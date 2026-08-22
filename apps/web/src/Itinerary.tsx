@@ -1,12 +1,24 @@
 import { Maximize2, Minimize2 } from "lucide-react";
-import type { KeyboardEvent } from "react";
-import type { TripPlan } from "./types";
+import { useEffect, useState, type KeyboardEvent } from "react";
+import type { MapSnapshot, TripPlan } from "./types";
 import { shouldActivateSelectionKey } from "./workspace-controls";
 
 export type MapSelection = { scope: "all" } | { scope: "day"; dayNumber: number };
 
-export function Itinerary({ plan, selection, onSelectAll, onSelectDay, fullscreen, onToggleFullscreen }: { plan: TripPlan | null; selection: MapSelection; onSelectAll: () => void; onSelectDay: (dayNumber: number) => void; fullscreen: boolean; onToggleFullscreen: () => void }) {
+export function Itinerary({ plan, unlocatedActivityIds: suppliedUnlocatedActivityIds = new Set<string>(), selection, onSelectAll, onSelectDay, fullscreen, onToggleFullscreen }: { plan: TripPlan | null; unlocatedActivityIds?: ReadonlySet<string>; selection: MapSelection; onSelectAll: () => void; onSelectDay: (dayNumber: number) => void; fullscreen: boolean; onToggleFullscreen: () => void }) {
+  const [mapUnlocatedActivityIds, setMapUnlocatedActivityIds] = useState<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    const update = (event: Event) => {
+      const snapshot = (event as CustomEvent<MapSnapshot | null>).detail;
+      if (!snapshot) { setMapUnlocatedActivityIds(new Set()); return; }
+      if (snapshot.scope !== "all") return;
+      setMapUnlocatedActivityIds(new Set(snapshot.entities.flatMap((entity) => entity.status === "unlocated" && entity.activityId ? [entity.activityId] : [])));
+    };
+    window.addEventListener("travel.map.snapshot", update);
+    return () => window.removeEventListener("travel.map.snapshot", update);
+  }, []);
+  const unlocatedActivityIds = mapUnlocatedActivityIds.size ? mapUnlocatedActivityIds : suppliedUnlocatedActivityIds;
   if (!plan) return <section className="itinerary-panel empty-itinerary">告诉 AI 目的地，它会在需求足够时自动生成首版旅行方案。日期、人数和预算都可以稍后再决定。</section>;
   const keySelect = (event: KeyboardEvent, action: () => void) => { if (shouldActivateSelectionKey(event.key, event.target === event.currentTarget)) { event.preventDefault(); action(); } };
-  return <section className="itinerary-panel"><div className={`itinerary-head ${selection.scope === "all" ? "selected" : ""}`} role="button" tabIndex={0} onClick={onSelectAll} onKeyDown={(event) => keySelect(event, onSelectAll)}><div><h2>当前行程 · {plan.tripName}</h2><p>{plan.travelerSummary} · {plan.pace}节奏 · {plan.themes.join(" / ")} · {plan.timezone}</p><p>预算：{plan.budgetNote}</p></div><span>Codex</span><button className="icon-button panel-fullscreen" type="button" title={fullscreen ? "退出行程全屏" : "行程全屏"} aria-label={fullscreen ? "退出行程全屏" : "行程全屏"} onClick={(event) => { event.stopPropagation(); onToggleFullscreen(); }} onKeyDown={(event) => event.stopPropagation()}>{fullscreen ? <Minimize2 size={17}/> : <Maximize2 size={17}/>}</button></div>{plan.days.map((day) => { const selected = selection.scope === "day" && selection.dayNumber === day.dayNumber; const choose = () => onSelectDay(day.dayNumber); return <article className={`day-card ${selected ? "selected" : ""}`} role="button" tabIndex={0} aria-pressed={selected} onClick={choose} onKeyDown={(event) => keySelect(event, choose)} key={day.dayNumber}><h3>Day {day.dayNumber} <small>{day.date ? `${day.date} · ` : ""}{day.title}</small></h3>{day.activities.map((activity) => <div className="activity" key={activity.id}><div><b>{activity.startTime}</b><small>{activity.endTime}</small></div><div><strong>{activity.placeName}</strong><p>{activity.activity} · {activity.durationMinutes} 分钟</p><small>{activity.transportMode === "transit_advisory" ? "公共交通建议，未实时核验" : `${activity.transportMode} · 约 ${activity.transportMinutes} 分钟`} · {activity.costNote}</small></div></div>)}</article>; })}<footer className="warning"><strong>出发前核验：</strong>{plan.warnings.join(" ")}</footer></section>;
+  return <section className="itinerary-panel"><div className={`itinerary-head ${selection.scope === "all" ? "selected" : ""}`} role="button" tabIndex={0} onClick={onSelectAll} onKeyDown={(event) => keySelect(event, onSelectAll)}><div><h2>当前行程 · {plan.tripName}</h2><p>{plan.travelerSummary} · {plan.pace}节奏 · {plan.themes.join(" / ")} · {plan.timezone}</p><p>预算：{plan.budgetNote}</p></div><span>Codex</span><button className="icon-button panel-fullscreen" type="button" title={fullscreen ? "退出行程全屏" : "行程全屏"} aria-label={fullscreen ? "退出行程全屏" : "行程全屏"} onClick={(event) => { event.stopPropagation(); onToggleFullscreen(); }} onKeyDown={(event) => event.stopPropagation()}>{fullscreen ? <Minimize2 size={17}/> : <Maximize2 size={17}/>}</button></div>{plan.days.map((day) => { const selected = selection.scope === "day" && selection.dayNumber === day.dayNumber; const choose = () => onSelectDay(day.dayNumber); return <article className={`day-card ${selected ? "selected" : ""}`} role="button" tabIndex={0} aria-pressed={selected} onClick={choose} onKeyDown={(event) => keySelect(event, choose)} key={day.dayNumber}><h3>Day {day.dayNumber} <small>{day.date ? `${day.date} · ` : ""}{day.title}</small></h3>{day.activities.map((activity) => <div className="activity" key={activity.id}><div><b>{activity.startTime}</b><small>{activity.endTime}</small></div><div><strong>{activity.placeName}{unlocatedActivityIds.has(activity.id) ? "（未定位）" : ""}</strong><p>{activity.activity} · {activity.durationMinutes} 分钟</p><small>{activity.transportMode === "transit_advisory" ? "公共交通建议，未实时核验" : `${activity.transportMode} · 约 ${activity.transportMinutes} 分钟`} · {activity.costNote}</small></div></div>)}</article>; })}<footer className="warning"><strong>出发前核验：</strong>{plan.warnings.join(" ")}</footer></section>;
 }

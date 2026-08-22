@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./map-label-overrides.css";
-import { AlertTriangle, LoaderCircle, Maximize2, Minimize2, RotateCcw } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronUp, Filter, LoaderCircle, Maximize2, Minimize2, RotateCcw } from "lucide-react";
 import { api } from "./api";
 import type {
   Candidate,
@@ -15,6 +15,13 @@ import {
   labelRole,
   layoutLabels,
 } from "./map-label-layout";
+import {
+  defaultCategoryVisibility,
+  mapCategoryLegend,
+  routeHoverFromFeature,
+  visibleCategories,
+} from "./map-interactions";
+import type { MapCategory } from "./map-interactions";
 import type { MapSelection } from "./Itinerary";
 import { shouldApplyMapLayout, shouldRequestFullscreenLayout } from "./workspace-controls";
 
@@ -25,6 +32,8 @@ type JobUpdate = {
   status: MapSnapshot["status"];
   summary: string;
 } | null;
+const displayEntityName = (item: MapEntity) =>
+  `${item.name}${item.status === "approximate" ? "（大致）" : ""}`;
 const pointFeature = (item: MapEntity) => ({
   type: "Feature" as const,
   id: item.id,
@@ -34,7 +43,7 @@ const pointFeature = (item: MapEntity) => ({
   },
   properties: {
     id: item.id,
-    name: item.name,
+    name: displayEntityName(item),
     kind: item.kind,
     importance: item.importance,
     dayNumber: item.dayNumber,
@@ -86,6 +95,7 @@ export function MapPanel({
   selection,
   fullscreen,
   onToggleFullscreen,
+  onSnapshotChange,
 }: {
   tripId: string | null;
   plan: TripPlan | null;
@@ -96,11 +106,14 @@ export function MapPanel({
   selection: MapSelection;
   fullscreen: boolean;
   onToggleFullscreen: () => void;
+  onSnapshotChange?: (snapshot: MapSnapshot | null) => void;
 }) {
   const element = useRef<HTMLDivElement>(null);
   const labelsRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
   const popupRef = useRef<any>(null);
+  const routePopupRef = useRef<any>(null);
+  const hoveredRouteRef = useRef<string | null>(null);
   const pinnedRef = useRef(false);
   const previousPoints = useRef(new Map<string, string>());
   const previousRoutes = useRef(new Map<string, string>());
@@ -123,6 +136,14 @@ export function MapPanel({
     string
   > | null>(null);
   const [spiderCluster, setSpiderCluster] = useState<string | null>(null);
+  const [legendOpen, setLegendOpen] = useState(false);
+  const [categoryVisibility, setCategoryVisibility] = useState(
+    defaultCategoryVisibility,
+  );
+  useEffect(() => {
+    onSnapshotChange?.(snapshot);
+    window.dispatchEvent(new CustomEvent("travel.map.snapshot", { detail: snapshot }));
+  }, [snapshot, onSnapshotChange]);
   const days = plan?.days || [];
   const scope = selection.scope;
   const day = selection.scope === "day" ? selection.dayNumber : (days[0]?.dayNumber || 1);
@@ -143,6 +164,9 @@ export function MapPanel({
     labelsRef.current?.replaceChildren();
     popupRef.current?.remove();
     popupRef.current = null;
+    routePopupRef.current?.remove();
+    routePopupRef.current = null;
+    hoveredRouteRef.current = null;
     pinnedRef.current = false;
     fitKey.current = "";
     setSpiderCluster(null);
@@ -157,6 +181,10 @@ export function MapPanel({
       stop: "#0891b2",
       waypoint: "#64748b",
     };
+  const enabledCategories = useMemo(
+    () => visibleCategories(categoryVisibility),
+    [categoryVisibility],
+  );
   useEffect(() => {
     operationGeneration.current += 1;
     const update = (event: Event) =>
@@ -200,6 +228,8 @@ export function MapPanel({
     cancelMapLoads();
     clearRenderedMap();
     setSnapshot(null);
+    setLegendOpen(false);
+    setCategoryVisibility(defaultCategoryVisibility());
     void load("all", days[0]?.dayNumber || 1);
   }, [tripId, revision, clearRenderedMap, cancelMapLoads]);
   useEffect(() => {
@@ -350,8 +380,18 @@ export function MapPanel({
                 "#16a34a",
                 "#64748b",
               ],
-              "line-width": ["match", ["get", "mode"], "drive", 5, 3],
-              "line-opacity": 0.82,
+              "line-width": [
+                "case",
+                ["boolean", ["feature-state", "hover"], false],
+                ["match", ["get", "mode"], "drive", 7, 5],
+                ["match", ["get", "mode"], "drive", 5, 3],
+              ],
+              "line-opacity": [
+                "case",
+                ["boolean", ["feature-state", "hover"], false],
+                1,
+                0.82,
+              ],
             },
           });
           map.addSource("travel-places", {
@@ -387,6 +427,36 @@ export function MapPanel({
               "circle-stroke-color": "#ffffff",
             },
           });
+          const clearRouteHover = () => {
+            const id = hoveredRouteRef.current;
+            if (id) map.setFeatureState({ source: "travel-routes", id }, { hover: false });
+            hoveredRouteRef.current = null;
+            routePopupRef.current?.remove();
+            routePopupRef.current = null;
+          };
+          const showRouteHover = (event: any) => {
+            if (viewRef.current.scope !== "all") return clearRouteHover();
+            const hover = routeHoverFromFeature(event.features?.[0] || {});
+            if (!hover) return clearRouteHover();
+            if (hoveredRouteRef.current !== hover.id) {
+              clearRouteHover();
+              map.setFeatureState({ source: "travel-routes", id: hover.id }, { hover: true });
+              hoveredRouteRef.current = hover.id;
+            }
+            routePopupRef.current?.remove();
+            const content = document.createElement("div");
+            content.className = "map-route-tooltip";
+            content.textContent = `Day ${hover.dayNumber}`;
+            routePopupRef.current = new lib.Popup({
+              offset: 10,
+              closeButton: false,
+              closeOnClick: false,
+              className: "map-route-popup",
+            })
+              .setLngLat(event.lngLat)
+              .setDOMContent(content)
+              .addTo(map);
+          };
           const showPopup = (event: any, pinned: boolean) => {
             const feature = event.features?.[0];
             if (!feature) return;
@@ -467,6 +537,15 @@ export function MapPanel({
           map.on("click", "travel-places", (event: any) =>
             showPopup(event, true),
           );
+          map.on("mouseenter", "travel-routes", (event: any) => {
+            if (viewRef.current.scope === "all") map.getCanvas().style.cursor = "pointer";
+            showRouteHover(event);
+          });
+          map.on("mousemove", "travel-routes", showRouteHover);
+          map.on("mouseleave", "travel-routes", () => {
+            if (viewRef.current.scope === "all") map.getCanvas().style.cursor = "";
+            clearRouteHover();
+          });
           map.on("click", (event: any) => {
             if (
               !map.queryRenderedFeatures(event.point, {
@@ -488,6 +567,7 @@ export function MapPanel({
       cancelled = true;
       resizeObserver?.disconnect();
       popupRef.current?.remove();
+      routePopupRef.current?.remove();
       map?.remove();
       mapRef.current = null;
       setReady(false);
@@ -545,7 +625,11 @@ export function MapPanel({
       overlay.replaceChildren();
       if (!snapshot) return;
       const boxes = snapshot.entities
-        .filter((entity) => entity.location)
+        .filter(
+          (entity) =>
+            entity.location &&
+            enabledCategories.includes(entity.kind as MapCategory),
+        )
         .map((entity) => {
           const p = map.project([
             entity.location!.longitude,
@@ -554,7 +638,7 @@ export function MapPanel({
           const role =
             labelRole(entity.id, snapshot.dayPaths) ||
             `D${entity.dayNumber} · ${entity.order}`;
-          const text = `${entity.name} · ${role}`;
+          const text = `${displayEntityName(entity)} · ${role}`;
           return {
             id: entity.id,
             x: p.x,
@@ -640,7 +724,11 @@ export function MapPanel({
             const angle = (Math.PI * 2 * index) / group.members.length;
             const node = document.createElement("button");
             node.className = "map-label map-spider";
-            node.textContent = member.entity.name;
+            node.style.setProperty(
+              "--label-color",
+              categoryColors[member.entity.kind] || "#1b4f78",
+            );
+            node.textContent = displayEntityName(member.entity);
             node.style.transform = `translate(${group.x + Math.cos(angle) * 72}px,${group.y + Math.sin(angle) * 72}px)`;
             node.onclick = () =>
               map.flyTo({
@@ -689,6 +777,7 @@ export function MapPanel({
     scope,
     day,
     categoryColors,
+    enabledCategories,
     spiderCluster,
   ]);
   useEffect(() => {
@@ -704,6 +793,15 @@ export function MapPanel({
         "#1b4f78",
       ]);
   }, [ready, categoryColors]);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!ready || !map?.getLayer("travel-places")) return;
+    map.setFilter("travel-places", [
+      "in",
+      ["get", "kind"],
+      ["literal", enabledCategories],
+    ]);
+  }, [ready, enabledCategories]);
   useEffect(() => {
     const map = mapRef.current;
     if (!ready || !map?.getLayer("travel-routes")) return;
@@ -823,14 +921,6 @@ export function MapPanel({
       if (operation === operationGeneration.current && requestedView.current === `${view.tripId || ""}:${view.revision || ""}:${view.scope}:${view.scope === "day" ? view.day : "all"}`) setLoading(false);
     }
   };
-  const categoryLegend = [
-    ["city", "城市"],
-    ["attraction", "景点"],
-    ["lodging", "住宿"],
-    ["meal", "餐饮"],
-    ["stop", "交通/停靠"],
-    ["waypoint", "途经点"],
-  ] as const;
   return (
     <section className="map-panel">
       <div className="map-heading">
@@ -857,51 +947,59 @@ export function MapPanel({
       <div className="map-canvas-wrap">
         <div ref={element} className="map-canvas" />
         <div ref={labelsRef} className="map-label-overlay" />
-        <div className="map-legend" aria-label="地图图例">
-          <strong>{scope === "all" ? "路线（按天）" : "路线（按交通）"}</strong>
-          <div className="map-legend-items">
-            {scope === "all" ? (
-              days.map((item) => (
-                <span key={item.dayNumber}>
-                  <i
-                    style={{
-                      background:
-                        dayColors[(item.dayNumber - 1) % dayColors.length],
-                    }}
-                  />
-                  Day {item.dayNumber}
-                </span>
-              ))
-            ) : (
-              <>
-                <span>
-                  <i style={{ background: "#2563eb" }} />
-                  步行
-                </span>
-                <span>
-                  <i style={{ background: "#dc2626" }} />
-                  自驾
-                </span>
-                <span>
-                  <i style={{ background: "#16a34a" }} />
-                  骑行
-                </span>
-                <span>
-                  <i className="legend-flight" />
-                  飞机
-                </span>
-              </>
-            )}
-          </div>
-          <strong>地点</strong>
-          <div className="map-legend-items">
-            {categoryLegend.map(([kind, label]) => (
-              <span key={kind}>
-                <i style={{ background: categoryColors[kind] }} />
-                {label}
-              </span>
-            ))}
-          </div>
+        <fieldset className="map-category-filter" aria-label="地点筛选">
+          <legend><Filter size={13} /> 地点筛选</legend>
+          {mapCategoryLegend.map(([kind, label]) => (
+            <label key={kind}>
+              <input
+                type="checkbox"
+                checked={categoryVisibility[kind]}
+                onChange={() => setCategoryVisibility((current) => ({
+                  ...current,
+                  [kind]: !current[kind],
+                }))}
+              />
+              <i style={{ background: categoryColors[kind] }} />
+              {label}
+            </label>
+          ))}
+        </fieldset>
+        <div className={`map-legend ${legendOpen ? "open" : ""}`} aria-label="地图图例">
+          <button
+            className="map-legend-toggle"
+            type="button"
+            aria-expanded={legendOpen}
+            aria-controls="map-legend-details"
+            onClick={() => setLegendOpen((open) => !open)}
+          >
+            图例 {legendOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          </button>
+          {legendOpen && <div id="map-legend-details">
+            <strong>{scope === "all" ? "路线（按天）" : "路线（按交通）"}</strong>
+            <div className="map-legend-items">
+              {scope === "all" ? (
+                days.map((item) => (
+                  <span key={item.dayNumber}>
+                    <i style={{ background: dayColors[(item.dayNumber - 1) % dayColors.length] }} />
+                    Day {item.dayNumber}
+                  </span>
+                ))
+              ) : (
+                <>
+                  <span><i style={{ background: "#2563eb" }} />步行</span>
+                  <span><i style={{ background: "#dc2626" }} />自驾</span>
+                  <span><i style={{ background: "#16a34a" }} />骑行</span>
+                  <span><i className="legend-flight" />飞机</span>
+                </>
+              )}
+            </div>
+            <strong>地点</strong>
+            <div className="map-legend-items">
+              {mapCategoryLegend.map(([kind, label]) => (
+                <span key={kind}><i style={{ background: categoryColors[kind] }} />{label}</span>
+              ))}
+            </div>
+          </div>}
         </div>
       </div>
       {unresolved.length > 0 && (

@@ -14,6 +14,7 @@ import {
 } from "./contracts.js";
 import { loadAgentPrompts } from "./prompt-contract.js";
 import { TravelStore } from "./travel-store.js";
+import { normalizeGeneratedPlaceName } from "./travel-store.js";
 import { MapService } from "./map-service.js";
 
 type SqliteModule = typeof import("node:sqlite");
@@ -88,6 +89,12 @@ afterEach(async () => {
 });
 
 describe("TravelStore revisions", () => {
+  it("normalizes only generated geographic functional suffixes", () => {
+    expect(normalizeGeneratedPlaceName("罗托鲁瓦市区")).toBe("罗托鲁瓦 市区");
+    expect(normalizeGeneratedPlaceName("奥克兰住宿")).toBe("奥克兰 住宿");
+    expect(normalizeGeneratedPlaceName("东京迪士尼乐园")).toBe("东京迪士尼乐园");
+  });
+
   it("normalizes redundant day-path endpoints before strict map validation", () => {
     const normalized = normalizeMapAgentOutput({
       dayPaths: [{ entityIds: ["overnight", "spot"], startEntityId: "wrong", endEntityId: "wrong", overnightEntityId: "spot" }],
@@ -461,6 +468,33 @@ describe("TravelStore revisions", () => {
     store.close();
   });
 
+  it("finishes a map and bridges across unlocated day-path entities", async () => {
+    const folder = await mkdtemp(path.join(tmpdir(), "travelplanner-test-"));
+    folders.push(folder);
+    const store = new TravelStore(path.join(folder, "travel.sqlite3"));
+    const maps = new MapService(path.join(folder, "cache.sqlite3"), store);
+    const trip = store.createTrip();
+    store.applyAgentOutput(trip.id, store.createUserMessage(trip.id, "安排京都一日游"), output());
+    const manifest = store.prepareMapManifest(trip.id, 1, []);
+    const base = { activityId: "d1-a1", dayNumber: 1, kind: "attraction" as const, city: "京都", detail: "地点", importance: "primary" as const, startTime: "", endTime: "", durationMinutes: 0, transportMode: "flight" as const, costNote: "", notes: "", approximateLodgingArea: false };
+    const first = { ...base, id: "first", order: 1, name: "第一站", query: "第一站" };
+    const missing = { ...base, id: "missing", order: 2, name: "未定位地点", query: "未定位地点" };
+    const last = { ...base, id: "last", order: 3, name: "末站", query: "末站" };
+    store.applyMapPatch(trip.id, 1, manifest.baseMapVersion, MapAgentOutputSchema.parse({ schemaVersion: 3, baseItineraryVersion: 1, baseMapVersion: manifest.baseMapVersion, upsertEntities: [first, missing, last], removeEntityIds: [], upsertRoutes: [{ id: "r1", dayNumber: 1, order: 1, fromEntityId: "first", toEntityId: "missing", mode: "flight" }, { id: "r2", dayNumber: 1, order: 2, fromEntityId: "missing", toEntityId: "last", mode: "flight" }], removeRouteIds: [], dayPaths: [{ dayNumber: 1, entityIds: ["first", "missing", "last"], startEntityId: "first", endEntityId: "last", overnightEntityId: "last" }], warnings: [] }));
+    const candidate = (id: string, longitude: number) => ({ providerPlaceId: id, displayName: id, latitude: 35, longitude, category: "tourism", sourceUrl: "https://example.com", sourceType: "manual" as const, evidenceUrl: null, confidence: "high" as const, decisionNote: null });
+    store.selectMapCandidate(trip.id, 1, "first", candidate("first", 135));
+    store.updateMapEntity(trip.id, 1, "missing", "unlocated", null, [], "无法定位");
+    store.selectMapCandidate(trip.id, 1, "last", candidate("last", 136));
+    await maps.resolveRoutes(trip.id, 1, manifest.mapVersion);
+    const snapshot = maps.finalize(trip.id, 1, manifest.mapVersion)!;
+    expect(snapshot.status).toBe("ready");
+    expect(snapshot.summary).toContain("未定位");
+    expect(snapshot.routes.find((route) => route.id === "r1")).toMatchObject({ status: "resolved", geometry: { type: "LineString" } });
+    expect(snapshot.routes.find((route) => route.id === "r2")).toMatchObject({ status: "resolved", geometry: null });
+    maps.close();
+    store.close();
+  });
+
   it("splits flights at the correct antimeridian in both shortest directions", async () => {
     const folder = await mkdtemp(path.join(tmpdir(), "travelplanner-test-"));
     folders.push(folder);
@@ -644,9 +678,7 @@ describe("TravelStore revisions", () => {
       ],
       unresolved: [],
     });
-    expect(() =>
-      maps.applyResolution(trip.id, 1, manifest.mapVersion, invalid),
-    ).toThrow("候选列表之外");
+    await expect(maps.applyResolution(trip.id, 1, manifest.mapVersion, invalid)).rejects.toThrow("候选列表之外");
     expect(
       store.mapEntities(trip.id, 1).find((item) => item.id === "second")
         ?.location,
@@ -661,7 +693,7 @@ describe("TravelStore revisions", () => {
         },
       ],
     });
-    maps.applyResolution(trip.id, 1, manifest.mapVersion, valid);
+    await maps.applyResolution(trip.id, 1, manifest.mapVersion, valid);
     expect(
       store.mapEntities(trip.id, 1).find((item) => item.id === "first")
         ?.location?.providerPlaceId,

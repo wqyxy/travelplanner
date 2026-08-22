@@ -48,6 +48,20 @@ export class MapService {
     for (const query of unique) { const options = await this.geocode(query); const relevant = this.relevantCandidates(item, options); if (relevant.length) return relevant; if (!fallback.length) fallback = options; }
     return this.relevantCandidates(item, fallback);
   }
+  private async useApproximateCityLocation(tripId: string, itineraryVersion: number, mapVersion: number, item: MapEntityView, reason: string) {
+    const city = item.city.trim();
+    if (!city) { this.store.updateMapEntity(tripId, itineraryVersion, item.id, "unlocated", null, item.candidates, `${reason}；未提供可用于大致定位的城市。`); this.emitEntity(tripId, itineraryVersion, mapVersion, item.id); return; }
+    try {
+      const options = await this.geocode(city);
+      const selected = options.find((candidate) => ["place", "boundary"].includes(candidate.category || "")) ?? options[0];
+      if (!selected) { this.store.updateMapEntity(tripId, itineraryVersion, item.id, "unlocated", null, item.candidates, `${reason}；未能定位到${city}。`); this.emitEntity(tripId, itineraryVersion, mapVersion, item.id); return; }
+      const location: Candidate = { ...selected, confidence: "medium", decisionNote: `${reason}；使用${city}的城市/区域中心作大致定位。` };
+      this.store.selectMapCandidate(tripId, itineraryVersion, item.id, location, "approximate", "未找到可靠的精确地点，地图以城市/区域中心（大致）显示。");
+    } catch (error) {
+      this.store.updateMapEntity(tripId, itineraryVersion, item.id, "unlocated", null, item.candidates, `${reason}；${error instanceof Error ? error.message : "城市大致定位失败。"}`);
+    }
+    this.emitEntity(tripId, itineraryVersion, mapVersion, item.id);
+  }
   private profile(mode: string) { if (mode === "bike") return "https://routing.openstreetmap.de/routed-bike/route/v1/driving"; if (mode === "walk") return "https://routing.openstreetmap.de/routed-foot/route/v1/driving"; return "https://routing.openstreetmap.de/routed-car/route/v1/driving"; }
   private async route(from: Candidate, to: Candidate, mode: string): Promise<{ geometry: unknown | null; warning: string | null }> {
     if (mode === "transit_advisory" || mode === "none") return { geometry: null, warning: mode === "transit_advisory" ? "公共交通仅作未实时核验建议。" : null };
@@ -65,7 +79,7 @@ export class MapService {
     for (const item of this.store.pendingMapEntities(tripId, itineraryVersion)) {
       this.assertCurrent(tripId, itineraryVersion, mapVersion);
       try { const options = await this.geocodeEntity(item); const selected = options.length === 1 ? options[0] : null; const status = selected ? "resolved" : options.length ? "ambiguous" : "unresolved"; this.store.updateMapEntity(tripId, itineraryVersion, item.id, status, selected, options, selected ? null : options.length ? "等待 AI 从多个候选中确认。" : "Nominatim 未找到合适候选，等待 AI 补充坐标。"); }
-      catch (error) { this.store.updateMapEntity(tripId, itineraryVersion, item.id, "failed", null, [], error instanceof Error ? error.message : "地点解析失败。"); }
+      catch (error) { this.store.updateMapEntity(tripId, itineraryVersion, item.id, "unresolved", null, [], error instanceof Error ? error.message : "地点解析失败。"); }
       this.emitEntity(tripId, itineraryVersion, mapVersion, item.id);
     }
     return this.resolutionBatch(tripId, itineraryVersion);
@@ -73,7 +87,15 @@ export class MapService {
 
   resolutionBatch(tripId: string, itineraryVersion: number): MapResolutionBatch { return this.store.mapEntities(tripId, itineraryVersion).filter((item) => item.status === "ambiguous" || item.status === "unresolved").map((item) => ({ entityId: item.id, name: item.name, query: item.query, city: item.city, kind: item.kind, approximateLodgingArea: item.approximateLodgingArea, detail: item.detail, candidates: item.candidates })); }
 
-  applyResolution(tripId: string, itineraryVersion: number, mapVersion: number, output: MapResolutionOutput) {
+  /** Final safety net, including when the AI resolution turn is unavailable. */
+  async settleUnresolvedWithCityFallback(tripId: string, itineraryVersion: number, mapVersion: number) {
+    for (const entity of this.store.mapEntities(tripId, itineraryVersion).filter((item) => item.status === "unresolved" || item.status === "ambiguous" || item.status === "failed" || item.status === "pending")) {
+      this.assertCurrent(tripId, itineraryVersion, mapVersion);
+      await this.useApproximateCityLocation(tripId, itineraryVersion, mapVersion, entity, entity.warning || "未能获得可靠的精确坐标");
+    }
+  }
+
+  async applyResolution(tripId: string, itineraryVersion: number, mapVersion: number, output: MapResolutionOutput) {
     const meta = this.assertCurrent(tripId, itineraryVersion, mapVersion); if (output.baseItineraryVersion !== itineraryVersion || output.baseMapVersion !== mapVersion || meta.mapVersion !== output.baseMapVersion) throw new Error("AI 坐标决策基线已经过期。");
     const eligible = new Map(this.store.mapEntities(tripId, itineraryVersion).filter((item) => item.status === "ambiguous" || item.status === "unresolved").map((item) => [item.id, item]));
     const decided = new Set([...output.selections, ...output.coordinates, ...output.unresolved].map((item) => item.entityId)); for (const entityId of eligible.keys()) if (!decided.has(entityId)) throw new Error(`AI 坐标决策遗漏了待处理地点：${entityId}`);
@@ -87,20 +109,45 @@ export class MapService {
     }
     for (const decision of output.coordinates) {
       const entity = requireEligible(decision.entityId);
-      if (decision.confidence === "low") { this.store.updateMapEntity(tripId, itineraryVersion, entity.id, "unresolved", null, [], `AI 坐标置信度较低：${decision.decisionNote}`); this.emitEntity(tripId, itineraryVersion, mapVersion, entity.id); continue; }
+      if (decision.confidence === "low") { await this.useApproximateCityLocation(tripId, itineraryVersion, mapVersion, entity, `AI 坐标置信度较低：${decision.decisionNote}`); continue; }
       const sourceUrl = `https://www.openstreetmap.org/?mlat=${decision.latitude}&mlon=${decision.longitude}`; const location: Candidate = { providerPlaceId: `ai:${decision.sourceType}:${entity.id}`, displayName: decision.displayName, latitude: decision.latitude, longitude: decision.longitude, category: entity.kind, sourceUrl, sourceType: decision.sourceType, evidenceUrl: decision.evidenceUrl, confidence: decision.confidence, decisionNote: decision.decisionNote };
       this.store.selectMapCandidate(tripId, itineraryVersion, entity.id, location); this.emitEntity(tripId, itineraryVersion, mapVersion, entity.id);
     }
-    for (const decision of output.unresolved) { const entity = requireEligible(decision.entityId); this.store.updateMapEntity(tripId, itineraryVersion, entity.id, "unresolved", null, entity.candidates, decision.reason); this.emitEntity(tripId, itineraryVersion, mapVersion, entity.id); }
+    for (const decision of output.unresolved) { const entity = requireEligible(decision.entityId); await this.useApproximateCityLocation(tripId, itineraryVersion, mapVersion, entity, decision.reason); }
   }
 
   async resolveRoutes(tripId: string, itineraryVersion: number, mapVersion: number) {
     this.assertCurrent(tripId, itineraryVersion, mapVersion); this.store.setMapStatus(tripId, itineraryVersion, "resolving", "正在用已确认坐标绘制路线"); this.onJob({ tripId, itineraryVersion, mapVersion, status: "resolving", summary: "正在用已确认坐标绘制路线" });
-    for (const item of this.store.pendingMapRoutes(tripId, itineraryVersion)) {
-      this.assertCurrent(tripId, itineraryVersion, mapVersion); const entities = new Map(this.store.mapEntities(tripId, itineraryVersion).map((entity) => [entity.id, entity])); const from = entities.get(item.fromEntityId); const to = entities.get(item.toEntityId);
-      if (!from?.location || !to?.location) this.store.updateMapRoute(tripId, itineraryVersion, item.id, "unresolved", null, "路线端点尚未获得有效坐标。");
-      else { try { const result = item.mode === "flight" ? { geometry: this.flightGeometry(from.location, to.location), warning: null } : await this.route(from.location, to.location, item.mode); this.store.updateMapRoute(tripId, itineraryVersion, item.id, result.geometry ? "resolved" : "unresolved", result.geometry, result.warning); } catch (error) { this.store.updateMapRoute(tripId, itineraryVersion, item.id, "failed", null, error instanceof Error ? error.message : "路线解析失败。"); } }
-      this.emitRoute(tripId, itineraryVersion, mapVersion, item.id);
+    const entities = new Map(this.store.mapEntities(tripId, itineraryVersion).map((entity) => [entity.id, entity]));
+    const routes = this.store.mapRoutes(tripId, itineraryVersion);
+    const routeFor = new Map(routes.map((route) => [`${route.dayNumber}:${route.fromEntityId}>${route.toEntityId}`, route]));
+    const paths = this.store.getMapSnapshot(tripId, "all")?.dayPaths ?? [];
+    for (const path of paths) {
+      this.assertCurrent(tripId, itineraryVersion, mapVersion);
+      const anchors = path.entityIds.map((id, index) => ({ id, index, entity: entities.get(id) })).filter((item): item is { id: string; index: number; entity: MapEntityView } => Boolean(item.entity?.location));
+      const pathRoutes = path.entityIds.slice(0, -1).map((fromEntityId, index) => routeFor.get(`${path.dayNumber}:${fromEntityId}>${path.entityIds[index + 1]}`)).filter((item): item is MapRouteView => Boolean(item));
+      if (anchors.length < 2) {
+        for (const route of pathRoutes) { this.store.updateMapRoute(tripId, itineraryVersion, route.id, "resolved", null, "当天不足两个可定位地点，未绘制路线。"); this.emitRoute(tripId, itineraryVersion, mapVersion, route.id); }
+        continue;
+      }
+      for (let anchorIndex = 0; anchorIndex < anchors.length - 1; anchorIndex += 1) {
+        const from = anchors[anchorIndex]; const to = anchors[anchorIndex + 1]; const skipped = path.entityIds.slice(from.index + 1, to.index);
+        const segmentRoutes = pathRoutes.filter((route) => {
+          const start = path.entityIds.indexOf(route.fromEntityId); return start >= from.index && start < to.index;
+        });
+        const primary = segmentRoutes[0]; if (!primary) continue;
+        try {
+          const result = primary.mode === "flight" ? { geometry: this.flightGeometry(from.entity.location!, to.entity.location!), warning: null } : await this.route(from.entity.location!, to.entity.location!, primary.mode);
+          const geometry = result.geometry ?? (primary.mode === "none" || primary.mode === "transit_advisory" ? null : this.flightGeometry(from.entity.location!, to.entity.location!));
+          const warning = [skipped.length ? `已略过未定位地点：${skipped.map((id) => entities.get(id)?.name || id).join("、")}。` : null, result.warning, !result.geometry && geometry ? "路线服务不可用，已显示直连线。" : null].filter(Boolean).join(" ") || null;
+          this.store.updateMapRoute(tripId, itineraryVersion, primary.id, "resolved", geometry, warning);
+        } catch (error) {
+          const geometry = primary.mode === "none" || primary.mode === "transit_advisory" ? null : this.flightGeometry(from.entity.location!, to.entity.location!);
+          this.store.updateMapRoute(tripId, itineraryVersion, primary.id, "resolved", geometry, `${skipped.length ? "已略过未定位地点。" : ""}${error instanceof Error ? error.message : "路线服务失败，已显示直连线。"}`);
+        }
+        this.emitRoute(tripId, itineraryVersion, mapVersion, primary.id);
+        for (const route of segmentRoutes.slice(1)) { this.store.updateMapRoute(tripId, itineraryVersion, route.id, "resolved", null, `已略过未定位地点，由 ${primary.id} 连接相邻可定位地点。`); this.emitRoute(tripId, itineraryVersion, mapVersion, route.id); }
+      }
     }
   }
 
@@ -118,7 +165,8 @@ export class MapService {
   }
 
   finalize(tripId: string, itineraryVersion: number, mapVersion: number) {
-    this.assertCurrent(tripId, itineraryVersion, mapVersion); const entities = this.store.mapEntities(tripId, itineraryVersion); const routes = this.store.mapRoutes(tripId, itineraryVersion); const unresolved = entities.filter((item) => item.status !== "resolved").length + routes.filter((item) => item.status !== "resolved" && item.mode !== "none" && item.mode !== "transit_advisory").length; const status = unresolved ? "partial" : "ready"; const summary = unresolved ? `地图已部分完成，${unresolved} 项待处理` : "全程地图已完成";
+    this.assertCurrent(tripId, itineraryVersion, mapVersion); const entities = this.store.mapEntities(tripId, itineraryVersion); const approximate = entities.filter((item) => item.status === "approximate").length; const unresolved = entities.filter((item) => item.status === "unlocated" || item.status === "unresolved" || item.status === "failed" || item.status === "ambiguous" || item.status === "pending").length; const summary = `全程地图已完成${approximate || unresolved ? `（${[approximate ? `${approximate} 个大致定位` : "", unresolved ? `${unresolved} 个未定位` : ""].filter(Boolean).join("，")}）` : ""}`;
+    const status = "ready";
     this.store.setMapStatus(tripId, itineraryVersion, status, summary); this.onJob({ tripId, itineraryVersion, mapVersion, status, summary }); return this.store.getMapSnapshot(tripId, "all");
   }
 

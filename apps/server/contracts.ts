@@ -177,7 +177,8 @@ export const emptyRequirements = (): TravelRequirements => RequirementsSchema.pa
 export type CoordinateSource = "nominatim" | "ai_web" | "ai_knowledge" | "manual";
 export type CoordinateConfidence = "high" | "medium" | "low";
 export type Candidate = { providerPlaceId: string; displayName: string; latitude: number; longitude: number; category: string | null; sourceUrl: string; sourceType: CoordinateSource; evidenceUrl: string | null; confidence: CoordinateConfidence; decisionNote: string | null };
-export type MapEntityView = MapEntityPatch & { status: "pending" | "resolved" | "ambiguous" | "unresolved" | "failed"; location: Candidate | null; candidates: Candidate[]; warning: string | null };
+/** `approximate` is a usable city/area-centre fallback; `unresolved` is terminal but deliberately has no coordinate. */
+export type MapEntityView = MapEntityPatch & { status: "pending" | "resolved" | "approximate" | "ambiguous" | "unresolved" | "unlocated" | "failed"; location: Candidate | null; candidates: Candidate[]; warning: string | null };
 export type MapRouteView = MapRoutePatch & { status: "pending" | "resolved" | "unresolved" | "failed"; geometry: unknown | null; warning: string | null };
 export type MapJobStatus = "idle" | "queued" | "analyzing" | "resolving" | "ready" | "partial" | "failed" | "stopped";
 export type MapSnapshot = { itineraryVersion: number; mapVersion: number; scope: "all" | "day"; dayNumber: number | null; status: MapJobStatus; summary: string; warnings: string[]; entities: MapEntityView[]; routes: MapRouteView[]; dayPaths: MapDayPath[] };
