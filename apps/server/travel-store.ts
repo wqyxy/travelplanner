@@ -95,9 +95,33 @@ export class TravelStore {
   listTrips(view: TripState = "active") { return (this.db.prepare("SELECT * FROM trips WHERE state=? ORDER BY updated_at DESC").all(view) as DbRow[]).map((row) => this.summary(row)); }
   createTrip() { const id = randomUUID(); const now = iso(); this.db.prepare("INSERT INTO trips(id,title,state,created_at,updated_at) VALUES(?,?,?,?,?)").run(id, "未命名旅行", "active", now, now); this.db.prepare("INSERT INTO requirements(trip_id,revision,content_json,updated_at,updated_by) VALUES(?,?,?,?,?)").run(id, 1, json(emptyRequirements()), now, "system"); return this.getTrip(id)!; }
   getTrip(id: string): TripDetail | null { const row = this.db.prepare("SELECT * FROM trips WHERE id=?").get(id) as DbRow | undefined; if (!row) return null; const requirements = this.latestRequirements(id); return { ...this.summary(row), requirements: requirements.content, requirementsRevision: requirements.revision, codexThreadId: typeof row.codex_thread_id === "string" ? row.codex_thread_id : null, mapCodexThreadId: typeof row.map_codex_thread_id === "string" ? row.map_codex_thread_id : null }; }
+  requirementsDocument(id: string) { this.requireTrip(id); return this.latestRequirements(id); }
   requireTrip(id: string) { const trip = this.getTrip(id); if (!trip) throw new Error("找不到这趟旅行。"); return trip; }
   rename(id: string, title: string) { const trimmed = title.trim().slice(0, 200); if (!trimmed) throw new Error("旅行名称不能为空。"); this.db.prepare("UPDATE trips SET title=?, updated_at=? WHERE id=?").run(trimmed, iso(), id); return this.requireTrip(id); }
-  duplicate(id: string) { const source = this.requireTrip(id); const next = this.createTrip(); this.rename(next.id, `${source.title} 副本`); const req = this.latestRequirements(id); const now = iso(); this.db.prepare("UPDATE requirements SET content_json=?, updated_at=?, updated_by=? WHERE trip_id=? AND revision=1").run(json(req.content), now, "system", next.id); if (source.activeRevision) this.insertRevision(next.id, source.activeRevision.plan, 1, "duplicate", `复制自 ${source.title}`); return this.requireTrip(next.id); }
+  duplicate(id: string) {
+    const source = this.requireTrip(id); const req = this.latestRequirements(id); const nextId = randomUUID(); const now = iso();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare("INSERT INTO trips(id,title,state,created_at,updated_at) VALUES(?,?,?,?,?)").run(nextId, `${source.title} 副本`, "active", now, now);
+      this.db.prepare("INSERT INTO requirements(trip_id,revision,content_json,updated_at,updated_by) VALUES(?,?,?,?,?)").run(nextId, 1, json(req.content), now, "system");
+      if (source.activeRevision) {
+        this.db.prepare("INSERT INTO itinerary_revisions(trip_id,version,plan_json,requirements_revision,created_at,source,summary) VALUES(?,?,?,?,?,?,?)").run(nextId, 1, json(source.activeRevision.plan), 1, now, "duplicate", `复制自 ${source.title}`);
+        const manifest = this.db.prepare("SELECT * FROM map_manifests WHERE trip_id=? AND itinerary_version=?").get(id, source.activeRevision.version) as DbRow | undefined;
+        if (manifest) {
+          const hasRenderableMapData = this.mapEntities(id, source.activeRevision.version).some((item) => item.location !== null) || this.mapRoutes(id, source.activeRevision.version).some((item) => item.geometry !== null);
+          const active = ["queued", "analyzing", "resolving"].includes(String(manifest.status));
+          const status = active ? (hasRenderableMapData ? "partial" : "idle") : String(manifest.status);
+          const summary = active ? (hasRenderableMapData ? "复制的部分地图，可继续重试完成" : "等待地图 Agent") : String(manifest.summary);
+          this.db.prepare("INSERT INTO map_manifests(trip_id,itinerary_version,map_version,base_map_version,status,summary,warnings_json,created_at,updated_at,contract_version,day_paths_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)").run(nextId, 1, 1, 0, status, summary, String(manifest.warnings_json), now, now, Number(manifest.contract_version ?? 3), String(manifest.day_paths_json ?? "[]"));
+          const entities = this.db.prepare("SELECT * FROM map_entities WHERE trip_id=? AND itinerary_version=?").all(id, source.activeRevision.version) as DbRow[];
+          for (const row of entities) this.db.prepare("INSERT INTO map_entities(trip_id,itinerary_version,entity_id,data_json,status,candidate_json,candidates_json,warning) VALUES(?,?,?,?,?,?,?,?)").run(nextId, 1, String(row.entity_id), String(row.data_json), String(row.status), typeof row.candidate_json === "string" ? row.candidate_json : null, String(row.candidates_json), typeof row.warning === "string" ? row.warning : null);
+          const routes = this.db.prepare("SELECT * FROM map_routes WHERE trip_id=? AND itinerary_version=?").all(id, source.activeRevision.version) as DbRow[];
+          for (const row of routes) this.db.prepare("INSERT INTO map_routes(trip_id,itinerary_version,route_id,data_json,status,geometry_json,warning) VALUES(?,?,?,?,?,?,?)").run(nextId, 1, String(row.route_id), String(row.data_json), String(row.status), typeof row.geometry_json === "string" ? row.geometry_json : null, typeof row.warning === "string" ? row.warning : null);
+        }
+      }
+      this.db.exec("COMMIT"); return this.requireTrip(nextId);
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
   setState(id: string, state: TripState) { this.db.prepare("UPDATE trips SET state=?, updated_at=? WHERE id=?").run(state, iso(), id); return this.requireTrip(id); }
   permanentDelete(id: string) { this.db.prepare("DELETE FROM trips WHERE id=?").run(id); }
   setThread(id: string, threadId: string | null) { this.db.prepare("UPDATE trips SET codex_thread_id=?, updated_at=? WHERE id=?").run(threadId, iso(), id); }

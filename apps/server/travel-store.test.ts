@@ -194,6 +194,47 @@ describe("TravelStore revisions", () => {
     store.close();
   });
 
+  it("copies the current map snapshot with stable entity and route ids", async () => {
+    const store = await makeStore();
+    const trip = store.createTrip();
+    const message = store.createUserMessage(trip.id, "安排京都一日游");
+    store.applyAgentOutput(trip.id, message, output());
+    const manifest = store.prepareMapManifest(trip.id, 1, []);
+    const entity = { id: "copied-place", activityId: "d1-a1", dayNumber: 1, order: 1, kind: "attraction" as const, name: "清水寺", query: "清水寺", city: "京都", detail: "参观", importance: "primary" as const, startTime: "10:00", endTime: "11:00", durationMinutes: 60, transportMode: "walk" as const, costNote: "", notes: "", approximateLodgingArea: false };
+    const hotel = { ...entity, id: "copied-hotel", activityId: null, order: 2, kind: "lodging" as const, name: "京都住宿", query: "京都住宿" };
+    const route = { id: "copied-route", dayNumber: 1, order: 1, fromEntityId: entity.id, toEntityId: hotel.id, mode: "walk" as const };
+    store.applyMapPatch(trip.id, 1, manifest.baseMapVersion, MapAgentOutputSchema.parse({ schemaVersion: 3, baseItineraryVersion: 1, baseMapVersion: manifest.baseMapVersion, upsertEntities: [entity, hotel], removeEntityIds: [], upsertRoutes: [route], removeRouteIds: [], dayPaths: [{ dayNumber: 1, entityIds: [entity.id, hotel.id], startEntityId: entity.id, endEntityId: hotel.id, overnightEntityId: hotel.id }], warnings: [] }));
+    store.updateMapRoute(trip.id, 1, route.id, "resolved", { type: "LineString", coordinates: [[135, 35], [135.1, 35.1]] }, null);
+    store.setMapStatus(trip.id, 1, "resolving", "正在解析");
+    const partial = store.duplicate(trip.id);
+    expect(store.getMapSnapshot(partial.id)?.status).toBe("partial");
+    store.setMapStatus(trip.id, 1, "ready", "完成");
+    const copied = store.duplicate(trip.id);
+    const snapshot = store.getMapSnapshot(copied.id);
+    expect(snapshot?.mapVersion).toBe(1);
+    expect(snapshot?.status).toBe("ready");
+    expect(snapshot?.entities.map((item) => item.id)).toEqual([entity.id, hotel.id]);
+    expect(snapshot?.routes[0]).toMatchObject({ id: route.id, geometry: { type: "LineString" } });
+    expect(snapshot?.dayPaths[0]?.entityIds).toEqual([entity.id, hotel.id]);
+    store.close();
+  });
+
+  it("downgrades an in-progress copied map and leaves a mapless copy idle", async () => {
+    const store = await makeStore();
+    const trip = store.createTrip();
+    const message = store.createUserMessage(trip.id, "安排京都一日游");
+    store.applyAgentOutput(trip.id, message, output());
+    const manifest = store.prepareMapManifest(trip.id, 1, []);
+    store.setMapStatus(trip.id, 1, "resolving", "正在解析");
+    expect(store.duplicate(trip.id).activeRevision?.version).toBe(1);
+    const copied = store.listTrips().find((item) => item.title.includes("副本"))!;
+    expect(store.getMapSnapshot(copied.id)?.status).toBe("idle");
+    const emptyTrip = store.createTrip();
+    expect(store.duplicate(emptyTrip.id).activeRevision).toBeNull();
+    expect(manifest.mapVersion).toBe(1);
+    store.close();
+  });
+
   it("rejects a plan update without a complete plan before storage", () => {
     expect(() =>
       TravelAgentOutputSchema.parse({
