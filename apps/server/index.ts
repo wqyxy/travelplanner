@@ -20,7 +20,7 @@ const codex = new CodexClient(root);
 const sessions = new PersistentSessionStore(() => config);
 const limiter = new LoginRateLimiter();
 const clients = new Set<WebSocket>();
-const active = new Map<string, { tripId: string; messageId: string; turnId?: string; content: string }>();
+const active = new Map<string, { tripId: string; messageId: string; turnId?: string; content: string; failureMessage?: string }>();
 const loginStates = new Map<string, { method: "browser" | "device"; phase: "pending" | "succeeded" | "failed" | "cancelled"; message?: string }>();
 
 const agentConfig = { web_search: "live", features: { apps: false, goals: false, multi_agent: false, shell_tool: false, plugins: false, remote_plugin: false } } as const;
@@ -42,7 +42,21 @@ function hostClient(request: IncomingMessage) { const address = request.socket.r
 function sessionCookie(token: string, clear = false) { return `travel_session=${clear ? "" : encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${clear ? 0 : 60 * 60 * 24 * 30}`; }
 async function ensureCodex() { if (!codex.running) await codex.start(); }
 async function save(next: AppConfig) { config = next; await saveConfig(root, config); }
-async function modelList() { await ensureCodex(); const result = await codex.call("model/list", {}, 30000); return Array.isArray(result?.data) ? result.data : Array.isArray(result?.models) ? result.models : []; }
+async function modelList() {
+  await ensureCodex();
+  const result = await codex.call("model/list", {}, 30000);
+  const source = Array.isArray(result?.data) ? result.data : Array.isArray(result?.models) ? result.models : [];
+  const seen = new Set<string>();
+  return source.flatMap((item: any) => {
+    const model = String(item?.model || "").trim().slice(0, 120);
+    if (!model || item?.hidden === true || seen.has(model)) return [];
+    const supportedReasoningEfforts = Array.isArray(item?.supportedReasoningEfforts)
+      ? [...new Set<string>(item.supportedReasoningEfforts.map((entry: any) => typeof entry === "string" ? entry : entry?.reasoningEffort).filter((entry: unknown): entry is string => typeof entry === "string" && Boolean(entry.trim())).map((entry: string) => entry.trim().slice(0, 32)))]
+      : [];
+    seen.add(model);
+    return [{ model, displayName: String(item?.displayName || model).trim().slice(0, 120), supportedReasoningEfforts }];
+  });
+}
 function modelOptions() { return { ...(config.ai.model ? { model: config.ai.model } : {}), effort: config.ai.reasoningEffort || "medium" }; }
 function travelSchemaInput(trip: ReturnType<TravelStore["requireTrip"]>, userMessage: string) { return JSON.stringify({
   contract: "travel-agent-output:v1", userMessage, currentRequirements: trip.requirements,
@@ -55,15 +69,15 @@ async function startTravelTurn(tripId: string, text: string, retryOf?: string | 
   const messageId = store.createUserMessage(tripId, text.trim(), retryOf); broadcast("travel.turn.updated", { tripId, messageId, status: "queued", progressMessage: "请求已提交" });
   try {
     await ensureCodex(); const prompt = await loadTravelPrompt(root); let threadId = trip.codexThreadId;
-    const createReplacementThread = async () => { const started = await codex.call("thread/start", { cwd: root, developerInstructions: agentInstructions, threadSource: "ai-travel-planner", config: agentConfig, sandbox: "read-only", approvalPolicy: "never", environments: [], ...modelOptions() }); const id = String(started?.thread?.id || ""); if (!id) throw new Error("Codex 没有返回旅行线程。"); store.setThread(tripId, id); return id; };
+    const createReplacementThread = async () => { const started = await codex.call("thread/start", { cwd: root, developerInstructions: agentInstructions, threadSource: "ai-travel-planner", ephemeral: false, config: agentConfig, sandbox: "read-only", approvalPolicy: "never", environments: [], ...modelOptions() }); const id = String(started?.thread?.id || ""); if (!id) throw new Error("Codex 没有返回旅行线程。"); store.setThread(tripId, id); return id; };
     if (!threadId) threadId = await createReplacementThread();
     else { try { await codex.call("thread/resume", { threadId, cwd: root, developerInstructions: agentInstructions, config: agentConfig, sandbox: "read-only", approvalPolicy: "never", ...modelOptions() }); } catch { threadId = await createReplacementThread(); } }
     active.set(threadId, { tripId, messageId, content: "" });
-    const result = await codex.call("turn/start", { threadId, summary: "detailed", input: [{ type: "text", text: `${prompt.content}\n\n本轮受控状态：\n${travelSchemaInput(store.requireTrip(tripId), text.trim())}`, text_elements: [] }], outputSchema: { name: "travel-agent-output-v1", schema: TravelAgentOutputJsonSchema, strict: true }, ...modelOptions() }, 120000);
+    const result = await codex.call("turn/start", { threadId, summary: "detailed", input: [{ type: "text", text: `${prompt.content}\n\n本轮受控状态：\n${travelSchemaInput(store.requireTrip(tripId), text.trim())}`, text_elements: [] }], outputSchema: TravelAgentOutputJsonSchema, ...modelOptions() }, 120000);
     const turnId = String(result?.turn?.id || ""); const run = active.get(threadId); if (run) run.turnId = turnId; store.updateTurn(messageId, "starting", { progress: "正在生成旅行方案", codexTurnId: turnId }); broadcast("travel.turn.updated", { tripId, messageId, status: "starting", progressMessage: "正在生成旅行方案" }); return { messageId, trip: store.requireTrip(tripId) };
   } catch (error) { store.updateTurn(messageId, "failed", { error: message(error), progress: "任务启动失败" }); broadcast("travel.turn.updated", { tripId, messageId, status: "failed", errorMessage: message(error) }); throw error; }
 }
-async function completeRun(threadId: string, status: string) { const run = active.get(threadId); if (!run) return; active.delete(threadId); if (status !== "completed") { const error = status === "interrupted" ? "本轮已停止。" : "AI 未能完成本轮。"; store.updateTurn(run.messageId, status === "interrupted" ? "interrupted" : "failed", { error, progress: error }); broadcast("travel.turn.updated", { tripId: run.tripId, messageId: run.messageId, status: status === "interrupted" ? "interrupted" : "failed", errorMessage: error }); return; }
+async function completeRun(threadId: string, status: string, reportedError?: string) { const run = active.get(threadId); if (!run) return; active.delete(threadId); if (status !== "completed") { const error = status === "interrupted" ? "本轮已停止。" : (reportedError || run.failureMessage || "AI 未能完成本轮，请重试。").replace(/\s+/g, " ").slice(0, 500); store.updateTurn(run.messageId, status === "interrupted" ? "interrupted" : "failed", { error, progress: error }); broadcast("travel.turn.updated", { tripId: run.tripId, messageId: run.messageId, status: status === "interrupted" ? "interrupted" : "failed", errorMessage: error, progressMessage: error }); return; }
   try { const output = TravelAgentOutputSchema.parse(JSON.parse(run.content)); const applied = store.applyAgentOutput(run.tripId, run.messageId, output); broadcast("travel.turn.updated", { tripId: run.tripId, messageId: run.messageId, status: "completed", progressMessage: applied.version ? `行程已更新为 v${applied.version}` : "需求已整理" }); broadcast("travel.trip.updated", { tripId: run.tripId }); if (applied.version) broadcast("travel.revision.created", { tripId: run.tripId, version: applied.version }); } catch (error) { store.updateTurn(run.messageId, "failed", { error: `AI 输出未通过旅行合同：${message(error)}`, progress: "结果未保存" }); broadcast("travel.turn.updated", { tripId: run.tripId, messageId: run.messageId, status: "failed", errorMessage: "AI 输出未通过旅行合同，数据未修改。" }); }
 }
 
@@ -73,7 +87,8 @@ codex.on("notification", (event: RpcEnvelope) => { const params = event.params a
   if (run && (event.method === "item/reasoning/summaryTextDelta" || event.method === "item/plan/delta")) { const delta = String(params?.delta || "").replace(/\s+/g, " ").trim(); if (delta) { store.updateTurn(run.messageId, "active", { progress: delta.slice(0, 220) }); broadcast("travel.turn.updated", { tripId: run.tripId, messageId: run.messageId, status: "active", progressMessage: delta.slice(0, 220) }); } }
   if (run && event.method === "item/agentMessage/delta") run.content += String(params?.delta || "");
   if (run && event.method === "item/completed" && params?.item?.type === "agentMessage" && typeof params.item.text === "string") run.content = params.item.text;
-  if (event.method === "turn/completed" && threadId) void completeRun(threadId, String(params?.turn?.status || "completed"));
+  if (run && (event.method === "error" || event.method === "turn/error")) run.failureMessage = String(params?.error?.message || params?.message || "").trim();
+  if (event.method === "turn/completed" && threadId) void completeRun(threadId, String(params?.turn?.status || "completed"), String(params?.turn?.error?.message || params?.error?.message || "").trim());
 });
 codex.on("serverRequest", (event: RpcEnvelope) => { if (event.id !== undefined) codex.respond(event.id, { decision: "decline" }); });
 

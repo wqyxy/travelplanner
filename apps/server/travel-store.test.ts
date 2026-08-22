@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { TravelAgentOutputSchema } from "./contracts.js";
+import { TravelAgentOutputJsonSchema, TravelAgentOutputSchema } from "./contracts.js";
 import { TravelStore } from "./travel-store.js";
 
 const folders: string[] = [];
@@ -21,6 +21,23 @@ const output = (name?: string) => TravelAgentOutputSchema.parse({ schemaVersion:
 afterEach(async () => { await Promise.all(folders.splice(0).map((folder) => rm(folder, { recursive: true, force: true }))); });
 
 describe("TravelStore revisions", () => {
+  it("exports a strict Codex output schema with every object property required", () => {
+    const missing: string[] = [];
+    const visit = (value: unknown, path = "$") => {
+      if (Array.isArray(value)) return value.forEach((item, index) => visit(item, `${path}[${index}]`));
+      if (!value || typeof value !== "object") return;
+      const record = value as Record<string, unknown>;
+      if (record.properties && typeof record.properties === "object" && !Array.isArray(record.properties)) {
+        const required = new Set(Array.isArray(record.required) ? record.required : []);
+        for (const key of Object.keys(record.properties)) if (!required.has(key)) missing.push(`${path}.${key}`);
+      }
+      for (const [key, item] of Object.entries(record)) visit(item, `${path}.${key}`);
+    };
+    visit(TravelAgentOutputJsonSchema);
+    expect(missing).toEqual([]);
+    expect(TravelAgentOutputJsonSchema).not.toHaveProperty("$schema");
+  });
+
   it("creates an immediate version for an AI plan and restores by creating another version", async () => {
     const store = await makeStore();
     const trip = store.createTrip();
