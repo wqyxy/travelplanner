@@ -1,0 +1,3 @@
+export type Activity = { id: string; startTime: string; endTime: string; placeName: string; activity: string; durationMinutes: number; transportMode: string; transportMinutes: number; costNote: string; notes?: string };
+export type TripPlan = { tripName: string; travelerSummary: string; pace: string; themes: string[]; timezone: string; budgetNote: string; days: Array<{ dayNumber: number; date?: string; title: string; activities: Activity[] }>; warnings: string[]; generatedBy: "codex" };
+export type Trip = { id: string; title: string; state: string; updatedAt: string; activeRevision: { id: string; version: number; plan: TripPlan } | null; requirements?: unknown; requirementsRevision?: number };

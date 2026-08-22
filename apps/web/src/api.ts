@@ -1,0 +1,2 @@
+export class ApiError extends Error { constructor(message: string, readonly code?: string) { super(message); } }
+export async function api<T>(url: string, init: RequestInit = {}): Promise<T> { const response = await fetch(url, { ...init, headers: { "content-type": "application/json", ...init.headers } }); const payload = await response.json().catch(() => ({})) as { data?: T; error?: { message?: string; code?: string } }; if (!response.ok) throw new ApiError(payload.error?.message || "请求失败。", payload.error?.code); return payload.data as T; }
