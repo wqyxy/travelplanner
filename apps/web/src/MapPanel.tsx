@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./map-label-overrides.css";
-import { AlertTriangle, LoaderCircle, RotateCcw } from "lucide-react";
+import { AlertTriangle, LoaderCircle, Maximize2, Minimize2, RotateCcw } from "lucide-react";
 import { api } from "./api";
 import type {
   Candidate,
@@ -15,6 +15,8 @@ import {
   labelRole,
   layoutLabels,
 } from "./map-label-layout";
+import type { MapSelection } from "./Itinerary";
+import { shouldApplyMapLayout, shouldRequestFullscreenLayout } from "./workspace-controls";
 
 type JobUpdate = {
   tripId: string;
@@ -81,6 +83,9 @@ export function MapPanel({
   patch,
   job,
   categoryColors: suppliedColors,
+  selection,
+  fullscreen,
+  onToggleFullscreen,
 }: {
   tripId: string | null;
   plan: TripPlan | null;
@@ -88,6 +93,9 @@ export function MapPanel({
   patch: MapPatch | null;
   job: JobUpdate;
   categoryColors?: Record<string, string>;
+  selection: MapSelection;
+  fullscreen: boolean;
+  onToggleFullscreen: () => void;
 }) {
   const element = useRef<HTMLDivElement>(null);
   const labelsRef = useRef<HTMLDivElement>(null);
@@ -104,9 +112,9 @@ export function MapPanel({
   const requestedView = useRef("");
   const viewRef = useRef({ tripId, revision, scope: "all" as "all" | "day", day: 1 });
   const operationGeneration = useRef(0);
+  const layoutGeneration = useRef(0);
+  const previousFullscreen = useRef<boolean | null>(null);
   const [ready, setReady] = useState(false);
-  const [scope, setScope] = useState<"all" | "day">("all");
-  const [day, setDay] = useState(1);
   const [snapshot, setSnapshot] = useState<MapSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState("");
@@ -115,6 +123,9 @@ export function MapPanel({
     string
   > | null>(null);
   const [spiderCluster, setSpiderCluster] = useState<string | null>(null);
+  const days = plan?.days || [];
+  const scope = selection.scope;
+  const day = selection.scope === "day" ? selection.dayNumber : (days[0]?.dayNumber || 1);
   const currentViewKey = (selectedScope = scope, selectedDay = day) =>
     `${tripId || ""}:${revision || ""}:${selectedScope}:${selectedScope === "day" ? selectedDay : "all"}`;
   snapshotRef.current = snapshot;
@@ -146,7 +157,6 @@ export function MapPanel({
       stop: "#0891b2",
       waypoint: "#64748b",
     };
-  const days = plan?.days || [];
   useEffect(() => {
     operationGeneration.current += 1;
     const update = (event: Event) =>
@@ -184,8 +194,6 @@ export function MapPanel({
   };
   useEffect(() => {
     operationGeneration.current += 1;
-    setScope("all");
-    setDay(days[0]?.dayNumber || 1);
     handledPatchEvent.current = null;
     handledJobEvent.current = null;
     requestedView.current = `${tripId || ""}:${revision || ""}:all:all`;
@@ -194,6 +202,38 @@ export function MapPanel({
     setSnapshot(null);
     void load("all", days[0]?.dayNumber || 1);
   }, [tripId, revision, clearRenderedMap, cancelMapLoads]);
+  useEffect(() => {
+    operationGeneration.current += 1;
+    cancelMapLoads();
+    clearRenderedMap();
+    setSnapshot(null);
+    void load(scope, day);
+  }, [selection, scope, day]);
+  useEffect(() => {
+    const shouldLayout = shouldRequestFullscreenLayout(previousFullscreen.current, fullscreen);
+    previousFullscreen.current = fullscreen;
+    if (!shouldLayout) return;
+    const generation = ++layoutGeneration.current;
+    const frame = requestAnimationFrame(() => {
+      const map = mapRef.current;
+      map?.resize?.();
+      fitKey.current = "";
+      const points = snapshotRef.current?.entities.filter((item) => item.location) || [];
+      if (!shouldApplyMapLayout(layoutGeneration.current, generation, Boolean(map), points.length)) return;
+      void import("maplibre-gl").then((lib) => {
+        if (!shouldApplyMapLayout(layoutGeneration.current, generation, mapRef.current === map, points.length)) return;
+        const bounds = new lib.LngLatBounds();
+        for (const point of points) bounds.extend([point.location!.longitude, point.location!.latitude]);
+        if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 54, maxZoom: 13, duration: 0 });
+      });
+    });
+    return () => { cancelAnimationFrame(frame); layoutGeneration.current += 1; };
+  }, [fullscreen]);
+  useEffect(() => {
+    const resize = () => mapRef.current?.resize?.();
+    window.addEventListener("travel-workspace-resize", resize);
+    return () => window.removeEventListener("travel-workspace-resize", resize);
+  }, []);
   useEffect(() => {
     if (
       !patch ||
@@ -804,27 +844,7 @@ export function MapPanel({
         </div>
         {plan && (
           <div className="map-actions">
-            <select
-              aria-label="选择地图范围"
-              value={scope === "all" ? "all" : String(day)}
-              onChange={(event) => {
-                const value = event.target.value;
-                const nextScope = value === "all" ? "all" : "day";
-                const nextDay = value === "all" ? day : Number(value);
-                operationGeneration.current += 1;
-                setScope(nextScope);
-                setDay(nextDay);
-                fitKey.current = "";
-                void load(nextScope, nextDay);
-              }}
-            >
-              <option value="all">全程总览</option>
-              {days.map((item) => (
-                <option key={item.dayNumber} value={item.dayNumber}>
-                  Day {item.dayNumber}
-                </option>
-              ))}
-            </select>
+            <button className="icon-button panel-fullscreen" type="button" title={fullscreen ? "退出地图全屏" : "地图全屏"} aria-label={fullscreen ? "退出地图全屏" : "地图全屏"} onClick={onToggleFullscreen}>{fullscreen ? <Minimize2 size={17}/> : <Maximize2 size={17}/>}</button>
             {(snapshot && ["partial", "failed"].includes(snapshot.status) || job?.tripId === tripId && job?.itineraryVersion === revision && job.status === "failed") && (
               <button disabled={loading} onClick={() => void retry()}>
                 <RotateCcw size={12} />
@@ -915,14 +935,6 @@ export function MapPanel({
               : "生成行程后会自动建立地图。")}
         </span>
       </p>
-      <a
-        className="map-credit"
-        href="https://www.openstreetmap.org/fixthemap"
-        target="_blank"
-        rel="noreferrer"
-      >
-        © OpenStreetMap contributors · 报告地图问题
-      </a>
     </section>
   );
 }
