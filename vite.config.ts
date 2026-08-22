@@ -4,6 +4,7 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   root: "apps/web",
+  optimizeDeps: { exclude: ["maplibre-gl"] },
   build: { outDir: "../../dist/web", emptyOutDir: true },
   server: {
     host: "127.0.0.1",

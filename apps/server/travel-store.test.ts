@@ -1,9 +1,15 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { afterEach, describe, expect, it } from "vitest";
-import { TravelAgentOutputJsonSchema, TravelAgentOutputSchema } from "./contracts.js";
+import { MapAgentOutputJsonSchema, MapAgentOutputSchema, MapResolutionOutputJsonSchema, MapResolutionOutputSchema, TravelAgentOutputJsonSchema, TravelAgentOutputSchema } from "./contracts.js";
+import { loadAgentPrompts } from "./prompt-contract.js";
 import { TravelStore } from "./travel-store.js";
+import { MapService } from "./map-service.js";
+
+type SqliteModule = typeof import("node:sqlite");
+const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as SqliteModule;
 
 const folders: string[] = [];
 async function makeStore() {
@@ -36,6 +42,19 @@ describe("TravelStore revisions", () => {
     visit(TravelAgentOutputJsonSchema);
     expect(missing).toEqual([]);
     expect(TravelAgentOutputJsonSchema).not.toHaveProperty("$schema");
+    missing.length = 0; visit(MapAgentOutputJsonSchema); expect(missing).toEqual([]); expect(MapAgentOutputJsonSchema).not.toHaveProperty("$schema");
+    missing.length = 0; visit(MapResolutionOutputJsonSchema); expect(missing).toEqual([]); expect(MapResolutionOutputJsonSchema).not.toHaveProperty("$schema");
+  });
+
+  it("loads two distinct versioned UTF-8 agent prompts", async () => {
+    const prompts = await loadAgentPrompts(path.resolve(process.cwd()));
+    expect(prompts.travel.relativePath).not.toBe(prompts.map.relativePath);
+    expect(prompts.travel.sha256).not.toBe(prompts.map.sha256);
+  });
+
+  it("migrates an existing map database from v2 to the v2 map contract marker", async () => {
+    const folder = await mkdtemp(path.join(tmpdir(), "travelplanner-test-")); folders.push(folder); const filename = path.join(folder, "travel.sqlite3"); const database = new DatabaseSync(filename); database.exec("CREATE TABLE map_manifests(trip_id TEXT NOT NULL,itinerary_version INTEGER NOT NULL,map_version INTEGER NOT NULL,base_map_version INTEGER NOT NULL,status TEXT NOT NULL,summary TEXT NOT NULL,warnings_json TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(trip_id,itinerary_version),UNIQUE(trip_id,map_version)); PRAGMA user_version=2;"); database.close(); const store = new TravelStore(filename); store.close(); const migrated = new DatabaseSync(filename, { readOnly: true });
+    expect((migrated.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(3); expect(migrated.prepare("PRAGMA table_info(map_manifests)").all().some((column) => String((column as { name: string }).name) === "contract_version")).toBe(true); migrated.close();
   });
 
   it("creates an immediate version for an AI plan and restores by creating another version", async () => {
@@ -63,5 +82,34 @@ describe("TravelStore revisions", () => {
 
   it("rejects a plan update without a complete plan before storage", () => {
     expect(() => TravelAgentOutputSchema.parse({ schemaVersion: 1, replyType: "plan_updated", assistantMessage: "没有行程", requirements: {}, assumptions: [], verificationNotes: [] })).toThrow();
+  });
+
+  it("stores map patches by version, reuses unchanged entities, and rejects stale baselines", async () => {
+    const store = await makeStore(); const trip = store.createTrip(); const firstMessage = store.createUserMessage(trip.id, "安排京都一日游"); store.applyAgentOutput(trip.id, firstMessage, output());
+    const first = store.prepareMapManifest(trip.id, 1, []); const entity = { id: "place:d1-a1", activityId: "d1-a1", dayNumber: 1, order: 1, kind: "attraction" as const, name: "清水寺", query: "清水寺, 京都, 日本", city: "京都", detail: "参观寺院与周边街区", importance: "primary" as const, startTime: "10:00", endTime: "12:00", durationMinutes: 120, transportMode: "walk" as const, costNote: "门票以现场为准", notes: "" };
+    const patch = MapAgentOutputSchema.parse({ schemaVersion: 2, baseItineraryVersion: 1, baseMapVersion: 0, upsertEntities: [entity], removeEntityIds: [], upsertRoutes: [], removeRouteIds: [], warnings: [] }); store.applyMapPatch(trip.id, 1, first.baseMapVersion, patch); const candidate = { providerPlaceId: "1", displayName: "清水寺, 京都市", latitude: 34.9948, longitude: 135.785, category: "tourism", sourceUrl: "https://www.openstreetmap.org", sourceType: "nominatim" as const, evidenceUrl: null, confidence: "high" as const, decisionNote: null }; store.updateMapEntity(trip.id, 1, entity.id, "resolved", candidate, [candidate], null); expect(store.getMapSnapshot(trip.id)?.entities[0]?.location?.latitude).toBe(34.9948);
+    const secondMessage = store.createUserMessage(trip.id, "只改行程名称"); store.applyAgentOutput(trip.id, secondMessage, output("京都一日慢游")); const second = store.prepareMapManifest(trip.id, 2, ["d1-a1"]); expect(store.getMapSnapshot(trip.id)?.entities[0]?.id).toBe(entity.id); const stale = { ...patch, baseItineraryVersion: 2 }; expect(() => store.applyMapPatch(trip.id, 2, second.baseMapVersion + 1, stale)).toThrow("基线已经过期"); store.close();
+  });
+
+  it("forces an existing v1 map manifest onto contract v2 without changing the itinerary version", async () => {
+    const store = await makeStore(); const trip = store.createTrip(); const message = store.createUserMessage(trip.id, "安排京都一日游"); store.applyAgentOutput(trip.id, message, output()); const first = store.prepareMapManifest(trip.id, 1, []); const rebuilt = store.prepareMapManifest(trip.id, 1, [], true);
+    expect(rebuilt.mapVersion).toBe(first.mapVersion + 1); expect(rebuilt.baseMapVersion).toBe(first.mapVersion); expect(store.requireTrip(trip.id).activeRevision?.version).toBe(1); store.close();
+  });
+
+  it("validates AI candidate selection and coordinate provenance contracts", () => {
+    const valid = MapResolutionOutputSchema.parse({ schemaVersion: 1, baseItineraryVersion: 1, baseMapVersion: 2, selections: [{ entityId: "parliament", providerPlaceId: "123", decisionNote: "与堪培拉国会区匹配" }], coordinates: [{ entityId: "lake", displayName: "Lake Burley Griffin", latitude: -35.29, longitude: 149.13, sourceType: "ai_web", evidenceUrl: "https://example.com/lake", confidence: "high", decisionNote: "公开资料坐标" }], unresolved: [] });
+    expect(valid.coordinates[0].sourceType).toBe("ai_web");
+    expect(() => MapResolutionOutputSchema.parse({ ...valid, coordinates: [{ ...valid.coordinates[0], evidenceUrl: null }] })).toThrow("网页坐标必须提供证据链接");
+    expect(() => MapResolutionOutputSchema.parse({ ...valid, unresolved: [{ entityId: "lake", reason: "重复" }] })).toThrow("地点决策重复");
+  });
+
+  it("applies only whitelisted AI map resolutions and keeps invalid batches atomic", async () => {
+    const folder = await mkdtemp(path.join(tmpdir(), "travelplanner-test-")); folders.push(folder); const store = new TravelStore(path.join(folder, "travel.sqlite3")); const maps = new MapService(path.join(folder, "cache.sqlite3"), store); const trip = store.createTrip(); const message = store.createUserMessage(trip.id, "安排京都一日游"); store.applyAgentOutput(trip.id, message, output()); const manifest = store.prepareMapManifest(trip.id, 1, []); const base = { activityId: "d1-a1", dayNumber: 1, kind: "attraction" as const, city: "京都", detail: "地点", importance: "primary" as const, startTime: "10:00", endTime: "11:00", durationMinutes: 60, transportMode: "walk" as const, costNote: "", notes: "", approximateLodgingArea: false }; const first = { ...base, id: "first", order: 1, name: "候选地点", query: "候选地点 京都" }; const second = { ...base, id: "second", order: 2, name: "缺失地点", query: "缺失地点 京都" }; const patch = MapAgentOutputSchema.parse({ schemaVersion: 2, baseItineraryVersion: 1, baseMapVersion: 0, upsertEntities: [first, second], removeEntityIds: [], upsertRoutes: [], removeRouteIds: [], warnings: [] }); store.applyMapPatch(trip.id, 1, manifest.baseMapVersion, patch); const candidate = (id: string, latitude: number) => ({ providerPlaceId: id, displayName: id, latitude, longitude: 135.7, category: "tourism", sourceUrl: "https://www.openstreetmap.org", sourceType: "nominatim" as const, evidenceUrl: null, confidence: "high" as const, decisionNote: null }); store.updateMapEntity(trip.id, 1, "first", "ambiguous", null, [candidate("allowed", 35), candidate("other", 36)], null); store.updateMapEntity(trip.id, 1, "second", "unresolved", null, [], null);
+    const invalid = MapResolutionOutputSchema.parse({ schemaVersion: 1, baseItineraryVersion: 1, baseMapVersion: manifest.mapVersion, selections: [{ entityId: "first", providerPlaceId: "forged", decisionNote: "错误候选" }], coordinates: [{ entityId: "second", displayName: "知识坐标", latitude: 35.1, longitude: 135.8, sourceType: "ai_knowledge", evidenceUrl: null, confidence: "medium", decisionNote: "模型知识" }], unresolved: [] }); expect(() => maps.applyResolution(trip.id, 1, manifest.mapVersion, invalid)).toThrow("候选列表之外"); expect(store.mapEntities(trip.id, 1).find((item) => item.id === "second")?.location).toBeNull();
+    const valid = MapResolutionOutputSchema.parse({ ...invalid, selections: [{ entityId: "first", providerPlaceId: "allowed", decisionNote: "城市和类型匹配" }] }); maps.applyResolution(trip.id, 1, manifest.mapVersion, valid); expect(store.mapEntities(trip.id, 1).find((item) => item.id === "first")?.location?.providerPlaceId).toBe("allowed"); expect(store.mapEntities(trip.id, 1).find((item) => item.id === "second")?.location?.sourceType).toBe("ai_knowledge"); maps.close(); store.close();
+  });
+
+  it("keeps public progress history and coalesces streaming segments", async () => {
+    const store = await makeStore(); const trip = store.createTrip(); store.upsertAiTask({ id: "planner:1", tripId: trip.id, agent: "planner", label: "旅行规划", status: "starting", summary: "开始", canStop: false }); store.appendAiProgress("planner:1", "running", "reasoning:item:0", "先核对目的地"); store.appendAiProgress("planner:1", "running", "reasoning:item:0", "再安排每天节奏"); store.appendAiProgress("planner:1", "completed", "task:completed", "完成"); const task = store.getAiTask("planner:1"); expect(task?.events.map((event) => event.summary)).toEqual(["再安排每天节奏", "完成"]); expect(task?.canStop).toBe(false); store.close();
   });
 });

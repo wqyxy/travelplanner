@@ -1,0 +1,36 @@
+import type { AiAgentKind, AiTaskSnapshot, AiTaskStatus } from "./contracts.js";
+import type { TravelStore } from "./travel-store.js";
+
+const TERMINAL = new Set<AiTaskStatus>(["completed", "failed", "stopped"]);
+const LIMIT = 360;
+
+export function normalizePublicAiSummary(value: unknown) {
+  const text = String(value ?? "")
+    .replace(/\s+/gu, " ")
+    .replace(/(?:\*\*|__|`)(.*?)(?:\*\*|__|`)/gu, "$1")
+    .replace(/^#{1,6}\s*/u, "")
+    .replace(/(?:bearer|token|cookie|api[ _-]?key|password|secret)\s*[:=]\s*[^\s,;]+/giu, "敏感信息=[已隐藏]")
+    .replace(/(?:account(?:Id)?|账户(?:名称|编号|ID))\s*[:=：]\s*[^\s,;，。]+/giu, "账户信息=[已隐藏]")
+    .trim();
+  return text.length <= LIMIT ? text : `${text.slice(0, LIMIT - 1).trimEnd()}…`;
+}
+
+export class AiTaskMonitor {
+  private readonly buffers = new Map<string, Map<string, string>>();
+  constructor(private readonly store: TravelStore, private readonly emit: (snapshot: AiTaskSnapshot) => void) {}
+  start(input: { id: string; tripId: string; agent: AiAgentKind; label: string; summary: string }) {
+    const summary = normalizePublicAiSummary(input.summary);
+    const snapshot = this.store.upsertAiTask({ ...input, status: "starting", summary, canStop: false, resetStartedAt: true });
+    this.store.appendAiProgress(input.id, "starting", "task:started", summary); this.buffers.delete(input.id); this.emit(this.store.getAiTask(input.id)!); return snapshot;
+  }
+  update(id: string, status: AiTaskStatus, summary: unknown, kind = "status") {
+    const value = normalizePublicAiSummary(summary); if (!value) return this.store.getAiTask(id);
+    const snapshot = this.store.appendAiProgress(id, status, kind, value); if (snapshot) this.emit(snapshot); if (TERMINAL.has(status)) this.buffers.delete(id); return snapshot;
+  }
+  append(id: string, segment: string, delta: unknown) {
+    const value = String(delta ?? ""); if (!value) return this.store.getAiTask(id);
+    const segments = this.buffers.get(id) ?? new Map<string, string>(); const combined = `${segments.get(segment) ?? ""}${value}`.slice(-2400); segments.set(segment, combined); this.buffers.set(id, segments);
+    return this.update(id, "running", combined, segment);
+  }
+  list(tripId: string) { return this.store.listAiTasks(tripId); }
+}

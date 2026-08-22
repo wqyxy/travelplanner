@@ -67,7 +67,98 @@ function requireAllObjectProperties(value: unknown): unknown {
 }
 export const TravelAgentOutputJsonSchema = requireAllObjectProperties(z.toJSONSchema(TravelAgentOutputSchema)) as Record<string, unknown>;
 
+export const MapEntityKindSchema = z.enum(["city", "attraction", "lodging", "meal", "stop", "waypoint"]);
+export const MapEntityPatchSchema = z.object({
+  id: z.string().min(1).max(160),
+  activityId: z.string().min(1).max(120).nullish(),
+  dayNumber: z.number().int().min(1).max(90),
+  order: z.number().int().min(0).max(100),
+  kind: MapEntityKindSchema,
+  name: z.string().min(1).max(300),
+  query: z.string().min(1).max(500),
+  city: z.string().max(160),
+  detail: z.string().min(1).max(1600),
+  importance: z.enum(["primary", "secondary", "context"]),
+  startTime: z.string().max(32),
+  endTime: z.string().max(32),
+  durationMinutes: z.number().int().min(0).max(1440),
+  transportMode: TransportMode,
+  costNote: z.string().max(500),
+  notes: z.string().max(1000),
+  approximateLodgingArea: z.boolean().default(false)
+});
+export const MapRoutePatchSchema = z.object({
+  id: z.string().min(1).max(180),
+  dayNumber: z.number().int().min(1).max(90),
+  order: z.number().int().min(0).max(100),
+  fromEntityId: z.string().min(1).max(160),
+  toEntityId: z.string().min(1).max(160),
+  mode: TransportMode
+});
+export const MapAgentOutputSchema = z.object({
+  schemaVersion: z.literal(2),
+  baseItineraryVersion: z.number().int().min(1),
+  baseMapVersion: z.number().int().min(0),
+  upsertEntities: z.array(MapEntityPatchSchema).max(1800),
+  removeEntityIds: z.array(z.string().min(1).max(160)).max(1800),
+  upsertRoutes: z.array(MapRoutePatchSchema).max(1800),
+  removeRouteIds: z.array(z.string().min(1).max(180)).max(1800),
+  warnings: z.array(z.string().min(1).max(700)).max(100)
+}).superRefine((value, context) => {
+  const duplicate = (values: string[]) => values.find((id, index) => values.indexOf(id) !== index);
+  const entityDuplicate = duplicate(value.upsertEntities.map((item) => item.id));
+  const routeDuplicate = duplicate(value.upsertRoutes.map((item) => item.id));
+  if (entityDuplicate) context.addIssue({ code: "custom", path: ["upsertEntities"], message: `地点 ID 重复：${entityDuplicate}` });
+  if (routeDuplicate) context.addIssue({ code: "custom", path: ["upsertRoutes"], message: `路线 ID 重复：${routeDuplicate}` });
+});
+export type MapAgentOutput = z.infer<typeof MapAgentOutputSchema>;
+export type MapEntityPatch = z.infer<typeof MapEntityPatchSchema>;
+export type MapRoutePatch = z.infer<typeof MapRoutePatchSchema>;
+export const MapAgentOutputJsonSchema = requireAllObjectProperties(z.toJSONSchema(MapAgentOutputSchema)) as Record<string, unknown>;
+
+export const MapResolutionOutputSchema = z.object({
+  schemaVersion: z.literal(1),
+  baseItineraryVersion: z.number().int().min(1),
+  baseMapVersion: z.number().int().min(1),
+  selections: z.array(z.object({
+    entityId: z.string().min(1).max(160),
+    providerPlaceId: z.string().min(1).max(160),
+    decisionNote: z.string().min(1).max(700)
+  })).max(1800),
+  coordinates: z.array(z.object({
+    entityId: z.string().min(1).max(160),
+    displayName: z.string().min(1).max(500),
+    latitude: z.number().finite().min(-90).max(90),
+    longitude: z.number().finite().min(-180).max(180),
+    sourceType: z.enum(["ai_web", "ai_knowledge"]),
+    evidenceUrl: z.string().max(2000).nullable(),
+    confidence: z.enum(["high", "medium", "low"]),
+    decisionNote: z.string().min(1).max(700)
+  })).max(1800),
+  unresolved: z.array(z.object({ entityId: z.string().min(1).max(160), reason: z.string().min(1).max(700) })).max(1800)
+}).superRefine((value, context) => {
+  const ids = [...value.selections, ...value.coordinates, ...value.unresolved].map((item) => item.entityId);
+  const duplicate = ids.find((id, index) => ids.indexOf(id) !== index);
+  if (duplicate) context.addIssue({ code: "custom", path: ["selections"], message: `地点决策重复：${duplicate}` });
+  for (const item of value.coordinates) {
+    if (item.sourceType === "ai_web" && !item.evidenceUrl) context.addIssue({ code: "custom", path: ["coordinates"], message: `网页坐标必须提供证据链接：${item.entityId}` });
+    if (item.evidenceUrl && !/^https?:\/\/[^\s]+$/i.test(item.evidenceUrl)) context.addIssue({ code: "custom", path: ["coordinates"], message: `坐标证据链接无效：${item.entityId}` });
+  }
+});
+export type MapResolutionOutput = z.infer<typeof MapResolutionOutputSchema>;
+export const MapResolutionOutputJsonSchema = requireAllObjectProperties(z.toJSONSchema(MapResolutionOutputSchema)) as Record<string, unknown>;
+
 export const emptyRequirements = (): TravelRequirements => RequirementsSchema.parse({});
 
-export type Candidate = { providerPlaceId: string; displayName: string; latitude: number; longitude: number; category: string | null; sourceUrl: string };
-export type MapView = { dayNumber: number; dayTitle: string; markers: Array<{ activityId: string; order: number; placeName: string; activity: string; durationMinutes: number; transportMode: string; status: "resolved" | "ambiguous" | "unresolved"; location: Candidate | null; candidates: Candidate[] }>; routes: Array<{ fromActivityId: string; toActivityId: string; mode: string; geometry: unknown | null; status: "resolved" | "unresolved"; warning: string | null }> };
+export type CoordinateSource = "nominatim" | "ai_web" | "ai_knowledge" | "manual";
+export type CoordinateConfidence = "high" | "medium" | "low";
+export type Candidate = { providerPlaceId: string; displayName: string; latitude: number; longitude: number; category: string | null; sourceUrl: string; sourceType: CoordinateSource; evidenceUrl: string | null; confidence: CoordinateConfidence; decisionNote: string | null };
+export type MapEntityView = MapEntityPatch & { status: "pending" | "resolved" | "ambiguous" | "unresolved" | "failed"; location: Candidate | null; candidates: Candidate[]; warning: string | null };
+export type MapRouteView = MapRoutePatch & { status: "pending" | "resolved" | "unresolved" | "failed"; geometry: unknown | null; warning: string | null };
+export type MapJobStatus = "idle" | "queued" | "analyzing" | "resolving" | "ready" | "partial" | "failed" | "stopped";
+export type MapSnapshot = { itineraryVersion: number; mapVersion: number; scope: "all" | "day"; dayNumber: number | null; status: MapJobStatus; summary: string; warnings: string[]; entities: MapEntityView[]; routes: MapRouteView[] };
+
+export type AiAgentKind = "planner" | "map";
+export type AiTaskStatus = "starting" | "running" | "waiting" | "reconnecting" | "completed" | "failed" | "stopped";
+export type AiProgressEvent = { id: number; taskId: string; tripId: string; agent: AiAgentKind; status: AiTaskStatus; kind: string; summary: string; createdAt: string };
+export type AiTaskSnapshot = { id: string; tripId: string; agent: AiAgentKind; label: string; status: AiTaskStatus; summary: string; startedAt: string; updatedAt: string; canStop: boolean; events: AiProgressEvent[] };

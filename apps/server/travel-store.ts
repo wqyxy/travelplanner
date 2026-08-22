@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
-import type { Candidate, TravelAgentOutput, TravelRequirements, TripPlan } from "./contracts.js";
+import type { AiAgentKind, AiTaskSnapshot, AiTaskStatus, Candidate, MapAgentOutput, MapEntityPatch, MapEntityView, MapJobStatus, MapRoutePatch, MapRouteView, MapSnapshot, TravelAgentOutput, TravelRequirements, TripPlan } from "./contracts.js";
 import { emptyRequirements, RequirementsSchema, TripPlanSchema } from "./contracts.js";
 
 type SqliteModule = typeof import("node:sqlite");
@@ -9,13 +9,20 @@ const { DatabaseSync } = sqlite;
 
 export type TripState = "active" | "trashed";
 export type TripSummary = { id: string; title: string; state: TripState; updatedAt: string; activeRevision: { id: string; version: number; plan: TripPlan } | null };
-export type TripDetail = TripSummary & { requirements: TravelRequirements; requirementsRevision: number; codexThreadId: string | null };
+export type TripDetail = TripSummary & { requirements: TravelRequirements; requirementsRevision: number; codexThreadId: string | null; mapCodexThreadId: string | null };
 export type ChatMessage = { id: string; role: "user" | "assistant"; content: string; reply: TravelAgentOutput | null; status: "pending" | "completed" | "failed"; turn: { status: "queued" | "starting" | "active" | "completed" | "failed" | "interrupted"; cancelRequested: boolean; errorMessage: string | null; progressMessage?: string } | null; createdAt: string };
 export type RevisionSummary = { version: number; createdAt: string; source: string; summary: string };
 type DbRow = Record<string, unknown>;
 const iso = () => new Date().toISOString();
 const json = <T>(value: T) => JSON.stringify(value);
 const parse = <T>(value: unknown, fallback: T): T => { try { return typeof value === "string" ? JSON.parse(value) as T : fallback; } catch { return fallback; } };
+const normalizeCandidate = (value: unknown): Candidate | null => {
+  if (!value || typeof value !== "object") return null;
+  const item = value as Partial<Candidate>;
+  if (!item.providerPlaceId || !item.displayName || !Number.isFinite(item.latitude) || !Number.isFinite(item.longitude)) return null;
+  return { providerPlaceId: item.providerPlaceId, displayName: item.displayName, latitude: Number(item.latitude), longitude: Number(item.longitude), category: item.category ?? null, sourceUrl: item.sourceUrl || `https://www.openstreetmap.org/?mlat=${item.latitude}&mlon=${item.longitude}`, sourceType: item.sourceType ?? "nominatim", evidenceUrl: item.evidenceUrl ?? null, confidence: item.confidence ?? "high", decisionNote: item.decisionNote ?? null };
+};
+const normalizeCandidates = (value: unknown) => parse<unknown[]>(value, []).flatMap((item) => { const found = normalizeCandidate(item); return found ? [found] : []; });
 
 export class TravelStore {
   private readonly db: InstanceType<typeof DatabaseSync>;
@@ -23,7 +30,7 @@ export class TravelStore {
   close() { this.db.close(); }
   private migrate() {
     const version = this.db.prepare("PRAGMA user_version").get() as { user_version: number };
-    if (version.user_version > 1) throw new Error("travel.sqlite3 版本高于当前应用，已停止写入。");
+    if (version.user_version > 3) throw new Error("travel.sqlite3 版本高于当前应用，已停止写入。");
     if (version.user_version === 0) {
       this.db.exec(`
         CREATE TABLE trips (id TEXT PRIMARY KEY, title TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('active','trashed')), codex_thread_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -35,19 +42,64 @@ export class TravelStore {
         PRAGMA user_version = 1;
       `);
     }
+    const current = (this.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+    if (current === 1) {
+      this.db.exec(`
+        ALTER TABLE trips ADD COLUMN map_codex_thread_id TEXT;
+        CREATE TABLE ai_tasks (
+          id TEXT PRIMARY KEY, trip_id TEXT NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+          agent TEXT NOT NULL CHECK(agent IN ('planner','map')), label TEXT NOT NULL,
+          status TEXT NOT NULL, summary TEXT NOT NULL, started_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL, can_stop INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE ai_progress_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL REFERENCES ai_tasks(id) ON DELETE CASCADE,
+          trip_id TEXT NOT NULL REFERENCES trips(id) ON DELETE CASCADE, agent TEXT NOT NULL,
+          status TEXT NOT NULL, kind TEXT NOT NULL, summary TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE INDEX ai_progress_trip_created ON ai_progress_events(trip_id, created_at);
+        CREATE TABLE map_manifests (
+          trip_id TEXT NOT NULL REFERENCES trips(id) ON DELETE CASCADE, itinerary_version INTEGER NOT NULL,
+          map_version INTEGER NOT NULL, base_map_version INTEGER NOT NULL, status TEXT NOT NULL,
+          summary TEXT NOT NULL, warnings_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          PRIMARY KEY(trip_id, itinerary_version), UNIQUE(trip_id, map_version)
+        );
+        CREATE TABLE map_entities (
+          trip_id TEXT NOT NULL REFERENCES trips(id) ON DELETE CASCADE, itinerary_version INTEGER NOT NULL,
+          entity_id TEXT NOT NULL, data_json TEXT NOT NULL, status TEXT NOT NULL,
+          candidate_json TEXT, candidates_json TEXT NOT NULL, warning TEXT,
+          PRIMARY KEY(trip_id, itinerary_version, entity_id)
+        );
+        CREATE TABLE map_routes (
+          trip_id TEXT NOT NULL REFERENCES trips(id) ON DELETE CASCADE, itinerary_version INTEGER NOT NULL,
+          route_id TEXT NOT NULL, data_json TEXT NOT NULL, status TEXT NOT NULL,
+          geometry_json TEXT, warning TEXT,
+          PRIMARY KEY(trip_id, itinerary_version, route_id)
+        );
+        PRAGMA user_version = 2;
+      `);
+    }
+    const afterMaps = (this.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+    if (afterMaps === 2) {
+      this.db.exec(`
+        ALTER TABLE map_manifests ADD COLUMN contract_version INTEGER NOT NULL DEFAULT 1;
+        PRAGMA user_version = 3;
+      `);
+    }
   }
   private activeRevision(tripId: string) { const row = this.db.prepare("SELECT version, plan_json FROM itinerary_revisions WHERE trip_id=? ORDER BY version DESC LIMIT 1").get(tripId) as DbRow | undefined; if (!row) return null; const plan = TripPlanSchema.safeParse(parse(row.plan_json, null)); return plan.success ? { id: `${tripId}:${row.version}`, version: Number(row.version), plan: plan.data } : null; }
   private latestRequirements(tripId: string) { const row = this.db.prepare("SELECT revision, content_json, updated_at, updated_by FROM requirements WHERE trip_id=? ORDER BY revision DESC LIMIT 1").get(tripId) as DbRow | undefined; if (!row) return { revision: 0, content: emptyRequirements(), updatedAt: "", updatedBy: "system" }; const content = RequirementsSchema.safeParse(parse(row.content_json, {})); return { revision: Number(row.revision), content: content.success ? content.data : emptyRequirements(), updatedAt: String(row.updated_at), updatedBy: String(row.updated_by) }; }
   private summary(row: DbRow): TripSummary { const revision = this.activeRevision(String(row.id)); return { id: String(row.id), title: String(row.title), state: String(row.state) as TripState, updatedAt: String(row.updated_at), activeRevision: revision }; }
   listTrips(view: TripState = "active") { return (this.db.prepare("SELECT * FROM trips WHERE state=? ORDER BY updated_at DESC").all(view) as DbRow[]).map((row) => this.summary(row)); }
   createTrip() { const id = randomUUID(); const now = iso(); this.db.prepare("INSERT INTO trips(id,title,state,created_at,updated_at) VALUES(?,?,?,?,?)").run(id, "未命名旅行", "active", now, now); this.db.prepare("INSERT INTO requirements(trip_id,revision,content_json,updated_at,updated_by) VALUES(?,?,?,?,?)").run(id, 1, json(emptyRequirements()), now, "system"); return this.getTrip(id)!; }
-  getTrip(id: string): TripDetail | null { const row = this.db.prepare("SELECT * FROM trips WHERE id=?").get(id) as DbRow | undefined; if (!row) return null; const requirements = this.latestRequirements(id); return { ...this.summary(row), requirements: requirements.content, requirementsRevision: requirements.revision, codexThreadId: typeof row.codex_thread_id === "string" ? row.codex_thread_id : null }; }
+  getTrip(id: string): TripDetail | null { const row = this.db.prepare("SELECT * FROM trips WHERE id=?").get(id) as DbRow | undefined; if (!row) return null; const requirements = this.latestRequirements(id); return { ...this.summary(row), requirements: requirements.content, requirementsRevision: requirements.revision, codexThreadId: typeof row.codex_thread_id === "string" ? row.codex_thread_id : null, mapCodexThreadId: typeof row.map_codex_thread_id === "string" ? row.map_codex_thread_id : null }; }
   requireTrip(id: string) { const trip = this.getTrip(id); if (!trip) throw new Error("找不到这趟旅行。"); return trip; }
   rename(id: string, title: string) { const trimmed = title.trim().slice(0, 200); if (!trimmed) throw new Error("旅行名称不能为空。"); this.db.prepare("UPDATE trips SET title=?, updated_at=? WHERE id=?").run(trimmed, iso(), id); return this.requireTrip(id); }
   duplicate(id: string) { const source = this.requireTrip(id); const next = this.createTrip(); this.rename(next.id, `${source.title} 副本`); const req = this.latestRequirements(id); const now = iso(); this.db.prepare("UPDATE requirements SET content_json=?, updated_at=?, updated_by=? WHERE trip_id=? AND revision=1").run(json(req.content), now, "system", next.id); if (source.activeRevision) this.insertRevision(next.id, source.activeRevision.plan, 1, "duplicate", `复制自 ${source.title}`); return this.requireTrip(next.id); }
   setState(id: string, state: TripState) { this.db.prepare("UPDATE trips SET state=?, updated_at=? WHERE id=?").run(state, iso(), id); return this.requireTrip(id); }
   permanentDelete(id: string) { this.db.prepare("DELETE FROM trips WHERE id=?").run(id); }
   setThread(id: string, threadId: string | null) { this.db.prepare("UPDATE trips SET codex_thread_id=?, updated_at=? WHERE id=?").run(threadId, iso(), id); }
+  setMapThread(id: string, threadId: string | null) { this.db.prepare("UPDATE trips SET map_codex_thread_id=?, updated_at=? WHERE id=?").run(threadId, iso(), id); }
   saveRequirements(id: string, content: unknown, expectedRevision: number, updatedBy: "user" | "agent" | "system" = "user") { const current = this.latestRequirements(id); if (current.revision !== expectedRevision) throw new Error("需求总览已被更新，请重新读取后再保存。"); const parsed = RequirementsSchema.parse(content); const revision = current.revision + 1; const now = iso(); this.db.prepare("INSERT INTO requirements(trip_id,revision,content_json,updated_at,updated_by) VALUES(?,?,?,?,?)").run(id, revision, json(parsed), now, updatedBy); this.db.prepare("UPDATE trips SET updated_at=? WHERE id=?").run(now, id); return { revision, content: parsed, updatedAt: now, updatedBy };
   }
   listMessages(tripId: string): ChatMessage[] { return (this.db.prepare("SELECT * FROM messages WHERE trip_id=? ORDER BY created_at ASC").all(tripId) as DbRow[]).map((row) => ({ id: String(row.id), role: String(row.role) as "user" | "assistant", content: String(row.content), reply: row.reply_json ? parse<TravelAgentOutput | null>(row.reply_json, null) : null, status: String(row.status) as ChatMessage["status"], turn: row.turn_status ? { status: String(row.turn_status) as NonNullable<ChatMessage["turn"]>["status"], cancelRequested: Boolean(row.cancel_requested), errorMessage: row.error_message ? String(row.error_message) : null, ...(row.progress_message ? { progressMessage: String(row.progress_message) } : {}) } : null, createdAt: String(row.created_at) })); }
@@ -60,4 +112,72 @@ export class TravelStore {
   restoreRevision(tripId: string, version: number) { const old = this.getRevision(tripId, version); if (!old) throw new Error("找不到该行程版本。"); this.db.exec("BEGIN IMMEDIATE"); try { const current = this.latestRequirements(tripId); const req = this.saveRequirements(tripId, old.requirements, current.revision, "system"); const next = this.insertRevision(tripId, old.plan, req.revision, "restore", `从 v${version} 恢复`); this.db.exec("COMMIT"); return { version: next, trip: this.requireTrip(tripId) }; } catch (error) { this.db.exec("ROLLBACK"); throw error; } }
   selectedLocation(tripId: string, revision: number, activityId: string): Candidate | null { const row = this.db.prepare("SELECT candidate_json FROM activity_locations WHERE trip_id=? AND revision=? AND activity_id=?").get(tripId, revision, activityId) as DbRow | undefined; return row ? parse<Candidate | null>(row.candidate_json, null) : null; }
   selectLocation(tripId: string, revision: number, activityId: string, candidate: Candidate) { this.db.prepare("INSERT INTO activity_locations(trip_id,revision,activity_id,candidate_json) VALUES(?,?,?,?) ON CONFLICT(trip_id,revision,activity_id) DO UPDATE SET candidate_json=excluded.candidate_json").run(tripId, revision, activityId, json(candidate)); }
+
+  upsertAiTask(input: { id: string; tripId: string; agent: AiAgentKind; label: string; status: AiTaskStatus; summary: string; canStop: boolean; resetStartedAt?: boolean }) {
+    const now = iso(); const existing = this.db.prepare("SELECT started_at FROM ai_tasks WHERE id=?").get(input.id) as DbRow | undefined;
+    const startedAt = existing && !input.resetStartedAt ? String(existing.started_at) : now;
+    this.db.prepare(`INSERT INTO ai_tasks(id,trip_id,agent,label,status,summary,started_at,updated_at,can_stop) VALUES(?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET status=excluded.status,summary=excluded.summary,started_at=excluded.started_at,updated_at=excluded.updated_at,can_stop=excluded.can_stop,label=excluded.label`).run(input.id, input.tripId, input.agent, input.label, input.status, input.summary, startedAt, now, input.canStop ? 1 : 0);
+    return this.getAiTask(input.id)!;
+  }
+  appendAiProgress(taskId: string, status: AiTaskStatus, kind: string, summary: string) {
+    const task = this.db.prepare("SELECT trip_id,agent FROM ai_tasks WHERE id=?").get(taskId) as DbRow | undefined; if (!task) return null;
+    const now = iso(); const segment = this.db.prepare("SELECT id FROM ai_progress_events WHERE task_id=? AND kind=? ORDER BY id DESC LIMIT 1").get(taskId, kind) as DbRow | undefined;
+    if (segment && (kind.startsWith("reasoning:") || kind.startsWith("plan:"))) this.db.prepare("UPDATE ai_progress_events SET status=?,summary=?,created_at=? WHERE id=?").run(status, summary, now, Number(segment.id));
+    else this.db.prepare("INSERT INTO ai_progress_events(task_id,trip_id,agent,status,kind,summary,created_at) VALUES(?,?,?,?,?,?,?)").run(taskId, String(task.trip_id), String(task.agent), status, kind, summary, now);
+    this.db.prepare("UPDATE ai_tasks SET status=?,summary=?,updated_at=?,can_stop=? WHERE id=?").run(status, summary, now, ["running","reconnecting"].includes(status) ? 1 : 0, taskId);
+    return this.getAiTask(taskId);
+  }
+  getAiTask(id: string): AiTaskSnapshot | null { const row = this.db.prepare("SELECT * FROM ai_tasks WHERE id=?").get(id) as DbRow | undefined; return row ? this.aiTask(row) : null; }
+  listAiTasks(tripId: string): AiTaskSnapshot[] { return (this.db.prepare("SELECT * FROM ai_tasks WHERE trip_id=? ORDER BY updated_at DESC").all(tripId) as DbRow[]).map((row) => this.aiTask(row)); }
+  private aiTask(row: DbRow): AiTaskSnapshot { const events = (this.db.prepare("SELECT * FROM ai_progress_events WHERE task_id=? ORDER BY id ASC").all(String(row.id)) as DbRow[]).map((event) => ({ id: Number(event.id), taskId: String(event.task_id), tripId: String(event.trip_id), agent: String(event.agent) as AiAgentKind, status: String(event.status) as AiTaskStatus, kind: String(event.kind), summary: String(event.summary), createdAt: String(event.created_at) })); return { id: String(row.id), tripId: String(row.trip_id), agent: String(row.agent) as AiAgentKind, label: String(row.label), status: String(row.status) as AiTaskStatus, summary: String(row.summary), startedAt: String(row.started_at), updatedAt: String(row.updated_at), canStop: Boolean(row.can_stop), events }; }
+
+  latestMapMeta(tripId: string, beforeItineraryVersion?: number) { const row = this.db.prepare(`SELECT * FROM map_manifests WHERE trip_id=? ${beforeItineraryVersion ? "AND itinerary_version<?" : ""} ORDER BY itinerary_version DESC LIMIT 1`).get(...(beforeItineraryVersion ? [tripId, beforeItineraryVersion] : [tripId])) as DbRow | undefined; return row ? { itineraryVersion: Number(row.itinerary_version), mapVersion: Number(row.map_version), baseMapVersion: Number(row.base_map_version), contractVersion: Number(row.contract_version ?? 1), status: String(row.status) as MapJobStatus, summary: String(row.summary), warnings: parse<string[]>(row.warnings_json, []) } : null; }
+  prepareMapManifest(tripId: string, itineraryVersion: number, reusableActivityIds: string[], forceRebuild = false) {
+    const found = this.db.prepare("SELECT * FROM map_manifests WHERE trip_id=? AND itinerary_version=?").get(tripId, itineraryVersion) as DbRow | undefined;
+    if (found && !forceRebuild) return { itineraryVersion, mapVersion: Number(found.map_version), baseMapVersion: Number(found.base_map_version) };
+    if (found && forceRebuild) {
+      const mapVersion = Number((this.db.prepare("SELECT COALESCE(MAX(map_version),0) AS value FROM map_manifests WHERE trip_id=?").get(tripId) as DbRow).value) + 1;
+      const baseMapVersion = Number(found.map_version);
+      this.db.prepare("UPDATE map_manifests SET map_version=?,base_map_version=?,status='queued',summary='等待地图 Agent 重新拆分地点',updated_at=? WHERE trip_id=? AND itinerary_version=?").run(mapVersion, baseMapVersion, iso(), tripId, itineraryVersion);
+      return { itineraryVersion, mapVersion, baseMapVersion };
+    }
+    const previous = this.latestMapMeta(tripId, itineraryVersion); const mapVersion = Number((this.db.prepare("SELECT COALESCE(MAX(map_version),0) AS value FROM map_manifests WHERE trip_id=?").get(tripId) as DbRow).value) + 1; const now = iso();
+    this.db.exec("BEGIN IMMEDIATE"); try {
+      this.db.prepare("INSERT INTO map_manifests(trip_id,itinerary_version,map_version,base_map_version,status,summary,warnings_json,created_at,updated_at,contract_version) VALUES(?,?,?,?,?,?,?,?,?,2)").run(tripId, itineraryVersion, mapVersion, previous?.mapVersion ?? 0, "queued", "等待地图 Agent 分析", "[]", now, now);
+      if (previous) {
+        const reusable = new Set(reusableActivityIds); const entityRows = this.db.prepare("SELECT * FROM map_entities WHERE trip_id=? AND itinerary_version=?").all(tripId, previous.itineraryVersion) as DbRow[]; const copied = new Set<string>();
+        for (const row of entityRows) { const data = parse<MapEntityPatch | null>(row.data_json, null); if (!data || (data.activityId && !reusable.has(data.activityId))) continue; this.db.prepare("INSERT INTO map_entities(trip_id,itinerary_version,entity_id,data_json,status,candidate_json,candidates_json,warning) VALUES(?,?,?,?,?,?,?,?)").run(tripId, itineraryVersion, String(row.entity_id), String(row.data_json), String(row.status), typeof row.candidate_json === "string" ? row.candidate_json : null, String(row.candidates_json), typeof row.warning === "string" ? row.warning : null); copied.add(String(row.entity_id)); }
+        const routeRows = this.db.prepare("SELECT * FROM map_routes WHERE trip_id=? AND itinerary_version=?").all(tripId, previous.itineraryVersion) as DbRow[];
+        for (const row of routeRows) { const data = parse<MapRoutePatch | null>(row.data_json, null); if (!data || !copied.has(data.fromEntityId) || !copied.has(data.toEntityId)) continue; this.db.prepare("INSERT INTO map_routes(trip_id,itinerary_version,route_id,data_json,status,geometry_json,warning) VALUES(?,?,?,?,?,?,?)").run(tripId, itineraryVersion, String(row.route_id), String(row.data_json), String(row.status), typeof row.geometry_json === "string" ? row.geometry_json : null, typeof row.warning === "string" ? row.warning : null); }
+      }
+      this.db.exec("COMMIT"); return { itineraryVersion, mapVersion, baseMapVersion: previous?.mapVersion ?? 0 };
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+  setMapStatus(tripId: string, itineraryVersion: number, status: MapJobStatus, summary: string, warnings?: string[]) { this.db.prepare("UPDATE map_manifests SET status=?,summary=?,warnings_json=COALESCE(?,warnings_json),updated_at=? WHERE trip_id=? AND itinerary_version=?").run(status, summary.slice(0, 500), warnings ? json(warnings) : null, iso(), tripId, itineraryVersion); }
+  mapContext(tripId: string, itineraryVersion: number) { const meta = this.latestMapMeta(tripId, itineraryVersion + 1); if (!meta || meta.itineraryVersion !== itineraryVersion) return null; const entities = this.mapEntities(tripId, itineraryVersion); const routes = this.mapRoutes(tripId, itineraryVersion); return { ...meta, entities: entities.map(({ location: _location, candidates: _candidates, status: _status, warning: _warning, ...item }) => item), routes: routes.map(({ geometry: _geometry, status: _status, warning: _warning, ...item }) => item) }; }
+  applyMapPatch(tripId: string, itineraryVersion: number, expectedBaseMapVersion: number, patch: MapAgentOutput, replaceAll = false) {
+    const meta = this.latestMapMeta(tripId, itineraryVersion + 1); if (!meta || meta.itineraryVersion !== itineraryVersion || meta.baseMapVersion !== expectedBaseMapVersion || patch.baseMapVersion !== expectedBaseMapVersion || patch.baseItineraryVersion !== itineraryVersion) throw new Error("地图补丁基线已经过期。");
+    this.db.exec("BEGIN IMMEDIATE"); try {
+      if (replaceAll) { this.db.prepare("DELETE FROM map_routes WHERE trip_id=? AND itinerary_version=?").run(tripId, itineraryVersion); this.db.prepare("DELETE FROM map_entities WHERE trip_id=? AND itinerary_version=?").run(tripId, itineraryVersion); }
+      for (const id of patch.removeRouteIds) this.db.prepare("DELETE FROM map_routes WHERE trip_id=? AND itinerary_version=? AND route_id=?").run(tripId, itineraryVersion, id);
+      for (const id of patch.removeEntityIds) { this.db.prepare("DELETE FROM map_routes WHERE trip_id=? AND itinerary_version=? AND (json_extract(data_json,'$.fromEntityId')=? OR json_extract(data_json,'$.toEntityId')=?)").run(tripId, itineraryVersion, id, id); this.db.prepare("DELETE FROM map_entities WHERE trip_id=? AND itinerary_version=? AND entity_id=?").run(tripId, itineraryVersion, id); }
+      for (const item of patch.upsertEntities) this.db.prepare(`INSERT INTO map_entities(trip_id,itinerary_version,entity_id,data_json,status,candidate_json,candidates_json,warning) VALUES(?,?,?,?,?,?,?,?)
+        ON CONFLICT(trip_id,itinerary_version,entity_id) DO UPDATE SET data_json=excluded.data_json,status='pending',candidate_json=NULL,candidates_json='[]',warning=NULL`).run(tripId, itineraryVersion, item.id, json(item), "pending", null, "[]", null);
+      for (const item of patch.upsertRoutes) this.db.prepare(`INSERT INTO map_routes(trip_id,itinerary_version,route_id,data_json,status,geometry_json,warning) VALUES(?,?,?,?,?,?,?)
+        ON CONFLICT(trip_id,itinerary_version,route_id) DO UPDATE SET data_json=excluded.data_json,status='pending',geometry_json=NULL,warning=NULL`).run(tripId, itineraryVersion, item.id, json(item), "pending", null, null);
+      const ids = new Set(this.mapEntities(tripId, itineraryVersion).map((item) => item.id)); for (const route of this.mapRoutes(tripId, itineraryVersion)) if (!ids.has(route.fromEntityId) || !ids.has(route.toEntityId)) throw new Error(`路线 ${route.id} 引用了不存在的地点。`);
+      this.db.prepare("UPDATE map_manifests SET contract_version=2 WHERE trip_id=? AND itinerary_version=?").run(tripId, itineraryVersion);
+      this.setMapStatus(tripId, itineraryVersion, "resolving", "正在解析地点与路线", patch.warnings); this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+  mapEntities(tripId: string, itineraryVersion: number): MapEntityView[] { return (this.db.prepare("SELECT * FROM map_entities WHERE trip_id=? AND itinerary_version=? ORDER BY json_extract(data_json,'$.dayNumber'),json_extract(data_json,'$.order')").all(tripId, itineraryVersion) as DbRow[]).flatMap((row) => { const data = parse<MapEntityPatch | null>(row.data_json, null); return data ? [{ ...data, approximateLodgingArea: data.approximateLodgingArea ?? false, status: String(row.status) as MapEntityView["status"], location: normalizeCandidate(parse<unknown>(row.candidate_json, null)), candidates: normalizeCandidates(row.candidates_json), warning: row.warning ? String(row.warning) : null }] : []; }); }
+  mapRoutes(tripId: string, itineraryVersion: number): MapRouteView[] { return (this.db.prepare("SELECT * FROM map_routes WHERE trip_id=? AND itinerary_version=? ORDER BY json_extract(data_json,'$.dayNumber'),json_extract(data_json,'$.order')").all(tripId, itineraryVersion) as DbRow[]).flatMap((row) => { const data = parse<MapRoutePatch | null>(row.data_json, null); return data ? [{ ...data, status: String(row.status) as MapRouteView["status"], geometry: parse<unknown | null>(row.geometry_json, null), warning: row.warning ? String(row.warning) : null }] : []; }); }
+  pendingMapEntities(tripId: string, itineraryVersion: number) { return this.mapEntities(tripId, itineraryVersion).filter((item) => item.status === "pending" || item.status === "failed" || item.status === "unresolved"); }
+  pendingMapRoutes(tripId: string, itineraryVersion: number) { return this.mapRoutes(tripId, itineraryVersion).filter((item) => item.status === "pending" || item.status === "failed" || item.status === "unresolved"); }
+  updateMapEntity(tripId: string, itineraryVersion: number, entityId: string, status: MapEntityView["status"], location: Candidate | null, candidates: Candidate[], warning: string | null) { this.db.prepare("UPDATE map_entities SET status=?,candidate_json=?,candidates_json=?,warning=? WHERE trip_id=? AND itinerary_version=? AND entity_id=?").run(status, location ? json(location) : null, json(candidates), warning, tripId, itineraryVersion, entityId); }
+  updateMapRoute(tripId: string, itineraryVersion: number, routeId: string, status: MapRouteView["status"], geometry: unknown | null, warning: string | null) { this.db.prepare("UPDATE map_routes SET status=?,geometry_json=?,warning=? WHERE trip_id=? AND itinerary_version=? AND route_id=?").run(status, geometry ? json(geometry) : null, warning, tripId, itineraryVersion, routeId); }
+  getMapSnapshot(tripId: string, scope: "all" | "day" = "all", dayNumber: number | null = null): MapSnapshot | null { const trip = this.requireTrip(tripId); const itineraryVersion = trip.activeRevision?.version; if (!itineraryVersion) return null; const meta = this.latestMapMeta(tripId, itineraryVersion + 1); if (!meta || meta.itineraryVersion !== itineraryVersion) return { itineraryVersion, mapVersion: 0, scope, dayNumber, status: "idle", summary: "等待地图 Agent", warnings: [], entities: [], routes: [] }; const filter = <T extends { dayNumber: number }>(items: T[]) => scope === "day" && dayNumber ? items.filter((item) => item.dayNumber === dayNumber) : items; return { itineraryVersion, mapVersion: meta.mapVersion, scope, dayNumber: scope === "day" ? dayNumber : null, status: meta.status, summary: meta.summary, warnings: meta.warnings, entities: filter(this.mapEntities(tripId, itineraryVersion)), routes: filter(this.mapRoutes(tripId, itineraryVersion)) }; }
+  selectMapCandidate(tripId: string, itineraryVersion: number, entityId: string, candidate: Candidate) { this.updateMapEntity(tripId, itineraryVersion, entityId, "resolved", candidate, [candidate], null); this.db.prepare("UPDATE map_routes SET status='pending',geometry_json=NULL,warning=NULL WHERE trip_id=? AND itinerary_version=? AND (json_extract(data_json,'$.fromEntityId')=? OR json_extract(data_json,'$.toEntityId')=?)").run(tripId, itineraryVersion, entityId, entityId); }
+  resetMapEntity(tripId: string, itineraryVersion: number, entityId: string, warning: string) { this.updateMapEntity(tripId, itineraryVersion, entityId, "pending", null, [], warning); this.db.prepare("UPDATE map_routes SET status='pending',geometry_json=NULL,warning=NULL WHERE trip_id=? AND itinerary_version=? AND (json_extract(data_json,'$.fromEntityId')=? OR json_extract(data_json,'$.toEntityId')=?)").run(tripId, itineraryVersion, entityId, entityId); }
 }
