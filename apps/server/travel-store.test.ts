@@ -142,14 +142,15 @@ describe("TravelStore revisions", () => {
     expect(prompts.travel.sha256).not.toBe(prompts.map.sha256);
   });
 
-  it("migrates an existing map database from v2 to the v2 map contract marker", async () => {
+  it("adds v4 storage without rewriting legacy map data", async () => {
     const folder = await mkdtemp(path.join(tmpdir(), "travelplanner-test-"));
     folders.push(folder);
     const filename = path.join(folder, "travel.sqlite3");
     const database = new DatabaseSync(filename);
     database.exec(
-      "CREATE TABLE map_manifests(trip_id TEXT NOT NULL,itinerary_version INTEGER NOT NULL,map_version INTEGER NOT NULL,base_map_version INTEGER NOT NULL,status TEXT NOT NULL,summary TEXT NOT NULL,warnings_json TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(trip_id,itinerary_version),UNIQUE(trip_id,map_version)); PRAGMA user_version=2;",
+      "CREATE TABLE map_manifests(trip_id TEXT NOT NULL,itinerary_version INTEGER NOT NULL,map_version INTEGER NOT NULL,base_map_version INTEGER NOT NULL,status TEXT NOT NULL,summary TEXT NOT NULL,warnings_json TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(trip_id,itinerary_version),UNIQUE(trip_id,map_version)); CREATE TABLE map_entities(trip_id TEXT NOT NULL,itinerary_version INTEGER NOT NULL,entity_id TEXT NOT NULL,data_json TEXT NOT NULL,status TEXT NOT NULL,candidate_json TEXT,candidates_json TEXT NOT NULL,warning TEXT,PRIMARY KEY(trip_id,itinerary_version,entity_id)); PRAGMA user_version=2;",
     );
+    database.prepare("INSERT INTO map_manifests VALUES(?,?,?,?,?,?,?,?,?)").run("legacy-trip", 1, 1, 0, "ready", "旧地图", "[]", "2026-01-01", "2026-01-01");
     database.close();
     const store = new TravelStore(filename);
     store.close();
@@ -160,7 +161,7 @@ describe("TravelStore revisions", () => {
           user_version: number;
         }
       ).user_version,
-    ).toBe(4);
+    ).toBe(6);
     expect(
       migrated
         .prepare("PRAGMA table_info(map_manifests)")
@@ -170,6 +171,12 @@ describe("TravelStore revisions", () => {
             String((column as { name: string }).name) === "contract_version",
         ),
     ).toBe(true);
+    expect(
+      migrated.prepare("SELECT contract_version FROM map_manifests WHERE trip_id=?").get("legacy-trip"),
+    ).toEqual({ contract_version: 1 });
+    expect(
+      (migrated.prepare("SELECT COUNT(*) AS count FROM map_visits").get() as { count: number }).count,
+    ).toBe(0);
     migrated.close();
   });
 
@@ -334,6 +341,41 @@ describe("TravelStore revisions", () => {
     store.close();
   });
 
+  it("stores repeated visits while drawing one canonical place marker", async () => {
+    const store = await makeStore();
+    const trip = store.createTrip();
+    store.applyAgentOutput(trip.id, store.createUserMessage(trip.id, "安排京都一日游"), output());
+    const manifest = store.prepareMapManifest(trip.id, 1, []);
+    const base = { activityId: "d1-a1", dayNumber: 1, kind: "attraction" as const, city: "京都", region: "京都府", country: "日本", detail: "到访", importance: "primary" as const, startTime: "", endTime: "", durationMinutes: 30, transportMode: "walk" as const, costNote: "", notes: "", approximateLodgingArea: false };
+    const first = { ...base, id: "visit-a-1", order: 1, name: "京都站", displayName: "京都站", canonicalKey: "京都站|京都|京都府|日本", query: "京都站, 京都府, 日本" };
+    const middle = { ...base, id: "visit-b", order: 2, name: "清水寺", displayName: "清水寺", canonicalKey: "清水寺|京都|京都府|日本", query: "清水寺, 京都府, 日本" };
+    const again = { ...base, id: "visit-a-2", order: 3, name: "京都站", displayName: "京都站", canonicalKey: "ai-supplied-key-must-not-control-dedup", query: "京都站, 京都府, 日本" };
+    store.applyMapPatch(trip.id, 1, manifest.baseMapVersion, MapAgentOutputSchema.parse({ schemaVersion: 3, baseItineraryVersion: 1, baseMapVersion: manifest.baseMapVersion, upsertEntities: [first, middle, again], removeEntityIds: [], upsertRoutes: [], removeRouteIds: [], dayPaths: [{ dayNumber: 1, entityIds: [first.id, middle.id, again.id], startEntityId: first.id, endEntityId: again.id, overnightEntityId: again.id }], warnings: [] }));
+    const snapshot = store.getMapSnapshot(trip.id)!;
+    expect(snapshot.places.map((place) => place.displayName)).toEqual(["京都站", "清水寺"]);
+    expect(snapshot.visits.map((visit) => visit.placeId)).toEqual([first.id, middle.id, first.id]);
+    expect(snapshot.dayPaths[0].entityIds).toEqual([first.id, middle.id, first.id]);
+    expect(snapshot.routes.map((route) => [route.id, route.edgeOrder])).toEqual([["d1-r1", 1], ["d1-r2", 2]]);
+    store.close();
+  });
+
+  it("merges aliases after the provider confirms the same physical place", async () => {
+    const store = await makeStore(); const trip = store.createTrip();
+    store.applyAgentOutput(trip.id, store.createUserMessage(trip.id, "安排京都一日游"), output());
+    const manifest = store.prepareMapManifest(trip.id, 1, []);
+    const base = { activityId: "d1-a1", dayNumber: 1, kind: "attraction" as const, city: "京都", detail: "到访", importance: "primary" as const, startTime: "", endTime: "", durationMinutes: 30, transportMode: "walk" as const, costNote: "", notes: "", approximateLodgingArea: false };
+    const first = { ...base, id: "station-cn", order: 1, name: "京都站", query: "京都站, 日本", canonicalKey: "京都站|京都||日本" };
+    const alias = { ...base, id: "station-en", order: 2, name: "Kyoto Station", query: "Kyoto Station, Japan", canonicalKey: "kyoto station|京都||日本" };
+    store.applyMapPatch(trip.id, 1, manifest.baseMapVersion, MapAgentOutputSchema.parse({ schemaVersion: 3, baseItineraryVersion: 1, baseMapVersion: manifest.baseMapVersion, upsertEntities: [first, alias], removeEntityIds: [], upsertRoutes: [], removeRouteIds: [], dayPaths: [{ dayNumber: 1, entityIds: [first.id, alias.id], startEntityId: first.id, endEntityId: alias.id, overnightEntityId: alias.id }], warnings: [] }));
+    const candidate = { providerPlaceId: "osm:kyoto-station", displayName: "京都駅", latitude: 34.9858, longitude: 135.7588, category: "railway", sourceUrl: "https://www.openstreetmap.org", sourceType: "nominatim" as const, evidenceUrl: null, confidence: "high" as const, decisionNote: null };
+    store.selectMapCandidate(trip.id, 1, first.id, candidate);
+    const merged = store.selectMapCandidate(trip.id, 1, alias.id, candidate);
+    expect(merged).toEqual({ entityId: first.id, removedEntityIds: [alias.id], affectedDayNumbers: [1] });
+    expect(store.getMapSnapshot(trip.id)?.places).toHaveLength(1);
+    expect(store.getMapSnapshot(trip.id)?.visits.map((visit) => visit.placeId)).toEqual([first.id, first.id]);
+    store.close();
+  });
+
   it("forces an existing v1 map manifest onto contract v2 without changing the itinerary version", async () => {
     const store = await makeStore();
     const trip = store.createTrip();
@@ -487,7 +529,7 @@ describe("TravelStore revisions", () => {
     store.selectMapCandidate(trip.id, 1, "last", candidate("last", 136));
     await maps.resolveRoutes(trip.id, 1, manifest.mapVersion);
     const snapshot = maps.finalize(trip.id, 1, manifest.mapVersion)!;
-    expect(snapshot.status).toBe("ready");
+    expect(snapshot.status).toBe("partial");
     expect(snapshot.summary).toContain("未定位");
     expect(snapshot.routes.find((route) => route.id === "r1")).toMatchObject({ status: "resolved", geometry: { type: "LineString" } });
     expect(snapshot.routes.find((route) => route.id === "r2")).toMatchObject({ status: "resolved", geometry: null });

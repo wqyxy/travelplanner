@@ -6,10 +6,13 @@ import type {
   Candidate,
   MapEntity,
   MapPatch,
+  MapPlace,
   MapRoute,
   MapSnapshot,
+  MapVisit,
   TripPlan,
 } from "./types";
+import { applyMapPatch } from "./map-patch-reducer";
 import {
   clusterHiddenLabels,
   labelRole,
@@ -22,6 +25,7 @@ import {
   visibleCategories,
 } from "./map-interactions";
 import type { MapCategory } from "./map-interactions";
+import { mapStatusPresentation } from "./map-status";
 import type { MapSelection } from "./Itinerary";
 import { shouldApplyMapLayout, shouldRequestFullscreenLayout } from "./workspace-controls";
 
@@ -85,11 +89,50 @@ const routeFeature = (item: MapRoute, scope?: "all" | "day" | number) => ({
 const mapById = <T extends { id: string }>(values: T[]) =>
   new Map(values.map((item) => [item.id, item]));
 
+/** Adapt v4's shared places/visits to the established MapLibre presentation shape. */
+function normalizeSnapshot(raw: MapSnapshot): MapSnapshot {
+  // A legacy v3 snapshot has renderable `entities` but no visits. Keep using
+  // that presentation verbatim: reading an old map must never implicitly
+  // convert it to v4 or hide its markers.
+  if ((raw.contractVersion ?? 3) < 4 || !raw.places || !raw.visits) {
+    return { ...raw, entities: raw.entities || [] };
+  }
+  const visits = raw.scope === "day" && raw.dayNumber != null
+    ? raw.visits.filter((visit) => visit.dayNumber === raw.dayNumber)
+    : raw.visits;
+  const visitsByPlace = new Map<string, MapVisit[]>();
+  for (const visit of visits) visitsByPlace.set(visit.placeId, [...(visitsByPlace.get(visit.placeId) || []), visit]);
+  const entities: MapEntity[] = raw.places.filter((place) => visitsByPlace.has(place.id)).map((place: MapPlace) => {
+    const placeVisits = visitsByPlace.get(place.id)!;
+    const first = placeVisits[0];
+    return {
+      id: place.id, activityId: first.activityId || null, dayNumber: first.dayNumber, order: first.order,
+      kind: place.kind, name: place.displayName, query: place.query, city: place.city,
+      detail: [place.detail, ...placeVisits.map((visit) => `Day ${visit.dayNumber}${visit.startTime ? ` ${visit.startTime}` : ""}${visit.activity ? ` · ${visit.activity}` : ""}`)].filter(Boolean).join("\n"),
+      importance: place.importance || "primary", startTime: first.startTime || "", endTime: first.endTime || "", durationMinutes: first.durationMinutes || 0,
+      transportMode: first.transportMode || "", costNote: first.costNote || "", notes: first.notes || "", approximateLodgingArea: Boolean(place.approximateLodgingArea),
+      status: place.status, location: place.location, candidates: place.candidates || [], warning: place.warning || null,
+    };
+  });
+  const visitById = new Map(raw.visits.map((visit) => [visit.id, visit]));
+  const routes: MapRoute[] = raw.routes.filter((route: any) => raw.scope !== "day" || route.dayNumber === raw.dayNumber).map((route: any) => ({
+    ...route, order: route.edgeOrder ?? route.order ?? 0,
+    fromEntityId: route.fromEntityId ?? visitById.get(route.fromVisitId)?.placeId ?? "",
+    toEntityId: route.toEntityId ?? visitById.get(route.toVisitId)?.placeId ?? "",
+  }));
+  const dayPaths = raw.dayPaths.map((path: any) => {
+    if (path.entityIds) return path;
+    const entityIds = (path.visitIds || []).map((id: string) => visitById.get(id)?.placeId).filter(Boolean);
+    return { dayNumber: path.dayNumber, entityIds, startEntityId: entityIds[0] || "", endEntityId: entityIds.at(-1) || "", overnightEntityId: entityIds.at(-1) || "" };
+  });
+  return { ...raw, entities, routes, dayPaths };
+}
+
 export function MapPanel({
   tripId,
   plan,
   revision,
-  patch,
+  patches,
   job,
   categoryColors: suppliedColors,
   selection,
@@ -100,7 +143,7 @@ export function MapPanel({
   tripId: string | null;
   plan: TripPlan | null;
   revision: number | null;
-  patch: MapPatch | null;
+  patches: MapPatch[];
   job: JobUpdate;
   categoryColors?: Record<string, string>;
   selection: MapSelection;
@@ -119,7 +162,7 @@ export function MapPanel({
   const previousRoutes = useRef(new Map<string, string>());
   const fitKey = useRef("");
   const snapshotRef = useRef<MapSnapshot | null>(null);
-  const handledPatchEvent = useRef<MapPatch | null>(null);
+  const handledPatchCount = useRef(0);
   const handledJobEvent = useRef<JobUpdate>(null);
   const loadGeneration = useRef(0);
   const requestedView = useRef("");
@@ -211,7 +254,9 @@ export function MapPanel({
         `/api/trips/${tripId}/map?${query}`,
       );
       if (generation !== loadGeneration.current || requestedView.current !== target || (data.map && data.map.itineraryVersion !== revision)) return;
-      setSnapshot(data.map);
+      const current = snapshotRef.current;
+      if (data.map && current && data.map.mapVersion === current.mapVersion && (data.map.sequence ?? 0) < (current.sequence ?? 0)) return;
+      setSnapshot(data.map ? normalizeSnapshot(data.map) : null);
       setNotice("");
     } catch (cause) {
       if (generation !== loadGeneration.current || requestedView.current !== target) return;
@@ -222,7 +267,7 @@ export function MapPanel({
   };
   useEffect(() => {
     operationGeneration.current += 1;
-    handledPatchEvent.current = null;
+    handledPatchCount.current = 0;
     handledJobEvent.current = null;
     requestedView.current = `${tripId || ""}:${revision || ""}:all:all`;
     cancelMapLoads();
@@ -239,6 +284,20 @@ export function MapPanel({
     setSnapshot(null);
     void load(scope, day);
   }, [selection, scope, day]);
+  useEffect(() => {
+    const refresh = () => void load(scope, day);
+    window.addEventListener("travel-map-refresh", refresh);
+    window.addEventListener("online", refresh);
+    return () => {
+      window.removeEventListener("travel-map-refresh", refresh);
+      window.removeEventListener("online", refresh);
+    };
+  }, [tripId, revision, scope, day]);
+  useEffect(() => {
+    if (!snapshot || !["queued", "analyzing", "resolving"].includes(snapshot.status)) return;
+    const timer = window.setInterval(() => void load(scope, day), 5000);
+    return () => window.clearInterval(timer);
+  }, [snapshot?.status, snapshot?.mapVersion, tripId, revision, scope, day]);
   useEffect(() => {
     const shouldLayout = shouldRequestFullscreenLayout(previousFullscreen.current, fullscreen);
     previousFullscreen.current = fullscreen;
@@ -265,61 +324,29 @@ export function MapPanel({
     return () => window.removeEventListener("travel-workspace-resize", resize);
   }, []);
   useEffect(() => {
-    if (
-      !patch ||
-      patch.tripId !== tripId ||
-      patch.itineraryVersion !== revision
-    )
-      return;
-    if (handledPatchEvent.current === patch) return;
-    handledPatchEvent.current = patch;
-    const currentSnapshot = snapshotRef.current;
-    if (patch.replaceAll || !currentSnapshot || currentSnapshot.mapVersion !== patch.mapVersion) {
+    const pending = patches.slice(handledPatchCount.current);
+    if (!pending.length) return;
+    handledPatchCount.current = patches.length;
+    for (const patch of pending) {
+      if (patch.tripId !== tripId || patch.itineraryVersion !== revision) continue;
       cancelMapLoads();
-      clearRenderedMap();
-      setSnapshot(null);
-      void load();
-      return;
+      const next = applyMapPatch(snapshotRef.current, patch);
+      if (!next) { cancelMapLoads(); void load(); return; }
+      const normalized = normalizeSnapshot(next);
+      snapshotRef.current = normalized;
+      setSnapshot(normalized);
     }
-    setSnapshot((current) => {
-      if (!current) return current;
-      const dayPaths = patch.dayPaths || current.dayPaths;
-      const selected =
-        current.scope === "day"
-          ? dayPaths.find((item) => item.dayNumber === current.dayNumber)
-          : null;
-      const entityIds = selected ? new Set(selected.entityIds) : null;
-      const acceptsEntity = (item: MapEntity) =>
-        !entityIds || entityIds.has(item.id);
-      const acceptsRoute = (item: MapRoute) =>
-        !selected || item.dayNumber === selected.dayNumber;
-      const entities = mapById(current.entities);
-      for (const id of patch.entities.remove) entities.delete(id);
-      for (const item of patch.entities.upsert) entities.set(item.id, item);
-      const routes = mapById(current.routes);
-      for (const id of patch.routes.remove) routes.delete(id);
-      for (const item of patch.routes.upsert) routes.set(item.id, item);
-      return {
-        ...current,
-        entities: [...entities.values()].filter(acceptsEntity),
-        routes: [...routes.values()].filter(acceptsRoute),
-        dayPaths,
-      };
-    });
-  }, [patch, tripId, revision, clearRenderedMap, cancelMapLoads]);
+  }, [patches, tripId, revision, cancelMapLoads]);
   useEffect(() => {
     if (!job || job.tripId !== tripId || job.itineraryVersion !== revision)
       return;
     if (handledJobEvent.current === job) return;
     handledJobEvent.current = job;
     const currentSnapshot = snapshotRef.current;
-    if (job.status === "failed") {
-      operationGeneration.current += 1;
-      cancelMapLoads();
-      clearRenderedMap();
-      setSnapshot(null);
+    if (job.status === "failed" || job.status === "stopped") {
       setLoading(false);
-      setNotice("新地图生成失败，旧地图已清除");
+      setNotice(job.status === "stopped" ? "地图生成已停止，已保留当前结果。" : "地图生成部分失败，已保留当前结果。");
+      setSnapshot((current) => current ? { ...current, status: job.status, summary: job.summary } : current);
       return;
     }
     if (!currentSnapshot || currentSnapshot.mapVersion !== job.mapVersion) {
@@ -345,7 +372,7 @@ export function MapPanel({
             sources: {
               osm: {
                 type: "raster",
-                tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+                tiles: ["/api/map/tiles/{z}/{x}/{y}.png"],
                 tileSize: 256,
                 attribution: "© OpenStreetMap contributors",
               },
@@ -884,8 +911,18 @@ export function MapPanel({
       snapshot?.entities.filter((item) => item.status === "ambiguous") || [],
     [snapshot],
   );
-  const running =
-    snapshot && ["queued", "analyzing", "resolving"].includes(snapshot.status);
+  const matchingJob = job?.tripId === tripId && job.itineraryVersion === revision
+    ? job
+    : null;
+  const mapStatus = matchingJob?.status || snapshot?.status || "idle";
+  const statusPresentation = mapStatusPresentation(mapStatus);
+  const running = ["queued", "analyzing", "resolving"].includes(mapStatus);
+  const progress = useMemo(() => {
+    const places = snapshot?.places || snapshot?.entities || [];
+    const located = places.filter((item) => Boolean(item.location)).length;
+    const routed = snapshot?.routes.filter((item) => item.status === "resolved").length || 0;
+    return { located, places: places.length, routed, routes: snapshot?.routes.length || 0 };
+  }, [snapshot]);
   const select = async (entityId: string, candidate: Candidate) => {
     if (!tripId) return;
     const operation = ++operationGeneration.current;
@@ -924,14 +961,27 @@ export function MapPanel({
   return (
     <section className="map-panel">
       <div className="map-heading">
-        <div>
-          <h2>地图</h2>
-          <p>
-            {scope === "all"
-              ? "全程总览 · 按 Day 配色"
-              : `Day ${day} · ${days.find((item) => item.dayNumber === day)?.title || ""}`}
-          </p>
-        </div>
+        <h2 className={`map-status ${statusPresentation.tone}`} aria-live="polite">{statusPresentation.label}</h2>
+        {(progress.places || progress.routes) > 0 && <small className="map-progress">已定位 {progress.located}/{progress.places} · 路线 {progress.routed}/{progress.routes}</small>}
+        <fieldset className="map-category-filter" aria-label="地点筛选">
+          <legend><Filter size={13} /> 地点筛选</legend>
+          <div className="map-category-options">
+            {mapCategoryLegend.map(([kind, label]) => (
+              <label key={kind}>
+                <input
+                  type="checkbox"
+                  checked={categoryVisibility[kind]}
+                  onChange={() => setCategoryVisibility((current) => ({
+                    ...current,
+                    [kind]: !current[kind],
+                  }))}
+                />
+                <i style={{ background: categoryColors[kind] }} />
+                {label}
+              </label>
+            ))}
+          </div>
+        </fieldset>
         {plan && (
           <div className="map-actions">
             <button className="icon-button panel-fullscreen" type="button" title={fullscreen ? "退出地图全屏" : "地图全屏"} aria-label={fullscreen ? "退出地图全屏" : "地图全屏"} onClick={onToggleFullscreen}>{fullscreen ? <Minimize2 size={17}/> : <Maximize2 size={17}/>}</button>
@@ -947,23 +997,6 @@ export function MapPanel({
       <div className="map-canvas-wrap">
         <div ref={element} className="map-canvas" />
         <div ref={labelsRef} className="map-label-overlay" />
-        <fieldset className="map-category-filter" aria-label="地点筛选">
-          <legend><Filter size={13} /> 地点筛选</legend>
-          {mapCategoryLegend.map(([kind, label]) => (
-            <label key={kind}>
-              <input
-                type="checkbox"
-                checked={categoryVisibility[kind]}
-                onChange={() => setCategoryVisibility((current) => ({
-                  ...current,
-                  [kind]: !current[kind],
-                }))}
-              />
-              <i style={{ background: categoryColors[kind] }} />
-              {label}
-            </label>
-          ))}
-        </fieldset>
         <div className={`map-legend ${legendOpen ? "open" : ""}`} aria-label="地图图例">
           <button
             className="map-legend-toggle"
@@ -1027,6 +1060,7 @@ export function MapPanel({
         ) : null}
         <span>
           {notice ||
+            matchingJob?.summary ||
             snapshot?.summary ||
             (plan
               ? "地图 Agent 将在后台自动标注全程地点和路线。"

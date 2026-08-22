@@ -86,6 +86,12 @@ export const MapEntityPatchSchema = z.object({
   costNote: z.string().max(500),
   notes: z.string().max(1000),
   approximateLodgingArea: z.boolean().default(false)
+  ,canonicalKey: z.string().min(1).max(800).optional()
+  ,displayName: z.string().min(1).max(300).optional()
+  ,region: z.string().max(160).optional()
+  ,country: z.string().max(160).optional()
+  ,queueOrder: z.number().int().min(0).optional()
+  ,aliases: z.array(z.string().min(1).max(300)).max(30).optional()
 });
 export const MapRoutePatchSchema = z.object({
   id: z.string().min(1).max(180),
@@ -93,9 +99,12 @@ export const MapRoutePatchSchema = z.object({
   order: z.number().int().min(0).max(100),
   fromEntityId: z.string().min(1).max(160),
   toEntityId: z.string().min(1).max(160),
-  mode: TransportMode
+  mode: TransportMode,
+  edgeOrder: z.number().int().min(0).max(1000).optional(),
+  fromVisitId: z.string().min(1).max(180).optional(),
+  toVisitId: z.string().min(1).max(180).optional()
 });
-export const MapDayPathSchema = z.object({ dayNumber: z.number().int().min(1).max(90), entityIds: z.array(z.string().min(1).max(160)).min(1).max(200), startEntityId: z.string().min(1).max(160), endEntityId: z.string().min(1).max(160), overnightEntityId: z.string().min(1).max(160) });
+export const MapDayPathSchema = z.object({ dayNumber: z.number().int().min(1).max(90), entityIds: z.array(z.string().min(1).max(160)).min(1).max(200), visitIds: z.array(z.string().min(1).max(180)).max(200).optional(), startEntityId: z.string().min(1).max(160), endEntityId: z.string().min(1).max(160), overnightEntityId: z.string().min(1).max(160) });
 export type MapDayPath = z.infer<typeof MapDayPathSchema>;
 export const MapAgentOutputSchema = z.object({
   schemaVersion: z.literal(3),
@@ -138,6 +147,10 @@ export function normalizeMapAgentOutput(value: unknown): unknown {
 }
 export type MapEntityPatch = z.infer<typeof MapEntityPatchSchema>;
 export type MapRoutePatch = z.infer<typeof MapRoutePatchSchema>;
+/** V4 names.  `MapEntity*` is retained as a wire-compatible alias for V3 clients. */
+export type MapPlace = MapEntityPatch;
+export type MapVisit = { id: string; placeId: string; activityId: string | null; dayNumber: number; order: number; subOrder: number; activity: string; detail: string; startTime: string; endTime: string; durationMinutes: number; transportMode: z.infer<typeof TransportMode>; costNote: string; notes: string };
+export type MapDayProgress = { dayNumber: number; status: "pending" | "resolving" | "ready" | "partial"; resolvedPlaces: number; totalPlaces: number; resolvedRoutes: number; totalRoutes: number };
 export const MapAgentOutputJsonSchema = requireAllObjectProperties(z.toJSONSchema(MapAgentOutputSchema)) as Record<string, unknown>;
 
 export const MapResolutionOutputSchema = z.object({
@@ -181,7 +194,7 @@ export type Candidate = { providerPlaceId: string; displayName: string; latitude
 export type MapEntityView = MapEntityPatch & { status: "pending" | "resolved" | "approximate" | "ambiguous" | "unresolved" | "unlocated" | "failed"; location: Candidate | null; candidates: Candidate[]; warning: string | null };
 export type MapRouteView = MapRoutePatch & { status: "pending" | "resolved" | "unresolved" | "failed"; geometry: unknown | null; warning: string | null };
 export type MapJobStatus = "idle" | "queued" | "analyzing" | "resolving" | "ready" | "partial" | "failed" | "stopped";
-export type MapSnapshot = { itineraryVersion: number; mapVersion: number; scope: "all" | "day"; dayNumber: number | null; status: MapJobStatus; summary: string; warnings: string[]; entities: MapEntityView[]; routes: MapRouteView[]; dayPaths: MapDayPath[] };
+export type MapSnapshot = { itineraryVersion: number; mapVersion: number; contractVersion: number; sequence: number; scope: "all" | "day"; dayNumber: number | null; status: MapJobStatus; summary: string; warnings: string[]; places: MapEntityView[]; visits: MapVisit[]; dayProgress: MapDayProgress[]; /** V3 compatibility alias for places. */ entities: MapEntityView[]; routes: MapRouteView[]; dayPaths: MapDayPath[] };
 
 export type AiAgentKind = "planner" | "map";
 export type AiTaskStatus = "starting" | "running" | "waiting" | "reconnecting" | "completed" | "failed" | "stopped";
