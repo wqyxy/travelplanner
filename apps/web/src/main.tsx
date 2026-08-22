@@ -1,6 +1,7 @@
 import { Component, StrictMode, type ErrorInfo, type ReactNode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
+import "./itinerary-language.css";
 import App from "./App";
 import { KeyRound } from "lucide-react";
 import { PasswordDrawer } from "./PasswordDrawer";

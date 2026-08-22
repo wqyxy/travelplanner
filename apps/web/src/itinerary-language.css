@@ -1,0 +1,73 @@
+.itinerary-head-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  width: 100%;
+  gap: 8px;
+}
+
+.itinerary-head {
+  flex-wrap: wrap;
+}
+
+.itinerary-language {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 2px;
+  background: var(--control);
+}
+
+.itinerary-language button {
+  border: 0;
+  border-radius: 6px;
+  padding: 4px 7px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.itinerary-language button.active {
+  color: #fff;
+  background: var(--primary);
+}
+
+.activity-place-names {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+}
+
+.activity-place-name {
+  position: relative;
+  display: grid;
+}
+
+.activity-place-name + .activity-place-name::before {
+  position: absolute;
+  left: -11px;
+  color: var(--muted);
+  content: "→";
+  font-weight: 400;
+}
+
+.activity-place-english {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.activity-place-names em {
+  color: var(--danger);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 500;
+}
+
+@media (max-width: 900px) {
+  .itinerary-head-actions {
+    justify-content: flex-end;
+  }
+}

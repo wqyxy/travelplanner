@@ -33,6 +33,7 @@ type MapJob = {
   baseMapVersion: number;
   taskId: string;
   days: TripPlan["days"];
+  planPlaces: unknown[];
   requirements: unknown;
   forceRebuild: boolean;
   removedEntityIds: string[];
@@ -86,11 +87,23 @@ export class MapCoordinator {
     const existing = this.jobs.get(tripId); if (existing) { if (existing.itineraryVersion === itineraryVersion) return; throw new Error("另一行程版本的地图任务仍在运行。"); }
     const revision = this.options.store.getRevision(tripId, itineraryVersion);
     if (!revision) throw new Error("找不到待制图的行程版本。");
-    const manifest = this.options.store.prepareMapManifest(tripId, itineraryVersion, [], forceRebuild);
+    const currentPlan = revision.plan as TripPlan & { places?: Array<{ id: string; geocoding: unknown }> };
+    const previousPlan = itineraryVersion > 1 ? this.options.store.getRevision(tripId, itineraryVersion - 1)?.plan as (TripPlan & { places?: Array<{ id: string; geocoding: unknown }> }) | undefined : undefined;
+    const reusableActivityIds = (() => {
+      if (!currentPlan.places?.length || !previousPlan?.places?.length) return [];
+      const priorActivities = new Map(previousPlan.days.flatMap((day) => day.activities).map((activity) => [activity.id, activity]));
+      const currentPlaces = new Map(currentPlan.places.map((place) => [place.id, JSON.stringify(place.geocoding)]));
+      const priorPlaces = new Map(previousPlan.places.map((place) => [place.id, JSON.stringify(place.geocoding)]));
+      return currentPlan.days.flatMap((day) => day.activities).filter((activity) => {
+        const prior = priorActivities.get(activity.id); const placeIds = activity.placeIds ?? []; const priorPlaceIds = prior?.placeIds ?? [];
+        return prior && JSON.stringify(placeIds) === JSON.stringify(priorPlaceIds) && placeIds.every((id) => currentPlaces.get(id) === priorPlaces.get(id));
+      }).map((activity) => activity.id);
+    })();
+    const manifest = this.options.store.prepareMapManifest(tripId, itineraryVersion, reusableActivityIds, forceRebuild);
     const taskId = `map:${tripId}:${itineraryVersion}`;
     const job: MapJob = {
       token: randomUUID(), tripId, itineraryVersion, mapVersion: manifest.mapVersion,
-      baseMapVersion: manifest.baseMapVersion, taskId, days: revision.plan.days,
+      baseMapVersion: manifest.baseMapVersion, taskId, days: revision.plan.days, planPlaces: currentPlan.places ?? [],
       requirements: revision.requirements, forceRebuild,
       removedEntityIds: manifest.removedEntityIds, removedRouteIds: manifest.removedRouteIds,
       analysisQueue: revision.plan.days.map((_day, position) => position), nextCommit: 0, activeAnalyses: 0, activeLocationDays: 0, replaceApplied: false,
@@ -136,7 +149,7 @@ export class MapCoordinator {
     const days = trip.activeRevision.plan.days; const paths = this.options.maps.snapshot(tripId, "all", null)?.dayPaths ?? [];
     const pendingLocationDays = paths.flatMap((path) => { const position = days.findIndex((day) => day.dayNumber === path.dayNumber); return position < 0 ? [] : [{ position, dayNumber: path.dayNumber }]; });
     const pathPositions = new Set(pendingLocationDays.map((item) => item.position)); const missingPositions = days.map((_day, position) => position).filter((position) => !pathPositions.has(position));
-    const job: MapJob = { token: randomUUID(), tripId, itineraryVersion: meta.itineraryVersion, mapVersion: meta.mapVersion, baseMapVersion: meta.baseMapVersion, taskId, days, requirements: trip.requirements, forceRebuild: false, removedEntityIds: [], removedRouteIds: [], analysisQueue: [...missingPositions], nextCommit: 0, activeAnalyses: 0, activeLocationDays: 0, replaceApplied: true, draining: false, stopped: false, buffered: new Map(), failedPositions: new Set(days.map((_day, position) => position).filter((position) => pathPositions.has(position))), settledPositions: new Set(), pendingLocationDays, threadIds: new Set(), resolutionClaims: new Map() };
+    const job: MapJob = { token: randomUUID(), tripId, itineraryVersion: meta.itineraryVersion, mapVersion: meta.mapVersion, baseMapVersion: meta.baseMapVersion, taskId, days, planPlaces: (trip.activeRevision.plan as TripPlan & { places?: unknown[] }).places ?? [], requirements: trip.requirements, forceRebuild: false, removedEntityIds: [], removedRouteIds: [], analysisQueue: [...missingPositions], nextCommit: 0, activeAnalyses: 0, activeLocationDays: 0, replaceApplied: true, draining: false, stopped: false, buffered: new Map(), failedPositions: new Set(days.map((_day, position) => position).filter((position) => pathPositions.has(position))), settledPositions: new Set(), pendingLocationDays, threadIds: new Set(), resolutionClaims: new Map() };
     this.jobs.set(tripId, job); this.options.maps.activateRun(tripId, job.token);
     this.options.tasks.start({ id: taskId, tripId, agent: "map", label: "地图标注", summary: "正在重试未完成地点和路线" });
     this.options.store.setMapStatus(tripId, meta.itineraryVersion, "resolving", "正在重试未完成地点和路线");
@@ -202,7 +215,7 @@ export class MapCoordinator {
       const previousDay = position > 0 ? job.days[position - 1] : null;
       const nextDay = position + 1 < job.days.length ? job.days[position + 1] : null;
       const knownMap = this.options.store.mapContext(job.tripId, job.itineraryVersion);
-      const input = JSON.stringify({ contract: "travel-map-day:v4", baseItineraryVersion: job.itineraryVersion, baseMapVersion: job.baseMapVersion, day, previousDay, nextDay, currentRequirements: job.requirements, knownPlaces: knownMap?.entities ?? [], fullRebuild: job.forceRebuild, contractFeedback: feedback || null, responseSchema: MapAgentOutputJsonSchema }, null, 2);
+      const input = JSON.stringify({ contract: "travel-map-day:v4", baseItineraryVersion: job.itineraryVersion, baseMapVersion: job.baseMapVersion, day, previousDay, nextDay, planPlaces: job.planPlaces, currentRequirements: job.requirements, knownPlaces: knownMap?.entities ?? [], fullRebuild: job.forceRebuild, contractFeedback: feedback || null, responseSchema: MapAgentOutputJsonSchema }, null, 2);
       const result = await this.options.codex.call("turn/start", { threadId, summary: "detailed", input: [{ type: "text", text: `${this.options.prompt}\n\n本轮受控状态：\n${input}`, text_elements: [] }], outputSchema: MapAgentOutputJsonSchema, ...this.options.modelOptions() }, 120000);
       if (this.runs.get(threadId) === run) run.turnId = String(result?.turn?.id || run.turnId || "");
     } catch (error) {

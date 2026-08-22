@@ -21,6 +21,8 @@ export const ActivitySchema = z.object({
   startTime: z.string().max(32),
   endTime: z.string().max(32),
   placeName: z.string().min(1).max(300),
+  /** V2 references stable entries in TripPlan.places; absent on legacy V1 plans. */
+  placeIds: z.array(z.string().min(1).max(160)).min(1).max(20).optional(),
   activity: z.string().min(1).max(1200),
   durationMinutes: z.number().int().min(0).max(1440),
   transportMode: TransportMode,
@@ -28,7 +30,7 @@ export const ActivitySchema = z.object({
   costNote: z.string().max(500),
   notes: z.string().max(1000).nullish()
 });
-export const TripPlanSchema = z.object({
+const TripPlanBaseSchema = z.object({
   tripName: z.string().min(1).max(200),
   travelerSummary: z.string().min(1).max(600),
   pace: z.string().min(1).max(80),
@@ -41,19 +43,51 @@ export const TripPlanSchema = z.object({
   warnings: z.array(z.string().min(1).max(700)).max(30),
   generatedBy: z.literal("codex").default("codex")
 });
+export const TripPlaceSchema = z.object({
+  id: z.string().min(1).max(160),
+  kind: z.enum(["city", "attraction", "lodging", "meal", "stop", "waypoint"]),
+  nameZh: z.string().min(1).max(300),
+  nameEn: z.string().min(1).max(300),
+  nameLocal: z.string().min(1).max(300),
+  localLanguage: z.string().min(2).max(20),
+  approximate: z.boolean().default(false),
+  geocoding: z.object({
+    name: z.string().min(1).max(300), city: z.string().min(1).max(160), region: z.string().max(160),
+    country: z.string().min(1).max(160), countryCode: z.string().regex(/^[a-z]{2}$/i)
+  })
+});
+/** Legacy plans intentionally remain accepted without any coercion or write-back. */
+// A string is reserved for historical/foreign version markers; numeric 2 must
+// pass the V2 branch and cannot silently fall back to V1.
+export const TripPlanV1Schema = TripPlanBaseSchema.extend({ schemaVersion: z.literal(1).optional() });
+export const TripPlanV2Schema = TripPlanBaseSchema.extend({
+  schemaVersion: z.literal(2),
+  places: z.array(TripPlaceSchema).min(1).max(1800)
+}).superRefine((plan, context) => {
+  const ids = new Set(plan.places.map((place) => place.id));
+  if (ids.size !== plan.places.length) context.addIssue({ code: "custom", path: ["places"], message: "地点 id 不能重复。" });
+  for (const [dayIndex, day] of plan.days.entries()) for (const [activityIndex, activity] of day.activities.entries()) {
+    if (!activity.placeIds?.length) context.addIssue({ code: "custom", path: ["days", dayIndex, "activities", activityIndex, "placeIds"], message: "V2 活动必须引用至少一个 placeId。" });
+    else for (const placeId of activity.placeIds) if (!ids.has(placeId)) context.addIssue({ code: "custom", path: ["days", dayIndex, "activities", activityIndex, "placeIds"], message: `未知地点：${placeId}` });
+  }
+});
+export const TripPlanSchema = z.union([TripPlanV2Schema, TripPlanV1Schema]);
 export type TripPlan = z.infer<typeof TripPlanSchema>;
 
-export const TravelAgentOutputSchema = z.object({
-  schemaVersion: z.literal(1),
+const TravelAgentOutputBaseSchema = z.object({
   replyType: z.enum(["clarification", "requirements_updated", "plan_updated", "answer"]),
   assistantMessage: z.string().min(1).max(12000),
   requirements: RequirementsSchema,
-  plan: TripPlanSchema.nullish(),
   assumptions: z.array(z.string().min(1).max(500)).max(30).default([]),
   verificationNotes: z.array(z.string().min(1).max(700)).max(30).default([])
-}).superRefine((value, context) => {
+});
+const requirePlanForUpdate = <T extends z.ZodType<{ replyType: "clarification" | "requirements_updated" | "plan_updated" | "answer"; plan?: unknown }>>(schema: T) => schema.superRefine((value, context) => {
   if (value.replyType === "plan_updated" && !value.plan) context.addIssue({ code: "custom", path: ["plan"], message: "生成或修改行程时必须提供完整 plan。" });
 });
+/** New planner turns are V2-only; the legacy branch remains for stored/test V1 replies. */
+export const TravelAgentOutputV2Schema = requirePlanForUpdate(TravelAgentOutputBaseSchema.extend({ schemaVersion: z.literal(2), plan: TripPlanV2Schema.nullish() }));
+const TravelAgentOutputV1Schema = requirePlanForUpdate(TravelAgentOutputBaseSchema.extend({ schemaVersion: z.literal(1), plan: TripPlanSchema.nullish() }));
+export const TravelAgentOutputSchema = z.union([TravelAgentOutputV2Schema, TravelAgentOutputV1Schema]);
 export type TravelAgentOutput = z.infer<typeof TravelAgentOutputSchema>;
 function requireAllObjectProperties(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(requireAllObjectProperties);
@@ -65,7 +99,7 @@ function requireAllObjectProperties(value: unknown): unknown {
   delete record.$schema;
   return record;
 }
-export const TravelAgentOutputJsonSchema = requireAllObjectProperties(z.toJSONSchema(TravelAgentOutputSchema)) as Record<string, unknown>;
+export const TravelAgentOutputJsonSchema = requireAllObjectProperties(z.toJSONSchema(TravelAgentOutputV2Schema)) as Record<string, unknown>;
 
 export const MapEntityKindSchema = z.enum(["city", "attraction", "lodging", "meal", "stop", "waypoint"]);
 export const MapEntityPatchSchema = z.object({
@@ -90,6 +124,11 @@ export const MapEntityPatchSchema = z.object({
   ,displayName: z.string().min(1).max(300).optional()
   ,region: z.string().max(160).optional()
   ,country: z.string().max(160).optional()
+  ,countryCode: z.string().regex(/^[a-z]{2}$/i).optional()
+  ,queryLanguage: z.string().max(80).optional()
+  ,localName: z.string().min(1).max(300).optional()
+  ,englishName: z.string().min(1).max(300).optional()
+  ,localLanguage: z.string().min(2).max(20).optional()
   ,queueOrder: z.number().int().min(0).optional()
   ,aliases: z.array(z.string().min(1).max(300)).max(30).optional()
 });
@@ -189,7 +228,7 @@ export const emptyRequirements = (): TravelRequirements => RequirementsSchema.pa
 
 export type CoordinateSource = "nominatim" | "ai_web" | "ai_knowledge" | "manual";
 export type CoordinateConfidence = "high" | "medium" | "low";
-export type Candidate = { providerPlaceId: string; displayName: string; latitude: number; longitude: number; category: string | null; sourceUrl: string; sourceType: CoordinateSource; evidenceUrl: string | null; confidence: CoordinateConfidence; decisionNote: string | null };
+export type Candidate = { providerPlaceId: string; displayName: string; latitude: number; longitude: number; category: string | null; /** Optional for stored V1 candidates. */ placeType?: string | null; countryCode?: string | null; region?: string | null; city?: string | null; sourceUrl: string; sourceType: CoordinateSource; evidenceUrl: string | null; confidence: CoordinateConfidence; decisionNote: string | null };
 /** `approximate` is a usable city/area-centre fallback; `unresolved` is terminal but deliberately has no coordinate. */
 export type MapEntityView = MapEntityPatch & { status: "pending" | "resolved" | "approximate" | "ambiguous" | "unresolved" | "unlocated" | "failed"; location: Candidate | null; candidates: Candidate[]; warning: string | null };
 export type MapRouteView = MapRoutePatch & { status: "pending" | "resolved" | "unresolved" | "failed"; geometry: unknown | null; warning: string | null };

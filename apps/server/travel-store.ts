@@ -8,7 +8,8 @@ const sqlite = createRequire(import.meta.url)("node:sqlite") as SqliteModule;
 const { DatabaseSync } = sqlite;
 
 export type TripState = "active" | "trashed";
-export type TripSummary = { id: string; title: string; state: TripState; updatedAt: string; activeRevision: { id: string; version: number; plan: TripPlan } | null };
+export type ItineraryLanguage = "zh" | "en" | "bilingual";
+export type TripSummary = { id: string; title: string; state: TripState; updatedAt: string; itineraryLanguage: ItineraryLanguage; activeRevision: { id: string; version: number; plan: TripPlan } | null };
 export type TripDetail = TripSummary & { requirements: TravelRequirements; requirementsRevision: number; codexThreadId: string | null; mapCodexThreadId: string | null };
 export type ChatMessage = { id: string; role: "user" | "assistant"; content: string; reply: TravelAgentOutput | null; status: "pending" | "completed" | "failed"; turn: { status: "queued" | "starting" | "active" | "completed" | "failed" | "interrupted"; cancelRequested: boolean; errorMessage: string | null; progressMessage?: string } | null; createdAt: string };
 export type RevisionSummary = { version: number; createdAt: string; source: string; summary: string };
@@ -20,7 +21,7 @@ const normalizeCandidate = (value: unknown): Candidate | null => {
   if (!value || typeof value !== "object") return null;
   const item = value as Partial<Candidate>;
   if (!item.providerPlaceId || !item.displayName || !Number.isFinite(item.latitude) || !Number.isFinite(item.longitude)) return null;
-  return { providerPlaceId: item.providerPlaceId, displayName: item.displayName, latitude: Number(item.latitude), longitude: Number(item.longitude), category: item.category ?? null, sourceUrl: item.sourceUrl || `https://www.openstreetmap.org/?mlat=${item.latitude}&mlon=${item.longitude}`, sourceType: item.sourceType ?? "nominatim", evidenceUrl: item.evidenceUrl ?? null, confidence: item.confidence ?? "high", decisionNote: item.decisionNote ?? null };
+  return { providerPlaceId: item.providerPlaceId, displayName: item.displayName, latitude: Number(item.latitude), longitude: Number(item.longitude), category: item.category ?? null, placeType: item.placeType ?? null, countryCode: item.countryCode?.toLowerCase() ?? null, region: item.region ?? null, city: item.city ?? null, sourceUrl: item.sourceUrl || `https://www.openstreetmap.org/?mlat=${item.latitude}&mlon=${item.longitude}`, sourceType: item.sourceType ?? "nominatim", evidenceUrl: item.evidenceUrl ?? null, confidence: item.confidence ?? "high", decisionNote: item.decisionNote ?? null };
 };
 const normalizeCandidates = (value: unknown) => parse<unknown[]>(value, []).flatMap((item) => { const found = normalizeCandidate(item); return found ? [found] : []; });
 /** Stable internal identity; this is deliberately never used as the map label. */
@@ -38,7 +39,7 @@ export class TravelStore {
   close() { this.db.close(); }
   private migrate() {
     const version = this.db.prepare("PRAGMA user_version").get() as { user_version: number };
-    if (version.user_version > 6) throw new Error("travel.sqlite3 版本高于当前应用，已停止写入。");
+    if (version.user_version > 7) throw new Error("travel.sqlite3 版本高于当前应用，已停止写入。");
     if (version.user_version === 0) {
       this.db.exec(`
         CREATE TABLE trips (id TEXT PRIMARY KEY, title TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('active','trashed')), codex_thread_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -113,21 +114,27 @@ export class TravelStore {
       CREATE UNIQUE INDEX map_entities_canonical_v4 ON map_entities(trip_id,itinerary_version,canonical_key) WHERE canonical_key IS NOT NULL;
       PRAGMA user_version = 6;
     `);
+    const v6 = (this.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+    // Some pre-v4 test/repair databases contain only map tables.  Preserve
+    // their historical partial-migration behaviour; real travel databases
+    // always include `trips` and receive the V7 column.
+    if (v6 === 6 && this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='trips'").get()) this.db.exec("ALTER TABLE trips ADD COLUMN itinerary_language TEXT NOT NULL DEFAULT 'bilingual' CHECK(itinerary_language IN ('zh','en','bilingual')); PRAGMA user_version = 7;");
   }
   private activeRevision(tripId: string) { const row = this.db.prepare("SELECT version, plan_json FROM itinerary_revisions WHERE trip_id=? ORDER BY version DESC LIMIT 1").get(tripId) as DbRow | undefined; if (!row) return null; const plan = TripPlanSchema.safeParse(parse(row.plan_json, null)); return plan.success ? { id: `${tripId}:${row.version}`, version: Number(row.version), plan: plan.data } : null; }
   private latestRequirements(tripId: string) { const row = this.db.prepare("SELECT revision, content_json, updated_at, updated_by FROM requirements WHERE trip_id=? ORDER BY revision DESC LIMIT 1").get(tripId) as DbRow | undefined; if (!row) return { revision: 0, content: emptyRequirements(), updatedAt: "", updatedBy: "system" }; const content = RequirementsSchema.safeParse(parse(row.content_json, {})); return { revision: Number(row.revision), content: content.success ? content.data : emptyRequirements(), updatedAt: String(row.updated_at), updatedBy: String(row.updated_by) }; }
-  private summary(row: DbRow): TripSummary { const revision = this.activeRevision(String(row.id)); return { id: String(row.id), title: String(row.title), state: String(row.state) as TripState, updatedAt: String(row.updated_at), activeRevision: revision }; }
+  private summary(row: DbRow): TripSummary { const revision = this.activeRevision(String(row.id)); const language = row.itinerary_language; return { id: String(row.id), title: String(row.title), state: String(row.state) as TripState, updatedAt: String(row.updated_at), itineraryLanguage: language === "zh" || language === "en" || language === "bilingual" ? language : "bilingual", activeRevision: revision }; }
   listTrips(view: TripState = "active") { return (this.db.prepare("SELECT * FROM trips WHERE state=? ORDER BY updated_at DESC").all(view) as DbRow[]).map((row) => this.summary(row)); }
   createTrip() { const id = randomUUID(); const now = iso(); this.db.prepare("INSERT INTO trips(id,title,state,created_at,updated_at) VALUES(?,?,?,?,?)").run(id, "未命名旅行", "active", now, now); this.db.prepare("INSERT INTO requirements(trip_id,revision,content_json,updated_at,updated_by) VALUES(?,?,?,?,?)").run(id, 1, json(emptyRequirements()), now, "system"); return this.getTrip(id)!; }
   getTrip(id: string): TripDetail | null { const row = this.db.prepare("SELECT * FROM trips WHERE id=?").get(id) as DbRow | undefined; if (!row) return null; const requirements = this.latestRequirements(id); return { ...this.summary(row), requirements: requirements.content, requirementsRevision: requirements.revision, codexThreadId: typeof row.codex_thread_id === "string" ? row.codex_thread_id : null, mapCodexThreadId: typeof row.map_codex_thread_id === "string" ? row.map_codex_thread_id : null }; }
   requirementsDocument(id: string) { this.requireTrip(id); return this.latestRequirements(id); }
   requireTrip(id: string) { const trip = this.getTrip(id); if (!trip) throw new Error("找不到这趟旅行。"); return trip; }
   rename(id: string, title: string) { const trimmed = title.trim().slice(0, 200); if (!trimmed) throw new Error("旅行名称不能为空。"); this.db.prepare("UPDATE trips SET title=?, updated_at=? WHERE id=?").run(trimmed, iso(), id); return this.requireTrip(id); }
+  setItineraryLanguage(id: string, language: ItineraryLanguage) { this.db.prepare("UPDATE trips SET itinerary_language=?, updated_at=? WHERE id=?").run(language, iso(), id); return this.requireTrip(id); }
   duplicate(id: string) {
     const source = this.requireTrip(id); const req = this.latestRequirements(id); const nextId = randomUUID(); const now = iso();
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      this.db.prepare("INSERT INTO trips(id,title,state,created_at,updated_at) VALUES(?,?,?,?,?)").run(nextId, `${source.title} 副本`, "active", now, now);
+      this.db.prepare("INSERT INTO trips(id,title,state,itinerary_language,created_at,updated_at) VALUES(?,?,?,?,?,?)").run(nextId, `${source.title} 副本`, "active", source.itineraryLanguage, now, now);
       this.db.prepare("INSERT INTO requirements(trip_id,revision,content_json,updated_at,updated_by) VALUES(?,?,?,?,?)").run(nextId, 1, json(req.content), now, "system");
       if (source.activeRevision) {
         this.db.prepare("INSERT INTO itinerary_revisions(trip_id,version,plan_json,requirements_revision,created_at,source,summary) VALUES(?,?,?,?,?,?,?)").run(nextId, 1, json(source.activeRevision.plan), 1, now, "duplicate", `复制自 ${source.title}`);
@@ -247,7 +254,9 @@ export class TravelStore {
       let nextQueueOrder = existingPlaces.reduce((maximum, place) => Math.max(maximum, place.queueOrder ?? -1), -1) + 1;
       for (const source of patch.upsertEntities) {
         const name = normalizeGeneratedPlaceName(source.displayName || source.name);
-        const canonicalKey = canonicalPlaceKey(name, source.city, source.region || "", source.country || "");
+        // V2's planner owns physical place identity.  Never derive it from a
+        // translated display name; legacy V1 sources omit canonicalKey.
+        const canonicalKey = source.canonicalKey?.startsWith("place:") ? source.canonicalKey : canonicalPlaceKey(name, source.city, source.region || "", source.country || "");
         const sourcePath = patch.dayPaths.find((path) => path.entityIds[0] === source.id);
         const priorPath = sourcePath ? oldPaths.find((path) => path.dayNumber === sourcePath.dayNumber - 1) : null;
         const priorEnd = priorPath ? existingPlaces.find((place) => place.id === priorPath.entityIds.at(-1)) : null;
@@ -260,8 +269,8 @@ export class TravelStore {
         sourceToPlace.set(source.id, placeId);
         if (previous) {
           const aliases = [...new Set([...(previous.aliases ?? []), ...(name !== (previous.displayName || previous.name) ? [name] : [])])];
-          const reused = { ...previous, aliases };
-          if (aliases.length !== (previous.aliases ?? []).length) this.db.prepare("UPDATE map_entities SET data_json=json_set(data_json,'$.aliases',json(?)) WHERE trip_id=? AND itinerary_version=? AND entity_id=?").run(json(aliases), tripId, itineraryVersion, previous.id);
+          const reused = { ...previous, ...source, id: previous.id, activityId: previous.activityId, dayNumber: previous.dayNumber, order: previous.order, name, displayName: name, canonicalKey, queueOrder: previous.queueOrder, aliases };
+          this.db.prepare("UPDATE map_entities SET data_json=?,canonical_key=? WHERE trip_id=? AND itinerary_version=? AND entity_id=?").run(json(reused), canonicalKey, tripId, itineraryVersion, previous.id);
           placeByKey.set(canonicalKey, reused); placeByKey.set(previous.canonicalKey || canonicalPlaceKey(previous.name, previous.city, previous.region || "", previous.country || ""), reused);
         }
         if (!previous) {

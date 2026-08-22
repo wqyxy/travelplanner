@@ -2,9 +2,9 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 export const TRAVEL_PROMPT_ID = "travel-planner-agent";
-export const TRAVEL_PROMPT_VERSION = 1;
+export const TRAVEL_PROMPT_VERSION = 2;
 export const MAP_PROMPT_ID = "travel-map-agent";
-export const MAP_PROMPT_VERSION = 4;
+export const MAP_PROMPT_VERSION = 5;
 type PromptSpec = { relativePath: string; id: string; version: number; label: string };
 async function loadPrompt(root: string, spec: PromptSpec) {
   const content = (await fs.readFile(path.join(root, spec.relativePath), "utf8")).replace(/^\uFEFF/, "");

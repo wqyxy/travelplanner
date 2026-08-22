@@ -7,13 +7,19 @@ type SqliteModule = typeof import("node:sqlite");
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as SqliteModule;
 export type MapPatchPayload = { tripId: string; itineraryVersion: number; mapVersion: number; sequence: number; replaceAll?: boolean; places?: { upsert: MapEntityView[]; remove: string[] }; visits?: { upsert: MapVisit[]; remove: string[] }; dayProgress?: MapDayProgress[]; entities: { upsert: MapEntityView[]; remove: string[] }; routes: { upsert: MapRouteView[]; remove: string[] }; dayPaths?: MapDayPath[] };
 type MapJobPayload = { tripId: string; itineraryVersion: number; mapVersion: number; status: string; summary: string };
-export type MapResolutionBatch = { entityId: string; name: string; query: string; city: string; kind: MapEntityView["kind"]; approximateLodgingArea: boolean; detail: string; candidates: Candidate[] }[];
+export type MapResolutionBatch = { entityId: string; name: string; query: string; city: string; region: string; countryCode: string | null; kind: MapEntityView["kind"]; approximateLodgingArea: boolean; detail: string; candidates: Candidate[] }[];
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export const dayPlacesAreTerminal = (statuses: MapEntityView["status"][]) => statuses.every((status) => !["pending", "ambiguous", "unresolved", "failed"].includes(status));
+export function nominatimSearchUrl(query: string, countryCode?: string | null, language?: string | null) { const url = new URL("https://nominatim.openstreetmap.org/search"); const country = countryCode?.trim().toLowerCase() || ""; const lang = language?.trim() || "en"; url.searchParams.set("format", "jsonv2"); url.searchParams.set("limit", "5"); url.searchParams.set("addressdetails", "1"); url.searchParams.set("accept-language", lang); if (country) url.searchParams.set("countrycodes", country); url.searchParams.set("q", query); return url; }
+export function relevantMapCandidates(item: Pick<MapEntityView, "countryCode" | "name" | "query" | "kind" | "approximateLodgingArea">, options: Candidate[]) { const country = item.countryCode?.toLowerCase(); const inCountry = country ? options.filter((candidate) => candidate.countryCode === country) : options; const query = `${item.name} ${item.query}`.toLocaleLowerCase(); const category = (candidate: Candidate, allowed: string[]) => allowed.includes(candidate.category || ""); if (/airport|机场/.test(query)) return inCountry.filter((candidate) => candidate.category === "aeroway" || candidate.placeType === "aerodrome"); if (/beach|海滩/.test(query)) return inCountry.filter((candidate) => category(candidate, ["natural", "place", "leisure"])); if (item.kind === "city" || (item.kind === "lodging" && item.approximateLodgingArea)) return inCountry.filter((candidate) => category(candidate, ["place", "boundary"])); if (item.kind === "lodging") return inCountry.filter((candidate) => category(candidate, ["tourism", "building", "amenity", "place"])); if (item.kind === "attraction") return inCountry.filter((candidate) => category(candidate, ["tourism", "historic", "leisure", "natural", "amenity", "man_made", "building", "place"])); if (item.kind === "meal") return inCountry.filter((candidate) => category(candidate, ["amenity", "shop", "tourism"])); if (item.kind === "stop") return inCountry.filter((candidate) => category(candidate, ["aeroway", "railway", "public_transport", "highway", "amenity", "place"])); return inCountry; }
 const asCandidate = (item: Record<string, unknown>): Candidate | null => {
   const latitude = Number(item.lat); const longitude = Number(item.lon); const providerPlaceId = String(item.place_id ?? ""); const displayName = String(item.display_name ?? "");
+  const address = item.address && typeof item.address === "object" ? item.address as Record<string, unknown> : {};
+  const countryCode = typeof address.country_code === "string" ? address.country_code.toLowerCase() : null;
+  const region = typeof address.state === "string" ? address.state : typeof address.region === "string" ? address.region : null;
+  const city = [address.city, address.town, address.village, address.municipality, address.county].find((value): value is string => typeof value === "string") ?? null;
   return providerPlaceId && displayName && Number.isFinite(latitude) && Number.isFinite(longitude) && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180
-    ? { providerPlaceId, displayName, latitude, longitude, category: typeof item.category === "string" ? item.category : null, sourceUrl: `https://www.openstreetmap.org/?mlat=${latitude}&mlon=${longitude}`, sourceType: "nominatim", evidenceUrl: null, confidence: "high", decisionNote: null } : null;
+    ? { providerPlaceId, displayName, latitude, longitude, category: typeof item.category === "string" ? item.category : null, placeType: typeof item.type === "string" ? item.type : null, countryCode, region, city, sourceUrl: `https://www.openstreetmap.org/?mlat=${latitude}&mlon=${longitude}`, sourceType: "nominatim", evidenceUrl: null, confidence: "high", decisionNote: null } : null;
 };
 
 export class MapService {
@@ -43,17 +49,22 @@ export class MapService {
   activateRun(tripId: string, token: string) { this.activeRuns.get(tripId)?.controller.abort(); this.activeRuns.set(tripId, { token, controller: new AbortController() }); }
   deactivateRun(tripId: string, token: string) { const active = this.activeRuns.get(tripId); if (active?.token === token) { active.controller.abort(); this.activeRuns.delete(tripId); } }
   private runSignal(tripId: string, token?: string) { const active = this.activeRuns.get(tripId); return token && active?.token === token ? active.controller.signal : undefined; }
-  private async geocode(query: string): Promise<Candidate[]> {
-    const key = query.trim().toLocaleLowerCase(); const cached = this.cached<Candidate[]>("geocode_cache", key); if (cached) return cached.map((item) => ({ ...item, sourceType: item.sourceType || "nominatim", evidenceUrl: item.evidenceUrl ?? null, confidence: item.confidence || "high", decisionNote: item.decisionNote ?? null }));
-    const values = await this.request(async () => { const url = new URL("https://nominatim.openstreetmap.org/search"); url.searchParams.set("format", "jsonv2"); url.searchParams.set("limit", "5"); url.searchParams.set("q", query); const response = await fetch(url, { headers: { "User-Agent": "AI-Travel-Planner/0.1 (personal local travel planner)", Accept: "application/json" } }); if (!response.ok) throw new Error("公开地点服务暂时不可用。"); const data = await response.json() as unknown; return Array.isArray(data) ? data.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object")).map(asCandidate).filter((item): item is Candidate => item !== null) : []; });
+  private async geocode(query: string, countryCode?: string | null, language?: string | null): Promise<Candidate[]> {
+    const country = countryCode?.trim().toLowerCase() || ""; const lang = language?.trim() || "en";
+    // v2 isolates all legacy Chinese query cache entries by contract/version.
+    const key = `v2:${country}:${lang}:${query.trim().toLocaleLowerCase()}`; const cached = this.cached<Candidate[]>("geocode_cache", key); if (cached) return cached.map((item) => ({ ...item, placeType: item.placeType ?? null, countryCode: item.countryCode?.toLowerCase() ?? null, region: item.region ?? null, city: item.city ?? null, sourceType: item.sourceType || "nominatim", evidenceUrl: item.evidenceUrl ?? null, confidence: item.confidence || "high", decisionNote: item.decisionNote ?? null }));
+    const values = await this.request(async () => { const url = nominatimSearchUrl(query, country, lang); const response = await fetch(url, { headers: { "User-Agent": "AI-Travel-Planner/0.1 (personal local travel planner)", Accept: "application/json", "Accept-Language": lang } }); if (!response.ok) throw new Error("公开地点服务暂时不可用。"); const data = await response.json() as unknown; return Array.isArray(data) ? data.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object")).map(asCandidate).filter((item): item is Candidate => item !== null) : []; });
     this.save("geocode_cache", key, values, 30 * 24 * 60 * 60 * 1000); return values;
   }
+  /** Reverse verification is intentionally serialized through the same public-Nominatim limiter. */
+  private async reverseCountry(latitude: number, longitude: number, language?: string | null): Promise<string | null> {
+    const lang = language?.trim() || "en"; const key = `v2:reverse:${lang}:${latitude.toFixed(6)},${longitude.toFixed(6)}`;
+    const cached = this.cached<{ countryCode: string | null }>("geocode_cache", key); if (cached) return cached.countryCode;
+    const countryCode = await this.request(async () => { const url = new URL("https://nominatim.openstreetmap.org/reverse"); url.searchParams.set("format", "jsonv2"); url.searchParams.set("addressdetails", "1"); url.searchParams.set("accept-language", lang); url.searchParams.set("lat", String(latitude)); url.searchParams.set("lon", String(longitude)); const response = await fetch(url, { headers: { "User-Agent": "AI-Travel-Planner/0.1 (personal local travel planner)", Accept: "application/json", "Accept-Language": lang } }); if (!response.ok) return null; const data = await response.json() as Record<string, unknown>; const address = data.address && typeof data.address === "object" ? data.address as Record<string, unknown> : null; return typeof address?.country_code === "string" ? address.country_code.toLowerCase() : null; });
+    this.save("geocode_cache", key, { countryCode }, 30 * 24 * 60 * 60 * 1000); return countryCode;
+  }
   private relevantCandidates(item: MapEntityView, options: Candidate[]) {
-    const query = `${item.name} ${item.query}`.toLocaleLowerCase();
-    if (/airport|机场/.test(query)) return options.filter((candidate) => candidate.category === "aeroway");
-    if (/beach|海滩/.test(query)) return options.filter((candidate) => ["natural", "place", "leisure"].includes(candidate.category || ""));
-    if (item.kind === "city" || item.kind === "lodging") return options.filter((candidate) => ["place", "boundary"].includes(candidate.category || ""));
-    return options;
+    return relevantMapCandidates(item, options);
   }
   private async geocodeEntity(item: MapEntityView) {
     const key = item.canonicalKey || `${item.name}|${item.city}`.toLocaleLowerCase();
@@ -66,15 +77,15 @@ export class MapService {
     if (parts.length > 3) variants.push([parts[0], parts.at(-2), parts.at(-1)].filter(Boolean).join(", "));
     if (parts.length > 2) variants.push([parts[0], parts.at(-1)].filter(Boolean).join(", "));
     const unique = [...new Set(variants)]; let fallback: Candidate[] = [];
-    for (const query of unique) { const options = await this.geocode(query); const relevant = this.relevantCandidates(item, options); if (relevant.length) return relevant; if (!fallback.length) fallback = options; }
+    for (const query of unique) { const options = await this.geocode(query, item.countryCode, item.queryLanguage || item.localLanguage || "en"); const relevant = this.relevantCandidates(item, options); if (relevant.length) return relevant; if (!fallback.length) fallback = options; }
     return this.relevantCandidates(item, fallback);
   }
   private async useApproximateCityLocation(tripId: string, itineraryVersion: number, mapVersion: number, item: MapEntityView, reason: string, runToken?: string) {
     const city = item.city.trim();
     if (!city) { this.store.updateMapEntity(tripId, itineraryVersion, item.id, "unlocated", null, item.candidates, `${reason}；未提供可用于大致定位的城市。`); this.emitEntity(tripId, itineraryVersion, mapVersion, item.id); return; }
     try {
-      const options = await this.geocode(city); this.assertCurrent(tripId, itineraryVersion, mapVersion, runToken);
-      const selected = options.find((candidate) => ["place", "boundary"].includes(candidate.category || "")) ?? options[0];
+      const cityQuery = [city, item.region, item.country].filter(Boolean).join(", "); const options = await this.geocode(cityQuery, item.countryCode, item.queryLanguage || item.localLanguage || "en"); this.assertCurrent(tripId, itineraryVersion, mapVersion, runToken);
+      const selected = options.find((candidate) => ["place", "boundary"].includes(candidate.category || "")) ?? null;
       if (!selected) { this.store.updateMapEntity(tripId, itineraryVersion, item.id, "unlocated", null, item.candidates, `${reason}；未能定位到${city}。`); this.emitEntity(tripId, itineraryVersion, mapVersion, item.id); return; }
       const location: Candidate = { ...selected, confidence: "medium", decisionNote: `${reason}；使用${city}的城市/区域中心作大致定位。` };
       const selectedPlace = this.store.selectMapCandidate(tripId, itineraryVersion, item.id, location, "approximate", "未找到可靠的精确地点，地图以城市/区域中心（大致）显示。"); await this.rerouteAffectedDays(tripId, itineraryVersion, mapVersion, selectedPlace.affectedDayNumbers, runToken);
@@ -125,7 +136,7 @@ export class MapService {
     return this.resolutionBatch(tripId, itineraryVersion, dayNumber);
   }
 
-  resolutionBatch(tripId: string, itineraryVersion: number, dayNumber?: number): MapResolutionBatch { const allowed = dayNumber ? new Set(this.store.getMapSnapshot(tripId, "day", dayNumber)?.places.map((item) => item.id) ?? []) : null; return this.store.mapEntities(tripId, itineraryVersion).filter((item) => (!allowed || allowed.has(item.id)) && (item.status === "ambiguous" || item.status === "unresolved")).map((item) => ({ entityId: item.id, name: item.name, query: item.query, city: item.city, kind: item.kind, approximateLodgingArea: item.approximateLodgingArea, detail: item.detail, candidates: item.candidates })); }
+  resolutionBatch(tripId: string, itineraryVersion: number, dayNumber?: number): MapResolutionBatch { const allowed = dayNumber ? new Set(this.store.getMapSnapshot(tripId, "day", dayNumber)?.places.map((item) => item.id) ?? []) : null; return this.store.mapEntities(tripId, itineraryVersion).filter((item) => (!allowed || allowed.has(item.id)) && (item.status === "ambiguous" || item.status === "unresolved")).map((item) => ({ entityId: item.id, name: item.name, query: item.query, city: item.city, region: item.region || "", countryCode: item.countryCode?.toLowerCase() ?? null, kind: item.kind, approximateLodgingArea: item.approximateLodgingArea, detail: item.detail, candidates: item.candidates })); }
 
   /** Final safety net, including when the AI resolution turn is unavailable. */
   async settleUnresolvedWithCityFallback(tripId: string, itineraryVersion: number, mapVersion: number, dayNumber?: number, runToken?: string, entityIds?: string[]) {
@@ -154,7 +165,11 @@ export class MapService {
     for (const decision of output.coordinates) {
       const entity = requireEligible(decision.entityId);
       if (decision.confidence === "low") { await this.useApproximateCityLocation(tripId, itineraryVersion, mapVersion, entity, `AI 坐标置信度较低：${decision.decisionNote}`, runToken); continue; }
-      const sourceUrl = `https://www.openstreetmap.org/?mlat=${decision.latitude}&mlon=${decision.longitude}`; const location: Candidate = { providerPlaceId: `ai:${decision.sourceType}:${entity.id}`, displayName: decision.displayName, latitude: decision.latitude, longitude: decision.longitude, category: entity.kind, sourceUrl, sourceType: decision.sourceType, evidenceUrl: decision.evidenceUrl, confidence: decision.confidence, decisionNote: decision.decisionNote };
+      const expectedCountry = entity.countryCode?.toLowerCase(); const actualCountry = await this.reverseCountry(decision.latitude, decision.longitude, entity.queryLanguage || entity.localLanguage || "en");
+      // V1 had no country identity to validate.  V2 coordinates must either
+      // reverse to the requested ISO country or remain deliberately unlocated.
+      if (expectedCountry && actualCountry !== expectedCountry) { this.store.updateMapEntity(tripId, itineraryVersion, entity.id, "unlocated", null, entity.candidates, "AI 提供的坐标无法通过目标国家反向地理编码核验，已保留为未定位。"); this.emitEntity(tripId, itineraryVersion, mapVersion, entity.id); continue; }
+      const sourceUrl = `https://www.openstreetmap.org/?mlat=${decision.latitude}&mlon=${decision.longitude}`; const location: Candidate = { providerPlaceId: `ai:${decision.sourceType}:${entity.id}`, displayName: decision.displayName, latitude: decision.latitude, longitude: decision.longitude, category: entity.kind, placeType: null, countryCode: actualCountry, region: entity.region || null, city: entity.city || null, sourceUrl, sourceType: decision.sourceType, evidenceUrl: decision.evidenceUrl, confidence: decision.confidence, decisionNote: decision.decisionNote };
       const merged = this.store.selectMapCandidate(tripId, itineraryVersion, entity.id, location); this.emitEntity(tripId, itineraryVersion, mapVersion, merged.entityId, merged.removedEntityIds); await this.rerouteAffectedDays(tripId, itineraryVersion, mapVersion, merged.affectedDayNumbers, runToken);
     }
     for (const decision of output.unresolved) { const entity = requireEligible(decision.entityId); await this.useApproximateCityLocation(tripId, itineraryVersion, mapVersion, entity, decision.reason, runToken); }

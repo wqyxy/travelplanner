@@ -79,7 +79,7 @@ async function modelList() {
 }
 function modelOptions() { return { ...(config.ai.model ? { model: config.ai.model } : {}), effort: config.ai.reasoningEffort || "medium" }; }
 function travelSchemaInput(trip: ReturnType<TravelStore["requireTrip"]>, userMessage: string) { return JSON.stringify({
-  contract: "travel-agent-output:v1", userMessage, currentRequirements: trip.requirements,
+  contract: "travel-agent-output:v2", userMessage, currentRequirements: trip.requirements,
   currentPlan: trip.activeRevision?.plan ?? null,
   responseSchema: TravelAgentOutputJsonSchema
 }, null, 2); }
@@ -237,7 +237,7 @@ async function api(request: IncomingMessage, response: ServerResponse) {
   if (method === "PUT" && url.pathname === "/api/settings/ai-model") { const input = await body(request); const next = await mutateConfig((current) => ({ ...current, ai: { model: String(input.model || "").slice(0, 120), reasoningEffort: String(input.reasoningEffort || "medium").slice(0, 32) } })); return json(response, 200, { settings: { ai: next.ai, ui: next.ui } }); }
   if (method === "GET" && url.pathname === "/api/trips") return json(response, 200, { trips: store.listTrips(url.searchParams.get("view") === "trash" ? "trashed" : "active") });
   if (method === "POST" && url.pathname === "/api/trips") return json(response, 200, { trip: store.createTrip() });
-  const tripMatch = /^\/api\/trips\/([^/]+)$/.exec(url.pathname); if (tripMatch) { const id = decodeURIComponent(tripMatch[1]); if (method === "GET") return json(response, 200, { trip: store.requireTrip(id) }); if (method === "PATCH") { const input = await body(request); return json(response, 200, { trip: store.rename(id, String(input.title || "")) }); } if (method === "DELETE") { store.setState(id, "trashed"); return json(response, 200, { ok: true }); } }
+  const tripMatch = /^\/api\/trips\/([^/]+)$/.exec(url.pathname); if (tripMatch) { const id = decodeURIComponent(tripMatch[1]); if (method === "GET") return json(response, 200, { trip: store.requireTrip(id) }); if (method === "PATCH") { const input = await body(request); let trip = store.requireTrip(id); if (input.title !== undefined) trip = store.rename(id, String(input.title)); if (input.itineraryLanguage !== undefined) { if (input.itineraryLanguage !== "zh" && input.itineraryLanguage !== "en" && input.itineraryLanguage !== "bilingual") return failure(response, 400, "日程地点语言必须是中文、英文或中英对照。"); trip = store.setItineraryLanguage(id, input.itineraryLanguage); } return json(response, 200, { trip }); } if (method === "DELETE") { store.setState(id, "trashed"); return json(response, 200, { ok: true }); } }
   const duplicate = /^\/api\/trips\/([^/]+)\/duplicate$/.exec(url.pathname); if (method === "POST" && duplicate) return json(response, 200, { trip: store.duplicate(decodeURIComponent(duplicate[1])) });
   const restore = /^\/api\/trips\/([^/]+)\/restore$/.exec(url.pathname); if (method === "POST" && restore) return json(response, 200, { trip: store.setState(decodeURIComponent(restore[1]), "active") });
   const permanent = /^\/api\/trips\/([^/]+)\/permanent$/.exec(url.pathname); if (method === "DELETE" && permanent) { store.permanentDelete(decodeURIComponent(permanent[1])); return json(response, 200, { ok: true }); }
