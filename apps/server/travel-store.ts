@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
-import type { AiAgentKind, AiTaskSnapshot, AiTaskStatus, Candidate, MapAgentOutput, MapEntityPatch, MapEntityView, MapJobStatus, MapRoutePatch, MapRouteView, MapSnapshot, TravelAgentOutput, TravelRequirements, TripPlan } from "./contracts.js";
+import type { AiAgentKind, AiTaskSnapshot, AiTaskStatus, Candidate, MapAgentOutput, MapDayPath, MapEntityPatch, MapEntityView, MapJobStatus, MapRoutePatch, MapRouteView, MapSnapshot, TravelAgentOutput, TravelRequirements, TripPlan } from "./contracts.js";
 import { emptyRequirements, RequirementsSchema, TripPlanSchema } from "./contracts.js";
 
 type SqliteModule = typeof import("node:sqlite");
@@ -30,7 +30,7 @@ export class TravelStore {
   close() { this.db.close(); }
   private migrate() {
     const version = this.db.prepare("PRAGMA user_version").get() as { user_version: number };
-    if (version.user_version > 3) throw new Error("travel.sqlite3 版本高于当前应用，已停止写入。");
+    if (version.user_version > 4) throw new Error("travel.sqlite3 版本高于当前应用，已停止写入。");
     if (version.user_version === 0) {
       this.db.exec(`
         CREATE TABLE trips (id TEXT PRIMARY KEY, title TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('active','trashed')), codex_thread_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -86,6 +86,8 @@ export class TravelStore {
         PRAGMA user_version = 3;
       `);
     }
+    const afterContract = (this.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+    if (afterContract === 3) this.db.exec("ALTER TABLE map_manifests ADD COLUMN day_paths_json TEXT NOT NULL DEFAULT '[]'; PRAGMA user_version = 4;");
   }
   private activeRevision(tripId: string) { const row = this.db.prepare("SELECT version, plan_json FROM itinerary_revisions WHERE trip_id=? ORDER BY version DESC LIMIT 1").get(tripId) as DbRow | undefined; if (!row) return null; const plan = TripPlanSchema.safeParse(parse(row.plan_json, null)); return plan.success ? { id: `${tripId}:${row.version}`, version: Number(row.version), plan: plan.data } : null; }
   private latestRequirements(tripId: string) { const row = this.db.prepare("SELECT revision, content_json, updated_at, updated_by FROM requirements WHERE trip_id=? ORDER BY revision DESC LIMIT 1").get(tripId) as DbRow | undefined; if (!row) return { revision: 0, content: emptyRequirements(), updatedAt: "", updatedBy: "system" }; const content = RequirementsSchema.safeParse(parse(row.content_json, {})); return { revision: Number(row.revision), content: content.success ? content.data : emptyRequirements(), updatedAt: String(row.updated_at), updatedBy: String(row.updated_by) }; }
@@ -144,7 +146,7 @@ export class TravelStore {
     }
     const previous = this.latestMapMeta(tripId, itineraryVersion); const mapVersion = Number((this.db.prepare("SELECT COALESCE(MAX(map_version),0) AS value FROM map_manifests WHERE trip_id=?").get(tripId) as DbRow).value) + 1; const now = iso();
     this.db.exec("BEGIN IMMEDIATE"); try {
-      this.db.prepare("INSERT INTO map_manifests(trip_id,itinerary_version,map_version,base_map_version,status,summary,warnings_json,created_at,updated_at,contract_version) VALUES(?,?,?,?,?,?,?,?,?,2)").run(tripId, itineraryVersion, mapVersion, previous?.mapVersion ?? 0, "queued", "等待地图 Agent 分析", "[]", now, now);
+      this.db.prepare("INSERT INTO map_manifests(trip_id,itinerary_version,map_version,base_map_version,status,summary,warnings_json,created_at,updated_at,contract_version,day_paths_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)").run(tripId, itineraryVersion, mapVersion, previous?.mapVersion ?? 0, "queued", "等待地图 Agent 分析", "[]", now, now, 3, "[]");
       if (previous) {
         const reusable = new Set(reusableActivityIds); const entityRows = this.db.prepare("SELECT * FROM map_entities WHERE trip_id=? AND itinerary_version=?").all(tripId, previous.itineraryVersion) as DbRow[]; const copied = new Set<string>();
         for (const row of entityRows) { const data = parse<MapEntityPatch | null>(row.data_json, null); if (!data || (data.activityId && !reusable.has(data.activityId))) continue; this.db.prepare("INSERT INTO map_entities(trip_id,itinerary_version,entity_id,data_json,status,candidate_json,candidates_json,warning) VALUES(?,?,?,?,?,?,?,?)").run(tripId, itineraryVersion, String(row.entity_id), String(row.data_json), String(row.status), typeof row.candidate_json === "string" ? row.candidate_json : null, String(row.candidates_json), typeof row.warning === "string" ? row.warning : null); copied.add(String(row.entity_id)); }
@@ -166,8 +168,21 @@ export class TravelStore {
         ON CONFLICT(trip_id,itinerary_version,entity_id) DO UPDATE SET data_json=excluded.data_json,status='pending',candidate_json=NULL,candidates_json='[]',warning=NULL`).run(tripId, itineraryVersion, item.id, json(item), "pending", null, "[]", null);
       for (const item of patch.upsertRoutes) this.db.prepare(`INSERT INTO map_routes(trip_id,itinerary_version,route_id,data_json,status,geometry_json,warning) VALUES(?,?,?,?,?,?,?)
         ON CONFLICT(trip_id,itinerary_version,route_id) DO UPDATE SET data_json=excluded.data_json,status='pending',geometry_json=NULL,warning=NULL`).run(tripId, itineraryVersion, item.id, json(item), "pending", null, null);
-      const ids = new Set(this.mapEntities(tripId, itineraryVersion).map((item) => item.id)); for (const route of this.mapRoutes(tripId, itineraryVersion)) if (!ids.has(route.fromEntityId) || !ids.has(route.toEntityId)) throw new Error(`路线 ${route.id} 引用了不存在的地点。`);
-      this.db.prepare("UPDATE map_manifests SET contract_version=2 WHERE trip_id=? AND itinerary_version=?").run(tripId, itineraryVersion);
+      const entities = this.mapEntities(tripId, itineraryVersion); const routes = this.mapRoutes(tripId, itineraryVersion); const ids = new Set(entities.map((item) => item.id)); for (const route of routes) if (!ids.has(route.fromEntityId) || !ids.has(route.toEntityId)) throw new Error(`路线 ${route.id} 引用了不存在的地点。`);
+      const paths = [...patch.dayPaths].sort((a, b) => a.dayNumber - b.dayNumber); const itineraryDays = this.getRevision(tripId, itineraryVersion)?.plan.days.map((day) => day.dayNumber) ?? [];
+      if (paths.length !== itineraryDays.length || paths.some((path, index) => path.dayNumber !== itineraryDays[index])) throw new Error("每日路径必须覆盖当前行程的每一天且仅一次。");
+      const routeKeys = new Set<string>(); const expectedKeys = new Set<string>();
+      for (let index = 0; index < paths.length; index += 1) {
+        const path = paths[index];
+        if (path.entityIds[0] !== path.startEntityId || path.entityIds.at(-1) !== path.endEntityId || path.endEntityId !== path.overnightEntityId) throw new Error(`Day ${path.dayNumber} 路径首尾不一致。`);
+        if (new Set(path.entityIds).size !== path.entityIds.length) throw new Error(`Day ${path.dayNumber} 路径包含重复地点。`);
+        for (const id of path.entityIds) if (!ids.has(id)) throw new Error(`Day ${path.dayNumber} 路径引用不存在地点。`);
+        for (let n = 0; n < path.entityIds.length - 1; n += 1) expectedKeys.add(`${path.dayNumber}:${path.entityIds[n]}>${path.entityIds[n + 1]}`);
+        if (index < paths.length - 1) { const next = paths[index + 1]; const overnight = entities.find((entity) => entity.id === path.overnightEntityId); if (overnight?.kind !== "lodging" || next.startEntityId !== path.overnightEntityId) throw new Error(`Day ${path.dayNumber} 必须以住宿结束并作为次日出发点。`); }
+      }
+      for (const route of routes) { const key = `${route.dayNumber}:${route.fromEntityId}>${route.toEntityId}`; if (routeKeys.has(key)) throw new Error(`路线重复：${key}`); routeKeys.add(key); if (!expectedKeys.has(key)) throw new Error(`路线 ${route.id} 不属于每日路径。`); }
+      if (routeKeys.size !== expectedKeys.size || [...expectedKeys].some((key) => !routeKeys.has(key))) throw new Error("每日路径存在断链。");
+      this.db.prepare("UPDATE map_manifests SET contract_version=3,day_paths_json=? WHERE trip_id=? AND itinerary_version=?").run(json(paths), tripId, itineraryVersion);
       this.setMapStatus(tripId, itineraryVersion, "resolving", "正在解析地点与路线", patch.warnings); this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
@@ -177,7 +192,7 @@ export class TravelStore {
   pendingMapRoutes(tripId: string, itineraryVersion: number) { return this.mapRoutes(tripId, itineraryVersion).filter((item) => item.status === "pending" || item.status === "failed" || item.status === "unresolved"); }
   updateMapEntity(tripId: string, itineraryVersion: number, entityId: string, status: MapEntityView["status"], location: Candidate | null, candidates: Candidate[], warning: string | null) { this.db.prepare("UPDATE map_entities SET status=?,candidate_json=?,candidates_json=?,warning=? WHERE trip_id=? AND itinerary_version=? AND entity_id=?").run(status, location ? json(location) : null, json(candidates), warning, tripId, itineraryVersion, entityId); }
   updateMapRoute(tripId: string, itineraryVersion: number, routeId: string, status: MapRouteView["status"], geometry: unknown | null, warning: string | null) { this.db.prepare("UPDATE map_routes SET status=?,geometry_json=?,warning=? WHERE trip_id=? AND itinerary_version=? AND route_id=?").run(status, geometry ? json(geometry) : null, warning, tripId, itineraryVersion, routeId); }
-  getMapSnapshot(tripId: string, scope: "all" | "day" = "all", dayNumber: number | null = null): MapSnapshot | null { const trip = this.requireTrip(tripId); const itineraryVersion = trip.activeRevision?.version; if (!itineraryVersion) return null; const meta = this.latestMapMeta(tripId, itineraryVersion + 1); if (!meta || meta.itineraryVersion !== itineraryVersion) return { itineraryVersion, mapVersion: 0, scope, dayNumber, status: "idle", summary: "等待地图 Agent", warnings: [], entities: [], routes: [] }; const filter = <T extends { dayNumber: number }>(items: T[]) => scope === "day" && dayNumber ? items.filter((item) => item.dayNumber === dayNumber) : items; return { itineraryVersion, mapVersion: meta.mapVersion, scope, dayNumber: scope === "day" ? dayNumber : null, status: meta.status, summary: meta.summary, warnings: meta.warnings, entities: filter(this.mapEntities(tripId, itineraryVersion)), routes: filter(this.mapRoutes(tripId, itineraryVersion)) }; }
+  getMapSnapshot(tripId: string, scope: "all" | "day" = "all", dayNumber: number | null = null): MapSnapshot | null { const trip = this.requireTrip(tripId); const itineraryVersion = trip.activeRevision?.version; if (!itineraryVersion) return null; const meta = this.latestMapMeta(tripId, itineraryVersion + 1); if (!meta || meta.itineraryVersion !== itineraryVersion) return { itineraryVersion, mapVersion: 0, scope, dayNumber, status: "idle", summary: "等待地图 Agent", warnings: [], entities: [], routes: [], dayPaths: [] }; const paths = parse<MapDayPath[]>((this.db.prepare("SELECT day_paths_json FROM map_manifests WHERE trip_id=? AND itinerary_version=?").get(tripId, itineraryVersion) as DbRow).day_paths_json, []); const selected = scope === "day" && dayNumber ? paths.find((path) => path.dayNumber === dayNumber) : null; const allowed = selected ? new Set(selected.entityIds) : null; const entities = this.mapEntities(tripId, itineraryVersion); const routes = this.mapRoutes(tripId, itineraryVersion); return { itineraryVersion, mapVersion: meta.mapVersion, scope, dayNumber: scope === "day" ? dayNumber : null, status: meta.status, summary: meta.summary, warnings: meta.warnings, entities: allowed ? entities.filter((item) => allowed.has(item.id)) : entities, routes: selected ? routes.filter((item) => item.dayNumber === selected.dayNumber) : routes, dayPaths: scope === "day" && selected ? [selected] : paths }; }
   selectMapCandidate(tripId: string, itineraryVersion: number, entityId: string, candidate: Candidate) { this.updateMapEntity(tripId, itineraryVersion, entityId, "resolved", candidate, [candidate], null); this.db.prepare("UPDATE map_routes SET status='pending',geometry_json=NULL,warning=NULL WHERE trip_id=? AND itinerary_version=? AND (json_extract(data_json,'$.fromEntityId')=? OR json_extract(data_json,'$.toEntityId')=?)").run(tripId, itineraryVersion, entityId, entityId); }
   resetMapEntity(tripId: string, itineraryVersion: number, entityId: string, warning: string) { this.updateMapEntity(tripId, itineraryVersion, entityId, "pending", null, [], warning); this.db.prepare("UPDATE map_routes SET status='pending',geometry_json=NULL,warning=NULL WHERE trip_id=? AND itinerary_version=? AND (json_extract(data_json,'$.fromEntityId')=? OR json_extract(data_json,'$.toEntityId')=?)").run(tripId, itineraryVersion, entityId, entityId); }
 }

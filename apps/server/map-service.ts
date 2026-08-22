@@ -1,11 +1,11 @@
 import { createRequire } from "node:module";
-import type { Candidate, MapEntityView, MapResolutionOutput, MapRouteView, MapSnapshot } from "./contracts.js";
+import type { Candidate, MapDayPath, MapEntityView, MapResolutionOutput, MapRouteView, MapSnapshot } from "./contracts.js";
 import type { TravelStore } from "./travel-store.js";
 
 type CacheRow = { payload_json: string; expires_at: number };
 type SqliteModule = typeof import("node:sqlite");
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as SqliteModule;
-type MapPatchPayload = { tripId: string; itineraryVersion: number; mapVersion: number; entities: { upsert: MapEntityView[]; remove: string[] }; routes: { upsert: MapRouteView[]; remove: string[] } };
+type MapPatchPayload = { tripId: string; itineraryVersion: number; mapVersion: number; entities: { upsert: MapEntityView[]; remove: string[] }; routes: { upsert: MapRouteView[]; remove: string[] }; dayPaths?: MapDayPath[] };
 type MapJobPayload = { tripId: string; itineraryVersion: number; mapVersion: number; status: string; summary: string };
 export type MapResolutionBatch = { entityId: string; name: string; query: string; city: string; kind: MapEntityView["kind"]; approximateLodgingArea: boolean; detail: string; candidates: Candidate[] }[];
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -99,9 +99,22 @@ export class MapService {
     for (const item of this.store.pendingMapRoutes(tripId, itineraryVersion)) {
       this.assertCurrent(tripId, itineraryVersion, mapVersion); const entities = new Map(this.store.mapEntities(tripId, itineraryVersion).map((entity) => [entity.id, entity])); const from = entities.get(item.fromEntityId); const to = entities.get(item.toEntityId);
       if (!from?.location || !to?.location) this.store.updateMapRoute(tripId, itineraryVersion, item.id, "unresolved", null, "路线端点尚未获得有效坐标。");
-      else { try { const result = await this.route(from.location, to.location, item.mode); this.store.updateMapRoute(tripId, itineraryVersion, item.id, result.geometry ? "resolved" : "unresolved", result.geometry, result.warning); } catch (error) { this.store.updateMapRoute(tripId, itineraryVersion, item.id, "failed", null, error instanceof Error ? error.message : "路线解析失败。"); } }
+      else { try { const result = item.mode === "flight" ? { geometry: this.flightGeometry(from.location, to.location), warning: null } : await this.route(from.location, to.location, item.mode); this.store.updateMapRoute(tripId, itineraryVersion, item.id, result.geometry ? "resolved" : "unresolved", result.geometry, result.warning); } catch (error) { this.store.updateMapRoute(tripId, itineraryVersion, item.id, "failed", null, error instanceof Error ? error.message : "路线解析失败。"); } }
       this.emitRoute(tripId, itineraryVersion, mapVersion, item.id);
     }
+  }
+
+  private flightGeometry(from: Candidate, to: Candidate) {
+    const a: [number, number] = [from.longitude, from.latitude]; const b: [number, number] = [to.longitude, to.latitude];
+    if (Math.abs(a[0] - b[0]) <= 180) return { type: "LineString", coordinates: [a, b] };
+    // Unwrap the destination in the direction of the shortest arc, then split
+    // exactly at the antimeridian.  This works in both directions.
+    const eastward = b[0] - a[0] < -180;
+    const targetLongitude = eastward ? b[0] + 360 : b[0] - 360;
+    const boundary = eastward ? 180 : -180;
+    const ratio = (boundary - a[0]) / (targetLongitude - a[0]);
+    const latitude = a[1] + (b[1] - a[1]) * ratio;
+    return { type: "MultiLineString", coordinates: [[a, [boundary, latitude]], [[-boundary, latitude], b]] };
   }
 
   finalize(tripId: string, itineraryVersion: number, mapVersion: number) {

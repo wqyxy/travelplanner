@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const transportModes = ["walk", "drive", "bike", "transit_advisory", "none"] as const;
+export const transportModes = ["walk", "drive", "bike", "transit_advisory", "flight", "none"] as const;
 export const TransportMode = z.enum(transportModes);
 
 export const RequirementsSchema = z.object({
@@ -95,14 +95,17 @@ export const MapRoutePatchSchema = z.object({
   toEntityId: z.string().min(1).max(160),
   mode: TransportMode
 });
+export const MapDayPathSchema = z.object({ dayNumber: z.number().int().min(1).max(90), entityIds: z.array(z.string().min(1).max(160)).min(1).max(200), startEntityId: z.string().min(1).max(160), endEntityId: z.string().min(1).max(160), overnightEntityId: z.string().min(1).max(160) });
+export type MapDayPath = z.infer<typeof MapDayPathSchema>;
 export const MapAgentOutputSchema = z.object({
-  schemaVersion: z.literal(2),
+  schemaVersion: z.literal(3),
   baseItineraryVersion: z.number().int().min(1),
   baseMapVersion: z.number().int().min(0),
   upsertEntities: z.array(MapEntityPatchSchema).max(1800),
   removeEntityIds: z.array(z.string().min(1).max(160)).max(1800),
   upsertRoutes: z.array(MapRoutePatchSchema).max(1800),
   removeRouteIds: z.array(z.string().min(1).max(180)).max(1800),
+  dayPaths: z.array(MapDayPathSchema).min(1).max(90),
   warnings: z.array(z.string().min(1).max(700)).max(100)
 }).superRefine((value, context) => {
   const duplicate = (values: string[]) => values.find((id, index) => values.indexOf(id) !== index);
@@ -156,7 +159,7 @@ export type Candidate = { providerPlaceId: string; displayName: string; latitude
 export type MapEntityView = MapEntityPatch & { status: "pending" | "resolved" | "ambiguous" | "unresolved" | "failed"; location: Candidate | null; candidates: Candidate[]; warning: string | null };
 export type MapRouteView = MapRoutePatch & { status: "pending" | "resolved" | "unresolved" | "failed"; geometry: unknown | null; warning: string | null };
 export type MapJobStatus = "idle" | "queued" | "analyzing" | "resolving" | "ready" | "partial" | "failed" | "stopped";
-export type MapSnapshot = { itineraryVersion: number; mapVersion: number; scope: "all" | "day"; dayNumber: number | null; status: MapJobStatus; summary: string; warnings: string[]; entities: MapEntityView[]; routes: MapRouteView[] };
+export type MapSnapshot = { itineraryVersion: number; mapVersion: number; scope: "all" | "day"; dayNumber: number | null; status: MapJobStatus; summary: string; warnings: string[]; entities: MapEntityView[]; routes: MapRouteView[]; dayPaths: MapDayPath[] };
 
 export type AiAgentKind = "planner" | "map";
 export type AiTaskStatus = "starting" | "running" | "waiting" | "reconnecting" | "completed" | "failed" | "stopped";
