@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   MapAgentOutputJsonSchema,
   MapAgentOutputSchema,
+  normalizeMapAgentOutput,
   MapResolutionOutputJsonSchema,
   MapResolutionOutputSchema,
   TravelAgentOutputJsonSchema,
@@ -87,6 +88,13 @@ afterEach(async () => {
 });
 
 describe("TravelStore revisions", () => {
+  it("normalizes redundant day-path endpoints before strict map validation", () => {
+    const normalized = normalizeMapAgentOutput({
+      dayPaths: [{ entityIds: ["overnight", "spot"], startEntityId: "wrong", endEntityId: "wrong", overnightEntityId: "spot" }],
+    }) as { dayPaths: Array<{ startEntityId: string; endEntityId: string; overnightEntityId: string }> };
+    expect(normalized.dayPaths[0]).toMatchObject({ startEntityId: "overnight", endEntityId: "spot", overnightEntityId: "spot" });
+  });
+
   it("exports a strict Codex output schema with every object property required", () => {
     const missing: string[] = [];
     const visit = (value: unknown, path = "$") => {

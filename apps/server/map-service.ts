@@ -5,7 +5,7 @@ import type { TravelStore } from "./travel-store.js";
 type CacheRow = { payload_json: string; expires_at: number };
 type SqliteModule = typeof import("node:sqlite");
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as SqliteModule;
-type MapPatchPayload = { tripId: string; itineraryVersion: number; mapVersion: number; entities: { upsert: MapEntityView[]; remove: string[] }; routes: { upsert: MapRouteView[]; remove: string[] }; dayPaths?: MapDayPath[] };
+type MapPatchPayload = { tripId: string; itineraryVersion: number; mapVersion: number; replaceAll?: boolean; entities: { upsert: MapEntityView[]; remove: string[] }; routes: { upsert: MapRouteView[]; remove: string[] }; dayPaths?: MapDayPath[] };
 type MapJobPayload = { tripId: string; itineraryVersion: number; mapVersion: number; status: string; summary: string };
 export type MapResolutionBatch = { entityId: string; name: string; query: string; city: string; kind: MapEntityView["kind"]; approximateLodgingArea: boolean; detail: string; candidates: Candidate[] }[];
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

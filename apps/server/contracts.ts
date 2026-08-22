@@ -115,6 +115,27 @@ export const MapAgentOutputSchema = z.object({
   if (routeDuplicate) context.addIssue({ code: "custom", path: ["upsertRoutes"], message: `路线 ID 重复：${routeDuplicate}` });
 });
 export type MapAgentOutput = z.infer<typeof MapAgentOutputSchema>;
+/**
+ * The path endpoints duplicate information already present in entityIds.  Keep
+ * the agent contract strict for everything meaningful, but canonicalize these
+ * redundant fields before validation so a harmless endpoint typo cannot throw
+ * away an otherwise valid map manifest.
+ */
+export function normalizeMapAgentOutput(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const output = value as Record<string, unknown>;
+  if (!Array.isArray(output.dayPaths)) return value;
+  return {
+    ...output,
+    dayPaths: output.dayPaths.map((path) => {
+      if (!path || typeof path !== "object" || Array.isArray(path)) return path;
+      const record = path as Record<string, unknown>;
+      const ids = record.entityIds;
+      if (!Array.isArray(ids) || !ids.length || ids.some((id) => typeof id !== "string" || !id)) return path;
+      return { ...record, startEntityId: ids[0], endEntityId: ids.at(-1) };
+    }),
+  };
+}
 export type MapEntityPatch = z.infer<typeof MapEntityPatchSchema>;
 export type MapRoutePatch = z.infer<typeof MapRoutePatchSchema>;
 export const MapAgentOutputJsonSchema = requireAllObjectProperties(z.toJSONSchema(MapAgentOutputSchema)) as Record<string, unknown>;

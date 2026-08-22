@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./map-label-overrides.css";
 import { AlertTriangle, LoaderCircle, RotateCcw } from "lucide-react";
 import { api } from "./api";
@@ -97,6 +97,13 @@ export function MapPanel({
   const previousPoints = useRef(new Map<string, string>());
   const previousRoutes = useRef(new Map<string, string>());
   const fitKey = useRef("");
+  const snapshotRef = useRef<MapSnapshot | null>(null);
+  const handledPatchEvent = useRef<MapPatch | null>(null);
+  const handledJobEvent = useRef<JobUpdate>(null);
+  const loadGeneration = useRef(0);
+  const requestedView = useRef("");
+  const viewRef = useRef({ tripId, revision, scope: "all" as "all" | "day", day: 1 });
+  const operationGeneration = useRef(0);
   const [ready, setReady] = useState(false);
   const [scope, setScope] = useState<"all" | "day">("all");
   const [day, setDay] = useState(1);
@@ -108,6 +115,28 @@ export function MapPanel({
     string
   > | null>(null);
   const [spiderCluster, setSpiderCluster] = useState<string | null>(null);
+  const currentViewKey = (selectedScope = scope, selectedDay = day) =>
+    `${tripId || ""}:${revision || ""}:${selectedScope}:${selectedScope === "day" ? selectedDay : "all"}`;
+  snapshotRef.current = snapshot;
+  requestedView.current = currentViewKey();
+  viewRef.current = { tripId, revision, scope, day };
+  const clearRenderedMap = useCallback(() => {
+    const empty = { type: "FeatureCollection", features: [] };
+    const map = mapRef.current;
+    for (const sourceId of ["travel-places", "travel-routes"]) {
+      const source = map?.getSource?.(sourceId);
+      if (source?.setData) source.setData(empty);
+    }
+    previousPoints.current.clear();
+    previousRoutes.current.clear();
+    labelsRef.current?.replaceChildren();
+    popupRef.current?.remove();
+    popupRef.current = null;
+    pinnedRef.current = false;
+    fitKey.current = "";
+    setSpiderCluster(null);
+  }, []);
+  const cancelMapLoads = useCallback(() => { loadGeneration.current += 1; }, []);
   const categoryColors = previewColors ||
     suppliedColors || {
       city: "#1b4f78",
@@ -119,6 +148,7 @@ export function MapPanel({
     };
   const days = plan?.days || [];
   useEffect(() => {
+    operationGeneration.current += 1;
     const update = (event: Event) =>
       setPreviewColors((event as CustomEvent<Record<string, string>>).detail);
     window.addEventListener("map-category-colors-preview", update);
@@ -130,6 +160,9 @@ export function MapPanel({
       setSnapshot(null);
       return;
     }
+    const target = `${tripId}:${revision}:${selectedScope}:${selectedScope === "day" ? selectedDay : "all"}`;
+    requestedView.current = target;
+    const generation = ++loadGeneration.current;
     setLoading(true);
     try {
       const query =
@@ -139,24 +172,28 @@ export function MapPanel({
       const data = await api<{ map: MapSnapshot | null }>(
         `/api/trips/${tripId}/map?${query}`,
       );
+      if (generation !== loadGeneration.current || requestedView.current !== target || (data.map && data.map.itineraryVersion !== revision)) return;
       setSnapshot(data.map);
       setNotice("");
     } catch (cause) {
+      if (generation !== loadGeneration.current || requestedView.current !== target) return;
       setNotice(cause instanceof Error ? cause.message : "地图加载失败。");
     } finally {
-      setLoading(false);
+      if (generation === loadGeneration.current) setLoading(false);
     }
   };
   useEffect(() => {
+    operationGeneration.current += 1;
     setScope("all");
     setDay(days[0]?.dayNumber || 1);
+    handledPatchEvent.current = null;
+    handledJobEvent.current = null;
+    requestedView.current = `${tripId || ""}:${revision || ""}:all:all`;
+    cancelMapLoads();
+    clearRenderedMap();
     setSnapshot(null);
-    setSpiderCluster(null);
-    previousPoints.current.clear();
-    previousRoutes.current.clear();
-    fitKey.current = "";
     void load("all", days[0]?.dayNumber || 1);
-  }, [tripId, revision]);
+  }, [tripId, revision, clearRenderedMap, cancelMapLoads]);
   useEffect(() => {
     if (
       !patch ||
@@ -164,11 +201,18 @@ export function MapPanel({
       patch.itineraryVersion !== revision
     )
       return;
+    if (handledPatchEvent.current === patch) return;
+    handledPatchEvent.current = patch;
+    const currentSnapshot = snapshotRef.current;
+    if (patch.replaceAll || !currentSnapshot || currentSnapshot.mapVersion !== patch.mapVersion) {
+      cancelMapLoads();
+      clearRenderedMap();
+      setSnapshot(null);
+      void load();
+      return;
+    }
     setSnapshot((current) => {
-      if (!current || current.mapVersion !== patch.mapVersion) {
-        void load();
-        return current;
-      }
+      if (!current) return current;
       const dayPaths = patch.dayPaths || current.dayPaths;
       const selected =
         current.scope === "day"
@@ -192,22 +236,31 @@ export function MapPanel({
         dayPaths,
       };
     });
-  }, [patch]);
+  }, [patch, tripId, revision, clearRenderedMap, cancelMapLoads]);
   useEffect(() => {
     if (!job || job.tripId !== tripId || job.itineraryVersion !== revision)
       return;
-    setSnapshot((current) =>
-      current
-        ? { ...current, status: job.status, summary: job.summary }
-        : current,
-    );
-  }, [job]);
-  useEffect(() => {
-    if (!snapshot) {
-      labelsRef.current?.replaceChildren();
-      setSpiderCluster(null);
+    if (handledJobEvent.current === job) return;
+    handledJobEvent.current = job;
+    const currentSnapshot = snapshotRef.current;
+    if (job.status === "failed") {
+      operationGeneration.current += 1;
+      cancelMapLoads();
+      clearRenderedMap();
+      setSnapshot(null);
+      setLoading(false);
+      setNotice("新地图生成失败，旧地图已清除");
+      return;
     }
-  }, [snapshot]);
+    if (!currentSnapshot || currentSnapshot.mapVersion !== job.mapVersion) {
+      cancelMapLoads();
+      clearRenderedMap();
+      setSnapshot(null);
+      void load();
+      return;
+    }
+    setSnapshot((current) => !current || (current.status === job.status && current.summary === job.summary) ? current : { ...current, status: job.status, summary: job.summary });
+  }, [job, tripId, revision, clearRenderedMap, cancelMapLoads]);
   useEffect(() => {
     let map: any;
     let resizeObserver: ResizeObserver | null = null;
@@ -529,17 +582,17 @@ export function MapPanel({
             .map((member) => member.entity.location!)
             .map((location) => [location.longitude, location.latitude]);
           if (map.getZoom() >= 17) setSpiderCluster(group.id);
-          else if (members.length)
-            map.fitBounds(
-              members.reduce(
-                (bounds: any, pair: any) => bounds.extend(pair),
-                new (map.constructor as any).LngLatBounds(
-                  members[0],
-                  members[0],
-                ),
-              ),
-              { padding: 70, maxZoom: 17 },
+          else if (members.length) {
+            const [firstLongitude, firstLatitude] = members[0] as [number, number];
+            const bounds = members.slice(1).reduce(
+              ([minLongitude, minLatitude, maxLongitude, maxLatitude]: [number, number, number, number], [longitude, latitude]: any) => [
+                Math.min(minLongitude, longitude), Math.min(minLatitude, latitude),
+                Math.max(maxLongitude, longitude), Math.max(maxLatitude, latitude),
+              ] as [number, number, number, number],
+              [firstLongitude, firstLatitude, firstLongitude, firstLatitude] as [number, number, number, number],
             );
+            map.fitBounds([[bounds[0], bounds[1]], [bounds[2], bounds[3]]], { padding: 70, maxZoom: 17 });
+          }
         };
         overlay.append(cluster);
         if (spiderCluster === group.id)
@@ -697,29 +750,37 @@ export function MapPanel({
     snapshot && ["queued", "analyzing", "resolving"].includes(snapshot.status);
   const select = async (entityId: string, candidate: Candidate) => {
     if (!tripId) return;
+    const operation = ++operationGeneration.current;
+    const view = { ...viewRef.current };
     try {
       await api(
         `/api/trips/${tripId}/map/locations/${encodeURIComponent(entityId)}/select`,
         { method: "POST", body: JSON.stringify({ candidate }) },
       );
-      await load();
+      if (operation !== operationGeneration.current || requestedView.current !== `${view.tripId || ""}:${view.revision || ""}:${view.scope}:${view.scope === "day" ? view.day : "all"}`) return;
+      await load(view.scope, view.day);
     } catch (cause) {
+      if (operation !== operationGeneration.current || requestedView.current !== `${view.tripId || ""}:${view.revision || ""}:${view.scope}:${view.scope === "day" ? view.day : "all"}`) return;
       setNotice(cause instanceof Error ? cause.message : "地点选择失败。");
     }
   };
   const retry = async () => {
     if (!tripId) return;
+    const operation = ++operationGeneration.current;
+    const view = { ...viewRef.current };
     setLoading(true);
     try {
       await api(`/api/trips/${tripId}/map/retry`, {
         method: "POST",
         body: "{}",
       });
-      await load();
+      if (operation !== operationGeneration.current || requestedView.current !== `${view.tripId || ""}:${view.revision || ""}:${view.scope}:${view.scope === "day" ? view.day : "all"}`) return;
+      await load(view.scope, view.day);
     } catch (cause) {
+      if (operation !== operationGeneration.current || requestedView.current !== `${view.tripId || ""}:${view.revision || ""}:${view.scope}:${view.scope === "day" ? view.day : "all"}`) return;
       setNotice(cause instanceof Error ? cause.message : "地图重试失败。");
     } finally {
-      setLoading(false);
+      if (operation === operationGeneration.current && requestedView.current === `${view.tripId || ""}:${view.revision || ""}:${view.scope}:${view.scope === "day" ? view.day : "all"}`) setLoading(false);
     }
   };
   const categoryLegend = [
@@ -750,6 +811,7 @@ export function MapPanel({
                 const value = event.target.value;
                 const nextScope = value === "all" ? "all" : "day";
                 const nextDay = value === "all" ? day : Number(value);
+                operationGeneration.current += 1;
                 setScope(nextScope);
                 setDay(nextDay);
                 fitKey.current = "";
@@ -763,7 +825,7 @@ export function MapPanel({
                 </option>
               ))}
             </select>
-            {snapshot && ["partial", "failed"].includes(snapshot.status) && (
+            {(snapshot && ["partial", "failed"].includes(snapshot.status) || job?.tripId === tripId && job?.itineraryVersion === revision && job.status === "failed") && (
               <button disabled={loading} onClick={() => void retry()}>
                 <RotateCcw size={12} />
                 {loading ? "重试中" : "重试未完成项"}

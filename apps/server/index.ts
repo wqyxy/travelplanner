@@ -8,7 +8,7 @@ import { CodexClient, type RpcEnvelope } from "./codex-client.js";
 import { MapService } from "./map-service.js";
 import { AiTaskMonitor } from "./ai-task-monitor.js";
 import { loadAgentPrompts } from "./prompt-contract.js";
-import { MapAgentOutputJsonSchema, MapAgentOutputSchema, MapResolutionOutputJsonSchema, MapResolutionOutputSchema, TravelAgentOutputJsonSchema, TravelAgentOutputSchema, type TripPlan } from "./contracts.js";
+import { MapAgentOutputJsonSchema, MapAgentOutputSchema, MapResolutionOutputJsonSchema, MapResolutionOutputSchema, TravelAgentOutputJsonSchema, TravelAgentOutputSchema, normalizeMapAgentOutput, type TripPlan } from "./contracts.js";
 import { TravelStore } from "./travel-store.js";
 
 const root = path.resolve(process.cwd());
@@ -22,7 +22,7 @@ const sessions = new PersistentSessionStore(() => config);
 const limiter = new LoginRateLimiter();
 const clients = new Set<WebSocket>();
 type PlannerRun = { kind: "planner"; taskId: string; tripId: string; messageId: string; turnId?: string; content: string; failureMessage?: string };
-type MapRun = { kind: "map"; phase: "manifest" | "resolution"; replaceAll: boolean; taskId: string; tripId: string; itineraryVersion: number; mapVersion: number; baseMapVersion: number; turnId?: string; content: string; failureMessage?: string };
+type MapRun = { kind: "map"; phase: "manifest" | "resolution"; replaceAll: boolean; contractRetryAttempt: number; removedEntityIds: string[]; removedRouteIds: string[]; taskId: string; tripId: string; itineraryVersion: number; mapVersion: number; baseMapVersion: number; turnId?: string; content: string; failureMessage?: string };
 type ActiveRun = PlannerRun | MapRun;
 const active = new Map<string, ActiveRun>();
 const loginStates = new Map<string, { method: "browser" | "device"; phase: "pending" | "succeeded" | "failed" | "cancelled"; message?: string }>();
@@ -119,23 +119,54 @@ async function beginMapResolution(threadId: string, run: MapRun) {
   } catch (error) { tasks.append(run.taskId, "map:ai-resolution-failed", `AI 坐标处理失败，继续绘制已有坐标路线：${message(error)}`); void finishMapRoutes(threadId, resolutionRun); }
 }
 const mapStarts = new Set<string>();
-async function startMapTurn(tripId: string, itineraryVersion: number, forceRebuild = false) {
-  if (mapStarts.has(tripId) || [...active.values()].some((run) => run.tripId === tripId)) return; mapStarts.add(tripId); const diff = mapChanges(tripId, itineraryVersion); const previousMap = forceRebuild ? store.mapContext(tripId, itineraryVersion) : diff.previous ? store.mapContext(tripId, diff.previous.version) : null; const manifest = store.prepareMapManifest(tripId, itineraryVersion, forceRebuild ? [] : diff.reusableActivityIds, forceRebuild); const taskId = `map:${tripId}:${itineraryVersion}`; tasks.start({ id: taskId, tripId, agent: "map", label: "地图标注", summary: forceRebuild ? "正在按新合同重新拆分地点" : "正在分析变化的地点与路线" }); store.setMapStatus(tripId, itineraryVersion, "analyzing", forceRebuild ? "正在按新合同重新拆分地点" : "正在分析变化的地点与路线"); broadcast("travel.map.job.updated", { tripId, itineraryVersion, mapVersion: manifest.mapVersion, status: "analyzing", summary: forceRebuild ? "正在按新合同重新拆分地点" : "正在分析变化的地点与路线" });
+async function startMapTurn(tripId: string, itineraryVersion: number, forceRebuild = false, contractRetryAttempt = 0, contractFeedback?: string, inheritedRemovedEntityIds: string[] = [], inheritedRemovedRouteIds: string[] = []) {
+  if (mapStarts.has(tripId) || [...active.values()].some((run) => run.tripId === tripId)) return;
+  mapStarts.add(tripId);
+  let manifest: { itineraryVersion: number; mapVersion: number; baseMapVersion: number; removedEntityIds: string[]; removedRouteIds: string[] } | null = null;
+  let threadId: string | null = null;
+  let mapRun: MapRun | null = null;
   try {
-    const threadId = await ensureMapThread(tripId); const fullActivities = flattened(diff.current.plan); const changes = forceRebuild ? { upsert: fullActivities, removeActivityIds: [], affectedActivityIds: fullActivities.map((item) => item.activity.id) } : diff.changes;
-    const input = JSON.stringify({ contract: "travel-map-patch:v3", baseItineraryVersion: itineraryVersion, baseMapVersion: manifest.baseMapVersion, fullRebuild: forceRebuild, currentRequirements: diff.current.requirements, currentPlan: diff.current.plan, previousMap, changes, responseSchema: MapAgentOutputJsonSchema }, null, 2);
-    const mapRun: MapRun = { kind: "map", phase: "manifest", replaceAll: forceRebuild, taskId, tripId, itineraryVersion, mapVersion: manifest.mapVersion, baseMapVersion: manifest.baseMapVersion, content: "" }; active.set(threadId, mapRun); mapStarts.delete(tripId); const result = await codex.call("turn/start", { threadId, summary: "detailed", input: [{ type: "text", text: `${prompts.map.content}\n\n本轮受控状态：\n${input}`, text_elements: [] }], outputSchema: MapAgentOutputJsonSchema, ...modelOptions() }, 120000); if (active.get(threadId) === mapRun) mapRun.turnId = String(result?.turn?.id || "");
-  } catch (error) { mapStarts.delete(tripId); store.setMapStatus(tripId, itineraryVersion, "failed", message(error)); tasks.update(taskId, "failed", message(error), "task:failed"); broadcast("travel.map.job.updated", { tripId, itineraryVersion, mapVersion: manifest.mapVersion, status: "failed", summary: message(error) }); }
+    const diff = mapChanges(tripId, itineraryVersion); const previousMap = forceRebuild ? store.mapContext(tripId, itineraryVersion) : diff.previous ? store.mapContext(tripId, diff.previous.version) : null; manifest = store.prepareMapManifest(tripId, itineraryVersion, forceRebuild ? [] : diff.reusableActivityIds, forceRebuild); const taskId = `map:${tripId}:${itineraryVersion}`; tasks.start({ id: taskId, tripId, agent: "map", label: "地图标注", summary: forceRebuild ? "正在按新合同重新拆分地点" : "正在分析变化的地点与路线" }); store.setMapStatus(tripId, itineraryVersion, "analyzing", forceRebuild ? "正在按新合同重新拆分地点" : "正在分析变化的地点与路线"); broadcast("travel.map.job.updated", { tripId, itineraryVersion, mapVersion: manifest.mapVersion, status: "analyzing", summary: forceRebuild ? "正在按新合同重新拆分地点" : "正在分析变化的地点与路线" });
+    threadId = await ensureMapThread(tripId); const fullActivities = flattened(diff.current.plan); const changes = forceRebuild ? { upsert: fullActivities, removeActivityIds: [], affectedActivityIds: fullActivities.map((item) => item.activity.id) } : diff.changes;
+    const input = JSON.stringify({ contract: "travel-map-patch:v3", baseItineraryVersion: itineraryVersion, baseMapVersion: manifest.baseMapVersion, fullRebuild: forceRebuild, currentRequirements: diff.current.requirements, currentPlan: diff.current.plan, previousMap, changes, ...(contractFeedback ? { contractFeedback } : {}), responseSchema: MapAgentOutputJsonSchema }, null, 2);
+    mapRun = { kind: "map", phase: "manifest", replaceAll: forceRebuild, contractRetryAttempt, removedEntityIds: [...new Set([...inheritedRemovedEntityIds, ...manifest.removedEntityIds])], removedRouteIds: [...new Set([...inheritedRemovedRouteIds, ...manifest.removedRouteIds])], taskId, tripId, itineraryVersion, mapVersion: manifest.mapVersion, baseMapVersion: manifest.baseMapVersion, content: "" }; active.set(threadId, mapRun); const result = await codex.call("turn/start", { threadId, summary: "detailed", input: [{ type: "text", text: `${prompts.map.content}\n\n本轮受控状态：\n${input}`, text_elements: [] }], outputSchema: MapAgentOutputJsonSchema, ...modelOptions() }, 120000); if (active.get(threadId) === mapRun) mapRun.turnId = String(result?.turn?.id || "");
+  } catch (error) { if (threadId && mapRun && active.get(threadId) === mapRun) active.delete(threadId); const taskId = `map:${tripId}:${itineraryVersion}`; store.setMapStatus(tripId, itineraryVersion, "failed", message(error)); tasks.update(taskId, "failed", message(error), "task:failed"); broadcast("travel.map.job.updated", { tripId, itineraryVersion, mapVersion: manifest?.mapVersion ?? 0, status: "failed", summary: message(error) }); }
+  finally { mapStarts.delete(tripId); }
 }
 async function retryMap(tripId: string) {
-  if ([...active.values()].some((run) => run.tripId === tripId)) throw new Error("这趟旅行的地图任务仍在运行。"); const trip = store.requireTrip(tripId); const meta = store.latestMapMeta(tripId); if (!trip.activeRevision || !meta || meta.itineraryVersion !== trip.activeRevision.version) throw new Error("当前地图尚未建立。"); const taskId = `map:${tripId}:${meta.itineraryVersion}`; tasks.start({ id: taskId, tripId, agent: "map", label: "地图标注", summary: "正在重试未完成地点" }); const threadId = await ensureMapThread(tripId); const run: MapRun = { kind: "map", phase: "resolution", replaceAll: false, taskId, tripId, itineraryVersion: meta.itineraryVersion, mapVersion: meta.mapVersion, baseMapVersion: meta.baseMapVersion, content: "" }; void beginMapResolution(threadId, run); return maps.snapshot(tripId, "all", null);
+  if ([...active.values()].some((run) => run.tripId === tripId)) throw new Error("这趟旅行的地图任务仍在运行。"); const trip = store.requireTrip(tripId); const meta = store.latestMapMeta(tripId); if (!trip.activeRevision || !meta || meta.itineraryVersion !== trip.activeRevision.version) throw new Error("当前地图尚未建立。");
+  if (meta.status === "failed") { void startMapTurn(tripId, meta.itineraryVersion, true); return maps.snapshot(tripId, "all", null); }
+  const taskId = `map:${tripId}:${meta.itineraryVersion}`; tasks.start({ id: taskId, tripId, agent: "map", label: "地图标注", summary: "正在重试未完成地点" }); const threadId = await ensureMapThread(tripId); const run: MapRun = { kind: "map", phase: "resolution", replaceAll: false, contractRetryAttempt: 0, removedEntityIds: [], removedRouteIds: [], taskId, tripId, itineraryVersion: meta.itineraryVersion, mapVersion: meta.mapVersion, baseMapVersion: meta.baseMapVersion, content: "" }; void beginMapResolution(threadId, run); return maps.snapshot(tripId, "all", null);
 }
 async function completeRun(threadId: string, status: string, reportedError?: string) {
   const run = active.get(threadId); if (!run) return;
   if (status !== "completed") { const error = status === "interrupted" ? "本轮已停止。" : (reportedError || run.failureMessage || "AI 未能完成本轮，请重试。").replace(/\s+/g, " ").slice(0, 500); if (run.kind === "planner") { active.delete(threadId); tasks.update(run.taskId, status === "interrupted" ? "stopped" : "failed", error, "task:ended"); store.updateTurn(run.messageId, status === "interrupted" ? "interrupted" : "failed", { error, progress: error }); broadcast("travel.turn.updated", { tripId: run.tripId, messageId: run.messageId, status: status === "interrupted" ? "interrupted" : "failed", errorMessage: error, progressMessage: error }); } else if (run.phase === "resolution" && status !== "interrupted") { tasks.append(run.taskId, "map:ai-resolution-failed", `AI 坐标处理失败，继续绘制已有坐标路线：${error}`); void finishMapRoutes(threadId, run); } else { active.delete(threadId); tasks.update(run.taskId, status === "interrupted" ? "stopped" : "failed", error, "task:ended"); store.setMapStatus(run.tripId, run.itineraryVersion, status === "interrupted" ? "stopped" : "failed", error); broadcast("travel.map.job.updated", { tripId: run.tripId, itineraryVersion: run.itineraryVersion, mapVersion: run.mapVersion, status: status === "interrupted" ? "stopped" : "failed", summary: error }); } return; }
   if (run.kind === "planner") { active.delete(threadId); try { const output = TravelAgentOutputSchema.parse(JSON.parse(run.content)); const applied = store.applyAgentOutput(run.tripId, run.messageId, output); tasks.update(run.taskId, "completed", applied.version ? `行程已更新为 v${applied.version}` : "需求已整理", "task:completed"); broadcast("travel.turn.updated", { tripId: run.tripId, messageId: run.messageId, status: "completed", progressMessage: applied.version ? `行程已更新为 v${applied.version}` : "需求已整理" }); broadcast("travel.trip.updated", { tripId: run.tripId }); if (applied.version) { broadcast("travel.revision.created", { tripId: run.tripId, version: applied.version }); void startMapTurn(run.tripId, applied.version); } } catch (error) { store.updateTurn(run.messageId, "failed", { error: `AI 输出未通过旅行合同：${message(error)}`, progress: "结果未保存" }); tasks.update(run.taskId, "failed", "AI 输出未通过旅行合同，数据未修改", "contract:failed"); broadcast("travel.turn.updated", { tripId: run.tripId, messageId: run.messageId, status: "failed", errorMessage: "AI 输出未通过旅行合同，数据未修改。" }); } return; }
   if (run.phase === "resolution") { try { const output = MapResolutionOutputSchema.parse(JSON.parse(run.content)); maps.applyResolution(run.tripId, run.itineraryVersion, run.mapVersion, output); tasks.update(run.taskId, "waiting", "AI 坐标决策已应用，正在绘制可用路线", "map:routing"); void finishMapRoutes(threadId, run); } catch (error) { tasks.append(run.taskId, "contract:resolution-failed", `AI 坐标输出未通过合同，继续绘制已有路线：${message(error)}`); void finishMapRoutes(threadId, run); } return; }
-  try { const output = MapAgentOutputSchema.parse(JSON.parse(run.content)); store.applyMapPatch(run.tripId, run.itineraryVersion, run.baseMapVersion, output, run.replaceAll); const entityIds = new Set(output.upsertEntities.map((item) => item.id)); const routeIds = new Set(output.upsertRoutes.map((item) => item.id)); broadcast("travel.map.patch", { tripId: run.tripId, itineraryVersion: run.itineraryVersion, mapVersion: run.mapVersion, entities: { upsert: store.mapEntities(run.tripId, run.itineraryVersion).filter((item) => entityIds.has(item.id)), remove: output.removeEntityIds }, routes: { upsert: store.mapRoutes(run.tripId, run.itineraryVersion).filter((item) => routeIds.has(item.id)), remove: output.removeRouteIds }, dayPaths: output.dayPaths }); tasks.update(run.taskId, "waiting", "原子地点清单已建立，正在解析坐标", "map:geocoding"); void beginMapResolution(threadId, run); } catch (error) { active.delete(threadId); store.setMapStatus(run.tripId, run.itineraryVersion, "failed", `地图输出未通过合同：${message(error)}`); tasks.update(run.taskId, "failed", "地图输出未通过合同，旧地图仍然可用", "contract:failed"); broadcast("travel.map.job.updated", { tripId: run.tripId, itineraryVersion: run.itineraryVersion, mapVersion: run.mapVersion, status: "failed", summary: "地图输出未通过合同，旧地图仍然可用" }); }
+  try {
+    const output = MapAgentOutputSchema.parse(normalizeMapAgentOutput(JSON.parse(run.content)));
+    const applied = store.applyMapPatch(run.tripId, run.itineraryVersion, run.baseMapVersion, output, run.replaceAll);
+    const entityIds = new Set(output.upsertEntities.map((item) => item.id)); const routeIds = new Set(output.upsertRoutes.map((item) => item.id));
+    broadcast("travel.map.patch", {
+      tripId: run.tripId, itineraryVersion: run.itineraryVersion, mapVersion: run.mapVersion, replaceAll: run.replaceAll,
+      entities: { upsert: store.mapEntities(run.tripId, run.itineraryVersion).filter((item) => entityIds.has(item.id)), remove: [...new Set([...run.removedEntityIds, ...output.removeEntityIds, ...applied.removedEntityIds]) ] },
+      routes: { upsert: store.mapRoutes(run.tripId, run.itineraryVersion).filter((item) => routeIds.has(item.id)), remove: [...new Set([...run.removedRouteIds, ...output.removeRouteIds, ...applied.removedRouteIds]) ] },
+      dayPaths: output.dayPaths,
+    });
+    tasks.update(run.taskId, "waiting", "原子地点清单已建立，正在解析坐标", "map:geocoding"); void beginMapResolution(threadId, run);
+  } catch (error) {
+    const detail = message(error);
+    active.delete(threadId);
+    if (run.contractRetryAttempt < 1) {
+      tasks.append(run.taskId, "contract:retry", `地图输出未通过合同，正在按错误信息完整重建：${detail}`);
+      void startMapTurn(run.tripId, run.itineraryVersion, true, run.contractRetryAttempt + 1, detail, run.removedEntityIds, run.removedRouteIds);
+      return;
+    }
+    const summary = "新地图生成失败，旧地图已清除";
+    store.setMapStatus(run.tripId, run.itineraryVersion, "failed", `${summary}：${detail}`);
+    tasks.update(run.taskId, "failed", summary, "contract:failed");
+    broadcast("travel.map.job.updated", { tripId: run.tripId, itineraryVersion: run.itineraryVersion, mapVersion: run.mapVersion, status: "failed", summary });
+  }
 }
 
 codex.on("status", (state) => broadcast("codex.status", state));
