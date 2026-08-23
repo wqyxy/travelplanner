@@ -781,4 +781,17 @@ describe("TravelStore revisions", () => {
     expect(task?.canStop).toBe(false);
     store.close();
   });
+
+  it("persists per-day retry state and exposes it through map progress", async () => {
+    const store = await makeStore();
+    const trip = store.createTrip();
+    store.applyAgentOutput(trip.id, store.createUserMessage(trip.id, "安排京都一日游"), output());
+    store.initializeMapDayRuns(trip.id, 1, [1]);
+    store.updateMapDayRun(trip.id, 1, 1, "repairing", { generationRetries: 3, repairRetries: 2, error: "路线不属于每日路径" });
+    expect(store.mapDayProgress(trip.id, 1)).toMatchObject([{ dayNumber: 1, status: "repairing", generationRetries: 3, repairRetries: 2, error: "路线不属于每日路径" }]);
+    store.updateMapDayRun(trip.id, 1, 1, "failed", { generationRetries: 3, repairRetries: 3, error: "仍未通过合同" });
+    expect(store.resetFailedMapDayRuns(trip.id, 1)).toEqual([1]);
+    expect(store.mapDayRuns(trip.id, 1).get(1)).toMatchObject({ status: "pending", generationRetries: 0, repairRetries: 0, error: null });
+    store.close();
+  });
 });

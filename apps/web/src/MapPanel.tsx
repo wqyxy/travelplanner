@@ -923,6 +923,10 @@ export function MapPanel({
     const routed = snapshot?.routes.filter((item) => item.status === "resolved").length || 0;
     return { located, places: places.length, routed, routes: snapshot?.routes.length || 0 };
   }, [snapshot]);
+  const dayProgress = snapshot?.dayProgress || [];
+  const completedDays = dayProgress.filter((item) => item.status === "ready" || item.status === "partial").length;
+  const failedDays = dayProgress.filter((item) => item.status === "failed");
+  const activeDay = dayProgress.find((item) => ["generating", "retrying", "repairing", "resolving", "locating", "routing"].includes(item.status || ""));
   const select = async (entityId: string, candidate: Candidate) => {
     if (!tripId) return;
     const operation = ++operationGeneration.current;
@@ -962,7 +966,7 @@ export function MapPanel({
     <section className="map-panel">
       <div className="map-heading">
         <h2 className={`map-status ${statusPresentation.tone}`} aria-live="polite">{statusPresentation.label}</h2>
-        {(progress.places || progress.routes) > 0 && <small className="map-progress">已定位 {progress.located}/{progress.places} · 路线 {progress.routed}/{progress.routes}</small>}
+        {(progress.places || progress.routes || dayProgress.length) > 0 && <small className="map-progress">已完成 {completedDays}/{dayProgress.length} 天 · 已定位 {progress.located}/{progress.places} · 路线 {progress.routed}/{progress.routes}</small>}
         <fieldset className="map-category-filter" aria-label="地点筛选">
           <legend><Filter size={13} /> 地点筛选</legend>
           <div className="map-category-options">
@@ -1067,6 +1071,10 @@ export function MapPanel({
               : "生成行程后会自动建立地图。")}
         </span>
       </p>
+      {(activeDay || failedDays.length > 0) && <div className="map-day-status" role="status">
+        {activeDay && <span>Day {activeDay.dayNumber}{activeDay.status === "repairing" ? ` 正在定向修复 ${activeDay.repairRetries || 0}/3` : activeDay.status === "retrying" ? ` 正在重试 ${activeDay.generationRetries || 0}/3` : " 正在处理中"}</span>}
+        {failedDays.map((item) => <span key={item.dayNumber}>Day {item.dayNumber} 待处理：{item.error || "地图输出未通过校验"}</span>)}
+      </div>}
     </section>
   );
 }

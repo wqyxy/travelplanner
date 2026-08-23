@@ -39,7 +39,7 @@ export class TravelStore {
   close() { this.db.close(); }
   private migrate() {
     const version = this.db.prepare("PRAGMA user_version").get() as { user_version: number };
-    if (version.user_version > 7) throw new Error("travel.sqlite3 版本高于当前应用，已停止写入。");
+    if (version.user_version > 8) throw new Error("travel.sqlite3 版本高于当前应用，已停止写入。");
     if (version.user_version === 0) {
       this.db.exec(`
         CREATE TABLE trips (id TEXT PRIMARY KEY, title TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('active','trashed')), codex_thread_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -119,6 +119,21 @@ export class TravelStore {
     // their historical partial-migration behaviour; real travel databases
     // always include `trips` and receive the V7 column.
     if (v6 === 6 && this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='trips'").get()) this.db.exec("ALTER TABLE trips ADD COLUMN itinerary_language TEXT NOT NULL DEFAULT 'bilingual' CHECK(itinerary_language IN ('zh','en','bilingual')); PRAGMA user_version = 7;");
+    const v7 = (this.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+    if (v7 === 7) this.db.exec(`
+      CREATE TABLE map_day_runs (
+        trip_id TEXT NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+        itinerary_version INTEGER NOT NULL,
+        day_number INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        generation_retries INTEGER NOT NULL DEFAULT 0,
+        repair_retries INTEGER NOT NULL DEFAULT 0,
+        error_message TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(trip_id, itinerary_version, day_number)
+      );
+      PRAGMA user_version = 8;
+    `);
   }
   private activeRevision(tripId: string) { const row = this.db.prepare("SELECT version, plan_json FROM itinerary_revisions WHERE trip_id=? ORDER BY version DESC LIMIT 1").get(tripId) as DbRow | undefined; if (!row) return null; const plan = TripPlanSchema.safeParse(parse(row.plan_json, null)); return plan.success ? { id: `${tripId}:${row.version}`, version: Number(row.version), plan: plan.data } : null; }
   private latestRequirements(tripId: string) { const row = this.db.prepare("SELECT revision, content_json, updated_at, updated_by FROM requirements WHERE trip_id=? ORDER BY revision DESC LIMIT 1").get(tripId) as DbRow | undefined; if (!row) return { revision: 0, content: emptyRequirements(), updatedAt: "", updatedBy: "system" }; const content = RequirementsSchema.safeParse(parse(row.content_json, {})); return { revision: Number(row.revision), content: content.success ? content.data : emptyRequirements(), updatedAt: String(row.updated_at), updatedBy: String(row.updated_by) }; }
@@ -193,6 +208,42 @@ export class TravelStore {
   private aiTask(row: DbRow): AiTaskSnapshot { const events = (this.db.prepare("SELECT * FROM ai_progress_events WHERE task_id=? ORDER BY id ASC").all(String(row.id)) as DbRow[]).map((event) => ({ id: Number(event.id), taskId: String(event.task_id), tripId: String(event.trip_id), agent: String(event.agent) as AiAgentKind, status: String(event.status) as AiTaskStatus, kind: String(event.kind), summary: String(event.summary), createdAt: String(event.created_at) })); return { id: String(row.id), tripId: String(row.trip_id), agent: String(row.agent) as AiAgentKind, label: String(row.label), status: String(row.status) as AiTaskStatus, summary: String(row.summary), startedAt: String(row.started_at), updatedAt: String(row.updated_at), canStop: Boolean(row.can_stop), events }; }
 
   latestMapMeta(tripId: string, beforeItineraryVersion?: number) { const row = this.db.prepare(`SELECT * FROM map_manifests WHERE trip_id=? ${beforeItineraryVersion ? "AND itinerary_version<?" : ""} ORDER BY itinerary_version DESC LIMIT 1`).get(...(beforeItineraryVersion ? [tripId, beforeItineraryVersion] : [tripId])) as DbRow | undefined; return row ? { itineraryVersion: Number(row.itinerary_version), mapVersion: Number(row.map_version), baseMapVersion: Number(row.base_map_version), contractVersion: Number(row.contract_version ?? 1), status: String(row.status) as MapJobStatus, summary: String(row.summary), warnings: parse<string[]>(row.warnings_json, []) } : null; }
+  initializeMapDayRuns(tripId: string, itineraryVersion: number, dayNumbers: number[]) {
+    const statement = this.db.prepare("INSERT INTO map_day_runs(trip_id,itinerary_version,day_number,status,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(trip_id,itinerary_version,day_number) DO NOTHING");
+    for (const dayNumber of dayNumbers) statement.run(tripId, itineraryVersion, dayNumber, "pending", iso());
+  }
+  updateMapDayRun(tripId: string, itineraryVersion: number, dayNumber: number, status: MapDayProgress["status"], patch: { generationRetries?: number; repairRetries?: number; error?: string | null } = {}) {
+    const current = this.mapDayRuns(tripId, itineraryVersion).get(dayNumber);
+    const generationRetries = patch.generationRetries ?? current?.generationRetries ?? 0;
+    const repairRetries = patch.repairRetries ?? current?.repairRetries ?? 0;
+    const error = patch.error === undefined ? current?.error ?? null : patch.error;
+    this.db.prepare("INSERT INTO map_day_runs(trip_id,itinerary_version,day_number,status,generation_retries,repair_retries,error_message,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(trip_id,itinerary_version,day_number) DO UPDATE SET status=excluded.status,generation_retries=excluded.generation_retries,repair_retries=excluded.repair_retries,error_message=excluded.error_message,updated_at=excluded.updated_at")
+      .run(tripId, itineraryVersion, dayNumber, status, generationRetries, repairRetries, error, iso());
+  }
+  resetFailedMapDayRuns(tripId: string, itineraryVersion: number) {
+    const rows = this.db.prepare("SELECT day_number FROM map_day_runs WHERE trip_id=? AND itinerary_version=? AND status='failed'").all(tripId, itineraryVersion) as DbRow[];
+    this.db.prepare("UPDATE map_day_runs SET status='pending',generation_retries=0,repair_retries=0,error_message=NULL,updated_at=? WHERE trip_id=? AND itinerary_version=? AND status='failed'").run(iso(), tripId, itineraryVersion);
+    return rows.map((row) => Number(row.day_number));
+  }
+  mapDayRuns(tripId: string, itineraryVersion: number) { return new Map((this.db.prepare("SELECT * FROM map_day_runs WHERE trip_id=? AND itinerary_version=?").all(tripId, itineraryVersion) as DbRow[]).map((row) => [Number(row.day_number), { status: String(row.status) as MapDayProgress["status"], generationRetries: Number(row.generation_retries), repairRetries: Number(row.repair_retries), error: row.error_message ? String(row.error_message) : null }])); }
+  /** Convert a readable v3 map in-place so recovery can be performed one day at a time. */
+  upgradeLegacyMap(tripId: string, itineraryVersion: number) {
+    const meta = this.latestMapMeta(tripId, itineraryVersion + 1); if (!meta || meta.itineraryVersion !== itineraryVersion || meta.contractVersion >= 4) return;
+    const paths = parse<MapDayPath[]>((this.db.prepare("SELECT day_paths_json FROM map_manifests WHERE trip_id=? AND itinerary_version=?").get(tripId, itineraryVersion) as DbRow).day_paths_json, []);
+    const entities = new Map(this.mapEntities(tripId, itineraryVersion).map((item) => [item.id, item]));
+    this.db.exec("BEGIN IMMEDIATE"); try {
+      for (const path of paths) {
+        const visitIds = path.entityIds.map((placeId, index) => {
+          const place = entities.get(placeId); const id = `v${path.dayNumber}-${index + 1}-${place?.activityId || placeId}`.slice(0, 180);
+          const visit: MapVisit = { id, placeId, activityId: place?.activityId ?? null, dayNumber: path.dayNumber, order: place?.order ?? index, subOrder: index, activity: place?.detail ?? place?.name ?? "", detail: place?.detail ?? "", startTime: place?.startTime ?? "", endTime: place?.endTime ?? "", durationMinutes: place?.durationMinutes ?? 0, transportMode: place?.transportMode ?? "none", costNote: place?.costNote ?? "", notes: place?.notes ?? "" };
+          this.db.prepare("INSERT OR REPLACE INTO map_visits(trip_id,itinerary_version,visit_id,place_id,data_json) VALUES(?,?,?,?,?)").run(tripId, itineraryVersion, id, placeId, json(visit)); return id;
+        });
+        path.visitIds = visitIds;
+      }
+      this.db.prepare("UPDATE map_manifests SET contract_version=4,day_paths_json=?,updated_at=? WHERE trip_id=? AND itinerary_version=?").run(json(paths), iso(), tripId, itineraryVersion);
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
   prepareMapManifest(tripId: string, itineraryVersion: number, reusableActivityIds: string[], forceRebuild = false) {
     const found = this.db.prepare("SELECT * FROM map_manifests WHERE trip_id=? AND itinerary_version=?").get(tripId, itineraryVersion) as DbRow | undefined;
     if (found && !forceRebuild) return { itineraryVersion, mapVersion: Number(found.map_version), baseMapVersion: Number(found.base_map_version), removedEntityIds: [] as string[], removedRouteIds: [] as string[] };
@@ -281,8 +332,12 @@ export class TravelStore {
         }
       }
       const replacementDays = new Set(patch.dayPaths.map((path) => path.dayNumber));
+      const replacedOldEntityIds = new Set(oldPaths.filter((path) => replacementDays.has(path.dayNumber)).flatMap((path) => path.entityIds));
       const paths = oldPaths.filter((path) => !replacementDays.has(path.dayNumber));
       for (const sourcePath of patch.dayPaths) {
+        // A day is the replacement boundary.  Never wipe a useful map merely
+        // because another day is being repaired or regenerated.
+        this.db.prepare("DELETE FROM map_visits WHERE trip_id=? AND itinerary_version=? AND json_extract(data_json,'$.dayNumber')=?").run(tripId, itineraryVersion, sourcePath.dayNumber);
         const visitIds = sourcePath.entityIds.map((sourceId, index) => {
           const source = patch.upsertEntities.find((item) => item.id === sourceId); const placeId = sourceToPlace.get(sourceId) || sourceId;
           const id = `v${sourcePath.dayNumber}-${index + 1}-${source?.activityId || sourceId}`.slice(0, 180);
@@ -302,6 +357,12 @@ export class TravelStore {
         }
       }
       paths.sort((a, b) => a.dayNumber - b.dayNumber);
+      const referenced = new Set(paths.flatMap((path) => path.entityIds));
+      for (const entity of this.mapEntities(tripId, itineraryVersion)) if (replacedOldEntityIds.has(entity.id) && !referenced.has(entity.id)) {
+        removedEntityIds.add(entity.id);
+        this.db.prepare("DELETE FROM map_routes WHERE trip_id=? AND itinerary_version=? AND (json_extract(data_json,'$.fromEntityId')=? OR json_extract(data_json,'$.toEntityId')=?)").run(tripId, itineraryVersion, entity.id, entity.id);
+        this.db.prepare("DELETE FROM map_entities WHERE trip_id=? AND itinerary_version=? AND entity_id=?").run(tripId, itineraryVersion, entity.id);
+      }
       this.db.prepare("UPDATE map_manifests SET contract_version=4,day_paths_json=?,patch_sequence=patch_sequence+1 WHERE trip_id=? AND itinerary_version=?").run(json(paths), tripId, itineraryVersion);
       this.setMapStatus(tripId, itineraryVersion, "resolving", "正在解析地点与路线", patch.warnings); this.db.exec("COMMIT");
       return { removedEntityIds: [...removedEntityIds], removedRouteIds: [...removedRouteIds] };
@@ -313,8 +374,9 @@ export class TravelStore {
   mapVisits(tripId: string, itineraryVersion: number): MapVisit[] { return (this.db.prepare("SELECT data_json FROM map_visits WHERE trip_id=? AND itinerary_version=? ORDER BY json_extract(data_json,'$.dayNumber'),json_extract(data_json,'$.subOrder')").all(tripId, itineraryVersion) as DbRow[]).flatMap((row) => { const visit = parse<MapVisit | null>(row.data_json, null); return visit ? [visit] : []; }); }
   mapDayProgress(tripId: string, itineraryVersion: number): MapDayProgress[] {
     const places = new Map(this.mapPlaces(tripId, itineraryVersion).map((item) => [item.id, item])); const visits = this.mapVisits(tripId, itineraryVersion); const routes = this.mapRoutes(tripId, itineraryVersion);
+    const runs = this.mapDayRuns(tripId, itineraryVersion);
     const days = this.getRevision(tripId, itineraryVersion)?.plan.days.map((day) => day.dayNumber) ?? [];
-    return days.map((dayNumber) => { const dayVisits = visits.filter((item) => item.dayNumber === dayNumber); const dayRoutes = routes.filter((item) => item.dayNumber === dayNumber); const resolvedPlaces = new Set(dayVisits.filter((item) => Boolean(places.get(item.placeId)?.location)).map((item) => item.placeId)).size; const totalPlaces = new Set(dayVisits.map((item) => item.placeId)).size; const resolvedRoutes = dayRoutes.filter((item) => item.status === "resolved").length; const status: MapDayProgress["status"] = totalPlaces && resolvedPlaces === totalPlaces && resolvedRoutes === dayRoutes.length ? "ready" : resolvedPlaces || resolvedRoutes ? "partial" : "pending"; return { dayNumber, status, resolvedPlaces, totalPlaces, resolvedRoutes, totalRoutes: dayRoutes.length }; });
+    return days.map((dayNumber) => { const dayVisits = visits.filter((item) => item.dayNumber === dayNumber); const dayRoutes = routes.filter((item) => item.dayNumber === dayNumber); const resolvedPlaces = new Set(dayVisits.filter((item) => Boolean(places.get(item.placeId)?.location)).map((item) => item.placeId)).size; const totalPlaces = new Set(dayVisits.map((item) => item.placeId)).size; const resolvedRoutes = dayRoutes.filter((item) => item.status === "resolved").length; const run = runs.get(dayNumber); const derived: MapDayProgress["status"] = totalPlaces && resolvedPlaces === totalPlaces && resolvedRoutes === dayRoutes.length ? "ready" : resolvedPlaces || resolvedRoutes ? "partial" : "pending"; const status = run?.status === "failed" ? "failed" : derived === "ready" ? "ready" : run?.status ?? derived; return { dayNumber, status, resolvedPlaces, totalPlaces, resolvedRoutes, totalRoutes: dayRoutes.length, generationRetries: run?.generationRetries ?? 0, repairRetries: run?.repairRetries ?? 0, error: run?.error ?? null }; });
   }
   mapRoutes(tripId: string, itineraryVersion: number): MapRouteView[] { return (this.db.prepare("SELECT * FROM map_routes WHERE trip_id=? AND itinerary_version=? ORDER BY json_extract(data_json,'$.dayNumber'),json_extract(data_json,'$.order')").all(tripId, itineraryVersion) as DbRow[]).flatMap((row) => { const data = parse<MapRoutePatch | null>(row.data_json, null); return data ? [{ ...data, status: String(row.status) as MapRouteView["status"], geometry: parse<unknown | null>(row.geometry_json, null), warning: row.warning ? String(row.warning) : null }] : []; }); }
   // `unresolved` is retained for historical snapshots and is retried; new terminal failures use `unlocated`.

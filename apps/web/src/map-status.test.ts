@@ -13,7 +13,8 @@ describe("map status presentation", () => {
   });
 
   it("separates attention and idle states", () => {
-    for (const status of ["partial", "failed", "stopped"] as const) {
+    expect(mapStatusPresentation("partial")).toEqual({ label: "地图部分完成", tone: "attention" });
+    for (const status of ["failed", "stopped"] as const) {
       expect(mapStatusPresentation(status)).toEqual({ label: "地图待处理", tone: "attention" });
     }
     expect(mapStatusPresentation("idle")).toEqual({ label: "等待同步", tone: "idle" });

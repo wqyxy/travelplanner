@@ -189,7 +189,7 @@ export type MapRoutePatch = z.infer<typeof MapRoutePatchSchema>;
 /** V4 names.  `MapEntity*` is retained as a wire-compatible alias for V3 clients. */
 export type MapPlace = MapEntityPatch;
 export type MapVisit = { id: string; placeId: string; activityId: string | null; dayNumber: number; order: number; subOrder: number; activity: string; detail: string; startTime: string; endTime: string; durationMinutes: number; transportMode: z.infer<typeof TransportMode>; costNote: string; notes: string };
-export type MapDayProgress = { dayNumber: number; status: "pending" | "resolving" | "ready" | "partial"; resolvedPlaces: number; totalPlaces: number; resolvedRoutes: number; totalRoutes: number };
+export type MapDayProgress = { dayNumber: number; status: "pending" | "generating" | "retrying" | "repairing" | "resolving" | "ready" | "partial" | "failed"; resolvedPlaces: number; totalPlaces: number; resolvedRoutes: number; totalRoutes: number; generationRetries: number; repairRetries: number; error: string | null };
 export const MapAgentOutputJsonSchema = requireAllObjectProperties(z.toJSONSchema(MapAgentOutputSchema)) as Record<string, unknown>;
 
 export const MapResolutionOutputSchema = z.object({

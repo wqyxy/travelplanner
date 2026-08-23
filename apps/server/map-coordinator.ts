@@ -16,7 +16,8 @@ type DayRun = {
   baseMapVersion: number;
   dayNumber: number;
   position: number;
-  attempt: number;
+  generationRetry: number;
+  repairRetry: number;
   claimedEntityIds: string[];
   waitingEntityIds: string[];
   turnId?: string;
@@ -42,7 +43,6 @@ type MapJob = {
   nextCommit: number;
   activeAnalyses: number;
   activeLocationDays: number;
-  replaceApplied: boolean;
   draining: boolean;
   stopped: boolean;
   buffered: Map<number, BufferedDay>;
@@ -106,11 +106,12 @@ export class MapCoordinator {
       baseMapVersion: manifest.baseMapVersion, taskId, days: revision.plan.days, planPlaces: currentPlan.places ?? [],
       requirements: revision.requirements, forceRebuild,
       removedEntityIds: manifest.removedEntityIds, removedRouteIds: manifest.removedRouteIds,
-      analysisQueue: revision.plan.days.map((_day, position) => position), nextCommit: 0, activeAnalyses: 0, activeLocationDays: 0, replaceApplied: false,
+      analysisQueue: revision.plan.days.map((_day, position) => position), nextCommit: 0, activeAnalyses: 0, activeLocationDays: 0,
       draining: false, stopped: false, buffered: new Map(), failedPositions: new Set(),
       settledPositions: new Set(), pendingLocationDays: [], threadIds: new Set(), resolutionClaims: new Map(),
     };
     this.jobs.set(tripId, job);
+    this.options.store.initializeMapDayRuns(tripId, itineraryVersion, revision.plan.days.map((day) => day.dayNumber));
     this.options.maps.activateRun(tripId, job.token);
     this.options.tasks.start({ id: taskId, tripId, agent: "map", label: "地图标注", summary: "正在按时间顺序建立地点队列" });
     this.options.store.setMapStatus(tripId, itineraryVersion, "analyzing", "正在按时间顺序建立地点队列");
@@ -144,17 +145,32 @@ export class MapCoordinator {
     if (this.jobs.has(tripId)) throw new Error("这趟旅行的地图任务仍在运行。");
     const trip = this.options.store.requireTrip(tripId); const meta = this.options.store.latestMapMeta(tripId);
     if (!trip.activeRevision || !meta || meta.itineraryVersion !== trip.activeRevision.version) throw new Error("当前地图尚未建立。");
-    if (meta.status === "failed" || meta.contractVersion < 4) { await this.start(tripId, meta.itineraryVersion, true); return this.options.maps.snapshot(tripId, "all", null); }
+    if (meta.contractVersion < 4) this.options.store.upgradeLegacyMap(tripId, meta.itineraryVersion);
+    this.options.store.initializeMapDayRuns(tripId, meta.itineraryVersion, trip.activeRevision.plan.days.map((day) => day.dayNumber));
+    const failedDayNumbers = this.options.store.resetFailedMapDayRuns(tripId, meta.itineraryVersion);
+    if (failedDayNumbers.length) return this.startDays(trip, meta, failedDayNumbers);
     const taskId = `map:${tripId}:${meta.itineraryVersion}`;
     const days = trip.activeRevision.plan.days; const paths = this.options.maps.snapshot(tripId, "all", null)?.dayPaths ?? [];
     const pendingLocationDays = paths.flatMap((path) => { const position = days.findIndex((day) => day.dayNumber === path.dayNumber); return position < 0 ? [] : [{ position, dayNumber: path.dayNumber }]; });
     const pathPositions = new Set(pendingLocationDays.map((item) => item.position)); const missingPositions = days.map((_day, position) => position).filter((position) => !pathPositions.has(position));
-    const job: MapJob = { token: randomUUID(), tripId, itineraryVersion: meta.itineraryVersion, mapVersion: meta.mapVersion, baseMapVersion: meta.baseMapVersion, taskId, days, planPlaces: (trip.activeRevision.plan as TripPlan & { places?: unknown[] }).places ?? [], requirements: trip.requirements, forceRebuild: false, removedEntityIds: [], removedRouteIds: [], analysisQueue: [...missingPositions], nextCommit: 0, activeAnalyses: 0, activeLocationDays: 0, replaceApplied: true, draining: false, stopped: false, buffered: new Map(), failedPositions: new Set(days.map((_day, position) => position).filter((position) => pathPositions.has(position))), settledPositions: new Set(), pendingLocationDays, threadIds: new Set(), resolutionClaims: new Map() };
+    const job: MapJob = { token: randomUUID(), tripId, itineraryVersion: meta.itineraryVersion, mapVersion: meta.mapVersion, baseMapVersion: meta.baseMapVersion, taskId, days, planPlaces: (trip.activeRevision.plan as TripPlan & { places?: unknown[] }).places ?? [], requirements: trip.requirements, forceRebuild: false, removedEntityIds: [], removedRouteIds: [], analysisQueue: [...missingPositions], nextCommit: 0, activeAnalyses: 0, activeLocationDays: 0, draining: false, stopped: false, buffered: new Map(), failedPositions: new Set(days.map((_day, position) => position).filter((position) => pathPositions.has(position))), settledPositions: new Set(), pendingLocationDays, threadIds: new Set(), resolutionClaims: new Map() };
     this.jobs.set(tripId, job); this.options.maps.activateRun(tripId, job.token);
     this.options.tasks.start({ id: taskId, tripId, agent: "map", label: "地图标注", summary: "正在重试未完成地点和路线" });
     this.options.store.setMapStatus(tripId, meta.itineraryVersion, "resolving", "正在重试未完成地点和路线");
     this.launchAvailable(job); this.pumpLocationDays(job); this.checkFinished(job);
     return this.options.maps.snapshot(tripId, "all", null);
+  }
+
+  private startDays(trip: ReturnType<TravelStore["requireTrip"]>, meta: NonNullable<ReturnType<TravelStore["latestMapMeta"]>>, dayNumbers: number[]) {
+    const days = trip.activeRevision!.plan.days; const wanted = new Set(dayNumbers); const positions = days.map((day, position) => wanted.has(day.dayNumber) ? position : -1).filter((position) => position >= 0);
+    const taskId = `map:${trip.id}:${meta.itineraryVersion}`;
+    const skipped = new Set(days.map((_day, position) => position).filter((position) => !positions.includes(position)));
+    const job: MapJob = { token: randomUUID(), tripId: trip.id, itineraryVersion: meta.itineraryVersion, mapVersion: meta.mapVersion, baseMapVersion: meta.baseMapVersion, taskId, days, planPlaces: (trip.activeRevision!.plan as TripPlan & { places?: unknown[] }).places ?? [], requirements: trip.requirements, forceRebuild: false, removedEntityIds: [], removedRouteIds: [], analysisQueue: positions, nextCommit: 0, activeAnalyses: 0, activeLocationDays: 0, draining: false, stopped: false, buffered: new Map(), failedPositions: skipped, settledPositions: new Set(skipped), pendingLocationDays: [], threadIds: new Set(), resolutionClaims: new Map() };
+    this.jobs.set(trip.id, job); this.options.maps.activateRun(trip.id, job.token);
+    this.options.tasks.start({ id: taskId, tripId: trip.id, agent: "map", label: "地图标注", summary: `正在重试 ${dayNumbers.length} 个未完成日程` });
+    this.options.store.setMapStatus(trip.id, meta.itineraryVersion, "analyzing", `正在重试 ${dayNumbers.length} 个未完成日程`);
+    this.options.broadcast("travel.map.job.updated", { tripId: trip.id, itineraryVersion: meta.itineraryVersion, mapVersion: meta.mapVersion, status: "analyzing", summary: `正在重试 ${dayNumbers.length} 个未完成日程` });
+    this.launchAvailable(job); return this.options.maps.snapshot(trip.id, "all", null);
   }
 
   handleNotification(event: RpcEnvelope) {
@@ -194,7 +210,7 @@ export class MapCoordinator {
 
   private launchAvailable(job: MapJob) {
     while (this.isCurrent(job) && job.activeAnalyses < 2 && job.analysisQueue.length) {
-      const position = job.analysisQueue.shift()!; void this.launchManifest(job, position, 0);
+      const position = job.analysisQueue.shift()!; void this.launchManifest(job, position, 0, 0);
     }
   }
 
@@ -204,13 +220,14 @@ export class MapCoordinator {
     if (!this.isCurrent(job)) throw new Error("地图任务已经过期。"); job.threadIds.add(threadId); return threadId;
   }
 
-  private async launchManifest(job: MapJob, position: number, attempt: number, feedback?: string) {
+  private async launchManifest(job: MapJob, position: number, generationRetry: number, repairRetry: number, feedback?: string) {
     job.activeAnalyses += 1;
     const day = job.days[position];
     let threadId = "";
     try {
       threadId = await this.createThread(job);
-      const run: DayRun = { kind: "map", phase: "manifest", jobToken: job.token, taskId: job.taskId, tripId: job.tripId, itineraryVersion: job.itineraryVersion, mapVersion: job.mapVersion, baseMapVersion: job.baseMapVersion, dayNumber: day.dayNumber, position, attempt, claimedEntityIds: [], waitingEntityIds: [], content: "" };
+      this.options.store.updateMapDayRun(job.tripId, job.itineraryVersion, day.dayNumber, repairRetry ? "repairing" : generationRetry ? "retrying" : "generating", { generationRetries: generationRetry, repairRetries: repairRetry });
+      const run: DayRun = { kind: "map", phase: "manifest", jobToken: job.token, taskId: job.taskId, tripId: job.tripId, itineraryVersion: job.itineraryVersion, mapVersion: job.mapVersion, baseMapVersion: job.baseMapVersion, dayNumber: day.dayNumber, position, generationRetry, repairRetry, claimedEntityIds: [], waitingEntityIds: [], content: "" };
       this.runs.set(threadId, run);
       const previousDay = position > 0 ? job.days[position - 1] : null;
       const nextDay = position + 1 < job.days.length ? job.days[position + 1] : null;
@@ -222,15 +239,17 @@ export class MapCoordinator {
       const failedRun = threadId ? this.runs.get(threadId) : undefined;
       if (threadId) this.runs.delete(threadId);
       if (threadId && failedRun?.turnId) void this.options.codex.call("turn/interrupt", { threadId, turnId: failedRun.turnId }).catch(() => undefined);
-      this.analysisFailed(job, position, attempt, publicError(error));
+      this.analysisFailed(job, position, generationRetry, repairRetry, publicError(error));
     }
   }
 
-  private analysisFailed(job: MapJob, position: number, attempt: number, detail: string) {
-    job.activeAnalyses = Math.max(0, job.activeAnalyses - 1);
+  private analysisFailed(job: MapJob, position: number, generationRetry: number, repairRetry: number, detail: string, alreadyDecremented = false) {
+    if (!alreadyDecremented) job.activeAnalyses = Math.max(0, job.activeAnalyses - 1);
     if (!this.isCurrent(job)) return;
-    if (attempt < 1) { this.options.tasks.update(job.taskId, "running", `Day ${job.days[position].dayNumber} 输出无效，正在重试`, `map:day-retry-${position}`); void this.launchManifest(job, position, attempt + 1, detail); }
-    else { job.failedPositions.add(position); job.settledPositions.add(position); this.options.tasks.update(job.taskId, "running", `Day ${job.days[position].dayNumber} 标注失败，继续其他日期`, `map:day-failed-${position}`); void this.drain(job); }
+    const dayNumber = job.days[position].dayNumber;
+    if (generationRetry < 3) { this.options.store.updateMapDayRun(job.tripId, job.itineraryVersion, dayNumber, "retrying", { generationRetries: generationRetry + 1, repairRetries: repairRetry, error: detail }); this.options.tasks.update(job.taskId, "running", `Day ${dayNumber} 输出无效，正在重试 ${generationRetry + 1}/3`, `map:day-retry-${position}`); void this.launchManifest(job, position, generationRetry + 1, repairRetry, detail); }
+    else if (repairRetry < 3) { this.options.store.updateMapDayRun(job.tripId, job.itineraryVersion, dayNumber, "repairing", { generationRetries: generationRetry, repairRetries: repairRetry + 1, error: detail }); this.options.tasks.update(job.taskId, "running", `Day ${dayNumber} 正在按错误定向修复 ${repairRetry + 1}/3`, `map:day-repair-${position}`); void this.launchManifest(job, position, generationRetry, repairRetry + 1, `请只修复 Day ${dayNumber}，上一轮合同错误：${detail}`); }
+    else { this.options.store.updateMapDayRun(job.tripId, job.itineraryVersion, dayNumber, "failed", { generationRetries: generationRetry, repairRetries: repairRetry, error: detail }); job.failedPositions.add(position); job.settledPositions.add(position); this.options.tasks.update(job.taskId, "running", `Day ${dayNumber} 暂未完成，继续其他日期`, `map:day-failed-${position}`); void this.drain(job); }
     this.launchAvailable(job);
   }
 
@@ -239,7 +258,7 @@ export class MapCoordinator {
     const job = this.jobs.get(run.tripId); if (!job || job.token !== run.jobToken || !this.isCurrent(job)) return;
     if (status !== "completed") {
       const detail = reportedError || run.failureMessage || "AI 未能完成本轮。";
-      if (run.phase === "manifest") this.analysisFailed(job, run.position, run.attempt, detail);
+      if (run.phase === "manifest") this.analysisFailed(job, run.position, run.generationRetry, run.repairRetry, detail);
       else await this.finishResolutionFallback(job, run.position, run.dayNumber, detail, run.claimedEntityIds, run.waitingEntityIds);
       return;
     }
@@ -267,8 +286,7 @@ export class MapCoordinator {
 
   private analysisFailedAfterDecrement(job: MapJob, run: DayRun, detail: string) {
     if (!this.isCurrent(job)) return;
-    if (run.attempt < 1) void this.launchManifest(job, run.position, run.attempt + 1, detail);
-    else { job.failedPositions.add(run.position); job.settledPositions.add(run.position); void this.drain(job); }
+    this.analysisFailed(job, run.position, run.generationRetry, run.repairRetry, detail, true);
   }
 
   private async drain(job: MapJob) {
@@ -278,15 +296,18 @@ export class MapCoordinator {
         if (job.failedPositions.has(job.nextCommit)) { job.nextCommit += 1; continue; }
         const buffered = job.buffered.get(job.nextCommit); if (!buffered) break;
         job.buffered.delete(job.nextCommit);
-        const replaceAll = job.forceRebuild && !job.replaceApplied; job.replaceApplied ||= replaceAll;
-        const applied = this.options.store.applyMapPatch(job.tripId, job.itineraryVersion, job.baseMapVersion, buffered.output, replaceAll);
+        const replaceAll = false;
+        const applied = this.options.store.applyMapPatch(job.tripId, job.itineraryVersion, job.baseMapVersion, buffered.output, false);
         const snapshot = this.options.maps.snapshot(job.tripId, "all", null)!;
         this.options.broadcast("travel.map.patch", { tripId: job.tripId, itineraryVersion: job.itineraryVersion, mapVersion: job.mapVersion, sequence: snapshot.sequence, replaceAll, places: { upsert: snapshot.places, remove: replaceAll ? job.removedEntityIds : applied.removedEntityIds }, visits: { upsert: snapshot.visits, remove: [] }, entities: { upsert: snapshot.entities, remove: replaceAll ? job.removedEntityIds : applied.removedEntityIds }, routes: { upsert: snapshot.routes, remove: replaceAll ? job.removedRouteIds : applied.removedRouteIds }, dayPaths: snapshot.dayPaths, dayProgress: snapshot.dayProgress });
+        this.options.store.updateMapDayRun(job.tripId, job.itineraryVersion, buffered.run.dayNumber, "resolving");
         const position = job.nextCommit++; job.pendingLocationDays.push({ position, dayNumber: buffered.run.dayNumber }); this.pumpLocationDays(job);
       }
     } catch (error) {
-      const summary = publicError(error); this.options.tasks.update(job.taskId, "running", `地图日数据提交失败：${summary}`, "map:day-commit-failed");
-      job.failedPositions.add(job.nextCommit); job.settledPositions.add(job.nextCommit); job.nextCommit += 1;
+      const summary = publicError(error); const position = job.nextCommit; const dayNumber = job.days[position]?.dayNumber;
+      this.options.tasks.update(job.taskId, "running", `地图日数据提交失败：${summary}`, "map:day-commit-failed");
+      if (dayNumber) this.options.store.updateMapDayRun(job.tripId, job.itineraryVersion, dayNumber, "failed", { error: summary });
+      job.failedPositions.add(position); job.settledPositions.add(position); job.nextCommit += 1;
       if (job.buffered.size || job.failedPositions.has(job.nextCommit)) queueMicrotask(() => void this.drain(job));
     } finally { job.draining = false; this.checkFinished(job); }
   }
@@ -318,7 +339,8 @@ export class MapCoordinator {
         return;
       }
       threadId = await this.createThread(job);
-      const run: DayRun = { kind: "map", phase: "resolution", jobToken: job.token, taskId: job.taskId, tripId: job.tripId, itineraryVersion: job.itineraryVersion, mapVersion: job.mapVersion, baseMapVersion: job.baseMapVersion, dayNumber, position, attempt: 0, claimedEntityIds: claimed, waitingEntityIds: waiting, content: "" };
+      this.options.store.updateMapDayRun(job.tripId, job.itineraryVersion, dayNumber, "resolving");
+      const run: DayRun = { kind: "map", phase: "resolution", jobToken: job.token, taskId: job.taskId, tripId: job.tripId, itineraryVersion: job.itineraryVersion, mapVersion: job.mapVersion, baseMapVersion: job.baseMapVersion, dayNumber, position, generationRetry: 0, repairRetry: 0, claimedEntityIds: claimed, waitingEntityIds: waiting, content: "" };
       this.runs.set(threadId, run);
       const input = JSON.stringify({ contract: "travel-map-resolution:v1", baseItineraryVersion: job.itineraryVersion, baseMapVersion: job.mapVersion, pendingLocations: batch.filter((item) => claimed.includes(item.entityId)), responseSchema: MapResolutionOutputJsonSchema }, null, 2);
       const result = await this.options.codex.call("turn/start", { threadId, summary: "detailed", input: [{ type: "text", text: `${this.options.prompt}\n\n本轮受控状态：\n${input}`, text_elements: [] }], outputSchema: MapResolutionOutputJsonSchema, ...this.options.modelOptions() }, 120000);
@@ -341,6 +363,8 @@ export class MapCoordinator {
   private daySettled(job: MapJob, position: number) {
     if (!this.isCurrent(job)) return; job.settledPositions.add(position);
     const snapshot = this.options.maps.snapshot(job.tripId, "all", null); const located = snapshot?.places.filter((place) => place.location).length ?? 0; const total = snapshot?.places.length ?? 0; const routes = snapshot?.routes.filter((route) => route.status === "resolved").length ?? 0; const routeTotal = snapshot?.routes.length ?? 0;
+    const dayNumber = job.days[position].dayNumber; const day = snapshot?.dayProgress.find((item) => item.dayNumber === dayNumber);
+    this.options.store.updateMapDayRun(job.tripId, job.itineraryVersion, dayNumber, day?.status === "ready" ? "ready" : "partial", { error: null });
     const summary = `已定位 ${located}/${total} 个地点 · 已生成 ${routes}/${routeTotal} 条路线`;
     this.options.store.setMapStatus(job.tripId, job.itineraryVersion, "resolving", summary);
     this.options.tasks.update(job.taskId, "running", summary, `map:progress-${position}`);
@@ -350,11 +374,6 @@ export class MapCoordinator {
 
   private checkFinished(job: MapJob) {
     if (!this.isCurrent(job) || job.settledPositions.size < job.days.length || job.activeAnalyses || job.activeLocationDays || job.pendingLocationDays.length || job.buffered.size) return;
-    if (!job.replaceApplied && job.forceRebuild) {
-      const summary = "新地图逐日分析均未成功，已保留旧地图";
-      this.options.store.setMapStatus(job.tripId, job.itineraryVersion, "failed", summary); this.options.tasks.update(job.taskId, "failed", summary, "map:all-days-failed");
-      this.options.broadcast("travel.map.job.updated", { tripId: job.tripId, itineraryVersion: job.itineraryVersion, mapVersion: job.mapVersion, status: "failed", summary }); this.jobs.delete(job.tripId); this.options.maps.deactivateRun(job.tripId, job.token); return;
-    }
     try { this.options.maps.finalize(job.tripId, job.itineraryVersion, job.mapVersion); }
     catch (error) { const summary = publicError(error); this.options.store.setMapStatus(job.tripId, job.itineraryVersion, "partial", summary); this.options.tasks.update(job.taskId, "failed", summary, "map:finalize-failed"); }
     this.jobs.delete(job.tripId); this.options.maps.deactivateRun(job.tripId, job.token);
