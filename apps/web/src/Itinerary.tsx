@@ -1,6 +1,6 @@
 import { Maximize2, Minimize2 } from "lucide-react";
 import { useEffect, useState, type KeyboardEvent } from "react";
-import type { ItineraryLanguage, MapSnapshot, PlaceDefinition, TripPlan } from "./types";
+import type { ItineraryLanguage, MapSnapshot, PlaceDefinition, PlanningStage, RouteDecision, TripPlan } from "./types";
 import { shouldActivateSelectionKey } from "./workspace-controls";
 
 export type MapSelection = { scope: "all" } | { scope: "day"; dayNumber: number };
@@ -29,11 +29,18 @@ type ItineraryProps = {
   onSelectDay: (dayNumber: number) => void;
   fullscreen: boolean;
   onToggleFullscreen: () => void;
+  planningStage?: PlanningStage;
+  detailProgress?: { completed: number; total: number; repairing: number; waiting: number; stopped: number; tasks: Array<{ dayNumber: number; status: string; error: string | null }> };
+  decisions?: RouteDecision[];
+  onConfirmOutline?: () => void;
+  onDetailAction?: (action: "stop" | "resume") => void;
+  onDecision?: (id: string, choice: "accept" | "reject") => void;
 };
 
-export function Itinerary({ plan, language, onLanguageChange, unlocatedActivityIds: suppliedUnlocatedActivityIds = new Set<string>(), selection, onSelectAll, onSelectDay, fullscreen, onToggleFullscreen }: ItineraryProps) {
+export function Itinerary({ plan, language, onLanguageChange, unlocatedActivityIds: suppliedUnlocatedActivityIds = new Set<string>(), selection, onSelectAll, onSelectDay, fullscreen, onToggleFullscreen, planningStage, detailProgress, decisions = [], onConfirmOutline, onDetailAction, onDecision }: ItineraryProps) {
   const [mapUnlocatedActivityIds, setMapUnlocatedActivityIds] = useState<ReadonlySet<string>>(new Set());
   const [savedLanguage, setSavedLanguage] = useState<ItineraryLanguage>("bilingual");
+  const [planningSnapshot, setPlanningSnapshot] = useState<{ planningStage?: PlanningStage; detailProgress?: ItineraryProps["detailProgress"]; decisions: RouteDecision[] }>({ decisions: [] });
   const displayLanguage = language || savedLanguage;
   useEffect(() => {
     const update = (event: Event) => {
@@ -51,8 +58,10 @@ export function Itinerary({ plan, language, onLanguageChange, unlocatedActivityI
     window.addEventListener("travel.itinerary.language", update);
     return () => window.removeEventListener("travel.itinerary.language", update);
   }, [language]);
+  useEffect(() => { const update = (event: Event) => { const value = (event as CustomEvent<{ planningStage?: PlanningStage; detailProgress?: ItineraryProps["detailProgress"]; decisions?: RouteDecision[] }>).detail; setPlanningSnapshot({ ...value, decisions: value?.decisions || [] }); }; window.addEventListener("travel.planning.state", update); return () => window.removeEventListener("travel.planning.state", update); }, []);
   const changeLanguage = (next: ItineraryLanguage) => { setSavedLanguage(next); if (onLanguageChange) onLanguageChange(next); else window.dispatchEvent(new CustomEvent("travel.itinerary.language.change", { detail: next })); };
   const unlocatedActivityIds = mapUnlocatedActivityIds.size ? mapUnlocatedActivityIds : suppliedUnlocatedActivityIds;
+  const visibleStage = planningStage || planningSnapshot.planningStage; const visibleProgress = detailProgress || planningSnapshot.detailProgress; const visibleDecisions = decisions.length ? decisions : planningSnapshot.decisions;
   if (!plan) return <section className="itinerary-panel empty-itinerary">告诉 AI 目的地，它会在需求足够时自动生成首版旅行方案。日期、人数和预算都可以稍后再决定。</section>;
   const keySelect = (event: KeyboardEvent, action: () => void) => { if (shouldActivateSelectionKey(event.key, event.target === event.currentTarget)) { event.preventDefault(); action(); } };
   const places = new Map((plan.places || []).map((place) => [place.id, place]));
@@ -65,6 +74,9 @@ export function Itinerary({ plan, language, onLanguageChange, unlocatedActivityI
         <button className="icon-button panel-fullscreen" type="button" title={fullscreen ? "退出行程全屏" : "行程全屏"} aria-label={fullscreen ? "退出行程全屏" : "行程全屏"} onClick={onToggleFullscreen}>{fullscreen ? <Minimize2 size={17}/> : <Maximize2 size={17}/>}</button>
       </div>
     </div>
+    {(visibleStage === "outline" || plan.warnings.includes("路线草案：确认后逐日细化")) && <div className="planning-banner"><span>路线草案已可用：确认后会每天独立细化，完成一天显示一天。</span><button className="button primary small" onClick={(event) => { event.stopPropagation(); if (onConfirmOutline) onConfirmOutline(); else window.dispatchEvent(new Event("travel.outline.confirm")); }}>确认路线并细化</button></div>}
+    {visibleDecisions.filter((item) => item.status === "pending").map((decision) => <div className="route-decision" key={decision.id}><strong>{decision.question}</strong><p>{decision.impact}</p><small>系统推荐：{decision.recommendation}。未选择时将按推荐继续。</small><div><button className="button primary small" onClick={() => onDecision ? onDecision(decision.id, "accept") : window.dispatchEvent(new CustomEvent("travel.route.decision", { detail: { id: decision.id, choice: "accept" } }))}>采用推荐</button><button className="button secondary small" onClick={() => onDecision ? onDecision(decision.id, "reject") : window.dispatchEvent(new CustomEvent("travel.route.decision", { detail: { id: decision.id, choice: "reject" } }))}>调整路线</button></div></div>)}
+    {["detailing","waiting_service","partial","stopped"].includes(visibleStage || "") && <div className="planning-banner"><span>已细化 {visibleProgress?.completed || 0}/{visibleProgress?.total || plan.days.length} 天{visibleProgress?.repairing ? " · AI 正在修复个别日期" : ""}{visibleProgress?.waiting || visibleStage === "waiting_service" ? " · 详细内容等待服务恢复，草案仍可用" : ""}{visibleStage === "stopped" ? " · 已停止，现有成果已保留" : ""}</span><button className="button secondary small" onClick={() => { const action = visibleStage === "stopped" ? "resume" : "stop"; if (onDetailAction) onDetailAction(action); else window.dispatchEvent(new CustomEvent("travel.detail.action", { detail: action })); }}>{visibleStage === "stopped" ? "恢复细化" : "停止细化"}</button></div>}
     {plan.days.map((day) => {
       const selected = selection.scope === "day" && selection.dayNumber === day.dayNumber;
       const choose = () => onSelectDay(day.dayNumber);

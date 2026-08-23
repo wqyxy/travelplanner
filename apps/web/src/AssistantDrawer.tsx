@@ -2,7 +2,7 @@ import { ChevronDown, ChevronUp, CircleStop, LoaderCircle, RotateCcw, Send, Spar
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-export type Chat = { id: string; role: "user" | "assistant"; content: string; reply: { replyType: string; assumptions?: string[] } | null; status: "pending" | "completed" | "failed"; turn: { status: "queued" | "starting" | "active" | "completed" | "failed" | "interrupted"; cancelRequested: boolean; errorMessage: string | null; progressMessage?: string } | null };
+export type Chat = { id: string; role: "user" | "assistant"; content: string; reply: { replyType: string; assumptions?: string[] } | null; status: "pending" | "completed" | "failed"; turn: { status: "deferred" | "queued" | "starting" | "active" | "completed" | "failed" | "interrupted"; cancelRequested: boolean; errorMessage: string | null; progressMessage?: string } | null };
 const prompts = ["直接做方案", "把节奏放慢一些", "优先照顾老人和孩子", "整理当前待定项"];
 export function AssistantDrawer({ title, chat, busy, error, onSend, onStop, onRetry }: { title: string | null; chat: Chat[]; busy: boolean; error: string; onSend: (text: string, retry?: string | null) => Promise<void>; onStop: (id: string) => Promise<void>; onRetry: (id: string, text: string) => Promise<void> }) {
   const [expanded, setExpanded] = useState(false); const [input, setInput] = useState(""); const end = useRef<HTMLDivElement>(null);

@@ -74,6 +74,21 @@ export const TripPlanV2Schema = TripPlanBaseSchema.extend({
 export const TripPlanSchema = z.union([TripPlanV2Schema, TripPlanV1Schema]);
 export type TripPlan = z.infer<typeof TripPlanSchema>;
 
+/** A deliberately small first response.  The server owns all generated ids and
+ * expands nights into day cards, so the model never has to keep a 30-day id
+ * graph consistent. */
+export const RouteStopSchema = z.object({ city: z.string().min(1).max(160), country: z.string().max(160).nullish(), nights: z.number().int().min(0).max(30), reason: z.string().min(1).max(700) });
+export const RouteLegSchema = z.object({ fromStop: z.number().int().min(0), toStop: z.number().int().min(1), mode: TransportMode, estimatedMinutes: z.number().int().min(0).max(2880), note: z.string().min(1).max(700), needsVerification: z.boolean().default(false) });
+export const RouteDecisionSchema = z.object({ id: z.string().min(1).max(120), question: z.string().min(1).max(700), recommendation: z.string().min(1).max(700), impact: z.string().min(1).max(700), defaultChoice: z.enum(["accept", "reject"]).default("accept") });
+export type RouteDecision = z.infer<typeof RouteDecisionSchema>;
+export const RouteSkeletonSchema = z.object({ tripName: z.string().min(1).max(200), timezone: z.string().min(1).max(80).default("当地时间"), stops: z.array(RouteStopSchema).min(1).max(30), legs: z.array(RouteLegSchema).max(30).default([]), decisions: z.array(RouteDecisionSchema).max(20).default([]), assumptions: z.array(z.string().min(1).max(500)).max(30).default([]), warnings: z.array(z.string().min(1).max(700)).max(30).default([]) }).superRefine((value, context) => {
+  for (const [index, leg] of value.legs.entries()) if (leg.toStop !== leg.fromStop + 1 || leg.toStop >= value.stops.length) context.addIssue({ code: "custom", path: ["legs", index], message: "路段必须连接相邻停留点。" });
+});
+export type RouteSkeleton = z.infer<typeof RouteSkeletonSchema>;
+export const DetailDayPatchSchema = z.object({ dayNumber: z.number().int().min(1).max(90), title: z.string().min(1).max(300), /** New or canonical definitions used by this day.  Existing ids may be repeated only identically. */ places: z.array(TripPlaceSchema).max(80).default([]), activities: z.array(ActivitySchema).min(1).max(20), warnings: z.array(z.string().min(1).max(700)).max(10).default([]) });
+export type DetailDayPatch = z.infer<typeof DetailDayPatchSchema>;
+export const DetailDayRepairPatchSchema = z.object({ dayNumber: z.number().int().min(1).max(90), title: z.string().min(1).max(300).nullable(), places: z.array(TripPlaceSchema).max(80).nullable(), activities: z.array(ActivitySchema).min(1).max(20).nullable(), warnings: z.array(z.string().min(1).max(700)).max(10).nullable() }).superRefine((value, context) => { if (value.title === null && value.places === null && value.activities === null && value.warnings === null) context.addIssue({ code: "custom", message: "修复补丁至少修改一个错误字段。" }); });
+
 const TravelAgentOutputBaseSchema = z.object({
   replyType: z.enum(["clarification", "requirements_updated", "plan_updated", "answer"]),
   assistantMessage: z.string().min(1).max(12000),
@@ -99,7 +114,21 @@ function requireAllObjectProperties(value: unknown): unknown {
   delete record.$schema;
   return record;
 }
+export const DetailDayPatchJsonSchema = requireAllObjectProperties(z.toJSONSchema(DetailDayPatchSchema)) as Record<string, unknown>;
+export const DetailDayRepairPatchJsonSchema = requireAllObjectProperties(z.toJSONSchema(DetailDayRepairPatchSchema)) as Record<string, unknown>;
 export const TravelAgentOutputJsonSchema = requireAllObjectProperties(z.toJSONSchema(TravelAgentOutputV2Schema)) as Record<string, unknown>;
+
+export const RouteSkeletonOutputSchema = z.object({
+  schemaVersion: z.literal(1), replyType: z.enum(["clarification", "requirements_updated", "outline_updated", "answer"]),
+  assistantMessage: z.string().min(1).max(12000), requirements: RequirementsSchema,
+  skeleton: RouteSkeletonSchema.nullish(), assumptions: z.array(z.string().min(1).max(500)).max(30).default([]),
+  verificationNotes: z.array(z.string().min(1).max(700)).max(30).default([])
+}).superRefine((value, context) => { if (value.replyType === "outline_updated" && !value.skeleton) context.addIssue({ code: "custom", path: ["skeleton"], message: "路线草案必须提供 skeleton。" }); });
+export type RouteSkeletonOutput = z.infer<typeof RouteSkeletonOutputSchema>;
+export const RouteSkeletonOutputJsonSchema = requireAllObjectProperties(z.toJSONSchema(RouteSkeletonOutputSchema)) as Record<string, unknown>;
+export const TransportVerificationOutputSchema = z.object({ schemaVersion: z.literal(1), checks: z.array(z.object({ legIndex: z.number().int().min(0).max(29), status: z.enum(["verified", "decision_required", "waiting_service"]), summary: z.string().min(1).max(700), decision: RouteDecisionSchema.nullish() })).max(30) });
+export type TransportVerificationOutput = z.infer<typeof TransportVerificationOutputSchema>;
+export const TransportVerificationOutputJsonSchema = requireAllObjectProperties(z.toJSONSchema(TransportVerificationOutputSchema)) as Record<string, unknown>;
 
 export const MapEntityKindSchema = z.enum(["city", "attraction", "lodging", "meal", "stop", "waypoint"]);
 export const MapEntityPatchSchema = z.object({
@@ -238,4 +267,4 @@ export type MapSnapshot = { itineraryVersion: number; mapVersion: number; contra
 export type AiAgentKind = "planner" | "map";
 export type AiTaskStatus = "starting" | "running" | "waiting" | "reconnecting" | "completed" | "failed" | "stopped";
 export type AiProgressEvent = { id: number; taskId: string; tripId: string; agent: AiAgentKind; status: AiTaskStatus; kind: string; summary: string; createdAt: string };
-export type AiTaskSnapshot = { id: string; tripId: string; agent: AiAgentKind; label: string; status: AiTaskStatus; summary: string; startedAt: string; updatedAt: string; canStop: boolean; events: AiProgressEvent[] };
+export type AiTaskSnapshot = { id: string; tripId: string; agent: AiAgentKind; label: string; status: AiTaskStatus; summary: string; startedAt: string; updatedAt: string; canStop: boolean; retryCount: number; nextAttemptAt: string | null; lastError: string | null; events: AiProgressEvent[] };

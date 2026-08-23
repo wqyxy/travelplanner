@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { MapAgentOutputJsonSchema, MapAgentOutputSchema, MapResolutionOutputJsonSchema, MapResolutionOutputSchema, normalizeMapAgentOutput, type MapAgentOutput, type TripPlan } from "./contracts.js";
 import type { AiTaskMonitor } from "./ai-task-monitor.js";
-import type { CodexClient, RpcEnvelope } from "./codex-client.js";
+import { classifyCodexFailure, nextCodexRetry, structuredTurn, type CodexClient, type RpcEnvelope } from "./codex-client.js";
 import type { MapService } from "./map-service.js";
 import type { TravelStore } from "./travel-store.js";
 
@@ -18,6 +18,7 @@ type DayRun = {
   position: number;
   generationRetry: number;
   repairRetry: number;
+  serviceRetry: number;
   claimedEntityIds: string[];
   waitingEntityIds: string[];
   turnId?: string;
@@ -51,6 +52,7 @@ type MapJob = {
   pendingLocationDays: Array<{ position: number; dayNumber: number }>;
   threadIds: Set<string>;
   resolutionClaims: Map<string, { promise: Promise<void>; resolve: () => void }>;
+  retryTimers: Set<NodeJS.Timeout>;
 };
 
 type CoordinatorOptions = {
@@ -108,7 +110,7 @@ export class MapCoordinator {
       removedEntityIds: manifest.removedEntityIds, removedRouteIds: manifest.removedRouteIds,
       analysisQueue: revision.plan.days.map((_day, position) => position), nextCommit: 0, activeAnalyses: 0, activeLocationDays: 0,
       draining: false, stopped: false, buffered: new Map(), failedPositions: new Set(),
-      settledPositions: new Set(), pendingLocationDays: [], threadIds: new Set(), resolutionClaims: new Map(),
+      settledPositions: new Set(), pendingLocationDays: [], threadIds: new Set(), resolutionClaims: new Map(), retryTimers: new Set(),
     };
     this.jobs.set(tripId, job);
     this.options.store.initializeMapDayRuns(tripId, itineraryVersion, revision.plan.days.map((day) => day.dayNumber));
@@ -127,6 +129,7 @@ export class MapCoordinator {
   async stop(tripId: string, summary = "地图任务已停止") {
     const job = this.jobs.get(tripId); if (!job) return false;
     job.stopped = true; this.jobs.delete(tripId); this.options.maps.deactivateRun(tripId, job.token);
+    for (const timer of job.retryTimers) clearTimeout(timer); job.retryTimers.clear();
     for (const claim of job.resolutionClaims.values()) claim.resolve(); job.resolutionClaims.clear();
     // Invalidate map-service workers before waiting for Agent interrupts.
     this.options.store.setMapStatus(tripId, job.itineraryVersion, "stopped", summary);
@@ -153,7 +156,7 @@ export class MapCoordinator {
     const days = trip.activeRevision.plan.days; const paths = this.options.maps.snapshot(tripId, "all", null)?.dayPaths ?? [];
     const pendingLocationDays = paths.flatMap((path) => { const position = days.findIndex((day) => day.dayNumber === path.dayNumber); return position < 0 ? [] : [{ position, dayNumber: path.dayNumber }]; });
     const pathPositions = new Set(pendingLocationDays.map((item) => item.position)); const missingPositions = days.map((_day, position) => position).filter((position) => !pathPositions.has(position));
-    const job: MapJob = { token: randomUUID(), tripId, itineraryVersion: meta.itineraryVersion, mapVersion: meta.mapVersion, baseMapVersion: meta.baseMapVersion, taskId, days, planPlaces: (trip.activeRevision.plan as TripPlan & { places?: unknown[] }).places ?? [], requirements: trip.requirements, forceRebuild: false, removedEntityIds: [], removedRouteIds: [], analysisQueue: [...missingPositions], nextCommit: 0, activeAnalyses: 0, activeLocationDays: 0, draining: false, stopped: false, buffered: new Map(), failedPositions: new Set(days.map((_day, position) => position).filter((position) => pathPositions.has(position))), settledPositions: new Set(), pendingLocationDays, threadIds: new Set(), resolutionClaims: new Map() };
+    const job: MapJob = { token: randomUUID(), tripId, itineraryVersion: meta.itineraryVersion, mapVersion: meta.mapVersion, baseMapVersion: meta.baseMapVersion, taskId, days, planPlaces: (trip.activeRevision.plan as TripPlan & { places?: unknown[] }).places ?? [], requirements: trip.requirements, forceRebuild: false, removedEntityIds: [], removedRouteIds: [], analysisQueue: [...missingPositions], nextCommit: 0, activeAnalyses: 0, activeLocationDays: 0, draining: false, stopped: false, buffered: new Map(), failedPositions: new Set(days.map((_day, position) => position).filter((position) => pathPositions.has(position))), settledPositions: new Set(), pendingLocationDays, threadIds: new Set(), resolutionClaims: new Map(), retryTimers: new Set() };
     this.jobs.set(tripId, job); this.options.maps.activateRun(tripId, job.token);
     this.options.tasks.start({ id: taskId, tripId, agent: "map", label: "地图标注", summary: "正在重试未完成地点和路线" });
     this.options.store.setMapStatus(tripId, meta.itineraryVersion, "resolving", "正在重试未完成地点和路线");
@@ -165,7 +168,7 @@ export class MapCoordinator {
     const days = trip.activeRevision!.plan.days; const wanted = new Set(dayNumbers); const positions = days.map((day, position) => wanted.has(day.dayNumber) ? position : -1).filter((position) => position >= 0);
     const taskId = `map:${trip.id}:${meta.itineraryVersion}`;
     const skipped = new Set(days.map((_day, position) => position).filter((position) => !positions.includes(position)));
-    const job: MapJob = { token: randomUUID(), tripId: trip.id, itineraryVersion: meta.itineraryVersion, mapVersion: meta.mapVersion, baseMapVersion: meta.baseMapVersion, taskId, days, planPlaces: (trip.activeRevision!.plan as TripPlan & { places?: unknown[] }).places ?? [], requirements: trip.requirements, forceRebuild: false, removedEntityIds: [], removedRouteIds: [], analysisQueue: positions, nextCommit: 0, activeAnalyses: 0, activeLocationDays: 0, draining: false, stopped: false, buffered: new Map(), failedPositions: skipped, settledPositions: new Set(skipped), pendingLocationDays: [], threadIds: new Set(), resolutionClaims: new Map() };
+    const job: MapJob = { token: randomUUID(), tripId: trip.id, itineraryVersion: meta.itineraryVersion, mapVersion: meta.mapVersion, baseMapVersion: meta.baseMapVersion, taskId, days, planPlaces: (trip.activeRevision!.plan as TripPlan & { places?: unknown[] }).places ?? [], requirements: trip.requirements, forceRebuild: false, removedEntityIds: [], removedRouteIds: [], analysisQueue: positions, nextCommit: 0, activeAnalyses: 0, activeLocationDays: 0, draining: false, stopped: false, buffered: new Map(), failedPositions: skipped, settledPositions: new Set(skipped), pendingLocationDays: [], threadIds: new Set(), resolutionClaims: new Map(), retryTimers: new Set() };
     this.jobs.set(trip.id, job); this.options.maps.activateRun(trip.id, job.token);
     this.options.tasks.start({ id: taskId, tripId: trip.id, agent: "map", label: "地图标注", summary: `正在重试 ${dayNumbers.length} 个未完成日程` });
     this.options.store.setMapStatus(trip.id, meta.itineraryVersion, "analyzing", `正在重试 ${dayNumbers.length} 个未完成日程`);
@@ -220,26 +223,39 @@ export class MapCoordinator {
     if (!this.isCurrent(job)) throw new Error("地图任务已经过期。"); job.threadIds.add(threadId); return threadId;
   }
 
-  private async launchManifest(job: MapJob, position: number, generationRetry: number, repairRetry: number, feedback?: string) {
-    job.activeAnalyses += 1;
+  private scheduleManifestServiceRetry(job: MapJob, position: number, generationRetry: number, repairRetry: number, feedback: string | undefined, serviceRetry: number, detail: string) {
+    const retry = nextCodexRetry(serviceRetry);
+    if (!retry) { this.analysisFailed(job, position, 3, 3, `${detail}；已达到 3 次自动重试上限`); return; }
+    const dayNumber = job.days[position].dayNumber; const nextAttemptAt = new Date(Date.now() + retry.delayMs).toISOString();
+    this.options.store.setAiTaskRetry(job.taskId, retry.attempt, nextAttemptAt, detail);
+    this.options.store.updateMapDayRun(job.tripId, job.itineraryVersion, dayNumber, "retrying", { generationRetries: generationRetry, repairRetries: repairRetry, error: detail });
+    this.options.tasks.update(job.taskId, "waiting", `Day ${dayNumber} 的地图服务暂时中断；第 ${retry.attempt}/3 次重试将在 ${Math.round(retry.delayMs / 1000)} 秒后进行`, `map:service-retry-${position}`);
+    const timer = setTimeout(() => { job.retryTimers.delete(timer); if (this.isCurrent(job)) void this.launchManifest(job, position, generationRetry, repairRetry, feedback, retry.attempt, true); }, retry.delayMs);
+    timer.unref(); job.retryTimers.add(timer);
+  }
+
+  private async launchManifest(job: MapJob, position: number, generationRetry: number, repairRetry: number, feedback?: string, serviceRetry = 0, slotReserved = false) {
+    if (!slotReserved) job.activeAnalyses += 1;
     const day = job.days[position];
     let threadId = "";
     try {
       threadId = await this.createThread(job);
       this.options.store.updateMapDayRun(job.tripId, job.itineraryVersion, day.dayNumber, repairRetry ? "repairing" : generationRetry ? "retrying" : "generating", { generationRetries: generationRetry, repairRetries: repairRetry });
-      const run: DayRun = { kind: "map", phase: "manifest", jobToken: job.token, taskId: job.taskId, tripId: job.tripId, itineraryVersion: job.itineraryVersion, mapVersion: job.mapVersion, baseMapVersion: job.baseMapVersion, dayNumber: day.dayNumber, position, generationRetry, repairRetry, claimedEntityIds: [], waitingEntityIds: [], content: "" };
+      const run: DayRun = { kind: "map", phase: "manifest", jobToken: job.token, taskId: job.taskId, tripId: job.tripId, itineraryVersion: job.itineraryVersion, mapVersion: job.mapVersion, baseMapVersion: job.baseMapVersion, dayNumber: day.dayNumber, position, generationRetry, repairRetry, serviceRetry, claimedEntityIds: [], waitingEntityIds: [], content: "" };
       this.runs.set(threadId, run);
       const previousDay = position > 0 ? job.days[position - 1] : null;
       const nextDay = position + 1 < job.days.length ? job.days[position + 1] : null;
       const knownMap = this.options.store.mapContext(job.tripId, job.itineraryVersion);
       const input = JSON.stringify({ contract: "travel-map-day:v4", baseItineraryVersion: job.itineraryVersion, baseMapVersion: job.baseMapVersion, day, previousDay, nextDay, planPlaces: job.planPlaces, currentRequirements: job.requirements, knownPlaces: knownMap?.entities ?? [], fullRebuild: job.forceRebuild, contractFeedback: feedback || null, responseSchema: MapAgentOutputJsonSchema }, null, 2);
-      const result = await this.options.codex.call("turn/start", { threadId, summary: "detailed", input: [{ type: "text", text: `${this.options.prompt}\n\n本轮受控状态：\n${input}`, text_elements: [] }], outputSchema: MapAgentOutputJsonSchema, ...this.options.modelOptions() }, 120000);
+      const result = await this.options.codex.call("turn/start", structuredTurn({ threadId, input: [{ type: "text", text: `${this.options.prompt}\n\n本轮受控状态：\n${input}`, text_elements: [] }], outputSchema: MapAgentOutputJsonSchema, ...this.options.modelOptions() }), 120000);
       if (this.runs.get(threadId) === run) run.turnId = String(result?.turn?.id || run.turnId || "");
     } catch (error) {
       const failedRun = threadId ? this.runs.get(threadId) : undefined;
       if (threadId) this.runs.delete(threadId);
       if (threadId && failedRun?.turnId) void this.options.codex.call("turn/interrupt", { threadId, turnId: failedRun.turnId }).catch(() => undefined);
-      this.analysisFailed(job, position, generationRetry, repairRetry, publicError(error));
+      const detail = publicError(error); const kind = classifyCodexFailure(error);
+      if (kind === "transient") this.scheduleManifestServiceRetry(job, position, generationRetry, repairRetry, feedback, serviceRetry, detail);
+      else this.analysisFailed(job, position, 3, 3, detail);
     }
   }
 
@@ -258,7 +274,10 @@ export class MapCoordinator {
     const job = this.jobs.get(run.tripId); if (!job || job.token !== run.jobToken || !this.isCurrent(job)) return;
     if (status !== "completed") {
       const detail = reportedError || run.failureMessage || "AI 未能完成本轮。";
-      if (run.phase === "manifest") this.analysisFailed(job, run.position, run.generationRetry, run.repairRetry, detail);
+      if (run.phase === "manifest") {
+        if (classifyCodexFailure(new Error(detail)) === "transient") this.scheduleManifestServiceRetry(job, run.position, run.generationRetry, run.repairRetry, undefined, run.serviceRetry, detail);
+        else this.analysisFailed(job, run.position, 3, 3, detail);
+      }
       else await this.finishResolutionFallback(job, run.position, run.dayNumber, detail, run.claimedEntityIds, run.waitingEntityIds);
       return;
     }
@@ -340,10 +359,10 @@ export class MapCoordinator {
       }
       threadId = await this.createThread(job);
       this.options.store.updateMapDayRun(job.tripId, job.itineraryVersion, dayNumber, "resolving");
-      const run: DayRun = { kind: "map", phase: "resolution", jobToken: job.token, taskId: job.taskId, tripId: job.tripId, itineraryVersion: job.itineraryVersion, mapVersion: job.mapVersion, baseMapVersion: job.baseMapVersion, dayNumber, position, generationRetry: 0, repairRetry: 0, claimedEntityIds: claimed, waitingEntityIds: waiting, content: "" };
+      const run: DayRun = { kind: "map", phase: "resolution", jobToken: job.token, taskId: job.taskId, tripId: job.tripId, itineraryVersion: job.itineraryVersion, mapVersion: job.mapVersion, baseMapVersion: job.baseMapVersion, dayNumber, position, generationRetry: 0, repairRetry: 0, serviceRetry: 0, claimedEntityIds: claimed, waitingEntityIds: waiting, content: "" };
       this.runs.set(threadId, run);
       const input = JSON.stringify({ contract: "travel-map-resolution:v1", baseItineraryVersion: job.itineraryVersion, baseMapVersion: job.mapVersion, pendingLocations: batch.filter((item) => claimed.includes(item.entityId)), responseSchema: MapResolutionOutputJsonSchema }, null, 2);
-      const result = await this.options.codex.call("turn/start", { threadId, summary: "detailed", input: [{ type: "text", text: `${this.options.prompt}\n\n本轮受控状态：\n${input}`, text_elements: [] }], outputSchema: MapResolutionOutputJsonSchema, ...this.options.modelOptions() }, 120000);
+      const result = await this.options.codex.call("turn/start", structuredTurn({ threadId, input: [{ type: "text", text: `${this.options.prompt}\n\n本轮受控状态：\n${input}`, text_elements: [] }], outputSchema: MapResolutionOutputJsonSchema, ...this.options.modelOptions() }), 120000);
       if (this.runs.get(threadId) === run) run.turnId = String(result?.turn?.id || run.turnId || "");
     } catch (error) {
       const runEntry = threadId ? ([threadId, this.runs.get(threadId)] as const) : undefined;

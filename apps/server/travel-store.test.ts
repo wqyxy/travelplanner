@@ -782,6 +782,44 @@ describe("TravelStore revisions", () => {
     store.close();
   });
 
+  it("persists retry metadata across restarts and keeps waiting tasks stoppable", async () => {
+    const folder = await mkdtemp(path.join(tmpdir(), "travelplanner-retry-test-")); folders.push(folder);
+    const database = path.join(folder, "travel.sqlite3");
+    const first = new TravelStore(database); const trip = first.createTrip();
+    first.upsertAiTask({ id: "planner:retry", tripId: trip.id, agent: "planner", label: "旅行规划", status: "starting", summary: "开始", canStop: false });
+    first.setAiTaskRetry("planner:retry", 2, "2030-01-02T03:04:05.000Z", "ECONNRESET");
+    first.appendAiProgress("planner:retry", "waiting", "outline:waiting", "等待第二次重试");
+    first.close();
+
+    const reopened = new TravelStore(database);
+    expect(reopened.getAiTask("planner:retry")).toMatchObject({
+      status: "waiting",
+      retryCount: 2,
+      nextAttemptAt: "2030-01-02T03:04:05.000Z",
+      lastError: "ECONNRESET",
+      canStop: true,
+    });
+    reopened.close();
+  });
+
+  it("terminates historical invalid-protocol turns during the v13 migration", async () => {
+    const folder = await mkdtemp(path.join(tmpdir(), "travelplanner-v12-test-")); folders.push(folder);
+    const database = path.join(folder, "travel.sqlite3");
+    const original = new TravelStore(database); const trip = original.createTrip(); const messageId = original.createUserMessage(trip.id, "除了岛上全程自驾如何");
+    original.updateTurn(messageId, "starting", { error: "Invalid request: unknown variant route outline", progress: "等待服务恢复" });
+    original.upsertAiTask({ id: `planner:${messageId}`, tripId: trip.id, agent: "planner", label: "旅行规划", status: "waiting", summary: "等待服务恢复", canStop: true });
+    original.close();
+
+    const v12 = new DatabaseSync(database);
+    v12.exec("ALTER TABLE ai_tasks DROP COLUMN last_error; ALTER TABLE ai_tasks DROP COLUMN next_attempt_at; ALTER TABLE ai_tasks DROP COLUMN retry_count; PRAGMA user_version = 12;");
+    v12.close();
+
+    const migrated = new TravelStore(database);
+    expect(migrated.getAiTask(`planner:${messageId}`)).toMatchObject({ status: "failed", canStop: false, retryCount: 0, nextAttemptAt: null });
+    expect(migrated.listMessages(trip.id).find((item) => item.id === messageId)?.turn).toMatchObject({ status: "failed", progressMessage: "应用协议错误已修复，请重试原问题" });
+    migrated.close();
+  });
+
   it("persists per-day retry state and exposes it through map progress", async () => {
     const store = await makeStore();
     const trip = store.createTrip();
@@ -792,6 +830,31 @@ describe("TravelStore revisions", () => {
     store.updateMapDayRun(trip.id, 1, 1, "failed", { generationRetries: 3, repairRetries: 3, error: "仍未通过合同" });
     expect(store.resetFailedMapDayRuns(trip.id, 1)).toEqual([1]);
     expect(store.mapDayRuns(trip.id, 1).get(1)).toMatchObject({ status: "pending", generationRetries: 0, repairRetries: 0, error: null });
+    store.close();
+  });
+
+  it("expands a route skeleton immediately and persists daily detail task state", async () => {
+    const store = await makeStore(); const trip = store.createTrip(); const messageId = store.createUserMessage(trip.id, "澳大利亚自驾");
+    const requirements = { destinations: [{ city: "悉尼", country: "澳大利亚", timezone: "Australia/Sydney" }], dates: { durationDays: 4 }, travelers: { summary: "两位成人" }, budget: {}, pace: "适中", themes: ["自然"], preferences: [], assumptions: [], openQuestions: [] };
+    const applied = store.applySkeleton(trip.id, messageId, { requirements, assistantMessage: "先看路线草案", skeleton: { tripName: "澳洲东海岸", timezone: "Australia/Sydney", stops: [{ city: "悉尼", country: "Australia", nights: 2, reason: "城市与海港" }, { city: "卧龙岗", country: "Australia", nights: 1, reason: "海岸自驾" }], legs: [{ fromStop: 0, toStop: 1, mode: "drive", estimatedMinutes: 120, note: "沿海公路", needsVerification: false }], decisions: [], assumptions: [], warnings: [] } });
+    expect(store.getRevision(trip.id, applied.version)?.plan.days).toHaveLength(4);
+    expect(store.requireTrip(trip.id).planningStage).toBe("outline");
+    store.confirmDetailing(trip.id); store.updateDailyTask(trip.id, 1, "repairing", { repairCount: 1, error: "活动时间重叠" });
+    expect(store.requireTrip(trip.id).detailProgress).toMatchObject({ total: 4, repairing: 1 });
+    const detailed = store.applyDailyDetail(trip.id, { dayNumber: 1, title: "悉尼海港", places: [{ id: "temporary-agent-id", kind: "attraction", nameZh: "悉尼歌剧院", nameEn: "Sydney Opera House", nameLocal: "Sydney Opera House", localLanguage: "en", approximate: false, geocoding: { name: "Sydney Opera House", city: "Sydney", region: "NSW", country: "Australia", countryCode: "au" } }], activities: [{ id: "temporary-activity-id", startTime: "10:00", endTime: "12:00", placeName: "悉尼歌剧院", placeIds: ["temporary-agent-id", "outline-stop-1"], activity: "参观海港建筑并返回悉尼住宿城市", durationMinutes: 120, transportMode: "walk", transportMinutes: 10, costNote: "待核验" }], warnings: [] });
+    expect(detailed.version).toBe(applied.version); expect(store.requireTrip(trip.id).activeRevision?.plan.days[0].activities[0].id).not.toBe("temporary-activity-id");
+    store.close();
+  });
+
+  it("persists route decisions, deferred messages, and rejects stale day baselines", async () => {
+    const store = await makeStore(); const trip = store.createTrip(); const messageId = store.createUserMessage(trip.id, "澳大利亚亲子路线");
+    const requirements = { destinations: [{ city: "悉尼", country: "澳大利亚" }], dates: { durationDays: 2 }, travelers: { summary: "亲子家庭" }, budget: {}, pace: "适中", themes: [], preferences: [], assumptions: [], openQuestions: [] };
+    store.applySkeleton(trip.id, messageId, { requirements, assistantMessage: "路线草案", skeleton: { tripName: "悉尼一日", timezone: "Australia/Sydney", stops: [{ city: "悉尼", country: "Australia", nights: 1, reason: "减少移动" }], legs: [], decisions: [{ id: "child-seat", question: "是否预订儿童座椅？", recommendation: "预订", impact: "影响租车可用性", defaultChoice: "accept" }], assumptions: [], warnings: [] } });
+    expect(store.requireTrip(trip.id).decisions).toMatchObject([{ id: "child-seat", status: "pending" }]);
+    store.recordRouteDecision(trip.id, "child-seat", "accept"); expect(store.requireTrip(trip.id).decisions[0]).toMatchObject({ status: "accepted", choice: "accept" });
+    const deferred = store.createUserMessage(trip.id, "晚一点出发", null, true); expect(store.nextDeferredMessage(trip.id)?.id).toBe(deferred); store.activateDeferredMessage(deferred); expect(store.nextDeferredMessage(trip.id)).toBeNull();
+    store.confirmDetailing(trip.id); const task = store.dailyTasks(trip.id)[0]; store.supersedeDetailing(trip.id);
+    expect(() => store.applyDailyDetail(trip.id, { dayNumber: 1, title: "旧结果", places: [], activities: [{ id: "old", startTime: "10:00", endTime: "11:00", placeName: "悉尼", placeIds: ["outline-stop-1"], activity: "旧结果", durationMinutes: 60, transportMode: "walk", transportMinutes: 0, costNote: "" }], warnings: [] }, { generation: task.generation, baselineVersion: task.baselineVersion })).toThrow("DETAIL_BASELINE_SUPERSEDED");
     store.close();
   });
 });
