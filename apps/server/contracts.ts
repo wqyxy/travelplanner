@@ -84,9 +84,6 @@ export const ItinerarySchema = z.object({ schemaVersion: z.literal(1), stage: z.
       }
     }
   }
-  // User accepted the lifecycle interpretation when starting Phase 1: a later
-  // detailed-itinerary mutation may leave an affected Day at draft.
-  if (value.stage === "detailed" && value.days.length && value.days.every((day) => day.detailLevel === "draft")) context.addIssue({ code: "custom", path: ["stage"], message: "detailed 生命周期至少应保留一个 detailed Day。" });
 });
 export type Itinerary = z.infer<typeof ItinerarySchema>;
 export const emptyItinerary = (): Itinerary => ItinerarySchema.parse({ schemaVersion: 1, stage: "planning", trip: { title: "未命名旅行", originPlaceId: null, destinationPlaceIds: [], dates: { start: null, end: null, requestedDurationDays: null }, travelers: { summary: "", adults: null, children: null }, budget: { amount: null, currency: null, note: null }, pace: null, themes: [], preferences: [], constraints: [], assumptions: [] }, places: [], days: [], warnings: [] });

@@ -61,6 +61,11 @@ describe("itinerary:v1 contracts", () => {
     expect(ItinerarySchema.safeParse({ ...value, days: [day("day-1", "detailed")] }).success).toBe(true);
   });
 
+  it("keeps the detailed lifecycle when every Day later needs re-detailing", () => {
+    const value = draft();
+    expect(ItinerarySchema.safeParse({ ...value, stage: "detailed", days: value.days.map((item) => ({ ...item, detailLevel: "draft", detailStatus: "needs_review" as const })) }).success).toBe(true);
+  });
+
   it("requires a detail batch to return the exact requested detailed day set", () => {
     const detailed = day("day-1", "detailed");
     const output = { schemaVersion: 1, baseGeneration: 3, batchId: "batch-1", dayIds: ["day-1"], placeUpserts: [], days: [detailed], assistantMessage: "已细化" };

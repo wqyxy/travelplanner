@@ -165,6 +165,7 @@ export function applyDetailBatch(store: TravelStore, tripId: string, request: De
     const returned = returnedDays.get(current.id);
     if (!returned) return current;
     const day = clone(returned);
+    day.detailStatus = "ready";
     day.stops = day.stops.map((stop): Stop => ({ ...stop, id: mapper.resolve(stop.id), placeId: mapper.resolve(stop.placeId) }));
     return day;
   });
@@ -192,10 +193,4 @@ export function applyDetailBatch(store: TravelStore, tripId: string, request: De
     completedDayIds: written.trip.itinerary.days.filter((day) => day.detailLevel === "detailed").map((day) => day.id),
     allDetailed,
   };
-}
-
-export function finalizeDetailedItinerary(store: TravelStore, tripId: string) {
-  const trip = store.requireTrip(tripId);
-  if (trip.itinerary.stage !== "draft" || !trip.itinerary.days.length || trip.itinerary.days.some((day) => day.detailLevel !== "detailed")) throw new Error("行程仍有未完成的 Day。");
-  return store.writeItinerary(tripId, { ...trip.itinerary, stage: "detailed" }, trip.contentGeneration, { revision: { source: "detail", summary: "完成全部日期细化" } }).trip;
 }

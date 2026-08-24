@@ -9,7 +9,7 @@ import { CodexClient, classifyCodexFailure, nextCodexRetry, structuredTurn, type
 import { MapTileCache, TileFetchError } from "./map-tile-cache.js";
 import { AiTaskMonitor, normalizePublicAiSummary } from "./ai-task-monitor.js";
 import { CandidateDecisionOutputJsonSchema, CandidateDecisionOutputSchema, DetailBatchOutputJsonSchema, type DetailCanonicalFeedback, type MapChangedEvent, type Place, PlannerOutputJsonSchema } from "./contracts.js";
-import { applyDetailBatch, finalizeDetailedItinerary, nextDetailBatch, type DetailBatchRequest } from "./detail-workflow.js";
+import { applyDetailBatch, nextDetailBatch, type DetailBatchRequest } from "./detail-workflow.js";
 import { MapPipeline } from "./map-pipeline.js";
 import { MapService, type MapCandidate } from "./map-service.js";
 import { loadAgentPrompts } from "./prompt-contract.js";
@@ -98,9 +98,9 @@ async function decideMapCandidate(input: { place: Place; candidates: MapCandidat
 }
 async function modelList() { await ensureCodex(); const result = await codex.call("model/list", {}, 30000); const source = Array.isArray(result?.data) ? result.data : Array.isArray(result?.models) ? result.models : []; const seen = new Set<string>(); return source.flatMap((item: any) => { const model = String(item?.model || "").trim().slice(0, 120); if (!model || item?.hidden === true || seen.has(model)) return []; seen.add(model); const supportedReasoningEfforts = Array.isArray(item?.supportedReasoningEfforts) ? [...new Set<string>(item.supportedReasoningEfforts.map((entry: any) => typeof entry === "string" ? entry : entry?.reasoningEffort).filter((entry: unknown): entry is string => typeof entry === "string" && Boolean(entry.trim())).map((entry: string) => entry.trim().slice(0, 32)))] : []; return [{ model, displayName: String(item?.displayName || model).trim().slice(0, 120), supportedReasoningEfforts }]; }); }
 
-function plannerInput(tripId: string, userMessage: string) {
+function plannerInput(tripId: string, userMessage: string, currentMessageId: string) {
   const trip = store.requireTrip(tripId); let size = 0; const history: Array<{ role: "user" | "assistant"; content: string }> = [];
-  for (const item of [...store.listMessages(tripId)].reverse()) { const length = item.content.length; if (size + length > 48_000) break; history.push({ role: item.role, content: item.content }); size += length; }
+  for (const item of [...store.listMessages(tripId)].reverse()) { if (item.id === currentMessageId) continue; const length = item.content.length; if (size + length > 48_000) break; history.push({ role: item.role, content: item.content }); size += length; }
   history.reverse();
   return JSON.stringify({ contract: "planner-output:v1", userMessage, messageHistory: history, canonicalItinerary: trip.itinerary, contentGeneration: trip.contentGeneration, responseSchema: PlannerOutputJsonSchema }, null, 2);
 }
@@ -118,7 +118,7 @@ function updateTurn(run: PlannerRun, status: "queued" | "starting" | "active" | 
 function failRun(threadId: string, run: PlannerRun, error: unknown) { removeRun(threadId, run); const detail = publicFailure(error); store.setAiTaskRetry(run.taskId, run.serviceFailures, null, detail); updateTurn(run, "failed", `AI 请求失败：${detail}`, detail); tasks.update(run.taskId, "failed", `AI 请求失败：${detail}`, "planner:failed"); }
 
 async function startPlannerAttempt(threadId: string, run: PlannerRun, repair?: { invalidOutput: string; validationError: string }) {
-  const input = plannerInput(run.tripId, run.userMessage);
+  const input = plannerInput(run.tripId, run.userMessage, run.messageId);
   const repairText = repair ? `\n\n上一份输出未通过合同。只用同一 Planner 合同修正输出，不得另建 repair 流程。\n${JSON.stringify(repair)}` : "";
   const attemptToken = ++run.attemptToken; run.turnId = undefined; run.content = ""; run.failureMessage = undefined;
   const result = await codex.call("turn/start", structuredTurn({ threadId, input: [{ type: "text", text: `${prompts.planner.content}\n\n本轮受控状态：\n${input}${repairText}`, text_elements: [] }], outputSchema: PlannerOutputJsonSchema, ...modelOptions() }), 120000);
@@ -169,7 +169,8 @@ async function startTravelTurn(tripId: string, text: string) {
   if ([...active.values()].some((run) => run.tripId === tripId)) throw new Error("这趟旅行仍在处理中。请先停止当前任务。");
   const messageId = store.createUserMessage(tripId, text.trim()); const taskId = `planner:${messageId}`; const run: PlannerRun = { kind: "planner", taskId, tripId, messageId, userMessage: text.trim(), content: "", contractAttempt: 0, serviceFailures: 0, stopRequested: false, attemptToken: 0, settledTurnIds: [] };
   tasks.start({ id: taskId, tripId, agent: "planner", label: "旅行规划", summary: "请求已提交" }); updateTurn(run, "queued", "请求已提交");
-  try { const threadId = await ensurePlannerThread(tripId); active.set(threadId, run); await startPlannerAttempt(threadId, run); return { messageId, trip: store.requireTrip(tripId) }; }
+  const pendingKey = `planner-pending:${messageId}`; active.set(pendingKey, run);
+  try { const threadId = await ensurePlannerThread(tripId); if (active.get(pendingKey) !== run || run.stopRequested) return { messageId, trip: store.requireTrip(tripId) }; active.delete(pendingKey); active.set(threadId, run); await startPlannerAttempt(threadId, run); return { messageId, trip: store.requireTrip(tripId) }; }
   catch (error) { const threadId = [...active.entries()].find(([, item]) => item === run)?.[0]; if (threadId) queueServiceRetry(threadId, run, error); else { const fallbackThread = store.requireTrip(tripId).codexThreadId || `planner:${messageId}`; active.set(fallbackThread, run); queueServiceRetry(fallbackThread, run, error); } return { messageId, trip: store.requireTrip(tripId), waiting: true }; }
 }
 
@@ -258,10 +259,7 @@ async function startDetailWorkflow(tripId: string) {
   const trip = store.requireTrip(tripId); if (trip.state !== "active" || trip.itinerary.stage === "planning") throw new Error("只能细化已有行程。");
   const taskId = `detail:${randomUUID()}`; const allDayIds = trip.itinerary.days.map((day) => day.id); const completedDayIds = trip.itinerary.days.filter((day) => day.detailLevel === "detailed").map((day) => day.id);
   const batch = nextDetailBatch(trip.itinerary);
-  if (!batch) {
-    tasks.start({ id: taskId, tripId, agent: "detailer", label: "行程细化", summary: "正在完成细化", metadata: { baselineGeneration: trip.contentGeneration, allDayIds, completedDayIds, currentBatchId: null } });
-    const completed = finalizeDetailedItinerary(store, tripId); tasks.update(taskId, "completed", `已完成 ${completed.itinerary.days.length}/${completed.itinerary.days.length} 天细化`, "detail:completed"); broadcast("travel.trip.updated", { tripId }); syncMap(tripId, completed.contentGeneration, []); return;
-  }
+  if (!batch) throw new Error("行程没有需要细化的 Day。");
   const run: DetailRun = { kind: "detailer", taskId, tripId, batch, batchInput: initialDetailInput(tripId, batch), baselineGeneration: trip.contentGeneration, allDayIds, completedDayIds, usedTemporaryIds: [], content: "", contractAttempt: 0, serviceFailures: 0, stopRequested: false, attemptToken: 0, settledTurnIds: [] };
   tasks.start({ id: taskId, tripId, agent: "detailer", label: "行程细化", summary: `准备细化 ${allDayIds.length - completedDayIds.length} 天`, metadata: detailMetadata(run) });
   const pendingKey = `detail-pending:${taskId}`; active.set(pendingKey, run);

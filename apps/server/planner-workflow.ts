@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { DetailedDaySchema, ItinerarySchema, PlannerOutputSchema, type Day, type Itinerary, type PlannerMutation, type PlannerOutput, type Stop, type Verification } from "./contracts.js";
+import { DetailedDaySchema, ItinerarySchema, PlannerOutputSchema, type Day, type Itinerary, type Place, type PlannerMutation, type PlannerOutput, type Stop, type Verification } from "./contracts.js";
 import type { TravelStore, TripDetail } from "./travel-store.js";
 
 type MutationRecord = Record<string, unknown>;
@@ -17,6 +17,14 @@ export type PlannerApplyResult = {
 const clone = <T>(value: T): T => structuredClone(value);
 const asMutations = (value: PlannerMutation[]) => value as unknown as MutationRecord[];
 const invalidVerification = (): Verification => ({ status: "unverified", checkedAt: null });
+const placeIdentityFields: Array<keyof Place> = ["kind", "city", "region", "country", "countryCode", "approximate"];
+const normalizedNames = (place: Place) => new Set([place.nameZh, place.nameLocal, place.nameEn].filter((name): name is string => Boolean(name)).map((name) => name.normalize("NFKC").trim().toLocaleLowerCase()));
+
+function placeIdentityChanged(previous: Place, next: Place) {
+  if (placeIdentityFields.some((field) => previous[field] !== next[field])) return true;
+  const before = normalizedNames(previous); const after = normalizedNames(next);
+  return before.size > 0 && after.size > 0 && [...before].every((name) => !after.has(name));
+}
 
 function findDay(itinerary: MutableItinerary, id: string) {
   const index = itinerary.days.findIndex((day) => day.id === id);
@@ -74,13 +82,31 @@ function invalidateStopTransport(stop: Stop, facts: string[]) {
   facts.push(`Stop ${stop.id} 的相邻交通已失效，需重新估算或核验。`);
 }
 
+function invalidateStopDateFacts(stop: Stop) {
+  if (stop.scheduleVerification) stop.scheduleVerification = invalidVerification();
+  if (stop.costVerification) stop.costVerification = invalidVerification();
+  if (stop.transportFromPrevious) stop.transportFromPrevious = { ...stop.transportFromPrevious, verification: invalidVerification() };
+}
+
 function invalidateDayFacts(day: Day, facts: string[]) {
-  for (const stop of day.stops) {
-    if (stop.scheduleVerification) stop.scheduleVerification = invalidVerification();
-    if (stop.costVerification) stop.costVerification = invalidVerification();
-    invalidateStopTransport(stop, facts);
-  }
+  for (const stop of day.stops) invalidateStopDateFacts(stop);
+  if (day.detailLevel === "detailed") day.detailStatus = "needs_review";
   facts.push(`Day ${day.id} 的日期相关核验已失效。`);
+}
+
+function invalidatePlaceDependents(itinerary: MutableItinerary, placeId: string, facts: string[]) {
+  for (const day of itinerary.days) {
+    let affected = false;
+    for (const [index, stop] of day.stops.entries()) {
+      if (stop.placeId !== placeId) continue;
+      invalidateStopDateFacts(stop);
+      invalidateStopTransport(stop, facts);
+      const next = day.stops[index + 1];
+      if (next) invalidateStopTransport(next, facts);
+      affected = true;
+    }
+    if (affected) facts.push(`Place ${placeId} 的身份信息变化；Day ${day.id} 的相关核验和相邻交通已失效。`);
+  }
 }
 
 function topology(itinerary: Itinerary) {
@@ -133,7 +159,7 @@ function applyExplicitInvalidation(itinerary: MutableItinerary, mutation: Mutati
   const entity = String(mutation.entity || ""); const id = resolve(mutation.id);
   if (entity === "day") { invalidateDayFacts(findDay(itinerary, id).day, facts); return; }
   if (entity === "stop") { const found = findStop(itinerary, id); if (found.stop.scheduleVerification) found.stop.scheduleVerification = invalidVerification(); if (found.stop.costVerification) found.stop.costVerification = invalidVerification(); invalidateStopTransport(found.stop, facts); facts.push(`Stop ${id} 的指定依赖已失效。`); return; }
-  if (entity === "place") { for (const day of itinerary.days) if (day.stops.some((stop) => stop.placeId === id)) for (const stop of day.stops) invalidateStopTransport(stop, facts); facts.push(`Place ${id} 的指定依赖已失效。`); }
+  if (entity === "place") { invalidatePlaceDependents(itinerary, id, facts); facts.push(`Place ${id} 的指定依赖已失效。`); }
   if (entity === "edge") facts.push(`路线边 ${id} 已标记为需要重新派生。`);
 }
 
@@ -184,10 +210,14 @@ export function applyPlannerMutations(current: Itinerary, mutations: PlannerMuta
   normalize(next);
   const beforeDays = new Map(before.days.map((day) => [day.id, day]));
   for (const day of next.days) if (beforeDays.get(day.id)?.date !== day.date) invalidateDayFacts(day, facts);
+  const beforePlaces = new Map(before.places.map((place) => [place.id, place]));
+  for (const place of next.places) { const previous = beforePlaces.get(place.id); if (previous && placeIdentityChanged(previous, place)) invalidatePlaceDependents(next, place.id, facts); }
   const beforeTopology = topology(before); const afterTopology = topology(next);
   for (const [stopId, value] of afterTopology) {
     const previous = beforeTopology.get(stopId);
-    if (!previous || previous.previousStopId !== value.previousStopId || previous.placeId !== value.placeId || previous.previousPlaceId !== value.previousPlaceId || previous.mode !== value.mode) invalidateStopTransport(findStop(next, stopId).stop, facts);
+    const found = findStop(next, stopId); const stop = found.stop;
+    if (previous && previous.dayId !== value.dayId) { invalidateStopDateFacts(stop); if (found.day.detailLevel === "detailed") found.day.detailStatus = "needs_review"; facts.push(`Stop ${stopId} 移动到另一日期；日程和费用核验已失效。`); }
+    if (previous && (previous.previousStopId !== value.previousStopId || previous.placeId !== value.placeId || previous.previousPlaceId !== value.previousPlaceId || previous.mode !== value.mode)) invalidateStopTransport(stop, facts);
   }
   clearUnreferencedPlaces(next); degradeIncompleteDetailedDays(next);
   const itinerary = ItinerarySchema.parse(next);

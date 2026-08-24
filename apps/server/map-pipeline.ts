@@ -192,10 +192,12 @@ export class MapPipeline {
 
   private async approximateOrUnresolved(place: Place): Promise<ResolvedPlace> {
     if (place.kind !== "city" && place.kind !== "lodging") return { placeId: place.id, geoFingerprint: geoFingerprint(place), provider: "nominatim", providerPlaceId: null, lat: null, lng: null, timezone: null, resolution: "unresolved", confidence: null, resolvedAt: null };
-    const query = [place.city ?? primaryName(place), place.region, place.countryCode].filter((part): part is string => Boolean(part?.trim())).join(", ");
+    const centerName = place.city ?? place.region ?? primaryName(place);
+    const centerTarget: Place = { ...place, nameZh: centerName, nameLocal: null, nameEn: null, kind: "city", approximate: true };
+    const query = [centerName, place.region === centerName ? null : place.region, place.countryCode].filter((part): part is string => Boolean(part?.trim())).join(", ");
     try {
-      const candidates = filterMapCandidates({ ...place, kind: "city" }, await this.options.maps.search(query, place.countryCode));
-      const selected = chooseAutomatically({ ...place, kind: "city" }, candidates) ?? (candidates.length === 1 ? { candidate: candidates[0], score: 40 } : null);
+      const candidates = filterMapCandidates(centerTarget, await this.options.maps.search(query, place.countryCode));
+      const selected = chooseAutomatically(centerTarget, candidates);
       if (selected) return resolvedFromCandidate(place, selected.candidate, "approximate", Math.min(0.5, selected.score / 100));
     } catch { /* The unresolved result below keeps the failure visible without inventing a location. */ }
     return { placeId: place.id, geoFingerprint: geoFingerprint(place), provider: "nominatim", providerPlaceId: null, lat: null, lng: null, timezone: null, resolution: "unresolved", confidence: null, resolvedAt: null };

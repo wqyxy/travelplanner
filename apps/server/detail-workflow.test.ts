@@ -28,6 +28,7 @@ describe("two-day detail workflow", () => {
     const { store, trip } = await seeded(); const request = nextDetailBatch(trip.itinerary)!;
     const result = applyDetailBatch(store, trip.id, request, output(trip.itinerary, request.batchId, request.dayIds, trip.contentGeneration, true));
     expect(request.dayIds).toEqual(["day-1", "day-2"]); expect(result.trip.itinerary.stage).toBe("draft"); expect(result.completedDayIds).toEqual(["day-1", "day-2"]);
+    expect(result.feedback.canonicalDays.every((day) => day.detailStatus === "ready")).toBe(true);
     expect(result.feedback.idMappings["new-place"]).toBeTruthy(); expect(result.feedback.idMappings["new-stop"]).toBeTruthy();
     expect(result.feedback.canonicalDays[0].stops.some((stop) => stop.id === result.feedback.idMappings["new-stop"])).toBe(true);
     expect(result.feedback.canonicalPlaceChanges[0].id).toBe(result.feedback.idMappings["new-place"]); expect(store.listRevisions(trip.id)).toHaveLength(0); store.close();

@@ -2,8 +2,8 @@
 
 更新时间：2026-08-24  
 架构依据：`docs/AI-architecture-refactor.md` v2  
-当前 Phase：Phase 6 — Legacy Cleanup  
-状态：已完成并通过验证；Phase 7 尚未开始
+当前 Phase：Phase 7 — 最终 Review
+状态：已完成并通过最终验证；等待独立的 `private_data` 安全重置与真实端到端验收
 
 ## 开始新阶段前的固定检查
 
@@ -724,3 +724,83 @@ npm test -- apps/server/map-pipeline.test.ts apps/server/map-service.test.ts app
 Phase 4 验收已关闭。下一轮恢复 Phase 5 — API + WebSocket + Frontend；不得直接进入 Phase 6。
 
 下一阶段推荐模型：Terra High
+
+## Phase 7 最终 Review（2026-08-24）
+
+### 已完成内容
+
+- 按固定交接流程重新完整读取 README、1158 行唯一架构文档、本状态文件，并检查干净的 Phase 6 基线、`git status`、`git diff` 和最近相关提交；未读取或接触 `private_data/`。
+- 以架构第 16、17 节和用户最终 Review 清单逐项复核 contracts、TravelStore、Planner、两日细化、Prompt、地图派生、API、WebSocket、前端、测试和遗留引用。
+- 确认运行时只有一份 canonical `itinerary:v1`；业务阶段只来自 itinerary 的 `planning | draft | detailed`，Day 完成度只来自 `detailLevel`/可选 `detailStatus`；Store 中的 revision、AI Task metadata 和 map_state 分别只是历史、操作恢复与派生状态。
+- 确认只保留 00/01 两个核心 Prompt 和短 02 候选消歧 Prompt；没有恢复 Patch、Repair、Requirements、RouteSkeleton、TripPlan、Map Agent、手工候选、独立细化 API 或额外业务 stage。
+- 修复 detailed 生命周期约束：首次进入 detailed 仍只能由全部 Day 完成触发；进入生命周期后，即使后续修改使全部 Day 需要重新细化，stage 也不回退。删除了不可能从当前聊天链路到达的第二套“最终完成”写入函数，最终 revision 仍只由最后一个成功 DetailBatch 原子创建。
+- 修复 Planner 依赖失效：日期变化现在只把日期相关 verification 设为 `unverified`，保留仍可复用的时间/时长内容，并把已细化 Day 标记为 `needs_review`；不再因日期变化机械删除交通时长。
+- 补上 Planner 对 Place 身份字段/全名称身份变化的确定性失效：只清理连接该 Place 的入站/出站交通及相关 schedule/cost verification，不影响无关 Day；仅修改仍有稳定 local/English 身份的中文显示名不会触发失效。
+- Stop 跨 Day 移动时补充日期相关 verification 失效；新创建的 Stop/Day 不再因为“此前不存在”而被当作旧路线事实清空。
+- 每个成功 01 批次由服务端把 canonical Day 的 `detailStatus` 设为 `ready`，不让模型决定操作完成度；临时 ID 映射、canonical Days/Places、失效摘要和 generation 回灌链保持不变。
+- 修复同一旅行 Planner 写入串行化窗口：用户消息和 AI Task 创建后立即登记 pending run，再异步创建/恢复 Codex 线程；并发 `/turns` 不能在等待线程期间同时通过。停止或失败也不能让 pending run 在异步返回后复活。
+- Planner 的允许列表对话历史现在排除单独注入的当前用户消息，避免同一消息同时出现在 `userMessage` 和 `messageHistory`。
+- 收紧地图 approximate 降级：城市/住宿区域中心必须使用确定性构造的 center Place、已确认 countryCode 和既有 65 分可信阈值；不再因只有一个低分候选就写入 approximate 坐标。
+- 删除仅被测试引用、当前 UI 完全未使用的旧 `DayPathRole`/`labelRole` 代码与测试，以及已由 App/MapPanel 当前实现取代的 `workspace-controls.ts` 和测试；未删除认证、配置、缓存、语言、地图交互或版本历史能力。
+
+### 关键修改文件
+
+- `apps/server/contracts.ts`
+- `apps/server/planner-workflow.ts`
+- `apps/server/detail-workflow.ts`
+- `apps/server/map-pipeline.ts`
+- `apps/server/index.ts`
+- `apps/server/location-contract.test.ts`
+- `apps/server/planner-workflow.test.ts`
+- `apps/server/detail-workflow.test.ts`
+- `apps/server/map-pipeline.test.ts`
+- `apps/web/src/map-label-layout.ts`
+- `apps/web/src/map-label-layout.test.ts`
+- 已删除：`apps/web/src/workspace-controls.ts`、`apps/web/src/workspace-controls.test.ts`
+- `docs/IMPLEMENTATION_STATUS.md`
+
+### 已执行测试 / 检查
+
+- 全仓运行时引用搜索确认旧 DayPath、Requirements、Skeleton、TripPlan、Detail/Map Patch、Repair、MapCoordinator、Outline projector、旧 API 和旧状态名没有有效调用链；旧术语剩余匹配只有 Prompt 禁止性约束、实施历史或 TypeScript 的 `Partial<T>`/测试局部变量。
+- Prompt 文件数量和名称确认严格为 00、01、02 三个；WebSocket 广播确认严格为 `travel.turn.updated`、`travel.trip.updated`、`ai-task.updated`、`travel.map.changed` 四类。
+- `git diff --check` 通过；只有工作区 LF/CRLF 转换提示。
+- 本阶段唯一轻量运行检查通过：用本地 TypeScript 转译器检查 11 个本阶段修改的 TS/TSX 源码和测试文件，syntax diagnostics 为 0。
+- 用户授权后执行完整 Vitest：18 个测试文件、81 个测试全部通过，耗时 7.17 秒。首次沙箱运行仅因 esbuild 无权读取配置解析所需的父目录元数据而未启动测试；按同一授权范围受控重试后通过。
+- 用户授权后执行 `npm run typecheck`：Web 与 Server 全仓 TypeScript 检查全部通过。
+- 用户授权后执行 `npm run build`：Web 生产构建与 Server TypeScript 编译全部通过；Vite 转换 1754 个模块，Web 构建耗时 15.51 秒。首次沙箱运行同样在加载配置前被父目录元数据权限阻止，受控重试后通过。
+- 未执行 Playwright、真实服务、真实 Codex、真实地图 Provider 或端到端验收。
+- 未读取、修改、迁移、重置或删除 `private_data/`。
+
+### 新增/收紧的回归覆盖
+
+- detailed 生命周期在所有 Day 后续都变为 draft/needs_review 时不回退 stage。
+- 日期变化使 verification 失效但保留交通/停留时长，并标记 Day 需要复核。
+- Place 显示名修正不失效；Place 身份变化只失效连接边和相关 Day，无关 detailed Day 保持不变。
+- 每个 DetailBatch 的 canonical feedback 中 Day completion 由服务端确定为 `ready`。
+- 低可信单候选不能进入 approximate；可信且国家已确认的住宿城市中心可以安全 approximate。
+
+### 已确认架构决策
+
+- `detailed` 是进入后不回退的生命周期；“所有 Day detailed”只决定首次进入和再次全部完成时的历史版本，不要求生命周期中始终至少保留一个 detailed Day。
+- 日期相关事实失效的核心是 verification 失效，不是删除用户已确认或仍可复用的时间/时长内容；坐标和同端点/同方式路线继续复用。
+- `detailStatus` 是由服务端确定的 UI/恢复辅助：成功 01 批次为 `ready`，确定性依赖失效可设为 `needs_review`；它不是第四业务 stage。
+- approximate 仍必须是可信城市/区域中心；“只有一个候选”不等于可信，也不能绕过 countryCode 和既有分数阈值。
+- 同一旅行的写入串行化必须在任何异步线程创建/恢复之前生效；generation CAS 继续作为最终陈旧结果保护，但不能代替运行中任务互斥。
+
+### 已知问题 / 风险
+
+- 服务入口仍是启动即打开受控数据库的单文件，因此没有在不触碰真实 `private_data` 的前提下运行 HTTP/WebSocket 集成测试；Planner pending 互斥、duplicate 初始地图同步和 02 no-search 已作逐行静态调用链复核。
+- 未运行真实浏览器、Codex app-server、Nominatim/OSRM 或 Playwright；这些必须在 Phase 7 验证通过并按架构第 10.3 节单独安全重置 `private_data` 后执行。
+- MapLibre 动态 chunk 的既有约 988 kB 警告不是架构正确性问题；不为该提示增加新抽象。
+
+### 最终验证结果
+
+1. `npm test`：通过，18 个测试文件、81 个测试全部成功。
+2. `npm run typecheck`：通过，Web 与 Server 均无类型错误。
+3. `npm run build`：通过，Web 与 Server 均成功；仅保留既有 MapLibre 大分块提示。
+
+### 下一阶段
+
+Phase 7 已关闭。下一步不是继续业务重构，而是按架构第 10.3 节作为单独步骤执行 `private_data` realpath + 非 symlink + sentinel 三重保护检查；任何条件不能确认都停止删除。之后才启动新 Schema 并做真实端到端验收。本阶段没有执行该步骤。
+
+下一阶段推荐模型：GPT-5.6 Sol High（安全重置与端到端验收）

@@ -144,4 +144,28 @@ describe("generation-bound map pipeline", () => {
     expect(routeCalls).toBe(2);
     store.close();
   });
+
+  it("uses only a scored country-confirmed city or region center for approximate fallback", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "map-approximate-")); directories.push(directory);
+    const store = new TravelStore(path.join(directory, "travel.sqlite3"));
+    const lowTrust = itinerary(); lowTrust.places[0] = { ...lowTrust.places[0], nameZh: "无匹配", nameLocal: "No Match", nameEn: "No Match", city: "No Match City", region: null };
+    const lowTrip = store.createTrip(); const lowWritten = store.writeItinerary(lowTrip.id, lowTrust, 0);
+    const maps = {
+      search: async (query: string) => query.includes("Osaka") || query.includes("大阪") ? [candidate("osaka", "Osaka", "Osaka")] : [{ ...candidate("unrelated", "Unrelated", "Elsewhere"), region: null }],
+      route: async () => ({ geometry: null, warning: null }),
+    } as unknown as import("./map-service.js").MapService;
+    const pipeline = new MapPipeline({ store, maps, decideCandidate: async () => null, onChanged: () => {} });
+    await pipeline.sync(lowTrip.id, lowWritten.generation, ["day-1"]);
+    expect(store.getMapState(lowTrip.id)?.resolvedPlaces.find((entry) => entry.placeId === "place-a")?.resolution).toBe("unresolved");
+
+    const lodging = itinerary(); lodging.places[0] = { ...lodging.places[0], nameZh: "未知酒店", nameLocal: "Unknown Hotel", nameEn: "Unknown Hotel", kind: "lodging", city: "Kyoto" };
+    const lodgingTrip = store.createTrip(); const lodgingWritten = store.writeItinerary(lodgingTrip.id, lodging, 0);
+    const lodgingMaps = {
+      search: async (query: string) => query.includes("Unknown Hotel") || query.includes("未知酒店") ? [] : query.includes("Osaka") || query.includes("大阪") ? [candidate("osaka", "Osaka", "Osaka")] : [candidate("kyoto-center", "Kyoto", "Kyoto")],
+      route: async () => ({ geometry: null, warning: null }),
+    } as unknown as import("./map-service.js").MapService;
+    const lodgingPipeline = new MapPipeline({ store, maps: lodgingMaps, decideCandidate: async () => null, onChanged: () => {} });
+    await lodgingPipeline.sync(lodgingTrip.id, lodgingWritten.generation, ["day-1"]);
+    expect(store.getMapState(lodgingTrip.id)?.resolvedPlaces.find((entry) => entry.placeId === "place-a")?.resolution).toBe("approximate"); store.close();
+  });
 });
