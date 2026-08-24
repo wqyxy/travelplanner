@@ -4,7 +4,7 @@ import type { Itinerary, ItineraryLanguage, MapEdge, MapState, MapVisit, Place, 
 import type { MapSelection } from "./Itinerary";
 import { placeNameLines } from "./Itinerary";
 import { clusterHiddenLabels, layoutLabels } from "./map-label-layout";
-import { dashedRouteModes, defaultCategoryVisibility, mapCategoryLegend, routeHoverFromFeature, routeLayerIds, visibleCategories, type MapCategory } from "./map-interactions";
+import { approximateRouteDurationMinutes, dashedRouteModes, defaultCategoryVisibility, formatRouteDistance, formatRouteDuration, geometryDistanceKm, mapCategoryLegend, routeHoverFromFeature, routeLayerIds, visibleCategories, type MapCategory } from "./map-interactions";
 
 const dayColors = ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#d97706", "#0891b2"];
 const modeColors: Record<TransportMode, string> = { walk: "#2563eb", drive: "#dc2626", bike: "#16a34a", transit: "#64748b", rail: "#475569", flight: "#7c3aed", ferry: "#0891b2", none: "#94a3b8" };
@@ -15,7 +15,7 @@ export function categoryForPlace(kind: PlaceKind): MapCategory {
 }
 
 type Marker = { id: string; place: Place; resolved: ResolvedPlace; visits: MapVisit[]; category: MapCategory; label: string; dayLabel: string };
-type RouteLine = { edge: MapEdge; route: NonNullable<MapState["map"]>["routes"][number]; dayNumber: number };
+type RouteLine = { edge: MapEdge; route: NonNullable<MapState["map"]>["routes"][number]; dayNumber: number; durationMinutes: number | null };
 export type MapPresentation = { markers: Marker[]; routes: RouteLine[]; visibleVisits: MapVisit[]; unresolvedPlaceIds: string[] };
 
 export function buildMapPresentation(itinerary: Itinerary | null, state: MapState | null, selection: MapSelection, enabledCategories: MapCategory[]): MapPresentation {
@@ -36,12 +36,15 @@ export function buildMapPresentation(itinerary: Itinerary | null, state: MapStat
     markers.push({ id: placeId, place, resolved: point, visits, category, label: place.nameZh, dayLabel });
   }
   const edges = new Map(state.map.edges.map((edge) => [edge.id, edge]));
+  const visits = new Map(state.map.visits.map((visit) => [visit.id, visit]));
+  const stops = new Map(itinerary.days.flatMap((day) => day.stops.map((stop) => [stop.id, stop] as const)));
   const visibleDayIds = new Set(visibleVisits.map((visit) => visit.dayId));
   const routes = state.map.routes.flatMap((route) => {
     const edge = edges.get(route.edgeId);
     if (!edge || !route.geometry || !visibleDayIds.has(edge.dayId)) return [];
     const dayNumber = visibleVisits.find((visit) => visit.dayId === edge.dayId)?.dayNumber;
-    return dayNumber ? [{ edge, route, dayNumber }] : [];
+    const destinationStop = stops.get(visits.get(edge.toVisitId)?.stopId ?? "");
+    return dayNumber ? [{ edge, route, dayNumber, durationMinutes: destinationStop?.transportFromPrevious?.durationMinutes ?? null }] : [];
   });
   return { markers, routes, visibleVisits, unresolvedPlaceIds };
 }
@@ -57,7 +60,9 @@ function pointFeature(marker: Marker, itinerary: Itinerary, language: ItineraryL
 }
 
 function routeFeature(line: RouteLine) {
-  return { type: "Feature" as const, id: line.edge.id, geometry: line.route.geometry, properties: { id: line.edge.id, mode: line.edge.mode, dayNumber: line.dayNumber, status: line.route.status, warning: line.route.warning || "" } };
+  const distanceKm = geometryDistanceKm(line.route.geometry);
+  const durationMinutes = approximateRouteDurationMinutes(line.edge.mode, distanceKm, line.durationMinutes);
+  return { type: "Feature" as const, id: line.edge.id, geometry: line.route.geometry, properties: { id: line.edge.id, mode: line.edge.mode, dayNumber: line.dayNumber, distanceKm, durationMinutes, status: line.route.status, warning: line.route.warning || "" } };
 }
 
 export function MapPanel({ itinerary, state, language, categoryColors, selection, fullscreen, onToggleFullscreen }: {
@@ -103,7 +108,15 @@ export function MapPanel({ itinerary, state, language, categoryColors, selection
         const showRouteHover = (event: any) => {
           const hover = routeHoverFromFeature(event.features?.[0] || {}); if (!hover) return clearRouteHover();
           if (hoveredRoute.current !== hover.id) { clearRouteHover(); map.setFeatureState({ source: "travel-routes", id: hover.id }, { hover: true }); hoveredRoute.current = hover.id; }
-          const feature = event.features?.[0]; const content = document.createElement("div"); content.className = "map-route-tooltip"; content.textContent = `Day ${hover.dayNumber} · ${modeLabels[feature?.properties?.mode as TransportMode] || feature?.properties?.mode || "路线"}${feature?.properties?.warning ? ` · ${feature.properties.warning}` : ""}`;
+          const feature = event.features?.[0]; const properties = feature?.properties || {}; const content = document.createElement("div"); content.className = "map-route-tooltip";
+          const title = document.createElement("strong"); title.textContent = `Day ${hover.dayNumber} · ${modeLabels[properties.mode as TransportMode] || properties.mode || "路线"}`;
+          const distanceValue = properties.distanceKm === null || properties.distanceKm === undefined ? Number.NaN : Number(properties.distanceKm);
+          const durationValue = properties.durationMinutes === null || properties.durationMinutes === undefined ? Number.NaN : Number(properties.durationMinutes);
+          const distance = formatRouteDistance(Number.isFinite(distanceValue) ? distanceValue : null);
+          const duration = formatRouteDuration(Number.isFinite(durationValue) ? durationValue : null);
+          const metrics = document.createElement("span"); metrics.textContent = [distance, duration ? `约 ${duration}` : "时间待估"].filter(Boolean).join(" · ");
+          content.append(title, metrics);
+          if (properties.warning) { const warning = document.createElement("small"); warning.textContent = properties.warning; content.append(warning); }
           routePopupRef.current?.remove(); routePopupRef.current = new lib.Popup({ offset: 10, closeButton: false, closeOnClick: false, className: "map-route-popup" }).setLngLat(event.lngLat).setDOMContent(content).addTo(map);
         };
         const showPlace = (event: any) => {
