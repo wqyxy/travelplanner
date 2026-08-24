@@ -1,7 +1,7 @@
 import type { AiAgentKind, AiTaskSnapshot, AiTaskStatus } from "./contracts.js";
 import type { TravelStore } from "./travel-store.js";
 
-const TERMINAL = new Set<AiTaskStatus>(["completed", "failed", "stopped"]);
+const TERMINAL = new Set<AiTaskStatus>(["completed", "failed", "stopped", "cancelled_by_generation"]);
 const LIMIT = 360;
 
 export function normalizePublicAiSummary(value: unknown) {
@@ -18,7 +18,7 @@ export function normalizePublicAiSummary(value: unknown) {
 export class AiTaskMonitor {
   private readonly buffers = new Map<string, Map<string, string>>();
   constructor(private readonly store: TravelStore, private readonly emit: (snapshot: AiTaskSnapshot) => void) {}
-  start(input: { id: string; tripId: string; agent: AiAgentKind; label: string; summary: string }) {
+  start(input: { id: string; tripId: string; agent: AiAgentKind; label: string; summary: string; metadata?: Record<string, unknown> }) {
     const summary = normalizePublicAiSummary(input.summary);
     const snapshot = this.store.upsertAiTask({ ...input, status: "starting", summary, canStop: false, resetStartedAt: true });
     this.store.appendAiProgress(input.id, "starting", "task:started", summary); this.buffers.delete(input.id); this.emit(this.store.getAiTask(input.id)!); return snapshot;
@@ -32,5 +32,6 @@ export class AiTaskMonitor {
     const segments = this.buffers.get(id) ?? new Map<string, string>(); const combined = `${segments.get(segment) ?? ""}${value}`.slice(-2400); segments.set(segment, combined); this.buffers.set(id, segments);
     return this.update(id, "running", combined, segment);
   }
+  metadata(id: string, value: Record<string, unknown>) { const snapshot = this.store.setAiTaskMetadata(id, value); if (snapshot) this.emit(snapshot); return snapshot; }
   list(tripId: string) { return this.store.listAiTasks(tripId); }
 }

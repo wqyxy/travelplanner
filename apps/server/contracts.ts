@@ -1,270 +1,149 @@
 import { z } from "zod";
 
-export const transportModes = ["walk", "drive", "bike", "transit_advisory", "flight", "none"] as const;
-export const TransportMode = z.enum(transportModes);
+const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+const timePattern = /^([01]\d|2[0-3]):[0-5]\d$/;
+const countryPattern = /^[A-Z]{2}$/;
+const instantPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+const IdSchema = z.string().min(1).max(160);
+const TextSchema = z.string().trim().min(1).max(1200);
+const DateSchema = z.string().refine((value) => { if (!datePattern.test(value)) return false; const [y, m, d] = value.split("-").map(Number); const date = new Date(Date.UTC(y, m - 1, d)); return date.getUTCFullYear() === y && date.getUTCMonth() === m - 1 && date.getUTCDate() === d; }, "日期必须为有效的 YYYY-MM-DD。");
+const TimeSchema = z.string().regex(timePattern, "时间必须为 HH:mm。");
 
-export const RequirementsSchema = z.object({
-  destinations: z.array(z.object({ city: z.string().min(1).max(120), country: z.string().max(120).nullish(), timezone: z.string().max(80).nullish() })).max(8).default([]),
-  dates: z.object({ start: z.string().max(32).nullish(), end: z.string().max(32).nullish(), durationDays: z.number().int().min(1).max(90).nullish() }).default({}),
-  travelers: z.object({ summary: z.string().max(500).default("待确认"), adults: z.number().int().min(0).max(30).nullish(), children: z.number().int().min(0).max(30).nullish() }).default({ summary: "待确认" }),
-  budget: z.object({ amount: z.number().nonnegative().nullish(), currency: z.string().max(12).nullish(), note: z.string().max(500).nullish() }).default({}),
-  pace: z.string().max(80).default("待确认"),
-  themes: z.array(z.string().min(1).max(80)).max(20).default([]),
-  preferences: z.array(z.string().min(1).max(300)).max(30).default([]),
-  assumptions: z.array(z.string().min(1).max(500)).max(30).default([]),
-  openQuestions: z.array(z.string().min(1).max(500)).max(20).default([])
+export const PeriodSchema = z.enum(["morning", "afternoon", "evening", "night", "all_day"]);
+export const VerificationStatusSchema = z.enum(["verified", "estimated", "unverified"]);
+export const VerificationSchema = z.object({ status: VerificationStatusSchema, checkedAt: z.string().regex(instantPattern).nullable() }).strict().superRefine((value, context) => {
+  if (value.status === "verified" && !value.checkedAt) context.addIssue({ code: "custom", path: ["checkedAt"], message: "verified 必须提供 checkedAt。" });
 });
-export type TravelRequirements = z.infer<typeof RequirementsSchema>;
+export type Verification = z.infer<typeof VerificationSchema>;
 
-export const ActivitySchema = z.object({
-  id: z.string().min(1).max(120),
-  startTime: z.string().max(32),
-  endTime: z.string().max(32),
-  placeName: z.string().min(1).max(300),
-  /** V2 references stable entries in TripPlan.places; absent on legacy V1 plans. */
-  placeIds: z.array(z.string().min(1).max(160)).min(1).max(20).optional(),
-  activity: z.string().min(1).max(1200),
-  durationMinutes: z.number().int().min(0).max(1440),
-  transportMode: TransportMode,
-  transportMinutes: z.number().int().min(0).max(1440),
-  costNote: z.string().max(500),
-  notes: z.string().max(1000).nullish()
-});
-const TripPlanBaseSchema = z.object({
-  tripName: z.string().min(1).max(200),
-  travelerSummary: z.string().min(1).max(600),
-  pace: z.string().min(1).max(80),
-  themes: z.array(z.string().min(1).max(80)).max(20),
-  timezone: z.string().min(1).max(80),
-  budgetNote: z.string().min(1).max(600),
-  days: z.array(z.object({
-    dayNumber: z.number().int().min(1).max(90), date: z.string().max(32).nullish(), title: z.string().min(1).max(300), activities: z.array(ActivitySchema).min(1).max(20)
-  })).min(1).max(90),
-  warnings: z.array(z.string().min(1).max(700)).max(30),
-  generatedBy: z.literal("codex").default("codex")
-});
-export const TripPlaceSchema = z.object({
-  id: z.string().min(1).max(160),
-  kind: z.enum(["city", "attraction", "lodging", "meal", "stop", "waypoint"]),
-  nameZh: z.string().min(1).max(300),
-  nameEn: z.string().min(1).max(300),
-  nameLocal: z.string().min(1).max(300),
-  localLanguage: z.string().min(2).max(20),
-  approximate: z.boolean().default(false),
-  geocoding: z.object({
-    name: z.string().min(1).max(300), city: z.string().min(1).max(160), region: z.string().max(160),
-    country: z.string().min(1).max(160), countryCode: z.string().regex(/^[a-z]{2}$/i)
-  })
-});
-/** Legacy plans intentionally remain accepted without any coercion or write-back. */
-// A string is reserved for historical/foreign version markers; numeric 2 must
-// pass the V2 branch and cannot silently fall back to V1.
-export const TripPlanV1Schema = TripPlanBaseSchema.extend({ schemaVersion: z.literal(1).optional() });
-export const TripPlanV2Schema = TripPlanBaseSchema.extend({
-  schemaVersion: z.literal(2),
-  places: z.array(TripPlaceSchema).min(1).max(1800)
-}).superRefine((plan, context) => {
-  const ids = new Set(plan.places.map((place) => place.id));
-  if (ids.size !== plan.places.length) context.addIssue({ code: "custom", path: ["places"], message: "地点 id 不能重复。" });
-  for (const [dayIndex, day] of plan.days.entries()) for (const [activityIndex, activity] of day.activities.entries()) {
-    if (!activity.placeIds?.length) context.addIssue({ code: "custom", path: ["days", dayIndex, "activities", activityIndex, "placeIds"], message: "V2 活动必须引用至少一个 placeId。" });
-    else for (const placeId of activity.placeIds) if (!ids.has(placeId)) context.addIssue({ code: "custom", path: ["days", dayIndex, "activities", activityIndex, "placeIds"], message: `未知地点：${placeId}` });
-  }
-});
-export const TripPlanSchema = z.union([TripPlanV2Schema, TripPlanV1Schema]);
-export type TripPlan = z.infer<typeof TripPlanSchema>;
-
-/** A deliberately small first response.  The server owns all generated ids and
- * expands nights into day cards, so the model never has to keep a 30-day id
- * graph consistent. */
-export const RouteStopSchema = z.object({ city: z.string().min(1).max(160), country: z.string().max(160).nullish(), nights: z.number().int().min(0).max(30), reason: z.string().min(1).max(700) });
-export const RouteLegSchema = z.object({ fromStop: z.number().int().min(0), toStop: z.number().int().min(1), mode: TransportMode, estimatedMinutes: z.number().int().min(0).max(2880), note: z.string().min(1).max(700), needsVerification: z.boolean().default(false) });
-export const RouteDecisionSchema = z.object({ id: z.string().min(1).max(120), question: z.string().min(1).max(700), recommendation: z.string().min(1).max(700), impact: z.string().min(1).max(700), defaultChoice: z.enum(["accept", "reject"]).default("accept") });
-export type RouteDecision = z.infer<typeof RouteDecisionSchema>;
-export const RouteSkeletonSchema = z.object({ tripName: z.string().min(1).max(200), timezone: z.string().min(1).max(80).default("当地时间"), stops: z.array(RouteStopSchema).min(1).max(30), legs: z.array(RouteLegSchema).max(30).default([]), decisions: z.array(RouteDecisionSchema).max(20).default([]), assumptions: z.array(z.string().min(1).max(500)).max(30).default([]), warnings: z.array(z.string().min(1).max(700)).max(30).default([]) }).superRefine((value, context) => {
-  for (const [index, leg] of value.legs.entries()) if (leg.toStop !== leg.fromStop + 1 || leg.toStop >= value.stops.length) context.addIssue({ code: "custom", path: ["legs", index], message: "路段必须连接相邻停留点。" });
-});
-export type RouteSkeleton = z.infer<typeof RouteSkeletonSchema>;
-export const DetailDayPatchSchema = z.object({ dayNumber: z.number().int().min(1).max(90), title: z.string().min(1).max(300), /** New or canonical definitions used by this day.  Existing ids may be repeated only identically. */ places: z.array(TripPlaceSchema).max(80).default([]), activities: z.array(ActivitySchema).min(1).max(20), warnings: z.array(z.string().min(1).max(700)).max(10).default([]) });
-export type DetailDayPatch = z.infer<typeof DetailDayPatchSchema>;
-export const DetailDayRepairPatchSchema = z.object({ dayNumber: z.number().int().min(1).max(90), title: z.string().min(1).max(300).nullable(), places: z.array(TripPlaceSchema).max(80).nullable(), activities: z.array(ActivitySchema).min(1).max(20).nullable(), warnings: z.array(z.string().min(1).max(700)).max(10).nullable() }).superRefine((value, context) => { if (value.title === null && value.places === null && value.activities === null && value.warnings === null) context.addIssue({ code: "custom", message: "修复补丁至少修改一个错误字段。" }); });
-
-const TravelAgentOutputBaseSchema = z.object({
-  replyType: z.enum(["clarification", "requirements_updated", "plan_updated", "answer"]),
-  assistantMessage: z.string().min(1).max(12000),
-  requirements: RequirementsSchema,
-  assumptions: z.array(z.string().min(1).max(500)).max(30).default([]),
-  verificationNotes: z.array(z.string().min(1).max(700)).max(30).default([])
-});
-const requirePlanForUpdate = <T extends z.ZodType<{ replyType: "clarification" | "requirements_updated" | "plan_updated" | "answer"; plan?: unknown }>>(schema: T) => schema.superRefine((value, context) => {
-  if (value.replyType === "plan_updated" && !value.plan) context.addIssue({ code: "custom", path: ["plan"], message: "生成或修改行程时必须提供完整 plan。" });
-});
-/** New planner turns are V2-only; the legacy branch remains for stored/test V1 replies. */
-export const TravelAgentOutputV2Schema = requirePlanForUpdate(TravelAgentOutputBaseSchema.extend({ schemaVersion: z.literal(2), plan: TripPlanV2Schema.nullish() }));
-const TravelAgentOutputV1Schema = requirePlanForUpdate(TravelAgentOutputBaseSchema.extend({ schemaVersion: z.literal(1), plan: TripPlanSchema.nullish() }));
-export const TravelAgentOutputSchema = z.union([TravelAgentOutputV2Schema, TravelAgentOutputV1Schema]);
-export type TravelAgentOutput = z.infer<typeof TravelAgentOutputSchema>;
-function requireAllObjectProperties(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(requireAllObjectProperties);
-  if (!value || typeof value !== "object") return value;
-  const record = Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, requireAllObjectProperties(item)])) as Record<string, unknown>;
-  const properties = record.properties;
-  const type = record.type;
-  if (properties && typeof properties === "object" && !Array.isArray(properties) && (type === "object" || (Array.isArray(type) && type.includes("object")))) record.required = Object.keys(properties);
-  delete record.$schema;
-  return record;
+export const TransportModeSchema = z.enum(["walk", "drive", "bike", "transit", "rail", "flight", "ferry", "none"]);
+export const TransportSchema = z.object({ mode: TransportModeSchema, durationMinutes: z.number().int().min(0).max(10080).nullable(), note: z.string().max(1000).nullable(), verification: VerificationSchema }).strict();
+export const PlaceKindSchema = z.enum(["city", "attraction", "lodging", "meal", "airport", "station", "port", "stop", "waypoint"]);
+export const PlaceSchema = z.object({ id: IdSchema, nameZh: TextSchema.max(300), nameLocal: z.string().trim().min(1).max(300).nullable(), nameEn: z.string().trim().min(1).max(300).nullable(), kind: PlaceKindSchema, city: z.string().trim().min(1).max(160).nullable(), region: z.string().trim().min(1).max(160).nullable(), country: z.string().trim().min(1).max(160).nullable(), countryCode: z.string().regex(countryPattern).nullable(), approximate: z.boolean() }).strict();
+export type Place = z.infer<typeof PlaceSchema>;
+const StopObjectSchema = z.object({ id: IdSchema, role: z.enum(["start", "visit", "end"]), placeId: IdSchema, activity: TextSchema, period: PeriodSchema.nullable(), startTime: TimeSchema.nullable(), endTime: TimeSchema.nullable(), durationMinutes: z.number().int().min(0).max(1440).nullable(), scheduleVerification: VerificationSchema.nullable(), transportFromPrevious: TransportSchema.nullable(), costNote: z.string().max(1000).nullable(), costVerification: VerificationSchema.nullable(), notes: z.string().max(2000).nullable() }).strict();
+function addStopIssues(value: z.infer<typeof StopObjectSchema>, context: z.RefinementCtx) {
+  if ((value.startTime === null) !== (value.endTime === null)) context.addIssue({ code: "custom", path: ["endTime"], message: "开始和结束时间必须同时提供或同时为空。" });
 }
-export const DetailDayPatchJsonSchema = requireAllObjectProperties(z.toJSONSchema(DetailDayPatchSchema)) as Record<string, unknown>;
-export const DetailDayRepairPatchJsonSchema = requireAllObjectProperties(z.toJSONSchema(DetailDayRepairPatchSchema)) as Record<string, unknown>;
-export const TravelAgentOutputJsonSchema = requireAllObjectProperties(z.toJSONSchema(TravelAgentOutputV2Schema)) as Record<string, unknown>;
-
-export const RouteSkeletonOutputSchema = z.object({
-  schemaVersion: z.literal(1), replyType: z.enum(["clarification", "requirements_updated", "outline_updated", "answer"]),
-  assistantMessage: z.string().min(1).max(12000), requirements: RequirementsSchema,
-  skeleton: RouteSkeletonSchema.nullish(), assumptions: z.array(z.string().min(1).max(500)).max(30).default([]),
-  verificationNotes: z.array(z.string().min(1).max(700)).max(30).default([])
-}).superRefine((value, context) => { if (value.replyType === "outline_updated" && !value.skeleton) context.addIssue({ code: "custom", path: ["skeleton"], message: "路线草案必须提供 skeleton。" }); });
-export type RouteSkeletonOutput = z.infer<typeof RouteSkeletonOutputSchema>;
-export const RouteSkeletonOutputJsonSchema = requireAllObjectProperties(z.toJSONSchema(RouteSkeletonOutputSchema)) as Record<string, unknown>;
-export const TransportVerificationOutputSchema = z.object({ schemaVersion: z.literal(1), checks: z.array(z.object({ legIndex: z.number().int().min(0).max(29), status: z.enum(["verified", "decision_required", "waiting_service"]), summary: z.string().min(1).max(700), decision: RouteDecisionSchema.nullish() })).max(30) });
-export type TransportVerificationOutput = z.infer<typeof TransportVerificationOutputSchema>;
-export const TransportVerificationOutputJsonSchema = requireAllObjectProperties(z.toJSONSchema(TransportVerificationOutputSchema)) as Record<string, unknown>;
-
-export const MapEntityKindSchema = z.enum(["city", "attraction", "lodging", "meal", "stop", "waypoint"]);
-export const MapEntityPatchSchema = z.object({
-  id: z.string().min(1).max(160),
-  activityId: z.string().min(1).max(120).nullish(),
-  dayNumber: z.number().int().min(1).max(90),
-  order: z.number().int().min(0).max(100),
-  kind: MapEntityKindSchema,
-  name: z.string().min(1).max(300),
-  query: z.string().min(1).max(500),
-  city: z.string().max(160),
-  detail: z.string().min(1).max(1600),
-  importance: z.enum(["primary", "secondary", "context"]),
-  startTime: z.string().max(32),
-  endTime: z.string().max(32),
-  durationMinutes: z.number().int().min(0).max(1440),
-  transportMode: TransportMode,
-  costNote: z.string().max(500),
-  notes: z.string().max(1000),
-  approximateLodgingArea: z.boolean().default(false)
-  ,canonicalKey: z.string().min(1).max(800).optional()
-  ,displayName: z.string().min(1).max(300).optional()
-  ,region: z.string().max(160).optional()
-  ,country: z.string().max(160).optional()
-  ,countryCode: z.string().regex(/^[a-z]{2}$/i).optional()
-  ,queryLanguage: z.string().max(80).optional()
-  ,localName: z.string().min(1).max(300).optional()
-  ,englishName: z.string().min(1).max(300).optional()
-  ,localLanguage: z.string().min(2).max(20).optional()
-  ,queueOrder: z.number().int().min(0).optional()
-  ,aliases: z.array(z.string().min(1).max(300)).max(30).optional()
+export const StopSchema = StopObjectSchema.superRefine(addStopIssues);
+export type Stop = z.infer<typeof StopSchema>;
+const DayObjectSchema = z.object({ id: IdSchema, dayNumber: z.number().int().min(1).max(90), date: DateSchema.nullable(), title: TextSchema.max(300), detailLevel: z.enum(["draft", "detailed"]), detailStatus: z.enum(["ready", "needs_review"]).nullable().optional(), stops: z.array(StopSchema).min(2).max(80) }).strict();
+export const DaySchema = DayObjectSchema;
+export type Day = z.infer<typeof DaySchema>;
+const TripDatesSchema = z.object({ start: DateSchema.nullable(), end: DateSchema.nullable(), requestedDurationDays: z.number().int().min(1).max(90).nullable() }).strict().superRefine((value, context) => {
+  if (value.start && value.end && value.start > value.end) context.addIssue({ code: "custom", path: ["end"], message: "结束日期不能早于开始日期。" });
+  if (value.start && value.end && value.requestedDurationDays !== null) context.addIssue({ code: "custom", path: ["requestedDurationDays"], message: "完整日期范围存在时不得再保存 requestedDurationDays。" });
 });
-export const MapRoutePatchSchema = z.object({
-  id: z.string().min(1).max(180),
-  dayNumber: z.number().int().min(1).max(90),
-  order: z.number().int().min(0).max(100),
-  fromEntityId: z.string().min(1).max(160),
-  toEntityId: z.string().min(1).max(160),
-  mode: TransportMode,
-  edgeOrder: z.number().int().min(0).max(1000).optional(),
-  fromVisitId: z.string().min(1).max(180).optional(),
-  toVisitId: z.string().min(1).max(180).optional()
-});
-export const MapDayPathSchema = z.object({ dayNumber: z.number().int().min(1).max(90), entityIds: z.array(z.string().min(1).max(160)).min(1).max(200), visitIds: z.array(z.string().min(1).max(180)).max(200).optional(), startEntityId: z.string().min(1).max(160), endEntityId: z.string().min(1).max(160), overnightEntityId: z.string().min(1).max(160) });
-export type MapDayPath = z.infer<typeof MapDayPathSchema>;
-export const MapAgentOutputSchema = z.object({
-  schemaVersion: z.literal(3),
-  baseItineraryVersion: z.number().int().min(1),
-  baseMapVersion: z.number().int().min(0),
-  upsertEntities: z.array(MapEntityPatchSchema).max(1800),
-  removeEntityIds: z.array(z.string().min(1).max(160)).max(1800),
-  upsertRoutes: z.array(MapRoutePatchSchema).max(1800),
-  removeRouteIds: z.array(z.string().min(1).max(180)).max(1800),
-  dayPaths: z.array(MapDayPathSchema).min(1).max(90),
-  warnings: z.array(z.string().min(1).max(700)).max(100)
-}).superRefine((value, context) => {
-  const duplicate = (values: string[]) => values.find((id, index) => values.indexOf(id) !== index);
-  const entityDuplicate = duplicate(value.upsertEntities.map((item) => item.id));
-  const routeDuplicate = duplicate(value.upsertRoutes.map((item) => item.id));
-  if (entityDuplicate) context.addIssue({ code: "custom", path: ["upsertEntities"], message: `地点 ID 重复：${entityDuplicate}` });
-  if (routeDuplicate) context.addIssue({ code: "custom", path: ["upsertRoutes"], message: `路线 ID 重复：${routeDuplicate}` });
-});
-export type MapAgentOutput = z.infer<typeof MapAgentOutputSchema>;
-/**
- * The path endpoints duplicate information already present in entityIds.  Keep
- * the agent contract strict for everything meaningful, but canonicalize these
- * redundant fields before validation so a harmless endpoint typo cannot throw
- * away an otherwise valid map manifest.
- */
-export function normalizeMapAgentOutput(value: unknown): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const output = value as Record<string, unknown>;
-  if (!Array.isArray(output.dayPaths)) return value;
-  return {
-    ...output,
-    dayPaths: output.dayPaths.map((path) => {
-      if (!path || typeof path !== "object" || Array.isArray(path)) return path;
-      const record = path as Record<string, unknown>;
-      const ids = record.entityIds;
-      if (!Array.isArray(ids) || !ids.length || ids.some((id) => typeof id !== "string" || !id)) return path;
-      return { ...record, startEntityId: ids[0], endEntityId: ids.at(-1) };
-    }),
-  };
-}
-export type MapEntityPatch = z.infer<typeof MapEntityPatchSchema>;
-export type MapRoutePatch = z.infer<typeof MapRoutePatchSchema>;
-/** V4 names.  `MapEntity*` is retained as a wire-compatible alias for V3 clients. */
-export type MapPlace = MapEntityPatch;
-export type MapVisit = { id: string; placeId: string; activityId: string | null; dayNumber: number; order: number; subOrder: number; activity: string; detail: string; startTime: string; endTime: string; durationMinutes: number; transportMode: z.infer<typeof TransportMode>; costNote: string; notes: string };
-export type MapDayProgress = { dayNumber: number; status: "pending" | "generating" | "retrying" | "repairing" | "resolving" | "ready" | "partial" | "failed"; resolvedPlaces: number; totalPlaces: number; resolvedRoutes: number; totalRoutes: number; generationRetries: number; repairRetries: number; error: string | null };
-export const MapAgentOutputJsonSchema = requireAllObjectProperties(z.toJSONSchema(MapAgentOutputSchema)) as Record<string, unknown>;
+export const TripFactsSchema = z.object({
+  title: TextSchema.max(200), originPlaceId: IdSchema.nullable(), destinationPlaceIds: z.array(IdSchema).max(30),
+  dates: TripDatesSchema,
+  travelers: z.object({ summary: z.string().max(500), adults: z.number().int().min(0).max(30).nullable(), children: z.number().int().min(0).max(30).nullable() }).strict(),
+  budget: z.object({ amount: z.number().finite().nonnegative().nullable(), currency: z.string().trim().min(1).max(12).nullable(), note: z.string().max(500).nullable() }).strict(),
+  pace: z.string().trim().min(1).max(120).nullable(), themes: z.array(TextSchema.max(120)).max(30), preferences: z.array(TextSchema.max(500)).max(40), constraints: z.array(TextSchema.max(500)).max(40),
+  assumptions: z.array(z.object({ text: TextSchema.max(500), source: z.enum(["user", "ai", "system"]), confidence: z.enum(["low", "medium", "high"]) }).strict()).max(40),
+}).strict();
+export type TripFacts = z.infer<typeof TripFactsSchema>;
 
-export const MapResolutionOutputSchema = z.object({
-  schemaVersion: z.literal(1),
-  baseItineraryVersion: z.number().int().min(1),
-  baseMapVersion: z.number().int().min(1),
-  selections: z.array(z.object({
-    entityId: z.string().min(1).max(160),
-    providerPlaceId: z.string().min(1).max(160),
-    decisionNote: z.string().min(1).max(700)
-  })).max(1800),
-  coordinates: z.array(z.object({
-    entityId: z.string().min(1).max(160),
-    displayName: z.string().min(1).max(500),
-    latitude: z.number().finite().min(-90).max(90),
-    longitude: z.number().finite().min(-180).max(180),
-    sourceType: z.enum(["ai_web", "ai_knowledge"]),
-    evidenceUrl: z.string().max(2000).nullable(),
-    confidence: z.enum(["high", "medium", "low"]),
-    decisionNote: z.string().min(1).max(700)
-  })).max(1800),
-  unresolved: z.array(z.object({ entityId: z.string().min(1).max(160), reason: z.string().min(1).max(700) })).max(1800)
-}).superRefine((value, context) => {
-  const ids = [...value.selections, ...value.coordinates, ...value.unresolved].map((item) => item.entityId);
-  const duplicate = ids.find((id, index) => ids.indexOf(id) !== index);
-  if (duplicate) context.addIssue({ code: "custom", path: ["selections"], message: `地点决策重复：${duplicate}` });
-  for (const item of value.coordinates) {
-    if (item.sourceType === "ai_web" && !item.evidenceUrl) context.addIssue({ code: "custom", path: ["coordinates"], message: `网页坐标必须提供证据链接：${item.entityId}` });
-    if (item.evidenceUrl && !/^https?:\/\/[^\s]+$/i.test(item.evidenceUrl)) context.addIssue({ code: "custom", path: ["coordinates"], message: `坐标证据链接无效：${item.entityId}` });
+function detailedDayIssues(day: Day, context: z.RefinementCtx, prefix: PropertyKey[] = []) {
+  for (const [stopIndex, stop] of day.stops.entries()) {
+    if (!stop.startTime || !stop.endTime || stop.durationMinutes === null || !stop.scheduleVerification) context.addIssue({ code: "custom", path: [...prefix, "stops", stopIndex], message: "detailed Stop 必须提供时间、停留时长和日程核验状态。" });
+    if (stopIndex > 0 && (!stop.transportFromPrevious || stop.transportFromPrevious.durationMinutes === null)) context.addIssue({ code: "custom", path: [...prefix, "stops", stopIndex, "transportFromPrevious"], message: "detailed 非首 Stop 必须提供交通和时长。" });
   }
+}
+export const DetailedDaySchema = DaySchema.superRefine((day, context) => {
+  if (day.detailLevel !== "detailed") context.addIssue({ code: "custom", path: ["detailLevel"], message: "细化批次只能返回 detailed Day。" });
+  detailedDayIssues(day, context);
 });
-export type MapResolutionOutput = z.infer<typeof MapResolutionOutputSchema>;
-export const MapResolutionOutputJsonSchema = requireAllObjectProperties(z.toJSONSchema(MapResolutionOutputSchema)) as Record<string, unknown>;
+export const ItinerarySchema = z.object({ schemaVersion: z.literal(1), stage: z.enum(["planning", "draft", "detailed"]), trip: TripFactsSchema, places: z.array(PlaceSchema).max(1800), days: z.array(DaySchema).max(90), warnings: z.array(TextSchema.max(700)).max(100) }).strict().superRefine((value, context) => {
+  const placeIds = new Set<string>();
+  for (const [index, place] of value.places.entries()) { if (placeIds.has(place.id)) context.addIssue({ code: "custom", path: ["places", index, "id"], message: "Place ID 不能重复。" }); placeIds.add(place.id); }
+  for (const id of [value.trip.originPlaceId, ...value.trip.destinationPlaceIds].filter((item): item is string => Boolean(item))) if (!placeIds.has(id)) context.addIssue({ code: "custom", path: ["trip"], message: `旅行引用未知 Place：${id}` });
+  if (new Set(value.trip.destinationPlaceIds).size !== value.trip.destinationPlaceIds.length) context.addIssue({ code: "custom", path: ["trip", "destinationPlaceIds"], message: "目的地引用不能重复。" });
+  const dayIds = new Set<string>(); const stopIds = new Set<string>();
+  for (const [dayIndex, day] of value.days.entries()) {
+    if (dayIds.has(day.id)) context.addIssue({ code: "custom", path: ["days", dayIndex, "id"], message: "Day ID 不能重复。" }); dayIds.add(day.id);
+    if (day.dayNumber !== dayIndex + 1) context.addIssue({ code: "custom", path: ["days", dayIndex, "dayNumber"], message: "dayNumber 必须从 1 连续递增。" });
+    for (const [stopIndex, stop] of day.stops.entries()) {
+      if (stopIds.has(stop.id)) context.addIssue({ code: "custom", path: ["days", dayIndex, "stops", stopIndex, "id"], message: "Stop ID 必须全局唯一。" }); stopIds.add(stop.id);
+      if (!placeIds.has(stop.placeId)) context.addIssue({ code: "custom", path: ["days", dayIndex, "stops", stopIndex, "placeId"], message: `Stop 引用未知 Place：${stop.placeId}` });
+      const expectedRole = stopIndex === 0 ? "start" : stopIndex === day.stops.length - 1 ? "end" : "visit";
+      if (stop.role !== expectedRole) context.addIssue({ code: "custom", path: ["days", dayIndex, "stops", stopIndex, "role"], message: `Stop 必须为 ${expectedRole}。` });
+      if (stopIndex === 0 && stop.transportFromPrevious !== null) context.addIssue({ code: "custom", path: ["days", dayIndex, "stops", stopIndex, "transportFromPrevious"], message: "首 Stop 不得有交通。" });
+    }
+    if (day.detailLevel === "detailed") detailedDayIssues(day, context, ["days", dayIndex]);
+  }
+  if (value.stage !== "planning") {
+    if (!value.days.length) context.addIssue({ code: "custom", path: ["days"], message: "draft 和 detailed 必须有 Days。" });
+    for (const [index, day] of value.days.entries()) if (day.stops.length < 3) context.addIssue({ code: "custom", path: ["days", index, "stops"], message: "draft 每天必须有开始、访问和结束 Stop。" });
+    if (value.trip.dates.start) {
+      const start = Date.parse(`${value.trip.dates.start}T00:00:00Z`);
+      value.days.forEach((day, index) => { const expected = new Date(start + index * 86400000).toISOString().slice(0, 10); if (day.date !== expected) context.addIssue({ code: "custom", path: ["days", index, "date"], message: "日期必须连续。" }); });
+      if (value.trip.dates.end) {
+        const total = Math.floor((Date.parse(`${value.trip.dates.end}T00:00:00Z`) - start) / 86400000) + 1;
+        if (value.days.length !== total) context.addIssue({ code: "custom", path: ["days"], message: "Day 数量必须覆盖完整日期范围。" });
+      }
+    }
+  }
+  // User accepted the lifecycle interpretation when starting Phase 1: a later
+  // detailed-itinerary mutation may leave an affected Day at draft.
+  if (value.stage === "detailed" && value.days.length && value.days.every((day) => day.detailLevel === "draft")) context.addIssue({ code: "custom", path: ["stage"], message: "detailed 生命周期至少应保留一个 detailed Day。" });
+});
+export type Itinerary = z.infer<typeof ItinerarySchema>;
+export const emptyItinerary = (): Itinerary => ItinerarySchema.parse({ schemaVersion: 1, stage: "planning", trip: { title: "未命名旅行", originPlaceId: null, destinationPlaceIds: [], dates: { start: null, end: null, requestedDurationDays: null }, travelers: { summary: "", adults: null, children: null }, budget: { amount: null, currency: null, note: null }, pace: null, themes: [], preferences: [], constraints: [], assumptions: [] }, places: [], days: [], warnings: [] });
 
-export const emptyRequirements = (): TravelRequirements => RequirementsSchema.parse({});
-
-export type CoordinateSource = "nominatim" | "ai_web" | "ai_knowledge" | "manual";
-export type CoordinateConfidence = "high" | "medium" | "low";
-export type Candidate = { providerPlaceId: string; displayName: string; latitude: number; longitude: number; category: string | null; /** Optional for stored V1 candidates. */ placeType?: string | null; countryCode?: string | null; region?: string | null; city?: string | null; sourceUrl: string; sourceType: CoordinateSource; evidenceUrl: string | null; confidence: CoordinateConfidence; decisionNote: string | null };
-/** `approximate` is a usable city/area-centre fallback; `unresolved` is terminal but deliberately has no coordinate. */
-export type MapEntityView = MapEntityPatch & { status: "pending" | "resolved" | "approximate" | "ambiguous" | "unresolved" | "unlocated" | "failed"; location: Candidate | null; candidates: Candidate[]; warning: string | null };
-export type MapRouteView = MapRoutePatch & { status: "pending" | "resolved" | "unresolved" | "failed"; geometry: unknown | null; warning: string | null };
-export type MapJobStatus = "idle" | "queued" | "analyzing" | "resolving" | "ready" | "partial" | "failed" | "stopped";
-export type MapSnapshot = { itineraryVersion: number; mapVersion: number; contractVersion: number; sequence: number; scope: "all" | "day"; dayNumber: number | null; status: MapJobStatus; summary: string; warnings: string[]; places: MapEntityView[]; visits: MapVisit[]; dayProgress: MapDayProgress[]; /** V3 compatibility alias for places. */ entities: MapEntityView[]; routes: MapRouteView[]; dayPaths: MapDayPath[] };
-
-export type AiAgentKind = "planner" | "map";
-export type AiTaskStatus = "starting" | "running" | "waiting" | "reconnecting" | "completed" | "failed" | "stopped";
+const TripChangesSchema = z.union([
+  z.object({ title: z.string().trim().min(1).max(200) }).strict(), z.object({ originPlaceId: IdSchema.nullable() }).strict(), z.object({ destinationPlaceIds: z.array(IdSchema).max(30) }).strict(), z.object({ dates: TripDatesSchema }).strict(), z.object({ travelers: TripFactsSchema.shape.travelers }).strict(), z.object({ budget: TripFactsSchema.shape.budget }).strict(), z.object({ pace: z.string().trim().min(1).max(120).nullable() }).strict(), z.object({ themes: z.array(TextSchema.max(120)).max(30) }).strict(), z.object({ preferences: z.array(TextSchema.max(500)).max(40) }).strict(), z.object({ constraints: z.array(TextSchema.max(500)).max(40) }).strict(), z.object({ assumptions: TripFactsSchema.shape.assumptions }).strict(),
+]);
+const PlaceChangesSchema = z.union([
+  z.object({ nameZh: TextSchema.max(300) }).strict(), z.object({ nameLocal: z.string().trim().min(1).max(300).nullable() }).strict(), z.object({ nameEn: z.string().trim().min(1).max(300).nullable() }).strict(), z.object({ kind: PlaceKindSchema }).strict(), z.object({ city: z.string().trim().min(1).max(160).nullable() }).strict(), z.object({ region: z.string().trim().min(1).max(160).nullable() }).strict(), z.object({ country: z.string().trim().min(1).max(160).nullable() }).strict(), z.object({ countryCode: z.string().regex(countryPattern).nullable() }).strict(), z.object({ approximate: z.boolean() }).strict(),
+]);
+const DayChangesSchema = z.union([
+  z.object({ date: DateSchema.nullable() }).strict(), z.object({ title: TextSchema.max(300) }).strict(), z.object({ detailLevel: z.enum(["draft", "detailed"]) }).strict(),
+]);
+const StopChangesSchema = z.union([
+  z.object({ activity: TextSchema }).strict(), z.object({ period: PeriodSchema.nullable() }).strict(), z.object({ startTime: TimeSchema.nullable() }).strict(), z.object({ endTime: TimeSchema.nullable() }).strict(), z.object({ durationMinutes: z.number().int().min(0).max(1440).nullable() }).strict(), z.object({ scheduleVerification: VerificationSchema.nullable() }).strict(), z.object({ transportFromPrevious: TransportSchema.nullable() }).strict(), z.object({ costNote: z.string().max(1000).nullable() }).strict(), z.object({ costVerification: VerificationSchema.nullable() }).strict(), z.object({ notes: z.string().max(2000).nullable() }).strict(),
+]);
+const NewPlaceSchema = PlaceSchema;
+const NewDaySchema = z.object({ id: IdSchema, date: DateSchema.nullable(), title: TextSchema.max(300), detailLevel: z.enum(["draft", "detailed"]), stops: z.array(StopSchema).min(2).max(80) }).strict();
+const NewStopSchema = StopObjectSchema.superRefine(addStopIssues);
+export const PlannerMutationSchema = z.union([
+  z.object({ type: z.literal("update_fields"), entity: z.literal("trip"), id: z.null(), changes: TripChangesSchema }).strict(), z.object({ type: z.literal("update_fields"), entity: z.literal("place"), id: IdSchema, changes: PlaceChangesSchema }).strict(), z.object({ type: z.literal("update_fields"), entity: z.literal("day"), id: IdSchema, changes: DayChangesSchema }).strict(), z.object({ type: z.literal("update_fields"), entity: z.literal("stop"), id: IdSchema, changes: StopChangesSchema }).strict(),
+  z.object({ type: z.literal("add_entity"), entity: z.literal("place"), parentId: z.null(), value: NewPlaceSchema }).strict(), z.object({ type: z.literal("add_entity"), entity: z.literal("day"), parentId: z.null(), value: NewDaySchema }).strict(), z.object({ type: z.literal("add_entity"), entity: z.literal("stop"), parentId: IdSchema, value: NewStopSchema }).strict(),
+  z.object({ type: z.literal("remove_entity"), entity: z.enum(["place", "day", "stop"]), id: IdSchema }).strict(), z.object({ type: z.literal("move_entity"), entity: z.literal("day"), id: IdSchema, targetParentId: z.null(), position: z.number().int().min(0).max(90).nullable() }).strict(), z.object({ type: z.literal("move_entity"), entity: z.literal("stop"), id: IdSchema, targetParentId: IdSchema, position: z.number().int().min(0).max(80).nullable() }).strict(),
+  z.object({ type: z.literal("replace_reference"), entity: z.enum(["place", "stop"]), id: IdSchema, newReferenceId: IdSchema }).strict(), z.object({ type: z.literal("invalidate_dependencies"), entity: z.enum(["place", "day", "stop", "edge"]), id: IdSchema, reason: TextSchema.max(500) }).strict(),
+]);
+export type PlannerMutation = z.infer<typeof PlannerMutationSchema>;
+export const PlannerOutputSchema = z.object({ schemaVersion: z.literal(1), operation: z.enum(["reply", "mutate_itinerary", "create_draft", "start_detailing"]), assistantMessage: TextSchema.max(12000), baseGeneration: z.number().int().min(0), mutations: z.array(PlannerMutationSchema).max(100).nullable(), draftItinerary: ItinerarySchema.nullable(), nextAction: z.enum(["none", "start_draft", "start_detail"]), suggestion: z.object({ id: IdSchema, text: TextSchema.max(700) }).strict().nullable() }).strict().superRefine((value, context) => {
+  if (value.operation === "reply" && (value.mutations !== null || value.draftItinerary !== null)) context.addIssue({ code: "custom", message: "reply 不得写 itinerary。" });
+  if (value.operation === "mutate_itinerary" && (!value.mutations?.length || value.draftItinerary !== null)) context.addIssue({ code: "custom", message: "mutation 必须只携带非空 mutations。" });
+  if (value.operation === "create_draft" && (!value.draftItinerary || value.mutations !== null || value.draftItinerary.stage !== "draft" || value.draftItinerary.days.some((day) => day.detailLevel !== "draft"))) context.addIssue({ code: "custom", message: "create_draft 必须携带完整初始 draft。" });
+  if (value.operation === "start_detailing" && (value.mutations !== null || value.draftItinerary !== null)) context.addIssue({ code: "custom", message: "start_detailing 不携带写入。" });
+});
+export type PlannerOutput = z.infer<typeof PlannerOutputSchema>;
+export const DetailBatchOutputSchema = z.object({ schemaVersion: z.literal(1), baseGeneration: z.number().int().min(0), batchId: IdSchema, dayIds: z.array(IdSchema).min(1).max(2), placeUpserts: z.array(PlaceSchema).max(100), days: z.array(DetailedDaySchema).min(1).max(2), assistantMessage: TextSchema.max(12000) }).strict().superRefine((value, context) => {
+  const requested = new Set(value.dayIds); const returned = new Set(value.days.map((day) => day.id));
+  if (requested.size !== value.dayIds.length || returned.size !== value.days.length || requested.size !== returned.size || [...requested].some((id) => !returned.has(id))) context.addIssue({ code: "custom", path: ["days"], message: "细化批次必须恰好替换指定 detailed Days。" });
+});
+export type DetailBatchOutput = z.infer<typeof DetailBatchOutputSchema>;
+export const DetailCanonicalFeedbackSchema = z.object({ appliedDayIds: z.array(IdSchema).min(1).max(2), idMappings: z.record(IdSchema, IdSchema), canonicalDays: z.array(DetailedDaySchema).min(1).max(2), canonicalPlaceChanges: z.array(PlaceSchema).max(100), invalidatedFacts: z.array(TextSchema.max(700)).max(100), currentGeneration: z.number().int().min(0) }).strict().superRefine((value, context) => {
+  const applied = new Set(value.appliedDayIds); const canonical = new Set(value.canonicalDays.map((day) => day.id));
+  if (applied.size !== value.appliedDayIds.length || canonical.size !== value.canonicalDays.length || applied.size !== canonical.size || [...applied].some((id) => !canonical.has(id))) context.addIssue({ code: "custom", path: ["canonicalDays"], message: "canonical feedback 必须回灌全部已应用 Day。" });
+});
+export type DetailCanonicalFeedback = z.infer<typeof DetailCanonicalFeedbackSchema>;
+export const ResolvedPlaceSchema = z.object({ placeId: IdSchema, geoFingerprint: TextSchema.max(1000), provider: TextSchema.max(120), providerPlaceId: z.string().max(200).nullable(), lat: z.number().finite().min(-90).max(90).nullable(), lng: z.number().finite().min(-180).max(180).nullable(), timezone: z.string().max(120).nullable(), resolution: z.enum(["exact", "approximate", "unresolved"]), confidence: z.number().finite().min(0).max(1).nullable(), resolvedAt: z.string().regex(instantPattern).nullable() }).strict();
+export type ResolvedPlace = z.infer<typeof ResolvedPlaceSchema>;
+export const MapVisitSchema = z.object({ id: IdSchema, dayId: IdSchema, dayNumber: z.number().int().min(1), stopId: IdSchema, placeId: IdSchema, order: z.number().int().min(0) }).strict(); export type MapVisit = z.infer<typeof MapVisitSchema>;
+export const MapEdgeSchema = z.object({ id: IdSchema, dayId: IdSchema, fromVisitId: IdSchema, toVisitId: IdSchema, mode: TransportModeSchema, order: z.number().int().min(0) }).strict(); export type MapEdge = z.infer<typeof MapEdgeSchema>;
+export const DerivedMapRouteSchema = z.object({ edgeId: IdSchema, routeKey: z.string().min(1).max(1000), geometry: z.unknown().nullable(), status: z.enum(["ready", "attention"]), warning: z.string().max(700).nullable() }).strict(); export type DerivedMapRoute = z.infer<typeof DerivedMapRouteSchema>;
+export const DerivedMapSnapshotSchema = z.object({ visits: z.array(MapVisitSchema).max(7200), edges: z.array(MapEdgeSchema).max(7200), routes: z.array(DerivedMapRouteSchema).max(7200) }).strict(); export type DerivedMapSnapshot = z.infer<typeof DerivedMapSnapshotSchema>;
+export const CandidateDecisionOutputSchema = z.object({ schemaVersion: z.literal(1), providerPlaceId: z.string().max(200).nullable(), reason: TextSchema.max(700) }).strict(); export type CandidateDecisionOutput = z.infer<typeof CandidateDecisionOutputSchema>;
+export const MapChangedEventSchema = z.object({ tripId: IdSchema, generation: z.number().int().min(0), changedDayIds: z.array(IdSchema).max(90), status: z.enum(["syncing", "ready", "attention"]), summary: TextSchema.max(700) }).strict(); export type MapChangedEvent = z.infer<typeof MapChangedEventSchema>;
+export type MapState = { generation: number; resolvedPlaces: ResolvedPlace[]; map: unknown; status: "idle" | "syncing" | "ready" | "attention"; warnings: string[]; updatedAt: string };
+export type AiAgentKind = "planner" | "detailer" | "map"; export type AiTaskStatus = "starting" | "running" | "waiting" | "reconnecting" | "completed" | "failed" | "stopped" | "cancelled_by_generation";
 export type AiProgressEvent = { id: number; taskId: string; tripId: string; agent: AiAgentKind; status: AiTaskStatus; kind: string; summary: string; createdAt: string };
-export type AiTaskSnapshot = { id: string; tripId: string; agent: AiAgentKind; label: string; status: AiTaskStatus; summary: string; startedAt: string; updatedAt: string; canStop: boolean; retryCount: number; nextAttemptAt: string | null; lastError: string | null; events: AiProgressEvent[] };
+export type AiTaskSnapshot = { id: string; tripId: string; agent: AiAgentKind; label: string; status: AiTaskStatus; summary: string; startedAt: string; updatedAt: string; canStop: boolean; retryCount: number; nextAttemptAt: string | null; lastError: string | null; metadata: Record<string, unknown>; events: AiProgressEvent[] };
+function strictJson(value: unknown): unknown { if (Array.isArray(value)) return value.map(strictJson); if (!value || typeof value !== "object") return value; const record = Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, strictJson(item)])) as Record<string, unknown>; if (record.properties && typeof record.properties === "object" && !Array.isArray(record.properties) && (record.type === "object" || (Array.isArray(record.type) && record.type.includes("object")))) record.required = Object.keys(record.properties as Record<string, unknown>); delete record.$schema; return record; }
+export const ItineraryJsonSchema = strictJson(z.toJSONSchema(ItinerarySchema)) as Record<string, unknown>;
+export const PlannerOutputJsonSchema = strictJson(z.toJSONSchema(PlannerOutputSchema)) as Record<string, unknown>;
+export const DetailBatchOutputJsonSchema = strictJson(z.toJSONSchema(DetailBatchOutputSchema)) as Record<string, unknown>;
+export const CandidateDecisionOutputJsonSchema = strictJson(z.toJSONSchema(CandidateDecisionOutputSchema)) as Record<string, unknown>;

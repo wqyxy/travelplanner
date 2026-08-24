@@ -1,5 +1,0 @@
-.map-label{overflow:visible}
-.map-label:after{z-index:-1}
-.map-cluster{min-width:70px;border-radius:999px;font-weight:800}
-.map-spider{z-index:6;max-width:120px;border-style:dashed}
-.map-spider:before{content:"";position:absolute;z-index:-1;left:-62px;top:12px;width:58px;border-top:1px solid var(--label-color,#1b4f78)}

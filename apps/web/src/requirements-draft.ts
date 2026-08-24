@@ -1,6 +1,0 @@
-import type { TravelRequirements } from "./types";
-export const emptyRequirements = (): TravelRequirements => ({ destinations: [], dates: {}, travelers: { summary: "待确认" }, budget: {}, pace: "待确认", themes: [], preferences: [], assumptions: [], openQuestions: [] });
-export const normalizeRequirements = (draft: TravelRequirements): TravelRequirements => ({ ...draft, destinations: draft.destinations.map((item) => ({ city: item.city.trim(), ...(item.country?.trim() ? { country: item.country.trim() } : {}), ...(item.timezone?.trim() ? { timezone: item.timezone.trim() } : {}) })), themes: draft.themes.map((item) => item.trim()).filter(Boolean), preferences: draft.preferences.map((item) => item.trim()).filter(Boolean), assumptions: draft.assumptions.map((item) => item.trim()).filter(Boolean), openQuestions: draft.openQuestions.map((item) => item.trim()).filter(Boolean) });
-export const canSaveRequirementsDraft = (documentTripId: string | null | undefined, currentTripId: string | null) => Boolean(currentTripId && documentTripId === currentTripId);
-export const shouldApplyRequirementsLoad = (switchedTrip: boolean, wasDirtyAtRequest: boolean, draftChangedSinceRequest: boolean) => switchedTrip || (!wasDirtyAtRequest && !draftChangedSinceRequest);
-export const shouldPreserveDraftAfterSave = (draftChangedSinceRequest: boolean) => draftChangedSinceRequest;

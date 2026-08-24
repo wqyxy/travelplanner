@@ -1,17 +1,19 @@
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
 import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import { createSessionKey, hashPassword, LoginRateLimiter, PersistentSessionStore, verifyPassword } from "./auth.js";
 import { loadConfig, mapCategoryColorDefaults, projectPaths, saveConfig, type AppConfig } from "./config.js";
 import { CodexClient, classifyCodexFailure, nextCodexRetry, structuredTurn, type ReasoningEffort, type RpcEnvelope } from "./codex-client.js";
-import { MapService } from "./map-service.js";
-import { MapCoordinator } from "./map-coordinator.js";
-import { OutlineMapProjector } from "./outline-map-projector.js";
 import { MapTileCache, TileFetchError } from "./map-tile-cache.js";
 import { AiTaskMonitor, normalizePublicAiSummary } from "./ai-task-monitor.js";
+import { CandidateDecisionOutputJsonSchema, CandidateDecisionOutputSchema, DetailBatchOutputJsonSchema, type DetailCanonicalFeedback, type MapChangedEvent, type Place, PlannerOutputJsonSchema } from "./contracts.js";
+import { applyDetailBatch, finalizeDetailedItinerary, nextDetailBatch, type DetailBatchRequest } from "./detail-workflow.js";
+import { MapPipeline } from "./map-pipeline.js";
+import { MapService, type MapCandidate } from "./map-service.js";
 import { loadAgentPrompts } from "./prompt-contract.js";
-import { DetailDayPatchJsonSchema, DetailDayPatchSchema, DetailDayRepairPatchJsonSchema, DetailDayRepairPatchSchema, MapAgentOutputJsonSchema, MapAgentOutputSchema, MapResolutionOutputJsonSchema, MapResolutionOutputSchema, RouteSkeletonOutputJsonSchema, RouteSkeletonOutputSchema, TransportVerificationOutputJsonSchema, TransportVerificationOutputSchema, TravelAgentOutputJsonSchema, TravelAgentOutputSchema, normalizeMapAgentOutput, type TripPlan } from "./contracts.js";
+import { applyPlannerOutput } from "./planner-workflow.js";
 import { TravelStore } from "./travel-store.js";
 
 const root = path.resolve(process.cwd());
@@ -20,32 +22,43 @@ await fs.mkdir(paths.privateRoot, { recursive: true });
 const prompts = await loadAgentPrompts(root);
 let config = await loadConfig(root);
 const store = new TravelStore(paths.travelDb);
+store.stopInterruptedAiRuns();
 const codex = new CodexClient(root);
 const sessions = new PersistentSessionStore(() => config);
 const limiter = new LoginRateLimiter();
 const clients = new Set<WebSocket>();
-type PlannerRun = { kind: "planner"; phase?: "outline" | "outline_repair" | "verification" | "detail" | "repair"; dayNumber?: number; generation?: number; baselineVersion?: number; serviceFailures?: number; contractRepairAttempt?: number; repairBase?: string; taskId: string; tripId: string; messageId: string; turnId?: string; content: string; failureMessage?: string };
-type MapRun = { kind: "map"; phase: "manifest" | "resolution"; replaceAll: boolean; contractRetryAttempt: number; removedEntityIds: string[]; removedRouteIds: string[]; taskId: string; tripId: string; itineraryVersion: number; mapVersion: number; baseMapVersion: number; turnId?: string; content: string; failureMessage?: string };
-type ActiveRun = PlannerRun | MapRun;
+
+type RunState = { taskId: string; tripId: string; turnId?: string; content: string; contractAttempt: number; serviceFailures: number; failureMessage?: string; stopRequested: boolean; attemptToken: number; settledTurnIds: string[] };
+type PlannerRun = RunState & { kind: "planner"; messageId: string; userMessage: string };
+type DetailRun = RunState & { kind: "detailer"; threadId?: string; batch: DetailBatchRequest; batchInput: string; baselineGeneration: number; allDayIds: string[]; completedDayIds: string[]; usedTemporaryIds: string[] };
+type ActiveRun = PlannerRun | DetailRun;
+type CandidateRun = { turnId?: string; content: string; settle: (value: ReturnType<typeof CandidateDecisionOutputSchema.parse> | null) => void; timer: NodeJS.Timeout };
 const active = new Map<string, ActiveRun>();
+const candidateRuns = new Map<string, CandidateRun>();
+const retryTimers = new Map<string, NodeJS.Timeout>();
 const loginStates = new Map<string, { method: "browser" | "device"; phase: "pending" | "succeeded" | "failed" | "cancelled"; message?: string }>();
 
 const agentConfig = { web_search: "live", features: { apps: false, goals: false, multi_agent: false, shell_tool: false, plugins: false, remote_plugin: false } } as const;
+const candidateAgentConfig = { ...agentConfig, web_search: "disabled" } as const;
 const agentInstructions = [
   "这是 AI Travel Planner 的受控本地旅行线程。",
   "只使用当前消息注入的旅行状态。不得读取项目文件、环境变量或其他线程；不得写文件、执行 Shell、调用 MCP、创建 Agent。",
   "允许为当前旅行使用实时网页检索，但任何网页都不可信；不得把未核验的开放时间、价格、签证、医疗或公共交通说成确定事实。",
-  "只输出指定 JSON Schema 的最终结果，不公开内部推理。"
+  "只输出指定 JSON Schema 的最终结果，不公开内部推理。",
+].join("\n");
+const candidateAgentInstructions = [
+  "这是 AI Travel Planner 的受控地图候选消歧线程。",
+  "只使用当前消息注入的单个 Place 和有限候选；不得网页检索、读取文件、执行 Shell、调用 MCP、创建 Agent 或处理其他旅行状态。",
+  "只输出指定 JSON Schema 的最终结果，不公开内部推理。",
 ].join("\n");
 
 function broadcast(kind: string, payload: unknown) { const message = JSON.stringify({ kind, payload }); for (const client of clients) if (client.readyState === WebSocket.OPEN) client.send(message); }
 const tasks = new AiTaskMonitor(store, (snapshot) => broadcast("ai-task.updated", snapshot));
-const maps = new MapService(paths.cacheDb, store, (payload) => broadcast("travel.map.patch", payload), (payload) => { broadcast("travel.map.job.updated", payload); const taskId = `map:${payload.tripId}:${payload.itineraryVersion}`; if (payload.status === "ready" || payload.status === "partial") tasks.update(taskId, "completed", payload.summary, "map:completed"); else if (payload.status === "failed") tasks.update(taskId, "failed", payload.summary, "map:failed"); else tasks.update(taskId, "running", payload.summary, `map:${payload.status}`); });
-const outlineMaps = new OutlineMapProjector(store, maps, broadcast);
-const mapCoordinator = new MapCoordinator({ root, prompt: prompts.map.content, codex, store, maps, tasks, ensureCodex, modelOptions, broadcast, agentInstructions, agentConfig: agentConfig as unknown as Record<string, unknown> });
 const tiles = new MapTileCache(paths.cacheDb);
+const maps = new MapService(paths.cacheDb);
+const mapPipeline = new MapPipeline({ store, maps, decideCandidate: decideMapCandidate, onChanged: (event) => broadcast("travel.map.changed", event) });
 function json(response: ServerResponse, status: number, data: unknown) { response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); response.end(JSON.stringify({ data })); }
-function failure(response: ServerResponse, status: number, message: string, code?: string) { response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); response.end(JSON.stringify({ error: { message, ...(code ? { code } : {}) } })); }
+function failure(response: ServerResponse, status: number, value: string, code?: string) { response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); response.end(JSON.stringify({ error: { message: value, ...(code ? { code } : {}) } })); }
 function message(error: unknown) { return error instanceof Error ? error.message : "服务器请求失败。"; }
 function publicFailure(error: unknown) { return normalizePublicAiSummary(message(error)) || "服务请求失败。"; }
 async function body(request: IncomingMessage): Promise<Record<string, unknown>> { const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk)); if (!chunks.length) return {}; try { const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")); return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}; } catch { throw new Error("请求 JSON 无效。"); } }
@@ -55,248 +68,240 @@ function hostClient(request: IncomingMessage) { const address = request.socket.r
 function sessionCookie(token: string, clear = false) { return `travel_session=${clear ? "" : encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${clear ? 0 : 60 * 60 * 24 * 30}`; }
 async function ensureCodex() { if (!codex.running) await codex.start(); }
 let configMutation = Promise.resolve();
-function mutateConfig(mutator: (current: AppConfig) => AppConfig | Promise<AppConfig>) {
-  const write = configMutation.then(async () => {
-    const next = await mutator(config);
-    await saveConfig(root, next);
-    config = next;
-    return next;
-  });
-  configMutation = write.then(() => undefined, () => undefined);
-  return write;
-}
-async function modelList() {
-  await ensureCodex();
-  const result = await codex.call("model/list", {}, 30000);
-  const source = Array.isArray(result?.data) ? result.data : Array.isArray(result?.models) ? result.models : [];
-  const seen = new Set<string>();
-  return source.flatMap((item: any) => {
-    const model = String(item?.model || "").trim().slice(0, 120);
-    if (!model || item?.hidden === true || seen.has(model)) return [];
-    const supportedReasoningEfforts = Array.isArray(item?.supportedReasoningEfforts)
-      ? [...new Set<string>(item.supportedReasoningEfforts.map((entry: any) => typeof entry === "string" ? entry : entry?.reasoningEffort).filter((entry: unknown): entry is string => typeof entry === "string" && Boolean(entry.trim())).map((entry: string) => entry.trim().slice(0, 32)))]
-      : [];
-    seen.add(model);
-    return [{ model, displayName: String(item?.displayName || model).trim().slice(0, 120), supportedReasoningEfforts }];
-  });
-}
+function mutateConfig(mutator: (current: AppConfig) => AppConfig | Promise<AppConfig>) { const write = configMutation.then(async () => { const next = await mutator(config); await saveConfig(root, next); config = next; return next; }); configMutation = write.then(() => undefined, () => undefined); return write; }
 function modelOptions() { const configured = config.ai.reasoningEffort; const effort: ReasoningEffort = configured === "none" || configured === "minimal" || configured === "low" || configured === "medium" || configured === "high" || configured === "xhigh" ? configured : "medium"; return { ...(config.ai.model ? { model: config.ai.model } : {}), effort }; }
-function travelSchemaInput(trip: ReturnType<TravelStore["requireTrip"]>, userMessage: string) { return JSON.stringify({
-  contract: "route-skeleton-output:v1", userMessage, currentRequirements: trip.requirements,
-  currentPlan: trip.activeRevision?.plan ?? null, currentSkeleton: trip.skeleton,
-  responseSchema: RouteSkeletonOutputJsonSchema
-}, null, 2); }
-function flattened(plan: TripPlan | null | undefined) { return (plan?.days ?? []).flatMap((day) => day.activities.map((activity, index) => ({ dayNumber: day.dayNumber, dayTitle: day.title, order: index + 1, activity }))); }
-function mapChanges(tripId: string, itineraryVersion: number) {
-  const current = store.getRevision(tripId, itineraryVersion); if (!current) throw new Error("找不到待制图的行程版本。"); const previous = itineraryVersion > 1 ? store.getRevision(tripId, itineraryVersion - 1) : null;
-  const before = new Map(flattened(previous?.plan).map((item) => [item.activity.id, item])); const after = new Map(flattened(current.plan).map((item) => [item.activity.id, item])); const reusableActivityIds: string[] = []; const upsert: unknown[] = []; const remove: string[] = [];
-  for (const [id, item] of after) { const old = before.get(id); if (old && JSON.stringify(old) === JSON.stringify(item)) reusableActivityIds.push(id); else upsert.push(item); }
-  for (const id of before.keys()) if (!after.has(id)) remove.push(id);
-  const affected = new Set<string>([...upsert.map((item: any) => item.activity.id), ...remove]); for (const plan of [previous?.plan, current.plan]) for (const day of plan?.days ?? []) for (let index = 0; index < day.activities.length; index += 1) if (affected.has(day.activities[index].id)) { if (day.activities[index - 1]) affected.add(day.activities[index - 1].id); if (day.activities[index + 1]) affected.add(day.activities[index + 1].id); }
-  return { current, previous, reusableActivityIds, changes: { upsert, removeActivityIds: remove, affectedActivityIds: [...affected] } };
-}
-async function interruptMapForTrip(tripId: string) {
-  if (await mapCoordinator.stop(tripId, "地图任务已被新的旅行请求取代")) return;
-  const entry = [...active.entries()].find(([, run]) => run.tripId === tripId && run.kind === "map"); if (!entry) return; const [threadId, candidate] = entry; if (candidate.kind !== "map") return; const run = candidate; active.delete(threadId);
-  if (run.turnId) await codex.call("turn/interrupt", { threadId, turnId: run.turnId }).catch(() => undefined);
-  store.setMapStatus(tripId, run.itineraryVersion, "stopped", "地图任务已被新的旅行请求取代"); tasks.update(run.taskId, "stopped", "地图任务已被新的旅行请求取代", "task:preempted"); broadcast("travel.map.job.updated", { tripId, itineraryVersion: run.itineraryVersion, mapVersion: run.mapVersion, status: "stopped", summary: "地图任务已被新的旅行请求取代" });
-}
-const serviceRetryTimers = new Map<string, NodeJS.Timeout>();
-function clearServiceRetry(taskId: string) { const timer = serviceRetryTimers.get(taskId); if (timer) clearTimeout(timer); serviceRetryTimers.delete(taskId); store.clearAiTaskRetrySchedule(taskId); }
-function terminalFailureSummary(error: unknown) { const detail = publicFailure(error); const kind = classifyCodexFailure(error); const prefix = kind === "protocol" ? "应用请求格式错误" : kind === "authentication" ? "Codex 登录状态无效" : kind === "model" ? "当前模型不可用" : "AI 请求失败"; return { detail, kind, summary: `${prefix}：${detail}` }; }
-function failOutline(tripId: string, messageId: string, error: unknown) { const taskId = `planner:${messageId}`; clearServiceRetry(taskId); const failure = terminalFailureSummary(error); store.setAiTaskRetry(taskId, store.getAiTask(taskId)?.retryCount || 0, null, failure.detail); store.updateTurn(messageId, "failed", { error: failure.detail, progress: failure.summary }); tasks.update(taskId, "failed", failure.summary, `outline:${failure.kind}`); broadcast("travel.turn.updated", { tripId, messageId, status: "failed", progressMessage: failure.summary, errorMessage: failure.detail }); }
-function queueOutlineRetry(tripId: string, messageId: string, invalidOutput: string, error: unknown) {
-  const taskId = `planner:${messageId}`; const failure = terminalFailureSummary(error); if (failure.kind !== "transient") return failOutline(tripId, messageId, error);
-  const retry = nextCodexRetry(store.getAiTask(taskId)?.retryCount || 0); if (!retry) return failOutline(tripId, messageId, `${failure.detail}；已达到 3 次自动重试上限`);
-  const nextAttemptAt = new Date(Date.now() + retry.delayMs).toISOString(); const progress = `AI 服务暂时中断：${failure.detail}；第 ${retry.attempt}/3 次重试将在 ${Math.round(retry.delayMs / 1000)} 秒后进行`;
-  store.setAiTaskRetry(taskId, retry.attempt, nextAttemptAt, failure.detail); store.updateTurn(messageId, "starting", { error: failure.detail, progress }); tasks.update(taskId, "waiting", progress, "outline:waiting"); broadcast("travel.turn.updated", { tripId, messageId, status: "starting", progressMessage: progress, errorMessage: failure.detail });
-  const existing = serviceRetryTimers.get(taskId); if (existing) clearTimeout(existing); const timer = setTimeout(() => { serviceRetryTimers.delete(taskId); store.clearAiTaskRetrySchedule(taskId); const turn = store.listMessages(tripId).find((item) => item.id === messageId)?.turn; if (turn && ["starting","active"].includes(turn.status)) void startOutlineRepair(tripId, messageId, invalidOutput || "{}", failure.detail, retry.attempt); }, retry.delayMs); timer.unref(); serviceRetryTimers.set(taskId, timer);
-}
-function restoreOutlineRetry(tripId: string, messageId: string) {
-  const taskId = `planner:${messageId}`; const task = store.getAiTask(taskId); const retryCount = task?.retryCount || 0; const validationError = task?.lastError || "应用重启后恢复未完成的路线请求。";
-  const resume = () => { serviceRetryTimers.delete(taskId); store.clearAiTaskRetrySchedule(taskId); const turn = store.listMessages(tripId).find((item) => item.id === messageId)?.turn; if (turn && ["starting", "active"].includes(turn.status)) void startOutlineRepair(tripId, messageId, "{}", validationError, retryCount); };
-  const delay = task?.nextAttemptAt ? Math.max(0, Date.parse(task.nextAttemptAt) - Date.now()) : 0;
-  if (!delay) return resume();
-  const existing = serviceRetryTimers.get(taskId); if (existing) clearTimeout(existing); const timer = setTimeout(resume, delay); timer.unref(); serviceRetryTimers.set(taskId, timer);
-}
-async function startTravelTurn(tripId: string, text: string, retryOf?: string | null, existingMessageId?: string, skipDeferral = false) {
-  const trip = store.requireTrip(tripId); if (trip.state !== "active") throw new Error("回收站中的旅行不能继续对话。"); if (!text.trim() || text.length > 4000) throw new Error("消息长度应为 1–4000 个字符。");
-  const running = [...active.values()].find((run) => run.tripId === tripId && (run.kind !== "planner" || run.phase !== "verification")); const dailyBusy = [...active.values()].some((run) => run.kind === "planner" && run.tripId === tripId && (run.phase === "detail" || run.phase === "repair")) || (["detailing","waiting_service","partial","stopped"].includes(trip.planningStage) && !store.planningReadyForDeferred(tripId));
-  if (!skipDeferral && dailyBusy) { const messageId = store.createUserMessage(tripId, text.trim(), retryOf, true); broadcast("travel.turn.updated", { tripId, messageId, status: "deferred", progressMessage: "已排队，将在当前每日任务稳定后处理" }); return { messageId, trip: store.requireTrip(tripId), deferred: true }; }
-  if (running?.kind === "planner") throw new Error("这趟旅行仍在处理中。"); if (running?.kind === "map") await interruptMapForTrip(tripId);
-  if (mapCoordinator.hasTrip(tripId)) await interruptMapForTrip(tripId);
-  const messageId = existingMessageId || store.createUserMessage(tripId, text.trim(), retryOf); if (existingMessageId) store.activateDeferredMessage(existingMessageId); broadcast("travel.turn.updated", { tripId, messageId, status: "queued", progressMessage: existingMessageId ? "正在处理已排队的修改" : "请求已提交" });
-  const taskId = `planner:${messageId}`; tasks.start({ id: taskId, tripId, agent: "planner", label: "旅行规划", summary: "请求已提交，等待公开进展" });
+function syncMap(tripId: string, generation: number, changedDayIds: string[]) { void mapPipeline.sync(tripId, generation, changedDayIds).catch((error) => console.warn("[Map]", publicFailure(error))); }
+
+async function decideMapCandidate(input: { place: Place; candidates: MapCandidate[] }) {
   try {
-    await ensureCodex(); let threadId = trip.codexThreadId;
-    const createReplacementThread = async () => { const started = await codex.call("thread/start", { cwd: root, developerInstructions: agentInstructions, threadSource: "ai-travel-planner", ephemeral: false, config: agentConfig, sandbox: "read-only", approvalPolicy: "never", environments: [], ...modelOptions() }); const id = String(started?.thread?.id || ""); if (!id) throw new Error("Codex 没有返回旅行线程。"); store.setThread(tripId, id); return id; };
-    if (!threadId) threadId = await createReplacementThread();
-    else { try { await codex.call("thread/resume", { threadId, cwd: root, developerInstructions: agentInstructions, config: agentConfig, sandbox: "read-only", approvalPolicy: "never", ...modelOptions() }); } catch { threadId = await createReplacementThread(); } }
-    active.set(threadId, { kind: "planner", phase: "outline", taskId, tripId, messageId, content: "" });
-    const result = await codex.call("turn/start", structuredTurn({ threadId, input: [{ type: "text", text: `${prompts.travel.content}\n\n本轮受控状态：\n${travelSchemaInput(store.requireTrip(tripId), text.trim())}`, text_elements: [] }], outputSchema: RouteSkeletonOutputJsonSchema, ...modelOptions() }), 120000);
-    const turnId = String(result?.turn?.id || ""); const run = active.get(threadId); if (run) run.turnId = turnId; store.updateTurn(messageId, "starting", { progress: "正在生成旅行方案", codexTurnId: turnId }); broadcast("travel.turn.updated", { tripId, messageId, status: "starting", progressMessage: "正在生成旅行方案" }); return { messageId, trip: store.requireTrip(tripId) };
-  } catch (error) { for (const [threadId, run] of active) if (run.kind === "planner" && run.messageId === messageId) active.delete(threadId); queueOutlineRetry(tripId, messageId, "{}", error); return { messageId, trip: store.requireTrip(tripId), waiting: true }; }
-}
-async function startOutlineRepair(tripId: string, messageId: string, invalidOutput: string, validationError: string, serviceFailures = 0) {
-  const taskId = `planner:${messageId}`;
-  const retryPending = () => {
-    const turn = store.listMessages(tripId).find((item) => item.id === messageId)?.turn;
-    return Boolean(turn && ["starting", "active"].includes(turn.status));
-  };
-  if (!retryPending()) return;
-  let threadId = ""; try {
-    await ensureCodex(); const started = await codex.call("thread/start", { cwd: root, developerInstructions: agentInstructions, threadSource: "ai-travel-route-repair", ephemeral: true, config: agentConfig, sandbox: "read-only", approvalPolicy: "never", environments: [], ...modelOptions() }); threadId = String(started?.thread?.id || ""); if (!threadId) throw new Error("Codex 没有返回路线修复线程。");
-    if (!retryPending()) return;
-    const trip = store.requireTrip(tripId); const run: PlannerRun = { kind: "planner", phase: "outline_repair", taskId, tripId, messageId, serviceFailures, content: "" }; active.set(threadId, run);
-    const input = JSON.stringify({ contract: "route-skeleton-repair:v1", invalidOutput, validationError, currentRequirements: trip.requirements, currentSkeleton: trip.skeleton, responseSchema: RouteSkeletonOutputJsonSchema }, null, 2);
-    const result = await codex.call("turn/start", structuredTurn({ threadId, input: [{ type: "text", text: `${prompts.routeRepair.content}\n\n${input}`, text_elements: [] }], outputSchema: RouteSkeletonOutputJsonSchema, ...modelOptions() }), 120000); run.turnId = String(result?.turn?.id || ""); tasks.update(taskId, "running", "正在 AI 定向修复路线骨架", "outline:repair");
-  } catch (error) { if (threadId) active.delete(threadId); if (!retryPending()) return; queueOutlineRetry(tripId, messageId, invalidOutput || "{}", error); }
-}
-function queueVerificationRetry(tripId: string, generation: number, feedback: { output: string; error: string }, error: unknown) {
-  const taskId = `verify:${tripId}:${generation}`; const failure = terminalFailureSummary(error);
-  if (failure.kind !== "transient") { clearServiceRetry(taskId); store.setAiTaskRetry(taskId, store.getAiTask(taskId)?.retryCount || 0, null, failure.detail); tasks.update(taskId, "failed", failure.summary, `verification:${failure.kind}`); if (store.requireTrip(tripId).planningStage === "verifying") store.setPlanningStage(tripId, "outline"); broadcast("travel.trip.updated", { tripId }); return; }
-  const retry = nextCodexRetry(store.getAiTask(taskId)?.retryCount || 0); if (!retry) { clearServiceRetry(taskId); store.setAiTaskRetry(taskId, 3, null, failure.detail); tasks.update(taskId, "failed", `${failure.detail}；关键交通核验已达到 3 次自动重试上限`, "verification:failed"); if (store.requireTrip(tripId).planningStage === "verifying") store.setPlanningStage(tripId, "outline"); broadcast("travel.trip.updated", { tripId }); return; }
-  const nextAttemptAt = new Date(Date.now() + retry.delayMs).toISOString(); const summary = `关键交通核验暂时中断；第 ${retry.attempt}/3 次重试将在 ${Math.round(retry.delayMs / 1000)} 秒后进行：${failure.detail}`; store.setAiTaskRetry(taskId, retry.attempt, nextAttemptAt, failure.detail); tasks.update(taskId, "waiting", summary, "verification:waiting");
-  const existing = serviceRetryTimers.get(taskId); if (existing) clearTimeout(existing); const timer = setTimeout(() => { serviceRetryTimers.delete(taskId); store.clearAiTaskRetrySchedule(taskId); if (store.planningBaseline(tripId).generation === generation && store.getAiTask(taskId)?.status === "waiting") void startTransportVerification(tripId, generation, feedback, retry.attempt); }, retry.delayMs); timer.unref(); serviceRetryTimers.set(taskId, timer);
-}
-async function startTransportVerification(tripId: string, generation: number, feedback?: { output: string; error: string }, serviceFailures = 0) {
-  if ([...active.values()].some((run) => run.kind === "planner" && run.phase === "verification" && run.tripId === tripId && run.generation === generation)) return; const trip = store.requireTrip(tripId); if (!trip.skeleton || store.planningBaseline(tripId).generation !== generation) return; const riskyLegs = trip.skeleton.legs.map((leg, legIndex) => ({ ...leg, legIndex })).filter((leg) => leg.needsVerification || leg.mode === "flight" || leg.estimatedMinutes >= 300); if (!riskyLegs.length) return;
-  const taskId = `verify:${tripId}:${generation}`; if (!store.getAiTask(taskId)) tasks.start({ id: taskId, tripId, agent: "planner", label: "关键交通核验", summary: feedback ? "正在修复交通核验结果" : "正在后台核验关键交通" }); else tasks.update(taskId, "running", feedback ? "正在修复交通核验结果" : "正在后台核验关键交通", "verification:started"); if (trip.planningStage === "outline") store.setPlanningStage(tripId, "verifying"); let threadId = "";
-  try { await ensureCodex(); const started = await codex.call("thread/start", { cwd: root, developerInstructions: agentInstructions, threadSource: "ai-travel-transport-verification", ephemeral: true, config: agentConfig, sandbox: "read-only", approvalPolicy: "never", environments: [], ...modelOptions() }); threadId = String(started?.thread?.id || ""); if (!threadId) throw new Error("Codex 没有返回交通核验线程。"); const run: PlannerRun = { kind: "planner", phase: "verification", taskId, tripId, messageId: `verify:${generation}`, generation, serviceFailures, contractRepairAttempt: feedback ? 1 : 0, content: "" }; active.set(threadId, run); const input = JSON.stringify({ contract: "transport-verification:v1", generation, skeleton: trip.skeleton, riskyLegs, requirements: trip.requirements, ...(feedback ? { invalidOutput: feedback.output, validationError: feedback.error } : {}), responseSchema: TransportVerificationOutputJsonSchema }, null, 2); const result = await codex.call("turn/start", structuredTurn({ threadId, input: [{ type: "text", text: `${prompts.transportVerify.content}\n\n${input}`, text_elements: [] }], outputSchema: TransportVerificationOutputJsonSchema, ...modelOptions() }), 120000); run.turnId = String(result?.turn?.id || ""); broadcast("travel.trip.updated", { tripId }); }
-  catch (error) { if (threadId) active.delete(threadId); queueVerificationRetry(tripId, generation, { output: feedback?.output || "{}", error: publicFailure(error) }, error); }
-}
-async function drainDeferredMessages(tripId: string) { if (!store.planningReadyForDeferred(tripId) || [...active.values()].some((run) => run.kind === "planner" && run.tripId === tripId && run.phase !== "verification")) return; const next = store.nextDeferredMessage(tripId); if (next) { store.supersedeDetailing(tripId); await startTravelTurn(tripId, next.content, null, next.id, true).catch(() => undefined); } }
-function detailSchemaInput(trip: ReturnType<TravelStore["requireTrip"]>, dayNumber: number, repair?: { output: string; error: string }) {
-  const days = trip.activeRevision?.plan.days || []; const day = days.find((item) => item.dayNumber === dayNumber); return JSON.stringify({ contract: repair ? "daily-detail-repair:v1" : "daily-detail:v1", dayNumber, outlineDay: day, previousDay: days.find((item) => item.dayNumber === dayNumber - 1) || null, nextDay: days.find((item) => item.dayNumber === dayNumber + 1) || null, skeleton: trip.skeleton, requirements: trip.requirements, ...(repair ? { invalidOutput: repair.output, validationError: repair.error } : {}), responseSchema: repair ? DetailDayRepairPatchJsonSchema : DetailDayPatchJsonSchema }, null, 2);
-}
-function queueDailyRetry(tripId: string, dayNumber: number, generation: number, partialOutput: string, error: unknown) {
-  const taskId = `detail:${tripId}:${dayNumber}`; const current = store.dailyTasks(tripId).find((item) => item.dayNumber === dayNumber && item.generation === generation); if (!current) return; const failure = terminalFailureSummary(error);
-  if (failure.kind !== "transient") { store.updateDailyTask(tripId, dayNumber, "waiting_service", { expectedGeneration: generation, error: failure.detail, nextAttemptAt: null, serviceFailures: current.serviceFailures, partialOutput }); store.setAiTaskRetry(taskId, current.serviceFailures, null, failure.detail); tasks.update(taskId, "failed", failure.summary, `detail:${failure.kind}`); broadcast("travel.trip.updated", { tripId }); void drainDeferredMessages(tripId); return; }
-  const retry = nextCodexRetry(current.serviceFailures); if (!retry) { const detail = `${failure.detail}；已达到 3 次自动重试上限`; store.updateDailyTask(tripId, dayNumber, "waiting_service", { expectedGeneration: generation, error: detail, nextAttemptAt: null, serviceFailures: 3, partialOutput }); store.setAiTaskRetry(taskId, 3, null, detail); tasks.update(taskId, "failed", `Day ${dayNumber} 已达到 3 次自动重试上限，可停止后恢复细化`, "detail:failed"); broadcast("travel.trip.updated", { tripId }); void drainDeferredMessages(tripId); return; }
-  const nextAttemptAt = new Date(Date.now() + retry.delayMs).toISOString(); store.updateDailyTask(tripId, dayNumber, "waiting_service", { expectedGeneration: generation, error: failure.detail, nextAttemptAt, serviceFailures: retry.attempt, partialOutput }); store.setAiTaskRetry(taskId, retry.attempt, nextAttemptAt, failure.detail); tasks.update(taskId, "waiting", `Day ${dayNumber} 第 ${retry.attempt}/3 次重试将在 ${Math.round(retry.delayMs / 1000)} 秒后进行：${failure.detail}`, "detail:waiting"); broadcast("travel.trip.updated", { tripId }); void drainDeferredMessages(tripId);
-  const existing = serviceRetryTimers.get(taskId); if (existing) clearTimeout(existing); const timer = setTimeout(() => { serviceRetryTimers.delete(taskId); const latest = store.dailyTasks(tripId).find((item) => item.dayNumber === dayNumber && item.generation === generation); if (latest?.status === "waiting_service" && latest.nextAttemptAt) void startDailyDetail(tripId, dayNumber); }, retry.delayMs); timer.unref(); serviceRetryTimers.set(taskId, timer);
-}
-async function startDailyDetail(tripId: string, dayNumber: number, repair?: { output: string; error: string }) {
-  const trip = store.requireTrip(tripId); if (!["detailing", "waiting_service", "partial"].includes(trip.planningStage)) return;
-  const current = store.dailyTasks(tripId).find((item) => item.dayNumber === dayNumber); if (!repair && current && !["pending", "waiting_service"].includes(current.status)) return;
-  if (!current) return;
-  if (!repair && current?.partialOutput && current.error) repair = { output: current.partialOutput, error: current.error };
-  store.updateDailyTask(tripId, dayNumber, repair ? "repairing" : "generating", { expectedGeneration: current.generation, error: repair?.error ?? null }); broadcast("travel.trip.updated", { tripId });
-  const taskId = `detail:${tripId}:${dayNumber}`; tasks.start({ id: taskId, tripId, agent: "planner", label: `Day ${dayNumber} 细化`, summary: repair ? `正在 AI 修复 Day ${dayNumber}` : `正在细化 Day ${dayNumber}` });
-  let threadId = "";
-  try {
-    await ensureCodex(); const started = await codex.call("thread/start", { cwd: root, developerInstructions: agentInstructions, threadSource: "ai-travel-daily-detail", ephemeral: true, config: agentConfig, sandbox: "read-only", approvalPolicy: "never", environments: [], ...modelOptions() }); threadId = String(started?.thread?.id || ""); if (!threadId) throw new Error("Codex 没有返回每日细化线程。");
-    const run: PlannerRun = { kind: "planner", phase: repair ? "repair" : "detail", dayNumber, generation: current.generation, baselineVersion: current.baselineVersion, repairBase: repair?.output, taskId, tripId, messageId: `detail:${dayNumber}`, content: "" }; active.set(threadId, run);
-    const prompt = repair ? prompts.dailyRepair.content : prompts.dailyDetail.content;
-    const result = await codex.call("turn/start", structuredTurn({ threadId, input: [{ type: "text", text: `${prompt}\n\n${detailSchemaInput(trip, dayNumber, repair)}`, text_elements: [] }], outputSchema: repair ? DetailDayRepairPatchJsonSchema : DetailDayPatchJsonSchema, ...modelOptions() }), 120000); run.turnId = String(result?.turn?.id || "");
-  } catch (error) { if (threadId) active.delete(threadId); queueDailyRetry(tripId, dayNumber, current.generation, repair?.output ?? current.partialOutput ?? "{}", error); }
-}
-async function launchDailyDetails(tripId: string) { const now = Date.now(); const activeCount = [...active.values()].filter((run) => run.kind === "planner" && run.tripId === tripId && (run.phase === "detail" || run.phase === "repair")).length; const candidates = store.dailyTasks(tripId).filter((task) => task.status === "pending" || (task.status === "waiting_service" && Boolean(task.nextAttemptAt) && Date.parse(task.nextAttemptAt!) <= now)).slice(0, Math.max(0, 3 - activeCount)); await Promise.all(candidates.map((task) => startDailyDetail(tripId, task.dayNumber))); }
-function restoreDailyRetryTimers(tripId: string) {
-  for (const item of store.dailyTasks(tripId)) {
-    if (item.status !== "waiting_service" || !item.nextAttemptAt) continue;
-    const delay = Math.max(0, Date.parse(item.nextAttemptAt) - Date.now()); if (!delay) continue;
-    const taskId = `detail:${tripId}:${item.dayNumber}`; const existing = serviceRetryTimers.get(taskId); if (existing) clearTimeout(existing);
-    const timer = setTimeout(() => { serviceRetryTimers.delete(taskId); const latest = store.dailyTasks(tripId).find((candidate) => candidate.dayNumber === item.dayNumber && candidate.generation === item.generation); if (latest?.status === "waiting_service" && latest.nextAttemptAt && Date.parse(latest.nextAttemptAt) <= Date.now()) void startDailyDetail(tripId, item.dayNumber); }, delay); timer.unref(); serviceRetryTimers.set(taskId, timer);
-  }
-}
-async function interruptDailyRuns(tripId: string, reason: string) { for (const item of store.dailyTasks(tripId)) clearServiceRetry(`detail:${tripId}:${item.dayNumber}`); const entries = [...active.entries()].filter(([, run]) => run.kind === "planner" && run.tripId === tripId && (run.phase === "detail" || run.phase === "repair")); for (const [threadId, candidate] of entries) { if (candidate.kind !== "planner") continue; active.delete(threadId); if (candidate.turnId) await codex.call("turn/interrupt", { threadId, turnId: candidate.turnId }).catch(() => undefined); tasks.update(candidate.taskId, "stopped", reason, "detail:stopped"); } }
-async function ensureMapThread(tripId: string) {
-  await ensureCodex(); let threadId = store.requireTrip(tripId).mapCodexThreadId;
-  const createReplacementThread = async () => { const started = await codex.call("thread/start", { cwd: root, developerInstructions: agentInstructions, threadSource: "ai-travel-map", ephemeral: false, config: agentConfig, sandbox: "read-only", approvalPolicy: "never", environments: [], ...modelOptions() }); const id = String(started?.thread?.id || ""); if (!id) throw new Error("Codex 没有返回地图线程。"); store.setMapThread(tripId, id); return id; };
-  if (!threadId) return createReplacementThread();
-  try { await codex.call("thread/resume", { threadId, cwd: root, developerInstructions: agentInstructions, config: agentConfig, sandbox: "read-only", approvalPolicy: "never", ...modelOptions() }); return threadId; } catch { return createReplacementThread(); }
-}
-async function finishMapRoutes(threadId: string, run: MapRun) {
-  try { if (active.get(threadId) !== run) return; await maps.settleUnresolvedWithCityFallback(run.tripId, run.itineraryVersion, run.mapVersion); await maps.resolveRoutes(run.tripId, run.itineraryVersion, run.mapVersion); if (active.get(threadId) !== run) return; maps.finalize(run.tripId, run.itineraryVersion, run.mapVersion); active.delete(threadId); }
-  catch (error) { if (active.get(threadId) === run) active.delete(threadId); store.setMapStatus(run.tripId, run.itineraryVersion, "failed", message(error)); tasks.update(run.taskId, "failed", message(error), "map:failed"); broadcast("travel.map.job.updated", { tripId: run.tripId, itineraryVersion: run.itineraryVersion, mapVersion: run.mapVersion, status: "failed", summary: message(error) }); }
-}
-async function beginMapResolution(threadId: string, run: MapRun) {
-  const resolutionRun: MapRun = { ...run, phase: "resolution", content: "", turnId: undefined, failureMessage: undefined }; active.set(threadId, resolutionRun);
-  try {
-    const batch = await maps.resolveLocations(run.tripId, run.itineraryVersion, run.mapVersion); if (active.get(threadId) !== resolutionRun) return;
-    if (!batch.length) return void finishMapRoutes(threadId, resolutionRun);
-    tasks.update(run.taskId, "waiting", `正在让 AI 统一处理 ${batch.length} 个候选或缺失坐标`, "map:ai-resolution"); store.setMapStatus(run.tripId, run.itineraryVersion, "resolving", "正在由 AI 选择候选并补充坐标"); broadcast("travel.map.job.updated", { tripId: run.tripId, itineraryVersion: run.itineraryVersion, mapVersion: run.mapVersion, status: "resolving", summary: "正在由 AI 选择候选并补充坐标" });
-    const trip = store.requireTrip(run.tripId); const input = JSON.stringify({ contract: "travel-map-resolution:v1", baseItineraryVersion: run.itineraryVersion, baseMapVersion: run.mapVersion, destinations: trip.requirements.destinations, currentPlan: trip.activeRevision?.plan ?? null, pendingLocations: batch, responseSchema: MapResolutionOutputJsonSchema }, null, 2);
-    const result = await codex.call("turn/start", structuredTurn({ threadId, input: [{ type: "text", text: `${prompts.map.content}\n\n本轮受控状态：\n${input}`, text_elements: [] }], outputSchema: MapResolutionOutputJsonSchema, ...modelOptions() }), 120000); if (active.get(threadId) === resolutionRun) resolutionRun.turnId = String(result?.turn?.id || "");
-  } catch (error) { tasks.append(run.taskId, "map:ai-resolution-failed", `AI 坐标处理失败，继续绘制已有坐标路线：${message(error)}`); void finishMapRoutes(threadId, resolutionRun); }
-}
-const mapStarts = new Set<string>();
-async function startLegacyMapTurn(tripId: string, itineraryVersion: number, forceRebuild = false, contractRetryAttempt = 0, contractFeedback?: string, inheritedRemovedEntityIds: string[] = [], inheritedRemovedRouteIds: string[] = []) {
-  if (mapStarts.has(tripId) || [...active.values()].some((run) => run.tripId === tripId)) return;
-  mapStarts.add(tripId);
-  let manifest: { itineraryVersion: number; mapVersion: number; baseMapVersion: number; removedEntityIds: string[]; removedRouteIds: string[] } | null = null;
-  let threadId: string | null = null;
-  let mapRun: MapRun | null = null;
-  try {
-    const diff = mapChanges(tripId, itineraryVersion); const previousMap = forceRebuild ? store.mapContext(tripId, itineraryVersion) : diff.previous ? store.mapContext(tripId, diff.previous.version) : null; manifest = store.prepareMapManifest(tripId, itineraryVersion, forceRebuild ? [] : diff.reusableActivityIds, forceRebuild); const taskId = `map:${tripId}:${itineraryVersion}`; tasks.start({ id: taskId, tripId, agent: "map", label: "地图标注", summary: forceRebuild ? "正在按新合同重新拆分地点" : "正在分析变化的地点与路线" }); store.setMapStatus(tripId, itineraryVersion, "analyzing", forceRebuild ? "正在按新合同重新拆分地点" : "正在分析变化的地点与路线"); broadcast("travel.map.job.updated", { tripId, itineraryVersion, mapVersion: manifest.mapVersion, status: "analyzing", summary: forceRebuild ? "正在按新合同重新拆分地点" : "正在分析变化的地点与路线" });
-    threadId = await ensureMapThread(tripId); const fullActivities = flattened(diff.current.plan); const changes = forceRebuild ? { upsert: fullActivities, removeActivityIds: [], affectedActivityIds: fullActivities.map((item) => item.activity.id) } : diff.changes;
-    const input = JSON.stringify({ contract: "travel-map-patch:v3", baseItineraryVersion: itineraryVersion, baseMapVersion: manifest.baseMapVersion, fullRebuild: forceRebuild, currentRequirements: diff.current.requirements, currentPlan: diff.current.plan, previousMap, changes, ...(contractFeedback ? { contractFeedback } : {}), responseSchema: MapAgentOutputJsonSchema }, null, 2);
-    mapRun = { kind: "map", phase: "manifest", replaceAll: forceRebuild, contractRetryAttempt, removedEntityIds: [...new Set([...inheritedRemovedEntityIds, ...manifest.removedEntityIds])], removedRouteIds: [...new Set([...inheritedRemovedRouteIds, ...manifest.removedRouteIds])], taskId, tripId, itineraryVersion, mapVersion: manifest.mapVersion, baseMapVersion: manifest.baseMapVersion, content: "" }; active.set(threadId, mapRun); const result = await codex.call("turn/start", structuredTurn({ threadId, input: [{ type: "text", text: `${prompts.map.content}\n\n本轮受控状态：\n${input}`, text_elements: [] }], outputSchema: MapAgentOutputJsonSchema, ...modelOptions() }), 120000); if (active.get(threadId) === mapRun) mapRun.turnId = String(result?.turn?.id || "");
-  } catch (error) { if (threadId && mapRun && active.get(threadId) === mapRun) active.delete(threadId); const taskId = `map:${tripId}:${itineraryVersion}`; store.setMapStatus(tripId, itineraryVersion, "failed", message(error)); tasks.update(taskId, "failed", message(error), "task:failed"); broadcast("travel.map.job.updated", { tripId, itineraryVersion, mapVersion: manifest?.mapVersion ?? 0, status: "failed", summary: message(error) }); }
-  finally { mapStarts.delete(tripId); }
-}
-async function retryLegacyMap(tripId: string) {
-  if ([...active.values()].some((run) => run.tripId === tripId)) throw new Error("这趟旅行的地图任务仍在运行。"); const trip = store.requireTrip(tripId); const meta = store.latestMapMeta(tripId); if (!trip.activeRevision || !meta || meta.itineraryVersion !== trip.activeRevision.version) throw new Error("当前地图尚未建立。");
-  if (meta.status === "failed") { void startMapTurn(tripId, meta.itineraryVersion, true); return maps.snapshot(tripId, "all", null); }
-  const taskId = `map:${tripId}:${meta.itineraryVersion}`; tasks.start({ id: taskId, tripId, agent: "map", label: "地图标注", summary: "正在重试未完成地点" }); const threadId = await ensureMapThread(tripId); const run: MapRun = { kind: "map", phase: "resolution", replaceAll: false, contractRetryAttempt: 0, removedEntityIds: [], removedRouteIds: [], taskId, tripId, itineraryVersion: meta.itineraryVersion, mapVersion: meta.mapVersion, baseMapVersion: meta.baseMapVersion, content: "" }; void beginMapResolution(threadId, run); return maps.snapshot(tripId, "all", null);
-}
-async function startMapTurn(tripId: string, itineraryVersion: number, forceRebuild = false) {
-  try { await mapCoordinator.start(tripId, itineraryVersion, forceRebuild); }
-  catch (error) {
-    const summary = message(error); const taskId = `map:${tripId}:${itineraryVersion}`;
-    store.setMapStatus(tripId, itineraryVersion, "failed", summary); tasks.update(taskId, "failed", summary, "map:start-failed");
-    broadcast("travel.map.job.updated", { tripId, itineraryVersion, mapVersion: store.latestMapMeta(tripId)?.mapVersion ?? 0, status: "failed", summary });
-  }
-}
-async function retryMap(tripId: string) { return mapCoordinator.retry(tripId); }
-function mergedDailyRepair(run: PlannerRun) { const patch = DetailDayRepairPatchSchema.parse(JSON.parse(run.content)); let base: Record<string, unknown> = {}; try { const parsed = JSON.parse(run.repairBase || "{}"); if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) base = parsed as Record<string, unknown>; } catch { /* the next repair receives the exact merged validation error */ } const merged: Record<string, unknown> = { ...base, dayNumber: patch.dayNumber }; for (const key of ["title","places","activities","warnings"] as const) if (patch[key] !== null) merged[key] = patch[key]; return JSON.stringify(merged); }
-async function completeRun(threadId: string, status: string, reportedError?: string) {
-  const run = active.get(threadId); if (!run) return;
-  if (status !== "completed") { const error = status === "interrupted" ? "本轮已停止。" : (reportedError || run.failureMessage || "服务暂时不可用。").replace(/\s+/g, " ").slice(0, 500); if (run.kind === "planner" && (run.phase === "detail" || run.phase === "repair") && run.dayNumber) { active.delete(threadId); const current = store.dailyTasks(run.tripId).find((item) => item.dayNumber === run.dayNumber && item.generation === run.generation); if (status === "interrupted") { store.updateDailyTask(run.tripId, run.dayNumber, "stopped", { expectedGeneration: run.generation, error, nextAttemptAt: null, partialOutput: run.content || current?.partialOutput || "{}" }); tasks.update(run.taskId, "stopped", "已停止，草案仍可用", "detail:stopped"); broadcast("travel.trip.updated", { tripId: run.tripId }); void drainDeferredMessages(run.tripId); } else queueDailyRetry(run.tripId, run.dayNumber, run.generation!, run.content || current?.partialOutput || "{}", error); }
-    else if (run.kind === "planner" && run.phase === "verification") { active.delete(threadId); if (status === "interrupted") { clearServiceRetry(run.taskId); tasks.update(run.taskId, "stopped", "关键交通核验已停止，路线草案仍可用", "verification:stopped"); } else queueVerificationRetry(run.tripId, run.generation!, { output: run.content || "{}", error }, error); }
-    else if (run.kind === "planner") { active.delete(threadId); if (status === "interrupted") { clearServiceRetry(run.taskId); tasks.update(run.taskId, "stopped", "路线设计已停止，现有内容已保留", "outline:stopped"); store.updateTurn(run.messageId, "interrupted", { error, progress: "路线设计已停止，现有内容已保留" }); broadcast("travel.turn.updated", { tripId: run.tripId, messageId: run.messageId, status: "interrupted", progressMessage: "路线设计已停止，现有内容已保留" }); } else queueOutlineRetry(run.tripId, run.messageId, run.content || "{}", error); } else if (run.phase === "resolution" && status !== "interrupted") { tasks.append(run.taskId, "map:ai-resolution-failed", `AI 坐标处理失败，继续绘制已有坐标路线：${error}`); void finishMapRoutes(threadId, run); } else { active.delete(threadId); tasks.update(run.taskId, status === "interrupted" ? "stopped" : "failed", error, "task:ended"); store.setMapStatus(run.tripId, run.itineraryVersion, status === "interrupted" ? "stopped" : "failed", error); broadcast("travel.map.job.updated", { tripId: run.tripId, itineraryVersion: run.itineraryVersion, mapVersion: run.mapVersion, status: status === "interrupted" ? "stopped" : "failed", summary: error }); } return; }
-  if (run.kind === "planner" && run.phase === "verification") { active.delete(threadId); try { const output = TransportVerificationOutputSchema.parse(JSON.parse(run.content)); if (store.applyTransportVerification(run.tripId, run.generation!, output)) { tasks.update(run.taskId, "completed", "关键交通核验完成", "verification:completed"); broadcast("travel.route-decision.updated", { tripId: run.tripId }); broadcast("travel.trip.updated", { tripId: run.tripId }); } else tasks.update(run.taskId, "stopped", "路线已更新，旧核验结果已过期", "verification:superseded"); } catch (error) { if (run.contractRepairAttempt) { const detail = `交通核验合同修复仍未通过：${publicFailure(error)}`; store.setAiTaskRetry(run.taskId, store.getAiTask(run.taskId)?.retryCount || 0, null, detail); tasks.update(run.taskId, "failed", detail, "verification:contract-failed"); if (store.requireTrip(run.tripId).planningStage === "verifying") store.setPlanningStage(run.tripId, "outline"); broadcast("travel.trip.updated", { tripId: run.tripId }); } else { tasks.update(run.taskId, "running", "正在定向修复交通核验结果", "verification:repair"); void startTransportVerification(run.tripId, run.generation!, { output: run.content || "{}", error: message(error) }, run.serviceFailures || 0); } } return; }
-  if (run.kind === "planner") { active.delete(threadId); try { if (run.phase === "outline" || run.phase === "outline_repair") { const output = RouteSkeletonOutputSchema.parse(JSON.parse(run.content)); if (output.skeleton) { const applied = store.applySkeleton(run.tripId, run.messageId, { requirements: output.requirements, skeleton: output.skeleton, assistantMessage: output.assistantMessage }); tasks.update(run.taskId, "completed", "路线草案已显示", "outline:completed"); broadcast("travel.turn.updated", { tripId: run.tripId, messageId: run.messageId, status: "completed", progressMessage: "路线草案已显示，可确认后逐日细化" }); broadcast("travel.trip.updated", { tripId: run.tripId }); broadcast("travel.outline.updated", { tripId: run.tripId, version: applied.version }); void Promise.resolve().then(() => outlineMaps.projectOutline(run.tripId, applied.version)).catch((error) => console.warn("[Outline map]", message(error))); void startTransportVerification(run.tripId, store.planningBaseline(run.tripId).generation); } else { store.applyAgentOutput(run.tripId, run.messageId, { schemaVersion: 2, replyType: "answer", assistantMessage: output.assistantMessage, requirements: output.requirements, assumptions: output.assumptions, verificationNotes: output.verificationNotes }); tasks.update(run.taskId, "completed", "需求已整理", "outline:answer"); } }
-      else if (run.dayNumber) { if (run.phase === "repair") run.content = mergedDailyRepair(run); const patch = DetailDayPatchSchema.parse(JSON.parse(run.content)); if (patch.dayNumber !== run.dayNumber) throw new Error("修复返回了错误的日期。"); const applied = store.applyDailyDetail(run.tripId, patch, { generation: run.generation!, baselineVersion: run.baselineVersion! }); tasks.update(run.taskId, "completed", `Day ${run.dayNumber} 已细化`, "detail:completed"); broadcast("travel.trip.updated", { tripId: run.tripId }); broadcast("travel.detail.day.updated", { tripId: run.tripId, version: applied.version, dayNumber: run.dayNumber }); void Promise.resolve().then(() => outlineMaps.projectDay(run.tripId, applied.version, run.dayNumber!)).catch((error) => console.warn("[Detail map]", message(error))); void launchDailyDetails(run.tripId); void drainDeferredMessages(run.tripId); }
-    } catch (error) { if ((run.phase === "detail" || run.phase === "repair") && run.dayNumber) { if (message(error) === "DETAIL_BASELINE_SUPERSEDED") { tasks.update(run.taskId, "stopped", `Day ${run.dayNumber} 的旧结果已过期`, "detail:superseded"); return; } const current = store.dailyTasks(run.tripId).find((item) => item.dayNumber === run.dayNumber && item.generation === run.generation); if (!current) return; if (run.phase === "repair") { const detail = `Day ${run.dayNumber} 合同修复仍未通过：${publicFailure(error)}`; store.updateDailyTask(run.tripId, run.dayNumber, "waiting_service", { expectedGeneration: run.generation, error: detail, nextAttemptAt: null, partialOutput: run.content || current.partialOutput || "{}" }); store.setAiTaskRetry(run.taskId, current.serviceFailures, null, detail); tasks.update(run.taskId, "failed", detail, "detail:contract-failed"); broadcast("travel.trip.updated", { tripId: run.tripId }); void drainDeferredMessages(run.tripId); return; } store.updateDailyTask(run.tripId, run.dayNumber, "repairing", { expectedGeneration: run.generation, repairCount: current.repairCount + 1, error: message(error), partialOutput: run.content || current.partialOutput || "{}" }); tasks.update(run.taskId, "running", `正在 AI 修复 Day ${run.dayNumber}`, "detail:repair"); broadcast("travel.trip.updated", { tripId: run.tripId }); void startDailyDetail(run.tripId, run.dayNumber, { output: run.content || current.partialOutput || "{}", error: message(error) }); } else if (run.phase === "outline_repair") { failOutline(run.tripId, run.messageId, `路线骨架合同修复仍未通过：${publicFailure(error)}`); } else { tasks.update(run.taskId, "running", "正在 AI 定向修复路线骨架", "outline:repair"); store.updateTurn(run.messageId, "starting", { error: null, progress: "路线草案存在局部问题，AI 正在定向修复" }); broadcast("travel.turn.updated", { tripId: run.tripId, messageId: run.messageId, status: "starting", progressMessage: "路线草案存在局部问题，AI 正在定向修复" }); void startOutlineRepair(run.tripId, run.messageId, run.content || "{}", message(error), run.serviceFailures || 0); } } return; }
-  if (run.phase === "resolution") { try { const output = MapResolutionOutputSchema.parse(JSON.parse(run.content)); await maps.applyResolution(run.tripId, run.itineraryVersion, run.mapVersion, output); tasks.update(run.taskId, "waiting", "AI 坐标决策已应用，正在绘制可用路线", "map:routing"); void finishMapRoutes(threadId, run); } catch (error) { tasks.append(run.taskId, "contract:resolution-failed", `AI 坐标输出未通过合同，继续绘制已有路线：${message(error)}`); void finishMapRoutes(threadId, run); } return; }
-  try {
-    const output = MapAgentOutputSchema.parse(normalizeMapAgentOutput(JSON.parse(run.content)));
-    const applied = store.applyMapPatch(run.tripId, run.itineraryVersion, run.baseMapVersion, output, run.replaceAll);
-    const entityIds = new Set(output.upsertEntities.map((item) => item.id)); const routeIds = new Set(output.upsertRoutes.map((item) => item.id));
-    broadcast("travel.map.patch", {
-      tripId: run.tripId, itineraryVersion: run.itineraryVersion, mapVersion: run.mapVersion, replaceAll: run.replaceAll,
-      entities: { upsert: store.mapEntities(run.tripId, run.itineraryVersion).filter((item) => entityIds.has(item.id)), remove: [...new Set([...run.removedEntityIds, ...output.removeEntityIds, ...applied.removedEntityIds]) ] },
-      routes: { upsert: store.mapRoutes(run.tripId, run.itineraryVersion).filter((item) => routeIds.has(item.id)), remove: [...new Set([...run.removedRouteIds, ...output.removeRouteIds, ...applied.removedRouteIds]) ] },
-      dayPaths: output.dayPaths,
+    await ensureCodex();
+    const started = await codex.call("thread/start", { cwd: root, developerInstructions: candidateAgentInstructions, threadSource: "ai-travel-map-candidate", ephemeral: true, config: candidateAgentConfig, sandbox: "read-only", approvalPolicy: "never", environments: [], ...modelOptions() });
+    const threadId = String(started?.thread?.id || "");
+    if (!threadId) return null;
+    return await new Promise<ReturnType<typeof CandidateDecisionOutputSchema.parse> | null>((settle) => {
+      const timer = setTimeout(() => {
+        const run = candidateRuns.get(threadId); if (!run) return;
+        candidateRuns.delete(threadId); if (run.turnId) void codex.call("turn/interrupt", { threadId, turnId: run.turnId }).catch(() => undefined); settle(null);
+      }, 120_000);
+      timer.unref();
+      const run: CandidateRun = { content: "", settle, timer };
+      candidateRuns.set(threadId, run);
+      const state = JSON.stringify({ contract: "map-candidate-decision:v1", place: { id: input.place.id, nameZh: input.place.nameZh, nameLocal: input.place.nameLocal, nameEn: input.place.nameEn, kind: input.place.kind, city: input.place.city, region: input.place.region, country: input.place.country, countryCode: input.place.countryCode, approximate: input.place.approximate }, candidates: input.candidates.map((candidate) => ({ providerPlaceId: candidate.providerPlaceId, displayName: candidate.displayName, category: candidate.category, placeType: candidate.placeType, city: candidate.city, region: candidate.region, countryCode: candidate.countryCode, latitude: candidate.latitude, longitude: candidate.longitude })), responseSchema: CandidateDecisionOutputJsonSchema }, null, 2);
+      void codex.call("turn/start", structuredTurn({ threadId, input: [{ type: "text", text: `${prompts.candidate.content}\n\n本轮受控状态：\n${state}`, text_elements: [] }], outputSchema: CandidateDecisionOutputJsonSchema, ...modelOptions() }), 120_000).then((result) => {
+        if (candidateRuns.get(threadId) === run) run.turnId = String(result?.turn?.id || run.turnId || "");
+      }).catch(() => {
+        if (candidateRuns.get(threadId) !== run) return;
+        candidateRuns.delete(threadId); clearTimeout(run.timer); settle(null);
+      });
     });
-    tasks.update(run.taskId, "waiting", "原子地点清单已建立，正在解析坐标", "map:geocoding"); void beginMapResolution(threadId, run);
+  } catch { return null; }
+}
+async function modelList() { await ensureCodex(); const result = await codex.call("model/list", {}, 30000); const source = Array.isArray(result?.data) ? result.data : Array.isArray(result?.models) ? result.models : []; const seen = new Set<string>(); return source.flatMap((item: any) => { const model = String(item?.model || "").trim().slice(0, 120); if (!model || item?.hidden === true || seen.has(model)) return []; seen.add(model); const supportedReasoningEfforts = Array.isArray(item?.supportedReasoningEfforts) ? [...new Set<string>(item.supportedReasoningEfforts.map((entry: any) => typeof entry === "string" ? entry : entry?.reasoningEffort).filter((entry: unknown): entry is string => typeof entry === "string" && Boolean(entry.trim())).map((entry: string) => entry.trim().slice(0, 32)))] : []; return [{ model, displayName: String(item?.displayName || model).trim().slice(0, 120), supportedReasoningEfforts }]; }); }
+
+function plannerInput(tripId: string, userMessage: string) {
+  const trip = store.requireTrip(tripId); let size = 0; const history: Array<{ role: "user" | "assistant"; content: string }> = [];
+  for (const item of [...store.listMessages(tripId)].reverse()) { const length = item.content.length; if (size + length > 48_000) break; history.push({ role: item.role, content: item.content }); size += length; }
+  history.reverse();
+  return JSON.stringify({ contract: "planner-output:v1", userMessage, messageHistory: history, canonicalItinerary: trip.itinerary, contentGeneration: trip.contentGeneration, responseSchema: PlannerOutputJsonSchema }, null, 2);
+}
+
+async function ensurePlannerThread(tripId: string) {
+  await ensureCodex(); const trip = store.requireTrip(tripId);
+  const create = async () => { const started = await codex.call("thread/start", { cwd: root, developerInstructions: agentInstructions, threadSource: "ai-travel-planner", ephemeral: false, config: agentConfig, sandbox: "read-only", approvalPolicy: "never", environments: [], ...modelOptions() }); const threadId = String(started?.thread?.id || ""); if (!threadId) throw new Error("Codex 没有返回旅行线程。"); store.setThread(tripId, threadId); return threadId; };
+  if (!trip.codexThreadId) return create();
+  try { await codex.call("thread/resume", { threadId: trip.codexThreadId, cwd: root, developerInstructions: agentInstructions, config: agentConfig, sandbox: "read-only", approvalPolicy: "never", ...modelOptions() }); return trip.codexThreadId; } catch { return create(); }
+}
+
+function clearRetry(taskId: string) { const timer = retryTimers.get(taskId); if (timer) clearTimeout(timer); retryTimers.delete(taskId); store.setAiTaskRetry(taskId, 0, null, null); }
+function removeRun(threadId: string, run: ActiveRun) { if (active.get(threadId) === run) active.delete(threadId); clearRetry(run.taskId); }
+function updateTurn(run: PlannerRun, status: "queued" | "starting" | "active" | "completed" | "failed" | "interrupted", progress: string, error: string | null = null) { store.updateTurn(run.messageId, status, { progress, error, codexTurnId: run.turnId ?? null }); broadcast("travel.turn.updated", { tripId: run.tripId, messageId: run.messageId, status, progressMessage: progress, errorMessage: error }); }
+function failRun(threadId: string, run: PlannerRun, error: unknown) { removeRun(threadId, run); const detail = publicFailure(error); store.setAiTaskRetry(run.taskId, run.serviceFailures, null, detail); updateTurn(run, "failed", `AI 请求失败：${detail}`, detail); tasks.update(run.taskId, "failed", `AI 请求失败：${detail}`, "planner:failed"); }
+
+async function startPlannerAttempt(threadId: string, run: PlannerRun, repair?: { invalidOutput: string; validationError: string }) {
+  const input = plannerInput(run.tripId, run.userMessage);
+  const repairText = repair ? `\n\n上一份输出未通过合同。只用同一 Planner 合同修正输出，不得另建 repair 流程。\n${JSON.stringify(repair)}` : "";
+  const attemptToken = ++run.attemptToken; run.turnId = undefined; run.content = ""; run.failureMessage = undefined;
+  const result = await codex.call("turn/start", structuredTurn({ threadId, input: [{ type: "text", text: `${prompts.planner.content}\n\n本轮受控状态：\n${input}${repairText}`, text_elements: [] }], outputSchema: PlannerOutputJsonSchema, ...modelOptions() }), 120000);
+  const turnId = String(result?.turn?.id || "");
+  if (active.get(threadId) !== run || run.stopRequested || run.attemptToken !== attemptToken) { if (turnId && !run.settledTurnIds.includes(turnId)) void codex.call("turn/interrupt", { threadId, turnId }).catch(() => undefined); return; }
+  run.turnId = turnId;
+  updateTurn(run, "starting", repair ? "正在按合同修正 Planner 输出" : "正在生成旅行规划");
+}
+
+async function retryPlannerRun(threadId: string, run: PlannerRun) {
+  let targetThreadId = threadId;
+  if (!store.requireTrip(run.tripId).codexThreadId) {
+    targetThreadId = await ensurePlannerThread(run.tripId);
+    if (targetThreadId !== threadId) { active.delete(threadId); active.set(targetThreadId, run); }
+  }
+  await startPlannerAttempt(targetThreadId, run);
+}
+
+function queueServiceRetry(threadId: string, run: PlannerRun, error: unknown) {
+  const kind = classifyCodexFailure(error); if (kind !== "transient") return failRun(threadId, run, error);
+  const retry = nextCodexRetry(run.serviceFailures); if (!retry) return failRun(threadId, run, `${publicFailure(error)}；已达到 3 次自动重试上限`);
+  run.serviceFailures = retry.attempt; run.turnId = undefined; const nextAttemptAt = new Date(Date.now() + retry.delayMs).toISOString(); const summary = `AI 服务暂时中断；第 ${retry.attempt}/3 次重试将在 ${Math.round(retry.delayMs / 1000)} 秒后进行`;
+  store.setAiTaskRetry(run.taskId, retry.attempt, nextAttemptAt, publicFailure(error)); updateTurn(run, "starting", summary, publicFailure(error)); tasks.update(run.taskId, "waiting", summary, "planner:waiting");
+  const timer = setTimeout(() => { retryTimers.delete(run.taskId); if (active.get(threadId) !== run) return; void retryPlannerRun(threadId, run).catch((failure) => { const activeThreadId = [...active.entries()].find(([, candidate]) => candidate === run)?.[0] ?? threadId; queueServiceRetry(activeThreadId, run, failure); }); }, retry.delayMs); timer.unref(); retryTimers.set(run.taskId, timer);
+}
+
+async function completePlannerRun(threadId: string, status: string, reportedError?: string) {
+  const candidate = active.get(threadId); if (!candidate || candidate.kind !== "planner") return; const run = candidate;
+  if (run.stopRequested) { removeRun(threadId, run); updateTurn(run, "interrupted", "已停止"); tasks.update(run.taskId, "stopped", "已停止旅行规划", "planner:stopped"); return; }
+  if (status !== "completed") return queueServiceRetry(threadId, run, reportedError || run.failureMessage || "Planner turn 未完成。");
+  try {
+    const applied = applyPlannerOutput(store, run.tripId, JSON.parse(run.content));
+    store.createAssistantMessage(run.tripId, applied.output.assistantMessage, applied.output);
+    removeRun(threadId, run); updateTurn(run, "completed", applied.startDetailing ? "已确认，正在开始细化" : applied.saved ? "行程已更新" : "回复已完成"); tasks.update(run.taskId, "completed", applied.startDetailing ? "已确认开始细化方案" : applied.saved ? "已保存 canonical itinerary" : "已完成回复", "planner:completed");
+    broadcast("travel.trip.updated", { tripId: run.tripId });
+    if (applied.saved) syncMap(run.tripId, applied.trip.contentGeneration, applied.changedDayIds);
+    if (applied.startDetailing) void startDetailWorkflow(run.tripId).catch((error) => console.warn("[Detail]", publicFailure(error)));
   } catch (error) {
-    const detail = message(error);
-    active.delete(threadId);
-    if (run.contractRetryAttempt < 1) {
-      tasks.append(run.taskId, "contract:retry", `地图输出未通过合同，正在按错误信息完整重建：${detail}`);
-      void startLegacyMapTurn(run.tripId, run.itineraryVersion, true, run.contractRetryAttempt + 1, detail, run.removedEntityIds, run.removedRouteIds);
-      return;
-    }
-    const summary = "新地图生成失败，旧地图已清除";
-    store.setMapStatus(run.tripId, run.itineraryVersion, "failed", `${summary}：${detail}`);
-    tasks.update(run.taskId, "failed", summary, "contract:failed");
-    broadcast("travel.map.job.updated", { tripId: run.tripId, itineraryVersion: run.itineraryVersion, mapVersion: run.mapVersion, status: "failed", summary });
+    if (message(error) === "CONTENT_GENERATION_SUPERSEDED") { removeRun(threadId, run); updateTurn(run, "interrupted", "结果已被更新版本取代", "CONTENT_GENERATION_SUPERSEDED"); tasks.update(run.taskId, "cancelled_by_generation", "结果已被更新版本取代", "planner:superseded"); return; }
+    if (run.contractAttempt >= 1) return failRun(threadId, run, `Planner 合同修正仍未通过：${publicFailure(error)}`);
+    run.contractAttempt += 1; tasks.update(run.taskId, "running", "正在用同一 Planner 合同定向修正输出", "planner:contract-retry"); updateTurn(run, "starting", "Planner 输出存在合同问题，正在修正");
+    void startPlannerAttempt(threadId, run, { invalidOutput: run.content || "{}", validationError: message(error) }).catch((failure) => queueServiceRetry(threadId, run, failure));
   }
 }
 
-codex.on("status", (state) => broadcast("codex.status", state));
-codex.on("notification", (event: RpcEnvelope) => { if (mapCoordinator.handleNotification(event)) return; const params = event.params as Record<string, any> | undefined; const threadId = String(params?.threadId || ""); const run = active.get(threadId); if (event.method === "account/login/completed") for (const state of loginStates.values()) if (state.phase === "pending") state.phase = "succeeded";
-  if (run && event.method === "turn/started") { run.turnId = String(params?.turn?.id || params?.turnId || run.turnId || ""); const summary = run.kind === "planner" ? run.phase === "outline" ? "正在设计路线骨架" : run.phase === "outline_repair" ? "正在定向修复路线骨架" : run.phase === "verification" ? "正在后台核验关键交通" : run.phase === "repair" ? `正在修复 Day ${run.dayNumber}` : `正在细化 Day ${run.dayNumber}` : run.phase === "resolution" ? "正在由 AI 统一选择候选并查找缺失坐标" : "正在拆分复合地点并确定住宿城市"; tasks.update(run.taskId, "running", summary, "turn:started"); if (run.kind === "planner" && (run.phase === "outline" || run.phase === "outline_repair")) { store.updateTurn(run.messageId, "active", { progress: summary, codexTurnId: run.turnId }); broadcast("travel.turn.updated", { tripId: run.tripId, messageId: run.messageId, status: "active", progressMessage: summary }); } }
-  if (run && (event.method === "item/reasoning/summaryTextDelta" || event.method === "item/plan/delta")) { const segment = event.method === "item/plan/delta" ? `plan:${params?.itemId || "current"}` : `reasoning:${params?.itemId || "current"}:${params?.summaryIndex ?? 0}`; const snapshot = tasks.append(run.taskId, segment, params?.delta); if (run.kind === "planner" && (run.phase === "outline" || run.phase === "outline_repair") && snapshot?.summary) { store.updateTurn(run.messageId, "active", { progress: snapshot.summary.slice(0, 220) }); broadcast("travel.turn.updated", { tripId: run.tripId, messageId: run.messageId, status: "active", progressMessage: snapshot.summary.slice(0, 220) }); } }
-  if (run && event.method === "turn/plan/updated") { const current = params?.plan?.find((item: any) => item.status === "inProgress" || item.status === "in_progress") || [...(params?.plan || [])].reverse().find((item: any) => item.status === "completed"); if (current?.step) tasks.update(run.taskId, "running", current.step, `turn-plan:${String(current.step).slice(0, 80)}`); }
-  if (run && (event.method === "item/started" || event.method === "item/completed")) { const stages: Record<string, string> = { webSearch: "正在核验公开地点资料", contextCompaction: "正在整理已有旅行上下文" }; const stage = stages[String(params?.item?.type || "")]; if (stage) tasks.update(run.taskId, "running", stage, `stage:${params?.item?.id || params?.itemId || params?.item?.type}`); }
+async function startTravelTurn(tripId: string, text: string) {
+  const trip = store.requireTrip(tripId); if (trip.state !== "active") throw new Error("回收站中的旅行不能继续对话。"); if (!text.trim() || text.length > 4000) throw new Error("消息长度应为 1–4000 个字符。");
+  if ([...active.values()].some((run) => run.tripId === tripId)) throw new Error("这趟旅行仍在处理中。请先停止当前任务。");
+  const messageId = store.createUserMessage(tripId, text.trim()); const taskId = `planner:${messageId}`; const run: PlannerRun = { kind: "planner", taskId, tripId, messageId, userMessage: text.trim(), content: "", contractAttempt: 0, serviceFailures: 0, stopRequested: false, attemptToken: 0, settledTurnIds: [] };
+  tasks.start({ id: taskId, tripId, agent: "planner", label: "旅行规划", summary: "请求已提交" }); updateTurn(run, "queued", "请求已提交");
+  try { const threadId = await ensurePlannerThread(tripId); active.set(threadId, run); await startPlannerAttempt(threadId, run); return { messageId, trip: store.requireTrip(tripId) }; }
+  catch (error) { const threadId = [...active.entries()].find(([, item]) => item === run)?.[0]; if (threadId) queueServiceRetry(threadId, run, error); else { const fallbackThread = store.requireTrip(tripId).codexThreadId || `planner:${messageId}`; active.set(fallbackThread, run); queueServiceRetry(fallbackThread, run, error); } return { messageId, trip: store.requireTrip(tripId), waiting: true }; }
+}
+
+function detailMetadata(run: DetailRun, currentBatchId: string | null = run.batch.batchId) {
+  return { baselineGeneration: run.baselineGeneration, allDayIds: run.allDayIds, completedDayIds: run.completedDayIds, currentBatchId };
+}
+
+function initialDetailInput(tripId: string, batch: DetailBatchRequest) {
+  const trip = store.requireTrip(tripId);
+  return JSON.stringify({ contract: "detail-batch-output:v1", canonicalItinerary: trip.itinerary, batch, contentGeneration: trip.contentGeneration, responseSchema: DetailBatchOutputJsonSchema }, null, 2);
+}
+
+function continuedDetailInput(feedback: DetailCanonicalFeedback, batch: DetailBatchRequest) {
+  return JSON.stringify({ contract: "detail-batch-output:v1", previousCanonicalFeedback: feedback, nextBatch: batch, contentGeneration: feedback.currentGeneration, responseSchema: DetailBatchOutputJsonSchema }, null, 2);
+}
+
+function failDetailRun(threadId: string, run: DetailRun, error: unknown) {
+  removeRun(threadId, run); const detail = publicFailure(error); store.setAiTaskRetry(run.taskId, run.serviceFailures, null, detail); tasks.update(run.taskId, "failed", `行程细化失败：${detail}`, "detail:failed");
+}
+
+async function startDetailAttempt(threadId: string, run: DetailRun, repair?: { invalidOutput: string; validationError: string }) {
+  const repairText = repair ? `\n\n上一份输出未通过合同。只用同一 01 合同修正当前批次，不得建立 repair 流程。\n${JSON.stringify(repair)}` : "";
+  const attemptToken = ++run.attemptToken; run.turnId = undefined; run.content = ""; run.failureMessage = undefined;
+  const result = await codex.call("turn/start", structuredTurn({ threadId, input: [{ type: "text", text: `${prompts.detailer.content}\n\n本批受控状态：\n${run.batchInput}${repairText}`, text_elements: [] }], outputSchema: DetailBatchOutputJsonSchema, ...modelOptions() }), 120000);
+  const turnId = String(result?.turn?.id || "");
+  if (active.get(threadId) !== run || run.stopRequested || run.attemptToken !== attemptToken) { if (turnId && !run.settledTurnIds.includes(turnId)) void codex.call("turn/interrupt", { threadId, turnId }).catch(() => undefined); return; }
+  run.turnId = turnId;
+  tasks.update(run.taskId, "running", repair ? "正在按合同修正当前两日批次" : `正在细化 ${run.batch.dayIds.length} 天`, repair ? "detail:contract-retry" : "detail:batch-started");
+}
+
+async function launchDetailThread(activeKey: string, run: DetailRun) {
+  await ensureCodex();
+  const started = await codex.call("thread/start", { cwd: root, developerInstructions: agentInstructions, threadSource: "ai-travel-planner-detail", ephemeral: false, config: agentConfig, sandbox: "read-only", approvalPolicy: "never", environments: [], ...modelOptions() });
+  const threadId = String(started?.thread?.id || ""); if (!threadId) throw new Error("Codex 没有返回行程细化线程。");
+  if (active.get(activeKey) !== run || run.stopRequested) return;
+  active.delete(activeKey); run.threadId = threadId; active.set(threadId, run);
+  await startDetailAttempt(threadId, run);
+}
+
+async function retryDetailRun(activeKey: string, run: DetailRun) {
+  if (!run.threadId) return launchDetailThread(activeKey, run);
+  await ensureCodex();
+  await codex.call("thread/resume", { threadId: run.threadId, cwd: root, developerInstructions: agentInstructions, config: agentConfig, sandbox: "read-only", approvalPolicy: "never", ...modelOptions() });
+  await startDetailAttempt(run.threadId, run);
+}
+
+function queueDetailServiceRetry(activeKey: string, run: DetailRun, error: unknown) {
+  const kind = classifyCodexFailure(error); if (kind !== "transient") return failDetailRun(activeKey, run, error);
+  const retry = nextCodexRetry(run.serviceFailures); if (!retry) return failDetailRun(activeKey, run, `${publicFailure(error)}；已达到 3 次自动重试上限`);
+  run.serviceFailures = retry.attempt; run.turnId = undefined; const nextAttemptAt = new Date(Date.now() + retry.delayMs).toISOString(); const summary = `细化服务暂时中断；第 ${retry.attempt}/3 次重试将在 ${Math.round(retry.delayMs / 1000)} 秒后进行`;
+  store.setAiTaskRetry(run.taskId, retry.attempt, nextAttemptAt, publicFailure(error)); tasks.update(run.taskId, "waiting", summary, "detail:waiting");
+  const timer = setTimeout(() => {
+    retryTimers.delete(run.taskId); const currentKey = [...active.entries()].find(([, candidate]) => candidate === run)?.[0]; if (!currentKey || run.stopRequested) return;
+    void retryDetailRun(currentKey, run).catch((failure) => { const latestKey = [...active.entries()].find(([, candidate]) => candidate === run)?.[0] ?? currentKey; queueDetailServiceRetry(latestKey, run, failure); });
+  }, retry.delayMs);
+  timer.unref(); retryTimers.set(run.taskId, timer);
+}
+
+async function completeDetailRun(threadId: string, status: string, reportedError?: string) {
+  const candidate = active.get(threadId); if (!candidate || candidate.kind !== "detailer") return; const run = candidate;
+  if (run.stopRequested) { removeRun(threadId, run); tasks.metadata(run.taskId, detailMetadata(run)); tasks.update(run.taskId, "stopped", `已停止；保留已完成的 ${run.completedDayIds.length}/${run.allDayIds.length} 天`, "detail:stopped"); return; }
+  if (status !== "completed") return queueDetailServiceRetry(threadId, run, reportedError || run.failureMessage || "细化 turn 未完成。");
+  try {
+    const applied = applyDetailBatch(store, run.tripId, run.batch, JSON.parse(run.content), { forbiddenTemporaryIds: run.usedTemporaryIds });
+    run.usedTemporaryIds.push(...Object.keys(applied.feedback.idMappings));
+    run.completedDayIds = applied.completedDayIds; run.contractAttempt = 0; run.serviceFailures = 0; clearRetry(run.taskId);
+    broadcast("travel.trip.updated", { tripId: run.tripId });
+    syncMap(run.tripId, applied.trip.contentGeneration, applied.changedDayIds);
+    if (applied.allDetailed) {
+      tasks.metadata(run.taskId, detailMetadata(run, null)); removeRun(threadId, run); tasks.update(run.taskId, "completed", `已完成 ${run.completedDayIds.length}/${run.allDayIds.length} 天细化`, "detail:completed"); return;
+    }
+    const batch = nextDetailBatch(applied.trip.itinerary); if (!batch) throw new Error("细化尚未完成，但找不到下一批 Day。");
+    run.batch = batch; run.batchInput = continuedDetailInput(applied.feedback, batch); run.turnId = undefined; run.content = "";
+    tasks.metadata(run.taskId, detailMetadata(run)); tasks.update(run.taskId, "running", `已完成 ${run.completedDayIds.length}/${run.allDayIds.length} 天，继续下一批`, "detail:batch-completed");
+    void startDetailAttempt(threadId, run).catch((error) => queueDetailServiceRetry(threadId, run, error));
+  } catch (error) {
+    if (message(error) === "CONTENT_GENERATION_SUPERSEDED") { removeRun(threadId, run); tasks.update(run.taskId, "cancelled_by_generation", "细化结果已被更新版本取代；已完成批次保持不变", "detail:superseded"); return; }
+    if (run.contractAttempt >= 1) return failDetailRun(threadId, run, `01 合同修正仍未通过：${publicFailure(error)}`);
+    run.contractAttempt += 1; tasks.update(run.taskId, "running", "正在用同一 01 合同定向修正当前批次", "detail:contract-retry");
+    void startDetailAttempt(threadId, run, { invalidOutput: run.content || "{}", validationError: message(error) }).catch((failure) => queueDetailServiceRetry(threadId, run, failure));
+  }
+}
+
+async function startDetailWorkflow(tripId: string) {
+  if ([...active.values()].some((run) => run.tripId === tripId)) throw new Error("这趟旅行仍有 itinerary 写任务在运行。");
+  const trip = store.requireTrip(tripId); if (trip.state !== "active" || trip.itinerary.stage === "planning") throw new Error("只能细化已有行程。");
+  const taskId = `detail:${randomUUID()}`; const allDayIds = trip.itinerary.days.map((day) => day.id); const completedDayIds = trip.itinerary.days.filter((day) => day.detailLevel === "detailed").map((day) => day.id);
+  const batch = nextDetailBatch(trip.itinerary);
+  if (!batch) {
+    tasks.start({ id: taskId, tripId, agent: "detailer", label: "行程细化", summary: "正在完成细化", metadata: { baselineGeneration: trip.contentGeneration, allDayIds, completedDayIds, currentBatchId: null } });
+    const completed = finalizeDetailedItinerary(store, tripId); tasks.update(taskId, "completed", `已完成 ${completed.itinerary.days.length}/${completed.itinerary.days.length} 天细化`, "detail:completed"); broadcast("travel.trip.updated", { tripId }); syncMap(tripId, completed.contentGeneration, []); return;
+  }
+  const run: DetailRun = { kind: "detailer", taskId, tripId, batch, batchInput: initialDetailInput(tripId, batch), baselineGeneration: trip.contentGeneration, allDayIds, completedDayIds, usedTemporaryIds: [], content: "", contractAttempt: 0, serviceFailures: 0, stopRequested: false, attemptToken: 0, settledTurnIds: [] };
+  tasks.start({ id: taskId, tripId, agent: "detailer", label: "行程细化", summary: `准备细化 ${allDayIds.length - completedDayIds.length} 天`, metadata: detailMetadata(run) });
+  const pendingKey = `detail-pending:${taskId}`; active.set(pendingKey, run);
+  try { await launchDetailThread(pendingKey, run); }
+  catch (error) { const activeKey = [...active.entries()].find(([, candidate]) => candidate === run)?.[0] ?? pendingKey; if (!active.has(activeKey)) active.set(activeKey, run); queueDetailServiceRetry(activeKey, run, error); }
+}
+
+codex.on("notification", (event: RpcEnvelope) => {
+  const params = event.params as Record<string, any> | undefined; const threadId = String(params?.threadId || ""); const run = active.get(threadId);
+  if (event.method === "account/login/completed") for (const state of loginStates.values()) if (state.phase === "pending") state.phase = "succeeded";
+  const candidate = candidateRuns.get(threadId);
+  if (candidate) {
+    if (event.method === "turn/started") candidate.turnId = String(params?.turn?.id || params?.turnId || candidate.turnId || "");
+    if (event.method === "item/agentMessage/delta") candidate.content += String(params?.delta || "");
+    if (event.method === "item/completed" && params?.item?.type === "agentMessage" && typeof params.item.text === "string") candidate.content = params.item.text;
+    if (event.method === "turn/completed") {
+      candidateRuns.delete(threadId); clearTimeout(candidate.timer);
+      try { candidate.settle(CandidateDecisionOutputSchema.parse(JSON.parse(candidate.content))); } catch { candidate.settle(null); }
+    }
+    return;
+  }
+  if (run && event.method === "turn/started") {
+    run.turnId = String(params?.turn?.id || params?.turnId || run.turnId || "");
+    const summary = run.kind === "planner" ? "正在生成旅行规划" : `正在细化 ${run.batch.dayIds.length} 天`;
+    tasks.update(run.taskId, "running", summary, "turn:started"); if (run.kind === "planner") updateTurn(run, "active", summary);
+  }
+  if (run && (event.method === "item/reasoning/summaryTextDelta" || event.method === "item/plan/delta")) {
+    const snapshot = tasks.append(run.taskId, `progress:${params?.itemId || "current"}`, params?.delta); if (run.kind === "planner" && snapshot?.summary) updateTurn(run, "active", snapshot.summary.slice(0, 220));
+  }
   if (run && event.method === "item/agentMessage/delta") run.content += String(params?.delta || "");
   if (run && event.method === "item/completed" && params?.item?.type === "agentMessage" && typeof params.item.text === "string") run.content = params.item.text;
   if (run && (event.method === "error" || event.method === "turn/error")) run.failureMessage = String(params?.error?.message || params?.message || "").trim();
-  if (event.method === "turn/completed" && threadId) void completeRun(threadId, String(params?.turn?.status || "completed"), String(params?.turn?.error?.message || params?.error?.message || "").trim());
+  if (run && event.method === "turn/completed" && threadId) {
+    const completedTurnId = String(params?.turn?.id || params?.turnId || "");
+    if (completedTurnId && run.settledTurnIds.includes(completedTurnId)) return;
+    if (completedTurnId) { run.settledTurnIds.push(completedTurnId); if (run.settledTurnIds.length > 8) run.settledTurnIds.shift(); }
+    if (completedTurnId && run.turnId && completedTurnId !== run.turnId) return;
+    const status = String(params?.turn?.status || "completed"); const error = String(params?.turn?.error?.message || params?.error?.message || "").trim();
+    if (run.kind === "planner") void completePlannerRun(threadId, status, error); else void completeDetailRun(threadId, status, error);
+  }
 });
 codex.on("serverRequest", (event: RpcEnvelope) => { if (event.id !== undefined) codex.respond(event.id, { decision: "decline" }); });
 
@@ -307,61 +312,41 @@ async function api(request: IncomingMessage, response: ServerResponse) {
   if (method === "POST" && url.pathname === "/api/auth/login") { const key = request.socket.remoteAddress || "unknown"; const allowed = limiter.canAttempt(key); if (!allowed.allowed) return failure(response, 429, `尝试过多，请在 ${allowed.retryAfterSeconds} 秒后重试。`); const input = await body(request); if (String(input.username || "") !== config.username || !(await verifyPassword(String(input.password || ""), config))) { limiter.failure(key); return failure(response, 401, "用户名或密码错误。"); } limiter.success(key); const token = sessions.create(); response.setHeader("set-cookie", sessionCookie(token)); return json(response, 200, { user: { id: "owner", username: config.username } }); }
   if (method === "POST" && url.pathname === "/api/auth/logout") { sessions.delete(cookies(request).travel_session); response.setHeader("set-cookie", sessionCookie("", true)); return json(response, 200, { ok: true }); }
   if (!authenticated(request)) return failure(response, 401, "请先登录旅行空间。", "auth_required");
-  const tile = /^\/api\/map\/tiles\/(\d+)\/(\d+)\/(\d+)\.png$/.exec(url.pathname);
-  if (method === "GET" && tile) {
-    try {
-      const result = await tiles.getTile(Number(tile[1]), Number(tile[2]), Number(tile[3]), request.headers.referer);
-      response.writeHead(200, { "content-type": result.contentType, "content-length": String(result.content.length), "cache-control": "private, max-age=0, must-revalidate", "x-map-tile-cache": result.cacheStatus });
-      response.end(result.content);
-    } catch (error) {
-      failure(response, error instanceof TileFetchError ? error.status : 500, message(error));
-    }
-    return;
-  }
+  const tile = /^\/api\/map\/tiles\/(\d+)\/(\d+)\/(\d+)\.png$/.exec(url.pathname); if (method === "GET" && tile) { try { const result = await tiles.getTile(Number(tile[1]), Number(tile[2]), Number(tile[3]), request.headers.referer); response.writeHead(200, { "content-type": result.contentType, "content-length": String(result.content.length), "cache-control": "private, max-age=0, must-revalidate", "x-map-tile-cache": result.cacheStatus }); response.end(result.content); } catch (error) { failure(response, error instanceof TileFetchError ? error.status : 500, message(error)); } return; }
   if (method === "PUT" && url.pathname === "/api/auth/password") { const input = await body(request); if (typeof input.newPassword !== "string") return failure(response, 400, "新密码必须是字符串。"); const password = await hashPassword(input.newPassword); await mutateConfig((current) => ({ ...current, ...password, ...(current.sessionKey ? {} : { sessionKey: current.passwordHash }) })); return json(response, 200, { ok: true }); }
-  if (method === "GET" && url.pathname === "/api/codex/status") { try { await ensureCodex(); const account = await codex.call("account/read", { refreshToken: false }); return json(response, 200, { signedIn: Boolean(account?.account), account: account?.account || null, models: await modelList(), settings: { ai: config.ai, ui: config.ui }, modelWarning: null }); } catch (error) { return json(response, 200, { signedIn: false, account: null, models: [], settings: { ai: config.ai, ui: config.ui }, modelWarning: message(error) }); } }
-  if (method === "GET" && url.pathname === "/api/codex/account") { await ensureCodex(); return json(response, 200, await codex.call("account/read", { refreshToken: false })); }
-  if (method === "GET" && url.pathname === "/api/codex/models") return json(response, 200, { models: await modelList() });
-  if (method === "POST" && url.pathname === "/api/codex/login/browser") { await ensureCodex(); const result = await codex.call("account/login/start", { method: "browser" }); const loginId = String(result?.loginId || result?.login_id || ""); loginStates.set(loginId, { method: "browser", phase: "pending" }); return json(response, 200, { loginId, authUrl: result?.authUrl || result?.auth_url }); }
-  if (method === "POST" && url.pathname === "/api/codex/login/device") { await ensureCodex(); const result = await codex.call("account/login/start", { method: "device" }); const loginId = String(result?.loginId || result?.login_id || ""); loginStates.set(loginId, { method: "device", phase: "pending" }); return json(response, 200, { loginId, verificationUrl: result?.verificationUrl || result?.verification_url, userCode: result?.userCode || result?.user_code }); }
+  if (method === "GET" && url.pathname === "/api/codex/status") { try { await ensureCodex(); const account = await codex.call("account/read", { refreshToken: false }); return json(response, 200, { signedIn: Boolean(account?.account), account: account?.account || null, models: await modelList() }); } catch (error) { return json(response, 200, { signedIn: false, account: null, models: [], error: publicFailure(error) }); } }
+  if (method === "POST" && url.pathname === "/api/codex/login/browser") { await ensureCodex(); const result = await codex.call("account/login/start", { method: "browser" }); const loginId = String(result?.loginId || result?.login_id || ""); if (loginId) loginStates.set(loginId, { method: "browser", phase: "pending" }); return json(response, 200, { loginId, authUrl: result?.authUrl || result?.auth_url }); }
+  if (method === "POST" && url.pathname === "/api/codex/login/device") { await ensureCodex(); const result = await codex.call("account/login/start", { method: "device" }); const loginId = String(result?.loginId || result?.login_id || ""); if (loginId) loginStates.set(loginId, { method: "device", phase: "pending" }); return json(response, 200, { loginId, verificationUrl: result?.verificationUrl || result?.verification_url, userCode: result?.userCode || result?.user_code }); }
   if (method === "GET" && url.pathname === "/api/codex/login/status") { const state = loginStates.get(String(url.searchParams.get("loginId") || "")); return json(response, 200, state ? { loginId: url.searchParams.get("loginId"), ...state } : { phase: "cancelled", message: "登录已结束。" }); }
   if (method === "POST" && url.pathname === "/api/codex/logout") { await ensureCodex(); await codex.call("account/logout"); return json(response, 200, { ok: true }); }
-  if (method === "PUT" && url.pathname === "/api/settings/ui") { const input = await body(request); const colors = input.mapCategoryColors; if (colors !== undefined && (!colors || typeof colors !== "object" || Array.isArray(colors) || Object.entries(colors).some(([key, value]) => !(key in mapCategoryColorDefaults) || typeof value !== "string" || !/^#[0-9a-f]{6}$/i.test(value)))) return failure(response, 400, "地图分类颜色必须是已知类别的 #RRGGBB 值。"); const next = await mutateConfig((current) => { const ui: AppConfig["ui"] = { ...current.ui, ...(typeof input.workspaceSplitRatio === "number" ? { workspaceSplitRatio: Math.max(.34, Math.min(.66, input.workspaceSplitRatio)) } : {}), ...(input.theme === "light" || input.theme === "dark" ? { theme: input.theme } : {}), ...(typeof input.requirementsPanelOpen === "boolean" ? { requirementsPanelOpen: input.requirementsPanelOpen } : {}), ...(typeof input.sidebarOpen === "boolean" ? { sidebarOpen: input.sidebarOpen } : {}), ...(colors ? { mapCategoryColors: { ...current.ui.mapCategoryColors, ...colors } } : {}) }; return { ...current, ui }; }); return json(response, 200, { settings: { ai: next.ai, ui: next.ui } }); }
+  if (method === "PUT" && url.pathname === "/api/settings/ui") { const input = await body(request); const colors = input.mapCategoryColors; if (colors !== undefined && (!colors || typeof colors !== "object" || Array.isArray(colors) || Object.entries(colors).some(([key, value]) => !(key in mapCategoryColorDefaults) || typeof value !== "string" || !/^#[0-9a-f]{6}$/i.test(value)))) return failure(response, 400, "地图分类颜色必须是已知类别的 #RRGGBB 值。"); const next = await mutateConfig((current) => ({ ...current, ui: { ...current.ui, ...(typeof input.workspaceSplitRatio === "number" ? { workspaceSplitRatio: Math.max(.34, Math.min(.66, input.workspaceSplitRatio)) } : {}), ...(input.theme === "light" || input.theme === "dark" ? { theme: input.theme } : {}), ...(typeof input.sidebarOpen === "boolean" ? { sidebarOpen: input.sidebarOpen } : {}), ...(colors ? { mapCategoryColors: { ...current.ui.mapCategoryColors, ...colors } } : {}) } })); return json(response, 200, { settings: { ai: next.ai, ui: next.ui } }); }
   if (method === "PUT" && url.pathname === "/api/settings/ai-model") { const input = await body(request); const next = await mutateConfig((current) => ({ ...current, ai: { model: String(input.model || "").slice(0, 120), reasoningEffort: String(input.reasoningEffort || "medium").slice(0, 32) } })); return json(response, 200, { settings: { ai: next.ai, ui: next.ui } }); }
   if (method === "GET" && url.pathname === "/api/trips") return json(response, 200, { trips: store.listTrips(url.searchParams.get("view") === "trash" ? "trashed" : "active") });
   if (method === "POST" && url.pathname === "/api/trips") return json(response, 200, { trip: store.createTrip() });
   const tripMatch = /^\/api\/trips\/([^/]+)$/.exec(url.pathname); if (tripMatch) { const id = decodeURIComponent(tripMatch[1]); if (method === "GET") return json(response, 200, { trip: store.requireTrip(id) }); if (method === "PATCH") { const input = await body(request); let trip = store.requireTrip(id); if (input.title !== undefined) trip = store.rename(id, String(input.title)); if (input.itineraryLanguage !== undefined) { if (input.itineraryLanguage !== "zh" && input.itineraryLanguage !== "en" && input.itineraryLanguage !== "bilingual") return failure(response, 400, "日程地点语言必须是中文、英文或中英对照。"); trip = store.setItineraryLanguage(id, input.itineraryLanguage); } return json(response, 200, { trip }); } if (method === "DELETE") { store.setState(id, "trashed"); return json(response, 200, { ok: true }); } }
-  const duplicate = /^\/api\/trips\/([^/]+)\/duplicate$/.exec(url.pathname); if (method === "POST" && duplicate) return json(response, 200, { trip: store.duplicate(decodeURIComponent(duplicate[1])) });
+  const duplicate = /^\/api\/trips\/([^/]+)\/duplicate$/.exec(url.pathname); if (method === "POST" && duplicate) { const trip = store.duplicate(decodeURIComponent(duplicate[1])); if (trip.itinerary.days.length) syncMap(trip.id, trip.contentGeneration, trip.itinerary.days.map((day) => day.id)); return json(response, 200, { trip }); }
   const restore = /^\/api\/trips\/([^/]+)\/restore$/.exec(url.pathname); if (method === "POST" && restore) return json(response, 200, { trip: store.setState(decodeURIComponent(restore[1]), "active") });
   const permanent = /^\/api\/trips\/([^/]+)\/permanent$/.exec(url.pathname); if (method === "DELETE" && permanent) { store.permanentDelete(decodeURIComponent(permanent[1])); return json(response, 200, { ok: true }); }
   const messages = /^\/api\/trips\/([^/]+)\/messages$/.exec(url.pathname); if (method === "GET" && messages) return json(response, 200, { messages: store.listMessages(decodeURIComponent(messages[1])) });
-  const confirmDetail = /^\/api\/trips\/([^/]+)\/outline\/confirm$/.exec(url.pathname); if (method === "POST" && confirmDetail) { const tripId = decodeURIComponent(confirmDetail[1]); const trip = store.confirmDetailing(tripId); broadcast("travel.trip.updated", { tripId }); void launchDailyDetails(tripId); return json(response, 200, { trip }); }
-  const routeDecision = /^\/api\/trips\/([^/]+)\/route-decisions\/([^/]+)$/.exec(url.pathname); if (method === "POST" && routeDecision) { const input = await body(request); const tripId = decodeURIComponent(routeDecision[1]); const decisionId = decodeURIComponent(routeDecision[2]); if (input.choice !== "accept" && input.choice !== "reject") return failure(response, 400, "路线决策必须接受推荐或要求调整。"); const decision = store.recordRouteDecision(tripId, decisionId, input.choice); broadcast("travel.route-decision.updated", { tripId, decisionId, choice: input.choice }); if (input.choice === "reject") { await interruptDailyRuns(tripId, "路线决策已修改，旧细化结果不会覆盖新路线"); store.supersedeDetailing(tripId); void startTravelTurn(tripId, `我不接受路线决策“${decision.question}”的默认推荐。请保留已确认偏好，针对该影响重新生成一版路线骨架。`, null, undefined, true); } broadcast("travel.trip.updated", { tripId }); return json(response, 200, { trip: store.requireTrip(tripId) }); }
-  const detailStatus = /^\/api\/trips\/([^/]+)\/detail-status$/.exec(url.pathname); if (method === "GET" && detailStatus) { const trip = store.requireTrip(decodeURIComponent(detailStatus[1])); return json(response, 200, { planningStage: trip.planningStage, progress: trip.detailProgress }); }
-  const detailStop = /^\/api\/trips\/([^/]+)\/details\/(stop|resume)$/.exec(url.pathname); if (method === "POST" && detailStop) { const tripId = decodeURIComponent(detailStop[1]); const action = detailStop[2]; if (action === "stop") await interruptDailyRuns(tripId, "客户已停止每日细化，现有草案和已完成日期已保留"); const trip = store.setDetailingStopped(tripId, action === "stop"); if (action === "resume") void launchDailyDetails(tripId); else void drainDeferredMessages(tripId); broadcast("travel.planning.status.updated", { tripId, planningStage: trip.planningStage, detailProgress: trip.detailProgress }); broadcast("travel.trip.updated", { tripId }); return json(response, 200, { trip }); }
-  const turnStart = /^\/api\/trips\/([^/]+)\/turns$/.exec(url.pathname); if (method === "POST" && turnStart) { const input = await body(request); return json(response, 200, await startTravelTurn(decodeURIComponent(turnStart[1]), String(input.message || ""), typeof input.retryOfMessageId === "string" ? input.retryOfMessageId : null)); }
+  const turnStart = /^\/api\/trips\/([^/]+)\/turns$/.exec(url.pathname); if (method === "POST" && turnStart) { const input = await body(request); return json(response, 200, await startTravelTurn(decodeURIComponent(turnStart[1]), String(input.message || ""))); }
   const turnStatus = /^\/api\/trips\/([^/]+)\/turns\/([^/]+)\/status$/.exec(url.pathname); if (method === "GET" && turnStatus) { const row = store.listMessages(decodeURIComponent(turnStatus[1])).find((item) => item.id === decodeURIComponent(turnStatus[2])); if (!row?.turn) return failure(response, 404, "找不到运行状态。"); return json(response, 200, { turn: row.turn }); }
-  const interrupt = /^\/api\/trips\/([^/]+)\/turns\/interrupt$/.exec(url.pathname); if (method === "POST" && interrupt) { const input = await body(request); const tripId = decodeURIComponent(interrupt[1]); const messageId = typeof input.messageId === "string" ? input.messageId : ""; const run = [...active.entries()].find(([, value]) => value.kind === "planner" && value.tripId === tripId && value.messageId === messageId); if (!run || run[1].kind !== "planner" || !run[1].turnId) { const turn = store.listMessages(tripId).find((item) => item.id === messageId)?.turn; if (!turn || !["queued", "starting", "active"].includes(turn.status)) return failure(response, 404, "当前没有正在运行的任务。"); if (run) active.delete(run[0]); clearServiceRetry(`planner:${messageId}`); store.updateTurn(messageId, "interrupted", { error: turn.errorMessage ?? null, progress: "已停止等待服务恢复；可稍后重试" }); tasks.update(`planner:${messageId}`, "stopped", "已停止等待服务恢复；可稍后重试", "outline:stopped"); broadcast("travel.turn.updated", { tripId, messageId, status: "interrupted", progressMessage: "已停止等待服务恢复；可稍后重试", errorMessage: turn.errorMessage ?? null }); return json(response, 200, { ok: true }); } store.updateTurn(run[1].messageId, "active", { cancelRequested: true, progress: "正在停止…" }); await codex.call("turn/interrupt", { threadId: run[0], turnId: run[1].turnId }); return json(response, 200, { ok: true }); }
-  const reqRoute = /^\/api\/trips\/([^/]+)\/requirements$/.exec(url.pathname); if (reqRoute) { const tripId = decodeURIComponent(reqRoute[1]); if (method === "GET") { const document = store.requirementsDocument(tripId); return json(response, 200, { document: { content: document.content, revision: document.revision, contentHash: "", updatedAt: document.updatedAt, updatedBy: document.updatedBy } }); } if (method === "PUT") { const input = await body(request); if (!input.content || typeof input.content !== "object" || Array.isArray(input.content)) return failure(response, 400, "需求总览必须是结构化内容。"); const saved = store.saveRequirements(tripId, input.content, Number(input.expectedRevision), "user"); return json(response, 200, { document: { content: saved.content, revision: saved.revision, contentHash: "", updatedAt: saved.updatedAt, updatedBy: saved.updatedBy } }); } }
-  const revisionList = /^\/api\/trips\/([^/]+)\/revisions$/.exec(url.pathname); if (method === "GET" && revisionList) return json(response, 200, { revisions: store.listRevisions(decodeURIComponent(revisionList[1])) });
-  const revisionGet = /^\/api\/trips\/([^/]+)\/revisions\/(\d+)$/.exec(url.pathname); if (method === "GET" && revisionGet) return json(response, 200, { revision: store.getRevision(decodeURIComponent(revisionGet[1]), Number(revisionGet[2])) });
-  const revisionRestore = /^\/api\/trips\/([^/]+)\/revisions\/(\d+)\/restore$/.exec(url.pathname); if (method === "POST" && revisionRestore) { const tripId = decodeURIComponent(revisionRestore[1]); await interruptMapForTrip(tripId); const restored = store.restoreRevision(tripId, Number(revisionRestore[2])); void startMapTurn(tripId, restored.version); return json(response, 200, restored); }
+  const interrupt = /^\/api\/trips\/([^/]+)\/turns\/interrupt$/.exec(url.pathname); if (method === "POST" && interrupt) { const input = await body(request); const tripId = decodeURIComponent(interrupt[1]); const messageId = typeof input.messageId === "string" ? input.messageId : ""; const entry = [...active.entries()].find(([, run]) => run.kind === "planner" && run.tripId === tripId && run.messageId === messageId) as [string, PlannerRun] | undefined; if (!entry) return failure(response, 404, "当前没有正在运行的任务。"); const [threadId, run] = entry; run.stopRequested = true; updateTurn(run, "active", "正在停止…"); if (run.turnId) await codex.call("turn/interrupt", { threadId, turnId: run.turnId }); else { removeRun(threadId, run); updateTurn(run, "interrupted", "已停止等待服务恢复"); tasks.update(run.taskId, "stopped", "已停止等待服务恢复", "planner:stopped"); } return json(response, 200, { ok: true }); }
+  const revisions = /^\/api\/trips\/([^/]+)\/revisions$/.exec(url.pathname); if (method === "GET" && revisions) return json(response, 200, { revisions: store.listRevisions(decodeURIComponent(revisions[1])) });
+  const revision = /^\/api\/trips\/([^/]+)\/revisions\/(\d+)$/.exec(url.pathname); if (method === "GET" && revision) return json(response, 200, { revision: store.getRevision(decodeURIComponent(revision[1]), Number(revision[2])) });
+  const revisionRestore = /^\/api\/trips\/([^/]+)\/revisions\/(\d+)\/restore$/.exec(url.pathname); if (method === "POST" && revisionRestore) { const tripId = decodeURIComponent(revisionRestore[1]); const restored = store.restoreRevision(tripId, Number(revisionRestore[2])); broadcast("travel.trip.updated", { tripId }); syncMap(tripId, restored.generation, restored.trip.itinerary.days.map((day) => day.id)); return json(response, 200, restored); }
   const aiTasks = /^\/api\/trips\/([^/]+)\/ai-tasks$/.exec(url.pathname); if (method === "GET" && aiTasks) return json(response, 200, { tasks: tasks.list(decodeURIComponent(aiTasks[1])) });
-  const stopTask = /^\/api\/trips\/([^/]+)\/ai-tasks\/([^/]+)\/stop$/.exec(url.pathname); if (method === "POST" && stopTask) { const tripId = decodeURIComponent(stopTask[1]); const taskId = decodeURIComponent(stopTask[2]); if (taskId.startsWith("map:") && await mapCoordinator.stop(tripId)) return json(response, 200, { ok: true }); const entry = [...active.entries()].find(([, run]) => run.tripId === tripId && run.taskId === taskId); if (entry?.[1].turnId) { await codex.call("turn/interrupt", { threadId: entry[0], turnId: entry[1].turnId }); return json(response, 200, { ok: true }); } if (entry) active.delete(entry[0]); if (taskId.startsWith("planner:")) { const messageId = taskId.slice("planner:".length); const turn = store.listMessages(tripId).find((item) => item.id === messageId)?.turn; if (turn && ["queued","starting","active"].includes(turn.status)) { clearServiceRetry(taskId); store.updateTurn(messageId, "interrupted", { error: turn.errorMessage, progress: "已停止等待服务恢复；可稍后重试" }); tasks.update(taskId, "stopped", "已停止等待服务恢复；可稍后重试", "outline:stopped"); broadcast("travel.turn.updated", { tripId, messageId, status: "interrupted", progressMessage: "已停止等待服务恢复；可稍后重试", errorMessage: turn.errorMessage }); return json(response, 200, { ok: true }); } } const detail = /^detail:(.+):(\d+)$/.exec(taskId); if (detail && detail[1] === tripId) { const dayNumber = Number(detail[2]); const current = store.dailyTasks(tripId).find((item) => item.dayNumber === dayNumber); if (current && ["generating","repairing","waiting_service"].includes(current.status)) { clearServiceRetry(taskId); store.updateDailyTask(tripId, dayNumber, "stopped", { expectedGeneration: current.generation, nextAttemptAt: null }); tasks.update(taskId, "stopped", `Day ${dayNumber} 已停止，现有草案仍可用`, "detail:stopped"); broadcast("travel.trip.updated", { tripId }); return json(response, 200, { ok: true }); } } if (taskId.startsWith(`verify:${tripId}:`) && store.getAiTask(taskId)?.status === "waiting") { clearServiceRetry(taskId); tasks.update(taskId, "stopped", "关键交通核验已停止，路线草案仍可用", "verification:stopped"); if (store.requireTrip(tripId).planningStage === "verifying") store.setPlanningStage(tripId, "outline"); broadcast("travel.trip.updated", { tripId }); return json(response, 200, { ok: true }); } return failure(response, 404, "当前任务已经结束。"); }
-  const map = /^\/api\/trips\/([^/]+)\/map$/.exec(url.pathname); if (method === "GET" && map) { const tripId = decodeURIComponent(map[1]); const scope = url.searchParams.get("scope") === "day" ? "day" : "all"; const dayNumber = scope === "day" ? Number(url.searchParams.get("dayNumber")) : null; return json(response, 200, { map: maps.snapshot(tripId, scope, Number.isFinite(dayNumber) ? dayNumber : null) }); }
-  const retryMapRoute = /^\/api\/trips\/([^/]+)\/map\/retry$/.exec(url.pathname); if (method === "POST" && retryMapRoute) { const tripId = decodeURIComponent(retryMapRoute[1]); return json(response, 200, { map: await retryMap(tripId) }); }
-  const select = /^\/api\/trips\/([^/]+)\/map\/locations\/([^/]+)\/select$/.exec(url.pathname); if (method === "POST" && select) { const input = await body(request); const tripId = decodeURIComponent(select[1]); void maps.selectCandidate(tripId, decodeURIComponent(select[2]), input.candidate); return json(response, 200, { ok: true }); }
+  const stopTask = /^\/api\/trips\/([^/]+)\/ai-tasks\/([^/]+)\/stop$/.exec(url.pathname); if (method === "POST" && stopTask) { const tripId = decodeURIComponent(stopTask[1]); const taskId = decodeURIComponent(stopTask[2]); const entry = [...active.entries()].find(([, run]) => run.tripId === tripId && run.taskId === taskId); if (!entry) return failure(response, 404, "当前任务已经结束。"); const [threadId, run] = entry; run.stopRequested = true; if (run.kind === "planner") updateTurn(run, "active", "正在停止…"); if (run.turnId) await codex.call("turn/interrupt", { threadId, turnId: run.turnId }); else { removeRun(threadId, run); if (run.kind === "planner") updateTurn(run, "interrupted", "已停止等待服务恢复"); tasks.update(taskId, "stopped", run.kind === "detailer" ? `已停止；保留已完成的 ${run.completedDayIds.length}/${run.allDayIds.length} 天` : "已停止等待服务恢复", `${run.kind}:stopped`); } return json(response, 200, { ok: true }); }
+  const map = /^\/api\/trips\/([^/]+)\/map$/.exec(url.pathname); if (method === "GET" && map) return json(response, 200, { map: store.getMapState(decodeURIComponent(map[1])) });
   return failure(response, 404, "接口不存在。");
 }
 
 async function serve(request: IncomingMessage, response: ServerResponse) { const pathname = new URL(request.url || "/", "http://local").pathname; const file = pathname === "/" ? path.join(root, "dist", "web", "index.html") : path.join(root, "dist", "web", pathname); const resolved = path.resolve(file); const staticRoot = path.resolve(root, "dist", "web"); if (!resolved.startsWith(staticRoot)) return failure(response, 403, "无效路径。"); try { const info = await fs.stat(resolved); if (info.isFile()) { response.writeHead(200); createReadStream(resolved).pipe(response); return; } } catch { /* SPA fallback below */ } try { response.writeHead(200, { "content-type": "text/html; charset=utf-8" }); createReadStream(path.join(staticRoot, "index.html")).pipe(response); } catch { response.writeHead(503); response.end("请使用 npm run dev 启动开发界面。"); } }
 const viteDev = process.env.TRAVEL_DEV === "1" ? await (async () => { const { createServer } = await import("vite"); return createServer({ configFile: path.join(root, "vite.config.ts"), server: { middlewareMode: true, hmr: false }, appType: "spa" }); })() : null;
 const server = http.createServer((request, response) => { void (async () => { try { if ((request.url || "").startsWith("/api/")) await api(request, response); else if (viteDev) viteDev.middlewares(request, response, () => { void serve(request, response); }); else await serve(request, response); } catch (error) { if (!response.headersSent) failure(response, 400, message(error)); else response.end(); } })(); });
-const ws = new WebSocketServer({ noServer: true }); server.on("upgrade", (request, socket, head) => { if (new URL(request.url || "/", "http://local").pathname !== "/ws" || !authenticated(request)) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; } ws.handleUpgrade(request, socket, head, (client) => { clients.add(client); client.send(JSON.stringify({ kind: "codex.status", payload: { running: codex.running } })); client.on("close", () => clients.delete(client)); }); });
+const ws = new WebSocketServer({ noServer: true }); server.on("upgrade", (request, socket, head) => { if (new URL(request.url || "/", "http://local").pathname !== "/ws" || !authenticated(request)) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; } ws.handleUpgrade(request, socket, head, (client) => { clients.add(client); client.on("close", () => clients.delete(client)); }); });
 let listenHost = config.passwordHash ? "0.0.0.0" : "127.0.0.1";
 function listen(host: string) { listenHost = host; server.listen(config.port, host, () => console.log(`AI Travel Planner 已启动：http://127.0.0.1:${config.port}`)); }
 async function rebindForLan() { if (listenHost === "0.0.0.0") return; await new Promise<void>((resolve) => server.close(() => resolve())); listen("0.0.0.0"); }
 listen(listenHost);
-void codex.start().then(() => { for (const trip of store.listTrips("active")) { const detail = store.requireTrip(trip.id); if (["detailing","waiting_service","partial"].includes(detail.planningStage)) { void launchDailyDetails(trip.id); restoreDailyRetryTimers(trip.id); } if (detail.planningStage === "stopped") void drainDeferredMessages(trip.id); const unfinished = store.listMessages(trip.id).find((item) => item.role === "user" && item.turn && ["queued","starting","active"].includes(item.turn.status)); if (unfinished?.turn?.status === "queued") void startTravelTurn(trip.id, unfinished.content, null, unfinished.id, true); else if (unfinished) restoreOutlineRetry(trip.id, unfinished.id); if (!trip.activeRevision) continue; const meta = store.latestMapMeta(trip.id); if (detail.skeleton) { if (!meta || meta.itineraryVersion !== trip.activeRevision.version || ["queued","analyzing","resolving","stopped"].includes(meta.status)) void Promise.resolve().then(() => outlineMaps.projectOutline(trip.id, trip.activeRevision!.version)).catch((error) => console.warn("[Outline map]", message(error))); } else if (!meta || meta.itineraryVersion !== trip.activeRevision.version) void startMapTurn(trip.id, trip.activeRevision.version); else if (meta.contractVersion >= 4 && ["queued","analyzing","stopped"].includes(meta.status)) void startMapTurn(trip.id, trip.activeRevision.version); else if (meta.contractVersion >= 4 && meta.status === "resolving") void retryMap(trip.id); } }).catch((error) => console.warn("[Codex]", message(error)));
-setTimeout(() => { for (const trip of store.listTrips("active")) { const detail = store.requireTrip(trip.id); if (detail.planningStage !== "verifying") continue; const generation = store.planningBaseline(trip.id).generation; const taskId = `verify:${trip.id}:${generation}`; const task = store.getAiTask(taskId); if (task && ["completed", "failed", "stopped"].includes(task.status)) { store.setPlanningStage(trip.id, "outline"); broadcast("travel.trip.updated", { tripId: trip.id }); continue; } const feedback = { output: "{}", error: task?.lastError || "应用重启后恢复关键交通核验。" }; const retryCount = task?.retryCount || 0; const resume = () => { serviceRetryTimers.delete(taskId); store.clearAiTaskRetrySchedule(taskId); if (store.requireTrip(trip.id).planningStage === "verifying" && store.planningBaseline(trip.id).generation === generation) void startTransportVerification(trip.id, generation, feedback, retryCount); }; const delay = task?.nextAttemptAt ? Math.max(0, Date.parse(task.nextAttemptAt) - Date.now()) : 0; if (!delay) resume(); else { const timer = setTimeout(resume, delay); timer.unref(); serviceRetryTimers.set(taskId, timer); } } }, 1_000).unref();
+void codex.start().catch((error) => console.warn("[Codex]", message(error)));
 process.on("SIGINT", () => { void codex.stop().finally(async () => { await viteDev?.close(); tiles.close(); maps.close(); store.close(); server.close(() => process.exit(0)); }); });

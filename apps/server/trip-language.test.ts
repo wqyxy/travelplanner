@@ -1,23 +1,11 @@
 import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { TravelStore } from "./travel-store.js";
 
-describe("per-trip itinerary language", () => {
-  it("defaults to bilingual, persists independently, and is copied with the trip", async () => {
-    const folder = await mkdtemp(path.join(tmpdir(), "travel-language-test-"));
-    const store = new TravelStore(path.join(folder, "travel.sqlite3"));
-    try {
-      const first = store.createTrip();
-      const second = store.createTrip();
-      expect(first.itineraryLanguage).toBe("bilingual");
-      expect(store.setItineraryLanguage(first.id, "en").itineraryLanguage).toBe("en");
-      expect(store.requireTrip(second.id).itineraryLanguage).toBe("bilingual");
-      expect(store.duplicate(first.id).itineraryLanguage).toBe("en");
-    } finally {
-      store.close();
-      await rm(folder, { recursive: true, force: true });
-    }
-  });
+const directories: string[] = [];
+afterEach(async () => { await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))); });
+describe("itinerary language preference", () => {
+  it("is a non-fact trip preference and survives copying", async () => { const directory = await mkdtemp(path.join(os.tmpdir(), "travel-language-v1-")); directories.push(directory); const store = new TravelStore(path.join(directory, "travel.sqlite3")); const trip = store.createTrip(); store.setItineraryLanguage(trip.id, "en"); const copy = store.duplicate(trip.id); expect(store.requireTrip(trip.id).itineraryLanguage).toBe("en"); expect(copy.itineraryLanguage).toBe("en"); expect(copy.itinerary.trip.title).toContain("副本"); store.close(); });
 });

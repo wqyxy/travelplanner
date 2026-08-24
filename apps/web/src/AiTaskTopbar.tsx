@@ -3,7 +3,7 @@ import { Bot, ChevronDown, CircleStop, MapPinned, Route } from "lucide-react";
 import type { AiTask } from "./types";
 
 const ACTIVE = new Set(["starting", "running", "waiting", "reconnecting"]);
-const labels: Record<string, string> = { starting: "启动中", running: "进行中", waiting: "后台解析", reconnecting: "重连中", completed: "已完成", failed: "失败", stopped: "已停止" };
+const labels: Record<string, string> = { starting: "启动中", running: "进行中", waiting: "后台解析", reconnecting: "重连中", completed: "已完成", failed: "失败", stopped: "已停止", cancelled_by_generation: "已被新版本取代" };
 const elapsed = (startedAt: string, updatedAt: string, active: boolean) => { const end = active ? Date.now() : new Date(updatedAt).getTime(); const seconds = Math.max(0, Math.floor((end - new Date(startedAt).getTime()) / 1000)); if (seconds < 60) return `${seconds} 秒`; return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`; };
 
 export function AiTaskTopbar({ tasks, onStop }: { tasks: AiTask[]; onStop: (taskId: string) => Promise<void> }) {

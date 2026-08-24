@@ -1,16 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { placeNameLines } from "./Itinerary";
-import type { PlaceDefinition } from "./types";
+import { itineraryStageIndex, placeNameLines } from "./Itinerary";
+import type { Place } from "./types";
 
-const place: PlaceDefinition = {
+const place: Place = {
   id: "batemans-bay",
   kind: "city",
   nameZh: "巴特曼斯贝",
   nameEn: "Batemans Bay",
   nameLocal: "Batemans Bay",
-  localLanguage: "en-AU",
-  approximate: false,
-  geocoding: { name: "Batemans Bay", city: "Batemans Bay", region: "New South Wales", country: "Australia", countryCode: "au" },
+  city: "Batemans Bay", region: "New South Wales", country: "Australia", countryCode: "au", approximate: false,
 };
 
 describe("itinerary place language", () => {
@@ -20,8 +18,12 @@ describe("itinerary place language", () => {
     expect(placeNameLines(place, "旧名称", "bilingual")).toEqual(["巴特曼斯贝", "Batemans Bay"]);
   });
 
-  it("falls back to the legacy Chinese name when translations are unavailable", () => {
+  it("falls back to the supplied name when translations are unavailable", () => {
     expect(placeNameLines(undefined, "清水寺", "en")).toEqual(["清水寺"]);
     expect(placeNameLines(undefined, "清水寺", "bilingual")).toEqual(["清水寺"]);
+  });
+
+  it("maps the canonical stage to the three-step rail", () => {
+    expect(["planning", "draft", "detailed"].map((stage) => itineraryStageIndex(stage as "planning" | "draft" | "detailed"))).toEqual([0, 1, 2]);
   });
 });

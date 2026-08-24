@@ -5,7 +5,7 @@ export const defaultMapCategoryColors = { city: "#1b4f78", attraction: "#e11d48"
 const labels: Record<string, string> = { city: "城市", attraction: "景点", lodging: "住宿", meal: "餐饮", stop: "交通/停靠", waypoint: "途经点" };
 export function SettingsDrawer({ colors, onSave, onClose, onPreview }: { colors: Record<string, string>; onSave: (colors: Record<string, string>) => Promise<void>; onClose: () => void; onPreview?: (colors: Record<string, string>) => void }) {
   const [draft, setDraft] = useState(colors); const [error, setError] = useState(""); const [saving, setSaving] = useState(false);
-  const preview = (next: Record<string, string>) => { onPreview?.(next); window.dispatchEvent(new CustomEvent("map-category-colors-preview", { detail: next })); };
+  const preview = (next: Record<string, string>) => { onPreview?.(next); };
   useEffect(() => { setDraft(colors); preview(colors); }, [colors]);
   const update = (next: Record<string, string>) => { setDraft(next); preview(next); };
   const dismiss = () => { preview(colors); onClose(); };

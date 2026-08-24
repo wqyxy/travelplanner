@@ -1,22 +1,59 @@
 export type ItineraryLanguage = "zh" | "en" | "bilingual";
-export type PlaceDefinition = { id: string; kind: "city" | "attraction" | "lodging" | "meal" | "stop" | "waypoint"; nameZh: string; nameEn: string; nameLocal: string; localLanguage: string; approximate: boolean; geocoding: { name: string; city: string; region: string; country: string; countryCode: string } };
-export type Activity = { id: string; startTime: string; endTime: string; placeName: string; placeIds?: string[]; activity: string; durationMinutes: number; transportMode: string; transportMinutes: number; costNote: string; notes?: string };
-export type TripPlan = { schemaVersion?: 1 | 2; places?: PlaceDefinition[]; tripName: string; travelerSummary: string; pace: string; themes: string[]; timezone: string; budgetNote: string; days: Array<{ dayNumber: number; date?: string; title: string; activities: Activity[] }>; warnings: string[]; generatedBy: "codex" };
-export type PlanningStage = "outline" | "verifying" | "detailing" | "detailed" | "partial" | "waiting_service" | "stopped";
-export type RouteDecision = { id: string; question: string; recommendation: string; impact: string; defaultChoice: "accept" | "reject"; status: "pending" | "accepted" | "rejected"; choice: "accept" | "reject" | null };
-export type Trip = { id: string; title: string; state: string; updatedAt: string; itineraryLanguage: ItineraryLanguage; activeRevision: { id: string; version: number; plan: TripPlan } | null; requirements?: unknown; requirementsRevision?: number; planningStage?: PlanningStage; decisions?: RouteDecision[]; detailProgress?: { completed: number; total: number; repairing: number; waiting: number; stopped: number; tasks: Array<{ dayNumber: number; status: string; error: string | null }> } };
-export type TravelRequirements = { destinations: Array<{ city: string; country?: string | null; timezone?: string | null }>; dates: { start?: string | null; end?: string | null; durationDays?: number | null }; travelers: { summary: string; adults?: number | null; children?: number | null }; budget: { amount?: number | null; currency?: string | null; note?: string | null }; pace: string; themes: string[]; preferences: string[]; assumptions: string[]; openQuestions: string[] };
-export type Candidate = { providerPlaceId: string; displayName: string; latitude: number; longitude: number; category: string | null; placeType?: string | null; countryCode?: string | null; region?: string | null; city?: string | null; sourceUrl: string; sourceType: "nominatim" | "ai_web" | "ai_knowledge" | "manual"; evidenceUrl: string | null; confidence: "high" | "medium" | "low"; decisionNote: string | null };
-export type MapEntity = { id: string; activityId?: string | null; dayNumber: number; order: number; kind: "city" | "attraction" | "lodging" | "meal" | "stop" | "waypoint"; name: string; query: string; city: string; region?: string | null; country?: string | null; countryCode?: string | null; localName?: string | null; englishName?: string | null; localLanguage?: string | null; detail: string; importance: "primary" | "secondary" | "context"; startTime: string; endTime: string; durationMinutes: number; transportMode: string; costNote: string; notes: string; approximateLodgingArea: boolean; status: "pending" | "resolved" | "approximate" | "unlocated" | "ambiguous" | "unresolved" | "failed"; location: Candidate | null; candidates: Candidate[]; warning: string | null };
-export type MapRoute = { id: string; dayNumber: number; order: number; fromEntityId: string; toEntityId: string; mode: string; status: "pending" | "resolved" | "skipped" | "unresolved" | "failed"; geometry: GeoJSON.Geometry | null; warning: string | null };
-export type MapDayPath = { dayNumber: number; entityIds: string[]; startEntityId: string; endEntityId: string; overnightEntityId: string };
-export type MapPlace = { id: string; canonicalKey?: string; displayName: string; kind: MapEntity["kind"]; query: string; city: string; region?: string | null; country?: string | null; countryCode?: string | null; localName?: string | null; englishName?: string | null; localLanguage?: string | null; detail?: string; importance?: MapEntity["importance"]; approximateLodgingArea?: boolean; status: MapEntity["status"]; location: Candidate | null; candidates?: Candidate[]; warning?: string | null };
-export type MapVisit = { id: string; placeId: string; dayNumber: number; order: number; subOrder?: number; activityId?: string | null; activity?: string; startTime?: string; endTime?: string; durationMinutes?: number; transportMode?: string; costNote?: string; notes?: string };
-export type MapDayPathV4 = { dayNumber: number; visitIds: string[] };
-export type MapDayProgress = { dayNumber: number; status?: "pending" | "generating" | "retrying" | "repairing" | "resolving" | "locating" | "routing" | "ready" | "partial" | "failed"; resolvedPlaces?: number; totalPlaces?: number; resolvedRoutes?: number; totalRoutes?: number; generationRetries?: number; repairRetries?: number; error?: string | null; warning?: string | null };
-export type MapRouteV4 = Omit<MapRoute, "order" | "fromEntityId" | "toEntityId"> & { edgeOrder: number; fromVisitId: string; toVisitId: string; order?: number; fromEntityId?: string; toEntityId?: string };
-export type MapStatus = "idle" | "queued" | "analyzing" | "resolving" | "ready" | "partial" | "failed" | "stopped";
-export type MapSnapshot = { itineraryVersion: number; mapVersion: number; contractVersion?: number; scope: "all" | "day"; dayNumber: number | null; status: MapStatus; summary: string; warnings: string[]; entities: MapEntity[]; places?: MapPlace[]; visits?: MapVisit[]; routes: MapRoute[]; dayPaths: MapDayPath[]; dayProgress?: MapDayProgress[]; schemaVersion?: number; sequence?: number };
-export type MapPatch = { tripId: string; itineraryVersion: number; mapVersion: number; sequence?: number; replaceAll?: boolean; entities?: { upsert: MapEntity[]; remove: string[] }; places?: { upsert: MapPlace[]; remove: string[] }; visits?: { upsert: MapVisit[]; remove: string[] }; routes: { upsert: Array<MapRoute | MapRouteV4>; remove: string[] }; dayPaths?: Array<MapDayPath | MapDayPathV4>; dayProgress?: MapDayProgress[] };
-export type AiProgressEvent = { id: number; taskId: string; tripId: string; agent: "planner" | "map"; status: string; kind: string; summary: string; createdAt: string };
-export type AiTask = { id: string; tripId: string; agent: "planner" | "map"; label: string; status: "starting" | "running" | "waiting" | "reconnecting" | "completed" | "failed" | "stopped"; summary: string; startedAt: string; updatedAt: string; canStop: boolean; retryCount: number; nextAttemptAt: string | null; lastError: string | null; events: AiProgressEvent[] };
+export type VerificationStatus = "verified" | "estimated" | "unverified";
+export type Verification = { status: VerificationStatus; checkedAt: string | null };
+export type PlaceKind = "city" | "attraction" | "lodging" | "meal" | "airport" | "station" | "port" | "stop" | "waypoint";
+export type Place = {
+  id: string; nameZh: string; nameLocal: string | null; nameEn: string | null; kind: PlaceKind;
+  city: string | null; region: string | null; country: string | null; countryCode: string | null; approximate: boolean;
+};
+export type Period = "morning" | "afternoon" | "evening" | "night" | "all_day";
+export type TransportMode = "walk" | "drive" | "bike" | "transit" | "rail" | "flight" | "ferry" | "none";
+export type Stop = {
+  id: string; role: "start" | "visit" | "end"; placeId: string; activity: string; period: Period | null;
+  startTime: string | null; endTime: string | null; durationMinutes: number | null; scheduleVerification: Verification | null;
+  transportFromPrevious: { mode: TransportMode; durationMinutes: number | null; note: string | null; verification: Verification } | null;
+  costNote: string | null; costVerification: Verification | null; notes: string | null;
+};
+export type Day = { id: string; dayNumber: number; date: string | null; title: string; detailLevel: "draft" | "detailed"; detailStatus?: "ready" | "needs_review" | null; stops: Stop[] };
+export type Assumption = { text: string; source: "user" | "ai" | "system"; confidence: "low" | "medium" | "high" };
+export type Itinerary = {
+  schemaVersion: 1; stage: "planning" | "draft" | "detailed";
+  trip: {
+    title: string; originPlaceId: string | null; destinationPlaceIds: string[];
+    dates: { start: string | null; end: string | null; requestedDurationDays: number | null };
+    travelers: { summary: string; adults: number | null; children: number | null };
+    budget: { amount: number | null; currency: string | null; note: string | null };
+    pace: string | null; themes: string[]; preferences: string[]; constraints: string[]; assumptions: Assumption[];
+  };
+  places: Place[]; days: Day[]; warnings: string[];
+};
+export type Trip = { id: string; title: string; state: "active" | "trashed"; updatedAt: string; itineraryLanguage: ItineraryLanguage; contentGeneration: number; itinerary: Itinerary };
+export type PlannerReply = {
+  schemaVersion: 1; operation: "reply" | "mutate_itinerary" | "create_draft" | "start_detailing";
+  assistantMessage: string; baseGeneration: number; nextAction: "none" | "start_draft" | "start_detail";
+  suggestion: { id: string; text: string } | null;
+};
+export type Chat = {
+  id: string; role: "user" | "assistant"; content: string; reply: PlannerReply | null; status: "pending" | "completed" | "failed";
+  turn: { status: "queued" | "starting" | "active" | "completed" | "failed" | "interrupted"; cancelRequested: boolean; errorMessage: string | null; progressMessage: string | null; codexTurnId?: string | null } | null;
+  createdAt?: string;
+};
+export type AiProgressEvent = { id: number; taskId: string; tripId: string; agent: "planner" | "detailer" | "map"; status: string; kind: string; summary: string; createdAt: string };
+export type AiTask = {
+  id: string; tripId: string; agent: "planner" | "detailer" | "map"; label: string;
+  status: "starting" | "running" | "waiting" | "reconnecting" | "completed" | "failed" | "stopped" | "cancelled_by_generation";
+  summary: string; startedAt: string; updatedAt: string; canStop: boolean; retryCount: number; nextAttemptAt: string | null; lastError: string | null;
+  metadata?: Record<string, unknown>; events: AiProgressEvent[];
+};
+export type MapVisit = { id: string; dayId: string; dayNumber: number; stopId: string; placeId: string; order: number };
+export type MapEdge = { id: string; dayId: string; fromVisitId: string; toVisitId: string; mode: TransportMode; order: number };
+export type GeoJsonGeometry = { type: string; coordinates: unknown };
+export type DerivedMapRoute = { edgeId: string; routeKey: string; geometry: GeoJsonGeometry | null; status: "ready" | "attention"; warning: string | null };
+export type DerivedMapSnapshot = { visits: MapVisit[]; edges: MapEdge[]; routes: DerivedMapRoute[] };
+export type ResolvedPlace = {
+  placeId: string; geoFingerprint: string; provider: string; providerPlaceId: string | null; lat: number | null; lng: number | null;
+  timezone: string | null; resolution: "exact" | "approximate" | "unresolved"; confidence: number | null; resolvedAt: string | null;
+};
+export type MapState = { generation: number; resolvedPlaces: ResolvedPlace[]; map: DerivedMapSnapshot | null; status: "idle" | "syncing" | "ready" | "attention"; warnings: string[]; updatedAt: string };
+export type UiSettings = { workspaceSplitRatio: number; theme: "light" | "dark"; sidebarOpen: boolean; mapCategoryColors: Record<string, string> };
+export type AppSettings = { ai: { model: string; reasoningEffort: string }; ui: UiSettings };

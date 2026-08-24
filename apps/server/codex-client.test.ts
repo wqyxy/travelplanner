@@ -15,8 +15,8 @@ describe("Codex app-server protocol", () => {
 
     // This assertion is intentionally checked by tsc, not at runtime.
     // @ts-expect-error Business task labels are not ReasoningSummary values.
-    const invalid: TurnStartParams = { threadId: "thread", input: [], summary: "route outline" };
-    expect(invalid.summary).toBe("route outline");
+    const invalid: TurnStartParams = { threadId: "thread", input: [], summary: "planner workflow" };
+    expect(invalid.summary).toBe("planner workflow");
     // @ts-expect-error Arbitrary UI text is not a protocol reasoning-effort value.
     const invalidEffort: TurnStartParams = { threadId: "thread", input: [], effort: "deep thinking" };
     expect(invalidEffort.effort).toBe("deep thinking");
@@ -24,13 +24,10 @@ describe("Codex app-server protocol", () => {
 
   it.each([
     "ordinary question",
-    "route update",
-    "route skeleton repair",
-    "critical transport verification",
-    "daily detail",
-    "daily repair",
-    "map manifest",
-    "map resolution",
+    "itinerary update",
+    "draft creation",
+    "detail batch",
+    "map candidate decision",
   ])("builds %s turns with a legal detailed summary", () => {
     const request = structuredTurn({
       threadId: "thread-1",
@@ -43,7 +40,7 @@ describe("Codex app-server protocol", () => {
   });
 
   it.each([
-    [new CodexRpcError("Invalid request: unknown variant route outline, expected one of auto, concise, detailed, none"), "protocol"],
+    [new CodexRpcError("Invalid request: unknown variant planner workflow, expected one of auto, concise, detailed, none"), "protocol"],
     [new Error("output schema is invalid"), "protocol"],
     [new Error("login required"), "authentication"],
     [new Error("model is unavailable"), "model"],

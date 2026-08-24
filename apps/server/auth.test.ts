@@ -20,10 +20,10 @@ describe("password changes and sessions", () => {
     await expect(verifyPassword("new-password", record)).resolves.toBe(true);
     expect(record.sessionKey).toHaveLength(128);
   });
-  it("keeps legacy cookies valid after the first password change", async () => {
-    const legacy = await hashPassword("old-password"); const record: { passwordSalt?: string; passwordHash?: string; sessionKey?: string } = { ...legacy };
+  it("keeps active sessions valid after the first password change", async () => {
+    const initialPassword = await hashPassword("old-password"); const record: { passwordSalt?: string; passwordHash?: string; sessionKey?: string } = { ...initialPassword };
     const sessions = new PersistentSessionStore(() => record); const token = sessions.create();
-    const next = await hashPassword("new-password"); Object.assign(record, next, { sessionKey: legacy.passwordHash });
+    const next = await hashPassword("new-password"); Object.assign(record, next, { sessionKey: initialPassword.passwordHash });
     expect(sessions.has(token)).toBe(true);
     expect(sessions.has(sessions.create())).toBe(true);
   });
