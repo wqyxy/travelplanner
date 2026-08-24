@@ -21,6 +21,7 @@ const state: MapState = {
   map: {
     visits: [
       { id: "v1", dayId: "d1", dayNumber: 1, stopId: "s1", placeId: "tokyo", order: 0 },
+      { id: "v1-repeat", dayId: "d1", dayNumber: 1, stopId: "s1-repeat", placeId: "tokyo", order: 1 },
       { id: "v2", dayId: "d1", dayNumber: 1, stopId: "s2", placeId: "museum", order: 1 },
       { id: "v3", dayId: "d2", dayNumber: 2, stopId: "s3", placeId: "tokyo", order: 0 },
     ],
@@ -39,8 +40,9 @@ describe("map snapshot presentation", () => {
   it("deduplicates Place markers while preserving every visible visit", () => {
     const result = buildMapPresentation(itinerary, state, { scope: "all" }, ["city", "attraction", "lodging", "meal", "stop", "waypoint"]);
     expect(result.markers).toHaveLength(1);
-    expect(result.markers[0].visits.map((visit) => visit.id)).toEqual(["v1", "v3"]);
-    expect(result.visibleVisits).toHaveLength(3);
+    expect(result.markers[0].visits.map((visit) => visit.id)).toEqual(["v1", "v1-repeat", "v3"]);
+    expect(result.markers[0].dayLabel).toBe("D1/D2");
+    expect(result.visibleVisits).toHaveLength(4);
     expect(result.unresolvedPlaceIds).toEqual(["museum"]);
   });
 

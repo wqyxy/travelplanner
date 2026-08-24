@@ -81,6 +81,13 @@ describe("itinerary:v1 contracts", () => {
     expect(PlannerMutationSchema.safeParse({ type: "move_entity", entity: "stop", id: "stop-1", targetParentId: "day-2", position: 1 }).success).toBe(true);
   });
 
+  it("keeps stage actions and optional suggestions mutually exclusive", () => {
+    const output = { schemaVersion: 1, operation: "reply", assistantMessage: "下一步", baseGeneration: 0, mutations: null, draftItinerary: null, nextAction: "none", suggestion: null };
+    expect(PlannerOutputSchema.safeParse({ ...output, nextAction: "start_detail" }).success).toBe(true);
+    expect(PlannerOutputSchema.safeParse({ ...output, suggestion: { id: "s1", text: "在京都多住一晚" } }).success).toBe(true);
+    expect(PlannerOutputSchema.safeParse({ ...output, nextAction: "start_detail", suggestion: { id: "duplicate", text: "下一步开始细化" } }).success).toBe(false);
+  });
+
   it("exports a closed Structured Output schema without optional object properties", () => {
     expect(PlannerOutputSchema.safeParse({ schemaVersion: 1, operation: "reply", assistantMessage: "您好", baseGeneration: 0, mutations: null, draftItinerary: null, nextAction: "none", suggestion: null }).success).toBe(true);
     expect(PlannerOutputJsonSchema).not.toHaveProperty("$schema");

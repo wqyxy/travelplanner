@@ -4,7 +4,7 @@ import type { Itinerary, ItineraryLanguage, MapEdge, MapState, MapVisit, Place, 
 import type { MapSelection } from "./Itinerary";
 import { placeNameLines } from "./Itinerary";
 import { clusterHiddenLabels, layoutLabels } from "./map-label-layout";
-import { defaultCategoryVisibility, mapCategoryLegend, routeHoverFromFeature, visibleCategories, type MapCategory } from "./map-interactions";
+import { dashedRouteModes, defaultCategoryVisibility, mapCategoryLegend, routeHoverFromFeature, routeLayerIds, visibleCategories, type MapCategory } from "./map-interactions";
 
 const dayColors = ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#d97706", "#0891b2"];
 const modeColors: Record<TransportMode, string> = { walk: "#2563eb", drive: "#dc2626", bike: "#16a34a", transit: "#64748b", rail: "#475569", flight: "#7c3aed", ferry: "#0891b2", none: "#94a3b8" };
@@ -14,7 +14,7 @@ export function categoryForPlace(kind: PlaceKind): MapCategory {
   return kind === "airport" || kind === "station" || kind === "port" ? "stop" : kind;
 }
 
-type Marker = { id: string; place: Place; resolved: ResolvedPlace; visits: MapVisit[]; category: MapCategory; label: string };
+type Marker = { id: string; place: Place; resolved: ResolvedPlace; visits: MapVisit[]; category: MapCategory; label: string; dayLabel: string };
 type RouteLine = { edge: MapEdge; route: NonNullable<MapState["map"]>["routes"][number]; dayNumber: number };
 export type MapPresentation = { markers: Marker[]; routes: RouteLine[]; visibleVisits: MapVisit[]; unresolvedPlaceIds: string[] };
 
@@ -32,7 +32,8 @@ export function buildMapPresentation(itinerary: Itinerary | null, state: MapStat
     if (!place || !point || point.lat === null || point.lng === null) { unresolvedPlaceIds.push(placeId); continue; }
     const category = categoryForPlace(place.kind);
     if (!enabledCategories.includes(category)) continue;
-    markers.push({ id: placeId, place, resolved: point, visits, category, label: place.nameZh });
+    const dayLabel = [...new Set(visits.map((visit) => visit.dayNumber))].map((dayNumber) => `D${dayNumber}`).join("/");
+    markers.push({ id: placeId, place, resolved: point, visits, category, label: place.nameZh, dayLabel });
   }
   const edges = new Map(state.map.edges.map((edge) => [edge.id, edge]));
   const visibleDayIds = new Set(visibleVisits.map((visit) => visit.dayId));
@@ -92,7 +93,10 @@ export function MapPanel({ itinerary, state, language, categoryColors, selection
       map.addControl(new lib.NavigationControl({ showCompass: false }), "top-right");
       map.on("load", () => {
         map.addSource("travel-routes", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-        map.addLayer({ id: "travel-routes", type: "line", source: "travel-routes", paint: { "line-color": "#64748b", "line-width": ["case", ["boolean", ["feature-state", "hover"], false], 6, 4], "line-opacity": ["case", ["==", ["get", "status"], "attention"], .55, .84] } });
+        const routePaint = { "line-color": "#64748b", "line-width": ["case", ["boolean", ["feature-state", "hover"], false], 6, 4], "line-opacity": ["case", ["==", ["get", "status"], "attention"], .55, .84] };
+        const dashedFilter = ["in", ["get", "mode"], ["literal", dashedRouteModes]];
+        map.addLayer({ id: "travel-routes-solid", type: "line", source: "travel-routes", filter: ["!", dashedFilter], paint: routePaint });
+        map.addLayer({ id: "travel-routes-dashed", type: "line", source: "travel-routes", filter: dashedFilter, paint: { ...routePaint, "line-dasharray": [2, 2] } });
         map.addSource("travel-places", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
         map.addLayer({ id: "travel-places", type: "circle", source: "travel-places", paint: { "circle-radius": 7, "circle-color": "#1b4f78", "circle-stroke-width": 2, "circle-stroke-color": "#fff" } });
         const clearRouteHover = () => { if (hoveredRoute.current) map.setFeatureState({ source: "travel-routes", id: hoveredRoute.current }, { hover: false }); hoveredRoute.current = null; routePopupRef.current?.remove(); routePopupRef.current = null; };
@@ -114,9 +118,11 @@ export function MapPanel({ itinerary, state, language, categoryColors, selection
         map.on("mouseenter", "travel-places", () => { map.getCanvas().style.cursor = "pointer"; });
         map.on("mouseleave", "travel-places", () => { map.getCanvas().style.cursor = ""; });
         map.on("click", "travel-places", showPlace);
-        map.on("mouseenter", "travel-routes", (event: any) => { map.getCanvas().style.cursor = "pointer"; showRouteHover(event); });
-        map.on("mousemove", "travel-routes", showRouteHover);
-        map.on("mouseleave", "travel-routes", () => { map.getCanvas().style.cursor = ""; clearRouteHover(); });
+        for (const layerId of routeLayerIds) {
+          map.on("mouseenter", layerId, (event: any) => { map.getCanvas().style.cursor = "pointer"; showRouteHover(event); });
+          map.on("mousemove", layerId, showRouteHover);
+          map.on("mouseleave", layerId, () => { map.getCanvas().style.cursor = ""; clearRouteHover(); });
+        }
         setReady(true);
       });
       observer = new ResizeObserver(() => map.resize()); observer.observe(element.current); mapRef.current = map;
@@ -130,7 +136,7 @@ export function MapPanel({ itinerary, state, language, categoryColors, selection
     map.getSource("travel-routes")?.setData({ type: "FeatureCollection", features: routeFeatures });
     map.setPaintProperty("travel-places", "circle-color", ["match", ["get", "kind"], ...Object.entries(categoryColors).flatMap(([kind, color]) => [kind, color]), "#1b4f78"]);
     const routeColors = selection.scope === "all" ? [...new Map(presentation.routes.map((line) => [line.dayNumber, dayColors[(line.dayNumber - 1) % dayColors.length]])).entries()].flatMap(([dayNumber, color]) => [dayNumber, color]) : Object.entries(modeColors).flatMap(([mode, color]) => [mode, color]);
-    map.setPaintProperty("travel-routes", "line-color", ["match", ["get", selection.scope === "all" ? "dayNumber" : "mode"], ...routeColors, "#64748b"]);
+    for (const layerId of routeLayerIds) map.setPaintProperty(layerId, "line-color", ["match", ["get", selection.scope === "all" ? "dayNumber" : "mode"], ...routeColors, "#64748b"]);
     const key = `${state?.generation ?? -1}:${selection.scope}:${selection.scope === "day" ? selection.dayNumber : "all"}:${pointFeatures.map((feature) => feature.id).join(",")}`;
     if (pointFeatures.length && fitKey.current !== key) void import("maplibre-gl").then((lib) => { if (mapRef.current !== map) return; const bounds = new lib.LngLatBounds(); for (const feature of pointFeatures) bounds.extend(feature.geometry.coordinates as [number, number]); if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 54, maxZoom: 13, duration: 500 }); fitKey.current = key; });
   }, [ready, pointFeatures, routeFeatures, categoryColors, selection, presentation.routes, state?.generation]);
@@ -139,7 +145,7 @@ export function MapPanel({ itinerary, state, language, categoryColors, selection
     const map = mapRef.current; const overlay = labels.current; if (!ready || !map || !overlay) return;
     const draw = () => {
       overlay.replaceChildren();
-      const boxes = presentation.markers.map((marker) => { const point = map.project([marker.resolved.lng, marker.resolved.lat]); const text = `${placeNameLines(marker.place, marker.place.nameZh, language)[0]} · ${marker.visits.map((visit) => `D${visit.dayNumber}`).join("/")}`; return { ...marker, x: point.x, y: point.y, width: Math.min(176, 38 + text.length * 11), height: 26, priority: marker.place.kind === "city" || marker.place.kind === "lodging" ? 3 : 2, text }; });
+      const boxes = presentation.markers.map((marker) => { const point = map.project([marker.resolved.lng, marker.resolved.lat]); const text = `${placeNameLines(marker.place, marker.place.nameZh, language)[0]} · ${marker.dayLabel}`; return { ...marker, x: point.x, y: point.y, width: Math.min(176, 38 + text.length * 11), height: 26, priority: marker.place.kind === "city" || marker.place.kind === "lodging" ? 3 : 2, text }; });
       const placements = layoutLabels(boxes, { width: overlay.clientWidth, height: overlay.clientHeight }, boxes.map((item) => ({ ...item, id: `pin:${item.id}`, x: item.x - 9, y: item.y - 9, width: 18, height: 18 })));
       for (const item of placements.filter((entry) => !entry.hidden)) { const node = document.createElement("button"); node.className = "map-label"; node.style.transform = `translate(${item.x}px,${item.y}px)`; node.style.setProperty("--label-color", categoryColors[item.category] || "#1b4f78"); node.textContent = item.text; node.onclick = () => map.flyTo({ center: [item.resolved.lng, item.resolved.lat], zoom: Math.max(14, map.getZoom()) }); overlay.append(node); }
       const clusters = layoutLabels(clusterHiddenLabels(placements.filter((item) => item.hidden)), { width: overlay.clientWidth, height: overlay.clientHeight });

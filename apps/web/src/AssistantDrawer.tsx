@@ -7,9 +7,9 @@ export type PlannerQuickAction = { id: string; label: "开始实施初稿" | "�
 
 export function plannerQuickActions(reply: PlannerReply | null): PlannerQuickAction[] {
   if (!reply) return [];
+  if (reply.nextAction === "start_draft") return [{ id: "start-draft", label: "开始实施初稿", message: "开始实施初稿" }];
+  if (reply.nextAction === "start_detail") return [{ id: "start-detail", label: "开始细化方案", message: "开始细化方案" }];
   const actions: PlannerQuickAction[] = [];
-  if (reply.nextAction === "start_draft") actions.push({ id: "start-draft", label: "开始实施初稿", message: "开始实施初稿" });
-  if (reply.nextAction === "start_detail") actions.push({ id: "start-detail", label: "开始细化方案", message: "开始细化方案" });
   if (reply.suggestion) {
     actions.push({ id: `${reply.suggestion.id}:accept`, label: "采用", message: `采用建议：${reply.suggestion.text}`, title: reply.suggestion.text });
     actions.push({ id: `${reply.suggestion.id}:reject`, label: "不采用", message: `不采用建议：${reply.suggestion.text}`, title: reply.suggestion.text });

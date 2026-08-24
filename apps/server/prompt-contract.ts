@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 export const PLANNER_PROMPT_ID = "travel-planner-agent";
-export const PLANNER_PROMPT_VERSION = 5;
+export const PLANNER_PROMPT_VERSION = 7;
 export const DETAIL_PROMPT_ID = "travel-itinerary-detail-agent";
 export const DETAIL_PROMPT_VERSION = 2;
 export const CANDIDATE_PROMPT_ID = "travel-map-candidate-agent";

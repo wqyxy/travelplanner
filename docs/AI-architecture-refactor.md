@@ -392,6 +392,7 @@ type PlannerOutput = {
 - `start_detailing`：只能在当前 itinerary 为 draft 且用户当前消息明确确认细化时返回；`mutations` 和 `draftItinerary` 通常均为 `null`。
 - 所有写操作都必须匹配 `baseGeneration`；过期结果拒绝应用。
 - `nextAction` 只控制聊天中的快捷按钮，不是持久化业务状态。
+- `nextAction` 与 `suggestion` 在单条回复中互斥；阶段动作优先，`suggestion` 只表达尚未执行的具体可选行程变更。
 - 初稿生成只能发生在用户点击“开始实施初稿”或用自然语言明确确认后。
 - 不用服务端关键词匹配判断自然语言确认，由 00 在合同中表达操作意图，服务端再校验阶段是否合法。
 - 普通问答不返回完整 itinerary；已有行程修改也不返回完整 itinerary，以降低 Token、合同失败和无意义重写风险。
@@ -865,6 +866,7 @@ AI Chat 是唯一规划入口。删除：
 - `不采用`
 
 按钮不直接调用另一套业务 API，只把自然语言指令发送到同一个聊天 `/turns` 接口。
+单条回复只显示一种决策模式：`nextAction` 对应的一个阶段按钮，或 `suggestion` 对应的“采用 / 不采用”按钮组，不得同时显示。
 
 建议按钮文案：
 

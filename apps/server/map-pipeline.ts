@@ -17,30 +17,36 @@ import type { TravelStore } from "./travel-store.js";
 export const AUTO_SELECT_MIN_SCORE = 65;
 export const AUTO_SELECT_MIN_MARGIN = 15;
 export const ROUTING_PROFILE_VERSION = "v1";
+export const MAP_RESOLUTION_VERSION = "v4";
 
 export type ScoredCandidate = { candidate: MapCandidate; score: number };
 type Decision = (input: { place: Place; candidates: MapCandidate[] }) => Promise<CandidateDecisionOutput | null>;
 type ChangeListener = (event: MapChangedEvent) => void;
 
-const normalize = (value: string | null | undefined) => (value ?? "").normalize("NFKC").toLocaleLowerCase().replace(/[\p{P}\p{S}\s]+/gu, "").trim();
+const normalize = (value: string | null | undefined) => (value ?? "").normalize("NFKD").replace(/\p{M}+/gu, "").toLocaleLowerCase().replace(/[\p{P}\p{S}\s]+/gu, "").trim();
 const hash = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 32);
 const coordinate = (place: ResolvedPlace) => place.lng === null || place.lat === null ? null : [place.lng, place.lat] as [number, number];
 const primaryName = (place: Place) => place.nameLocal ?? place.nameEn ?? place.nameZh;
+const placeLabel = (place: Place | undefined) => place?.nameZh ?? "未知地点";
 
 /** A display-only translation does not change the preferred local/English identity. */
 export function geoFingerprint(place: Place) {
   const countryIdentity = place.countryCode ? normalize(place.countryCode) : normalize(place.country);
-  return [normalize(primaryName(place)), place.kind, normalize(place.city), normalize(place.region), countryIdentity, place.approximate ? "approximate" : "exact"].join("|");
+  return [MAP_RESOLUTION_VERSION, normalize(primaryName(place)), place.kind, normalize(place.city), normalize(place.region), countryIdentity, place.approximate ? "approximate" : "exact"].join("|");
 }
 
 export function buildMapQueries(place: Place) {
   const names = [place.nameLocal, place.nameEn, place.nameZh];
   const areas = [place.city, place.region];
   const values: string[] = [];
-  for (const area of areas) for (const name of names) {
-    const query = [name, area, place.countryCode].filter((part): part is string => Boolean(part?.trim())).join(", ").trim();
+  const add = (...parts: Array<string | null>) => {
+    const query = parts.filter((part): part is string => Boolean(part?.trim())).join(", ").trim();
     if (query && !values.some((entry) => normalize(entry) === normalize(query))) values.push(query);
+  };
+  for (const area of areas) for (const name of names) {
+    add(name, name && area && normalize(name) === normalize(area) ? null : area, place.countryCode);
   }
+  for (const name of names) add(name, place.countryCode);
   return values;
 }
 
@@ -70,10 +76,25 @@ function typeCompatible(place: Place, candidate: MapCandidate) {
   return ["aeroway", "railway", "public_transport", "highway", "amenity", "place"].includes(category);
 }
 
-/** Country and obvious kind conflicts are rejected before either scoring or AI. */
+function exactNameMatch(place: Place, candidate: MapCandidate) {
+  const candidateName = normalize(candidate.name);
+  return Boolean(candidateName) && [place.nameZh, place.nameLocal, place.nameEn].some((name) => Boolean(name) && normalize(name) === candidateName);
+}
+
+/** Country stays strict; an exact provider short name can override a kind mismatch. */
 export function filterMapCandidates(place: Place, candidates: MapCandidate[]) {
   const country = place.countryCode?.toLowerCase() ?? null;
-  return candidates.filter((candidate) => (!country || candidate.countryCode === country) && typeCompatible(place, candidate));
+  return deduplicateMapCandidates(candidates).filter((candidate) => (!country || candidate.countryCode === country) && (exactNameMatch(place, candidate) || typeCompatible(place, candidate)));
+}
+
+export function deduplicateMapCandidates(candidates: MapCandidate[]) {
+  const unique = new Map<string, MapCandidate>();
+  for (const candidate of candidates) {
+    const key = [candidate.countryCode ?? "", normalize(candidate.name ?? candidate.displayName), candidate.category ?? "", candidate.placeType ?? "", candidate.latitude.toFixed(6), candidate.longitude.toFixed(6)].join("|");
+    const previous = unique.get(key);
+    if (!previous || candidate.providerPlaceId.localeCompare(previous.providerPlaceId) < 0) unique.set(key, candidate);
+  }
+  return [...unique.values()];
 }
 
 function distanceKm(left: [number, number], right: [number, number]) {
@@ -84,11 +105,13 @@ function distanceKm(left: [number, number], right: [number, number]) {
 }
 
 export function scoreMapCandidate(place: Place, candidate: MapCandidate, nearby: ResolvedPlace[] = []) {
-  const candidateName = normalize(candidate.displayName);
+  const candidateName = normalize(candidate.name);
+  const candidateDisplayName = normalize(candidate.displayName);
   const names = [place.nameZh, place.nameLocal, place.nameEn].filter((name): name is string => Boolean(name)).map(normalize);
-  let score = names.includes(candidateName) ? 50 : 0;
-  if ([place.nameLocal, place.nameEn].filter((name): name is string => Boolean(name)).map(normalize).includes(candidateName)) score += 45;
-  if (!score && names.some((name) => name.length >= 4 && (candidateName.includes(name) || name.includes(candidateName)))) score += 25;
+  let score = candidateName && names.includes(candidateName) ? 50 : 0;
+  if (candidateName && [place.nameLocal, place.nameEn].filter((name): name is string => Boolean(name)).map(normalize).includes(candidateName)) score += 45;
+  const containmentCandidates = candidateName ? [candidateName] : [candidateDisplayName];
+  if (!score && names.some((name) => name.length >= 4 && containmentCandidates.some((candidateValue) => candidateValue && (candidateValue.includes(name) || name.includes(candidateValue))))) score += 25;
   if (normalize(place.city) && normalize(place.city) === normalize(candidate.city)) score += 20;
   if (normalize(place.region) && normalize(place.region) === normalize(candidate.region)) score += 10;
   if (typeCompatible(place, candidate)) score += 15;
@@ -104,8 +127,11 @@ export function rankMapCandidates(place: Place, candidates: MapCandidate[], near
 export function chooseAutomatically(place: Place, candidates: MapCandidate[], nearby: ResolvedPlace[] = []): ScoredCandidate | null {
   // Without the target country code, code cannot prove a candidate belongs to the intended country.
   if (!place.countryCode) return null;
-  // A provider result without a country may still be shown to 02, but never becomes an automatic exact location.
-  const scored = rankMapCandidates(place, candidates, nearby).filter((entry) => entry.candidate.countryCode !== null);
+  const country = place.countryCode.toLowerCase();
+  const eligible = deduplicateMapCandidates(candidates).filter((candidate) => candidate.countryCode === country && (exactNameMatch(place, candidate) || typeCompatible(place, candidate)));
+  const exact = eligible.filter((candidate) => exactNameMatch(place, candidate));
+  const scored = rankMapCandidates(place, exact.length ? exact : eligible, nearby);
+  if (exact.length === 1) return { ...scored[0], score: Math.max(AUTO_SELECT_MIN_SCORE, scored[0].score) };
   if (scored.length === 1 && scored[0].score >= AUTO_SELECT_MIN_SCORE) return scored[0];
   if (scored.length > 1 && scored[0].score >= AUTO_SELECT_MIN_SCORE && scored[0].score - scored[1].score >= AUTO_SELECT_MIN_MARGIN) return scored[0];
   return null;
@@ -142,7 +168,7 @@ export class MapPipeline {
     if (trip.contentGeneration !== generation) return;
     const prior = this.options.store.getMapState(tripId);
     const graph = deriveMapGraph(trip.itinerary);
-    const reusable = new Map((prior?.resolvedPlaces ?? []).filter((entry) => trip.itinerary.places.some((place) => place.id === entry.placeId && geoFingerprint(place) === entry.geoFingerprint)).map((entry) => [entry.placeId, entry]));
+    const reusable = new Map((prior?.resolvedPlaces ?? []).filter((entry) => entry.resolution !== "unresolved" && trip.itinerary.places.some((place) => place.id === entry.placeId && geoFingerprint(place) === entry.geoFingerprint)).map((entry) => [entry.placeId, entry]));
     const initial: DerivedMapSnapshot = { ...graph, routes: [] };
     this.commit(tripId, generation, changedDayIds, token, { resolvedPlaces: [...reusable.values()], map: initial, status: "syncing", warnings: [] }, "正在同步地图派生数据");
     try {
@@ -151,9 +177,18 @@ export class MapPipeline {
         if (!resolved.has(place.id)) resolved.set(place.id, await this.resolvePlace(place, [...resolved.values()]));
         if (!this.current(tripId, generation, token)) return;
       }
-      const routes = await this.resolveRoutes(graph, resolved, snapshot(prior?.map));
+      const places = new Map(trip.itinerary.places.map((place) => [place.id, place]));
+      const routes = await this.resolveRoutes(graph, resolved, snapshot(prior?.map), places);
       if (!this.current(tripId, generation, token)) return;
-      const values = [...resolved.values()]; const warnings = [...values.filter((entry) => entry.resolution !== "exact").map((entry) => entry.resolution === "approximate" ? `Place ${entry.placeId} 使用城市或区域中心。` : `Place ${entry.placeId} 未能可靠定位。`), ...routes.filter((route) => route.status === "attention").flatMap((route) => route.warning ? [route.warning] : [])];
+      const values = [...resolved.values()];
+      const placeWarnings = values.filter((entry) => entry.resolution !== "exact").map((entry) => {
+        const place = places.get(entry.placeId); const name = placeLabel(place);
+        if (entry.resolution === "unresolved") return `${name}：未能可靠定位，地图暂不显示此地点。`;
+        const center = place?.city ?? place?.region ?? "所在城市或区域";
+        return place?.kind === "port" ? `${name}：未找到可确认的港口坐标，暂以${center}城镇中心显示（大致位置）。` : `${name}：暂以${center}中心显示（大致位置）。`;
+      });
+      const routeWarnings = routes.filter((route) => route.status === "attention").flatMap((route) => route.warning ? [route.warning] : []);
+      const warnings = [...new Set([...placeWarnings, ...routeWarnings])];
       const status = warnings.length ? "attention" : "ready";
       const map: DerivedMapSnapshot = { ...graph, routes };
       this.commit(tripId, generation, changedDayIds, token, { resolvedPlaces: values, map, status, warnings }, status === "ready" ? "地图已同步" : "地图已同步，部分地点或路线需要注意");
@@ -176,11 +211,13 @@ export class MapPipeline {
 
   private async resolvePlace(place: Place, nearby: ResolvedPlace[]) {
     const all = new Map<string, MapCandidate>();
-    for (const query of buildMapQueries(place)) for (const candidate of await this.options.maps.search(query, place.countryCode)) all.set(candidate.providerPlaceId, candidate);
+    for (const query of buildMapQueries(place)) {
+      for (const candidate of await this.options.maps.search(query, place.countryCode)) all.set(candidate.providerPlaceId, candidate);
+      const automatic = chooseAutomatically(place, filterMapCandidates(place, [...all.values()]), nearby);
+      if (automatic) return resolvedFromCandidate(place, automatic.candidate, "exact", Math.min(1, automatic.score / 100));
+    }
     const candidates = filterMapCandidates(place, [...all.values()]);
     const ranked = rankMapCandidates(place, candidates, nearby);
-    const automatic = chooseAutomatically(place, candidates, nearby);
-    if (automatic) return resolvedFromCandidate(place, automatic.candidate, "exact", Math.min(1, automatic.score / 100));
     if (candidates.length && this.options.decideCandidate) {
       const decisionCandidates = ranked.slice(0, 5).map((entry) => entry.candidate);
       const decision = await this.options.decideCandidate({ place, candidates: decisionCandidates });
@@ -191,19 +228,23 @@ export class MapPipeline {
   }
 
   private async approximateOrUnresolved(place: Place): Promise<ResolvedPlace> {
-    if (place.kind !== "city" && place.kind !== "lodging") return { placeId: place.id, geoFingerprint: geoFingerprint(place), provider: "nominatim", providerPlaceId: null, lat: null, lng: null, timezone: null, resolution: "unresolved", confidence: null, resolvedAt: null };
     const centerName = place.city ?? place.region ?? primaryName(place);
-    const centerTarget: Place = { ...place, nameZh: centerName, nameLocal: null, nameEn: null, kind: "city", approximate: true };
-    const query = [centerName, place.region === centerName ? null : place.region, place.countryCode].filter((part): part is string => Boolean(part?.trim())).join(", ");
+    const settlementNamedPort = place.kind === "port" && Boolean(place.city) && normalize(place.nameZh) === normalize(place.city);
+    if (place.kind !== "city" && place.kind !== "lodging" && !settlementNamedPort) return { placeId: place.id, geoFingerprint: geoFingerprint(place), provider: "nominatim", providerPlaceId: null, lat: null, lng: null, timezone: null, resolution: "unresolved", confidence: null, resolvedAt: null };
+    const preserveSettlementNames = place.kind !== "lodging" && normalize(place.nameZh) === normalize(centerName);
+    const centerTarget: Place = { ...place, nameZh: centerName, nameLocal: preserveSettlementNames ? place.nameLocal : null, nameEn: preserveSettlementNames ? place.nameEn : null, kind: "city", approximate: true };
     try {
-      const candidates = filterMapCandidates(centerTarget, await this.options.maps.search(query, place.countryCode));
-      const selected = chooseAutomatically(centerTarget, candidates);
-      if (selected) return resolvedFromCandidate(place, selected.candidate, "approximate", Math.min(0.5, selected.score / 100));
+      const all = new Map<string, MapCandidate>();
+      for (const query of buildMapQueries(centerTarget)) {
+        for (const candidate of await this.options.maps.search(query, place.countryCode)) all.set(candidate.providerPlaceId, candidate);
+        const selected = chooseAutomatically(centerTarget, filterMapCandidates(centerTarget, [...all.values()]));
+        if (selected) return resolvedFromCandidate(place, selected.candidate, "approximate", Math.min(0.5, selected.score / 100));
+      }
     } catch { /* The unresolved result below keeps the failure visible without inventing a location. */ }
     return { placeId: place.id, geoFingerprint: geoFingerprint(place), provider: "nominatim", providerPlaceId: null, lat: null, lng: null, timezone: null, resolution: "unresolved", confidence: null, resolvedAt: null };
   }
 
-  private async resolveRoutes(graph: Pick<DerivedMapSnapshot, "visits" | "edges">, resolved: Map<string, ResolvedPlace>, prior: DerivedMapSnapshot | null) {
+  private async resolveRoutes(graph: Pick<DerivedMapSnapshot, "visits" | "edges">, resolved: Map<string, ResolvedPlace>, prior: DerivedMapSnapshot | null, places: Map<string, Place>) {
     const visits = new Map(graph.visits.map((visit) => [visit.id, visit])); const existing = new Map((prior?.routes ?? []).map((route) => [route.routeKey, route]));
     const routes: DerivedMapRoute[] = [];
     for (const edge of graph.edges) {
@@ -213,7 +254,7 @@ export class MapPipeline {
       const fromCoordinate = fromPlace ? coordinate(fromPlace) : null; const toCoordinate = toPlace ? coordinate(toPlace) : null;
       if (edge.mode === "none") { routes.push({ edgeId: edge.id, routeKey: `none:${edge.id}:${ROUTING_PROFILE_VERSION}`, geometry: null, status: "ready", warning: null }); continue; }
       if (from.placeId === to.placeId) { routes.push({ edgeId: edge.id, routeKey: `same:${from.placeId}:${edge.mode}:${ROUTING_PROFILE_VERSION}`, geometry: null, status: "ready", warning: "同一地点内移动。" }); continue; }
-      if (!fromCoordinate || !toCoordinate) { routes.push({ edgeId: edge.id, routeKey: `${edge.mode}:unresolved:${edge.id}:${ROUTING_PROFILE_VERSION}`, geometry: null, status: "attention", warning: "路线端点尚未可靠定位。" }); continue; }
+      if (!fromCoordinate || !toCoordinate) { routes.push({ edgeId: edge.id, routeKey: `${edge.mode}:unresolved:${edge.id}:${ROUTING_PROFILE_VERSION}`, geometry: null, status: "attention", warning: `${placeLabel(places.get(from.placeId))} → ${placeLabel(places.get(to.placeId))}：路线端点尚未可靠定位。` }); continue; }
       const key = routeCacheKey(edge.mode, fromCoordinate, toCoordinate); const previous = existing.get(key);
       if (previous?.status === "ready") { routes.push({ ...previous, edgeId: edge.id }); continue; }
       if (edge.mode === "flight") { routes.push({ edgeId: edge.id, routeKey: key, geometry: straightGeometry(fromCoordinate, toCoordinate), status: "ready", warning: null }); continue; }
@@ -221,7 +262,8 @@ export class MapPipeline {
         const result = await this.options.maps.route(edge.mode, fromCoordinate, toCoordinate, key);
         routes.push({ edgeId: edge.id, routeKey: key, geometry: result.geometry, status: result.warning ? "attention" : "ready", warning: result.warning }); continue;
       }
-      routes.push({ edgeId: edge.id, routeKey: key, geometry: straightGeometry(fromCoordinate, toCoordinate), status: "attention", warning: "公共交通或水路仅显示建议连线，尚未实时核验。" });
+      const warning = edge.mode === "ferry" ? "渡轮仅显示直线建议连线，班次与航线尚未实时核验。" : "公共交通仅显示建议连线，尚未实时核验。";
+      routes.push({ edgeId: edge.id, routeKey: key, geometry: straightGeometry(fromCoordinate, toCoordinate), status: "attention", warning });
     }
     return routes;
   }

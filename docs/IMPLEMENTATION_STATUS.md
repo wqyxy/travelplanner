@@ -1,9 +1,9 @@
 # AI Architecture Refactor — Implementation Status
 
-更新时间：2026-08-24  
+更新时间：2026-08-25
 架构依据：`docs/AI-architecture-refactor.md` v2  
-当前 Phase：Phase 7 — 最终 Review
-状态：已完成并通过最终验证；等待独立的 `private_data` 安全重置与真实端到端验收
+当前 Phase：Phase 7 Follow-up — 地图与聊天交互缺陷修复
+状态：国家公园定位与聊天快捷按钮互斥修复已通过定向验证；其余地图展示改动仍待后续完整验证
 
 ## 开始新阶段前的固定检查
 
@@ -804,3 +804,109 @@ Phase 4 验收已关闭。下一轮恢复 Phase 5 — API + WebSocket + Frontend
 Phase 7 已关闭。下一步不是继续业务重构，而是按架构第 10.3 节作为单独步骤执行 `private_data` realpath + 非 symlink + sentinel 三重保护检查；任何条件不能确认都停止删除。之后才启动新 Schema 并做真实端到端验收。本阶段没有执行该步骤。
 
 下一阶段推荐模型：GPT-5.6 Sol High（安全重置与端到端验收）
+
+## Phase 7 Follow-up — 地图定位缺陷修复（2026-08-24）
+
+### 已完成内容
+
+- 对用户当前行程及公开地图缓存进行了只读诊断；没有写入、重算或复制 canonical itinerary、`map_state`、聊天、凭据或用户旅行内容到仓库。
+- 确认大量 unresolved 的共同原因是确定性 query 重复地点名/城市名、Provider 完整地址无法命中短名称精确评分、Unicode 变音符未折叠，以及同一物理候选因不同 provider ID 形成虚假并列。
+- query builder 保持架构规定的 local/en/zh 与 city/region 顺序，但会消除规范化后重复的名称/区域组件，并追加不改写地点身份的 `name + countryCode` 回退。
+- 地理文本改为 NFKD 并移除组合音标；国家和地点类型硬过滤、65 分最低阈值及 15 分领先阈值保持不变。
+- `MapCandidate` 保存 Provider 短名称，完整 `displayName` 只作为地址/包含匹配和 02 上下文；公开 geocode cache 合同升级为 v4，旧 v3 缓存保留但不再命中。
+- 相同国家、规范化短名称、类型和六位坐标的候选在评分前确定性合并；邻近但不同坐标的实体不会合并。
+- 每个确定性 query 返回后立即尝试可信自动选择，成功即停止后续查询；全部 query 后仍真实歧义时才把去重排序后的最多五项交给既有 02。
+- 地理指纹当前为 `MAP_RESOLUTION_VERSION=v3`；不修改 itinerary、ResolvedPlace/MapState Schema 或数据库迁移。下次 canonical 保存触发地图同步时，旧解析结果将按派生缓存规则重新生成。
+- 按用户选择，本轮不修改或立即重算当前行程的 `map_state`，也不新增重试 UI、HTTP API、地图 Agent、手工选点或兼容层。
+
+### 关键修改文件
+
+- `apps/server/map-service.ts`
+- `apps/server/map-pipeline.ts`
+- `apps/server/index.ts`
+- `apps/server/map-service.test.ts`
+- `apps/server/map-pipeline.test.ts`
+- `docs/IMPLEMENTATION_STATUS.md`
+
+### 新增/收紧的回归覆盖
+
+- 消除 `name == city` 重复 query，并保留确定性裸名称回退顺序。
+- 使用真实 Nominatim 形态的短名称与完整地址，验证名称评分和 v4 缓存合同。
+- Unicode 变音符等价匹配、同物理候选去重及邻近不同实体不误合并。
+- 首个可信确定性候选立即停止 query 且不调用 02；真实歧义继续受限进入 02。
+- 旧 resolver fingerprint 在下一次地图同步时失效，当前版本 exact/approximate 继续按指纹复用。
+
+### 已执行测试 / 检查
+
+- 轻量语法检查通过：用本地 TypeScript 转译器检查 5 个修改的服务端源码/测试文件，syntax diagnostics 为 0。
+- 用户授权后执行地图定向 Vitest：首次沙箱启动因 esbuild 无权读取配置解析所需的父目录元数据而未进入测试；按相同命令范围受控重试后实际运行，首次发现并修复了自动选择未防御性去重、以及完整地址中的城市名造成错误包含加分两项边界。相同测试范围最终为 2 个测试文件、16 个测试全部通过，耗时 1.28 秒：
+
+```text
+npm test -- apps/server/map-pipeline.test.ts apps/server/map-service.test.ts
+```
+
+- 用户授权后执行 `npm run typecheck:server`，通过。
+- 尚未执行全量 Vitest、Web typecheck 或生产 build。
+- 未启动真实服务、Codex、Nominatim/OSRM 或浏览器端到端流程。
+- 本轮没有写入或修改 `private_data/`。
+
+### 已知问题 / 风险
+
+- 当前已持久化地图快照按用户选择保持原样；只有下一次 canonical 行程保存触发地图同步后才会采用 v3 解析指纹和 v4 geocode 缓存。
+- Provider 实时结果仍可能使少数真正歧义或不存在的具体地点安全降级为 approximate/unresolved；不会为追求全定位而放宽国家或类型硬过滤。
+
+### 下一阶段
+
+地图定向 Vitest 与服务端 typecheck 已通过。下一步建议执行全量 Vitest、全仓 typecheck 和生产 build，再进行真实地图同步验收。
+
+下一阶段推荐模型：GPT-5.6 Sol High（地图修复验证与端到端复核）
+
+## Phase 7 Follow-up — 地图展示与港口回退修复（2026-08-25）
+
+### 已完成内容
+
+- 确认地点标签重复日号来自同一 Place 在同一天被多个 Stop 引用；marker 仍保留全部 Visit，但标签改为按首次出现顺序显示唯一 Day。
+- 保持港口精确候选的严格类型过滤；仅当 `port` 的中文名称与 `city` 相同时，才允许使用本地名/英文名解析同名城镇中心，并明确保存为 approximate。
+- resolver fingerprint 升级为 v3；不修改 itinerary 或数据库 Schema，旧地图派生结果只会在下一次 canonical 保存触发同步时失效。
+- 地点与路线警告改用可读名称并去重，不再向界面暴露内部 Place ID；渡轮继续显示直线建议连线和未核验警告。
+- 前端将普通路线与 flight/ferry 分为共享数据源的实线和虚线图层，两个图层共用颜色、按天筛选和悬停交互。
+- 旅行规划 Prompt 升级为 v6，明确聚落实体不能因港口活动被标成 `port`，具体码头才使用独立港口 Place。
+- 按用户选择，本轮不重算或写入当前 `private_data` 中的 map_state。
+
+### 验证状态
+
+- 已补充服务端港口回退/友好警告/渡轮几何、前端日期去重/路线分层及 Prompt v6 合同的定向测试。
+- 本轮测试、typecheck 与 build 尚未执行，等待用户按项目验证规则授权。
+
+## Phase 7 Follow-up — 国家公园定位改进（2026-08-25）
+
+### 已完成内容
+
+- 只读确认 Nominatim 已为奥拉基/库克山国家公园和汤加里罗国家公园返回名称及国家完全匹配的候选，但 Provider 将两者表达为 `boundary/protected_area`，旧 attraction 类型硬过滤在评分和 02 消歧前错误丢弃了候选。
+- 国家代码继续硬校验；同国家且 Provider 短名称与 Place 的中文、当地或英文名称之一规范化后精确一致时，不再由 category/type 否决，包括此前只能回退为 approximate 的同名港城候选。非精确名称仍受既有类型兼容规则约束，类型继续参与同名候选排序；具体码头名称仍不能由不同名城镇候选冒充。
+- 唯一物理同名候选可确定性采用；多个同名实体仍需要既有分数领先阈值，否则进入受控 02 消歧。
+- resolver fingerprint 升级为 v4；unresolved 结果不再跨同步复用。下一次 canonical 行程保存触发地图同步时会重新解析旧失败地点，当前 `private_data` 未被写入或重算。
+- 不修改 Place、ResolvedPlace、MapState、数据库 Schema、API、前端、Prompt 或国家公园作为出发/结束端点的现有语义；渡轮直线和未实时核验提示保持不变。
+
+### 验证状态
+
+- 已补充同国家精确名称越过类型不匹配、跨国同名拒绝、非精确错误类型拒绝、多同名歧义、两个真实国家公园候选端到端解析、v3 unresolved 失效及当前指纹 unresolved 重试覆盖。
+- 用户授权后执行 `npm test -- apps/server/map-pipeline.test.ts`：沙箱内首次因 esbuild 无权读取配置解析所需的父目录元数据而未启动，按相同范围受控重试后实际运行。首次运行发现上一轮“同名港城只能 approximate”的旧预期与本轮名称优先规则冲突；按已确认规则改为 exact，同时保留具体码头不得由不同名城镇冒充的负例。最终 1 个测试文件、18 个测试全部通过，耗时 792 ms。
+- 用户授权后执行 `npm run typecheck:server`：首次发现上一轮渡轮测试对 `state.map` 缺少测试侧结构收窄，补齐后服务端 TypeScript 检查通过；未修改生产 Schema。
+- 尚未执行全量 Vitest、Web typecheck、生产 build、真实 Nominatim/OSRM 或浏览器端到端验收。
+
+## Phase 7 Follow-up — 聊天快捷按钮互斥修复（2026-08-25）
+
+### 已完成内容
+
+- 只读确认新西兰初稿回复同时持久化了 `nextAction="start_detail"` 和复述相同动作的 `suggestion`，导致界面同时显示“开始细化方案”与“采用 / 不采用”。
+- 前端对历史重叠 reply 优先显示阶段动作；PlannerOutput v1 字段形状保持不变，但新输出增加 `nextAction` 与 `suggestion` 互斥校验，违规输出进入既有一次合同修正流程。
+- Planner Prompt 升级为 v7；suggestion 仅允许表示尚未执行的具体可选行程变更，不得复述阶段动作、进度、核验提醒或一般说明。
+- 不修改或迁移历史消息、canonical itinerary、数据库 Schema 或其他 `private_data`。
+
+### 验证状态
+
+- 已补充历史重叠回复 UI 降级、合法独立按钮模式、服务端互斥合同及 Prompt v7 合同覆盖。
+- 用户授权后执行 3 个定向 Vitest 文件：沙箱内首次因 esbuild 无权读取配置解析所需的父目录元数据而未启动，按相同范围受控重试后 3 个文件、13 个测试全部通过，耗时 5.04 秒。
+- 用户授权后执行 `npm run typecheck`，Web 与 Server TypeScript 检查全部通过。
+- 尚未执行全量 Vitest、生产 build 或真实浏览器/Codex 端到端验收。

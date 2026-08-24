@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { MapService, ROUTE_FAILURE_CACHE_TTL_MS, ROUTE_SUCCESS_CACHE_TTL_MS } from "./map-service.js";
+import { GEOCODE_CACHE_VERSION, MapService, ROUTE_FAILURE_CACHE_TTL_MS, ROUTE_SUCCESS_CACHE_TTL_MS } from "./map-service.js";
 
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))); });
@@ -23,5 +23,22 @@ describe("public route cache", () => {
     expect(row.expires_at).toBeGreaterThanOrEqual(startedAt + ROUTE_FAILURE_CACHE_TTL_MS);
     expect(row.expires_at).toBeLessThan(startedAt + ROUTE_SUCCESS_CACHE_TTL_MS);
     db.close();
+  });
+});
+
+describe("public geocode cache", () => {
+  it("keeps the provider short name and uses the current cache contract version", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "geocode-service-")); directories.push(directory);
+    const filename = path.join(directory, "public-cache.sqlite3"); let fetches = 0;
+    const maps = new MapService(filename, async () => {
+      fetches += 1;
+      return Response.json([{ place_id: 42, name: "Example City", display_name: "Example City, Example Region, Exampleland", lat: "-43.5", lon: "172.6", category: "place", type: "city", address: { city: "Example City", state: "Example Region", country_code: "ex" } }]);
+    });
+    await expect(maps.search("Example City, EX", "EX")).resolves.toEqual([expect.objectContaining({ providerPlaceId: "42", name: "Example City", displayName: "Example City, Example Region, Exampleland" })]);
+    await maps.search("Example City, EX", "EX");
+    expect(fetches).toBe(1); maps.close();
+    const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
+    const db = new DatabaseSync(filename); const key = String((db.prepare("SELECT key FROM geocode_cache").get() as { key: string }).key);
+    expect(key.startsWith(`${GEOCODE_CACHE_VERSION}:ex:`)).toBe(true); db.close();
   });
 });

@@ -8,6 +8,7 @@ type Fetcher = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
 export type MapCandidate = {
   providerPlaceId: string;
+  name: string | null;
   displayName: string;
   latitude: number;
   longitude: number;
@@ -24,6 +25,7 @@ export type MapRouteResult = { geometry: unknown | null; warning: string | null 
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 export const ROUTE_SUCCESS_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const ROUTE_FAILURE_CACHE_TTL_MS = 60 * 60 * 1000;
+export const GEOCODE_CACHE_VERSION = "v4";
 
 export function nominatimSearchUrl(query: string, countryCode?: string | null, language = "en") {
   const url = new URL("https://nominatim.openstreetmap.org/search");
@@ -45,8 +47,11 @@ function candidateFromNominatim(value: unknown): MapCandidate | null {
   const countryCode = typeof address.country_code === "string" ? address.country_code.toLowerCase() : null;
   const providerPlaceId = String(item.place_id ?? ""); const displayName = String(item.display_name ?? "");
   if (!providerPlaceId || !displayName || !Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return null;
+  const displayNameHead = displayName.split(",", 1)[0]?.trim() || null;
   return {
-    providerPlaceId, displayName, latitude, longitude,
+    providerPlaceId,
+    name: typeof item.name === "string" && item.name.trim() ? item.name.trim() : displayNameHead,
+    displayName, latitude, longitude,
     category: typeof item.category === "string" ? item.category : null,
     placeType: typeof item.type === "string" ? item.type : null,
     countryCode,
@@ -92,7 +97,7 @@ export class MapService {
 
   async search(query: string, countryCode?: string | null): Promise<MapCandidate[]> {
     const country = countryCode?.trim().toLowerCase() || "";
-    const key = `v3:${country}:${query.normalize("NFKC").trim().toLocaleLowerCase()}`;
+    const key = `${GEOCODE_CACHE_VERSION}:${country}:${query.normalize("NFKC").trim().toLocaleLowerCase()}`;
     const cached = this.cached<MapCandidate[]>("geocode_cache", key);
     if (cached) return cached;
     const candidates = await this.request(async () => {

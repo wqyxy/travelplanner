@@ -10,6 +10,11 @@ export const mapCategoryLegend = [
 export type MapCategory = (typeof mapCategoryLegend)[number][0];
 export type CategoryVisibility = Record<MapCategory, boolean>;
 export type RouteHover = { id: string; dayNumber: number } | null;
+export const dashedRouteModes = ["flight", "ferry"] as const;
+export const routeLayerIds = ["travel-routes-solid", "travel-routes-dashed"] as const;
+
+export const routeLayerForMode = (mode: string) =>
+  (dashedRouteModes as readonly string[]).includes(mode) ? "dashed" as const : "solid" as const;
 
 export const defaultCategoryVisibility = (): CategoryVisibility =>
   Object.fromEntries(mapCategoryLegend.map(([kind]) => [kind, true])) as CategoryVisibility;

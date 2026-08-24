@@ -115,6 +115,7 @@ export const PlannerOutputSchema = z.object({ schemaVersion: z.literal(1), opera
   if (value.operation === "mutate_itinerary" && (!value.mutations?.length || value.draftItinerary !== null)) context.addIssue({ code: "custom", message: "mutation 必须只携带非空 mutations。" });
   if (value.operation === "create_draft" && (!value.draftItinerary || value.mutations !== null || value.draftItinerary.stage !== "draft" || value.draftItinerary.days.some((day) => day.detailLevel !== "draft"))) context.addIssue({ code: "custom", message: "create_draft 必须携带完整初始 draft。" });
   if (value.operation === "start_detailing" && (value.mutations !== null || value.draftItinerary !== null)) context.addIssue({ code: "custom", message: "start_detailing 不携带写入。" });
+  if (value.nextAction !== "none" && value.suggestion !== null) context.addIssue({ code: "custom", path: ["suggestion"], message: "阶段动作与可选建议不能同时出现。" });
 });
 export type PlannerOutput = z.infer<typeof PlannerOutputSchema>;
 export const DetailBatchOutputSchema = z.object({ schemaVersion: z.literal(1), baseGeneration: z.number().int().min(0), batchId: IdSchema, dayIds: z.array(IdSchema).min(1).max(2), placeUpserts: z.array(PlaceSchema).max(100), days: z.array(DetailedDaySchema).min(1).max(2), assistantMessage: TextSchema.max(12000) }).strict().superRefine((value, context) => {
