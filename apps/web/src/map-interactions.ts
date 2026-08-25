@@ -13,6 +13,20 @@ export type RouteHover = { id: string; dayNumber: number } | null;
 type RouteMode = "walk" | "drive" | "bike" | "transit" | "rail" | "flight" | "ferry" | "none";
 export const dashedRouteModes = ["flight", "ferry"] as const;
 export const routeLayerIds = ["travel-routes-solid", "travel-routes-dashed"] as const;
+export const routeHitLayerIds = ["travel-route-hit-solid", "travel-route-hit-dashed"] as const;
+export const routeHoverHaloLayerIds = ["travel-route-hover-solid-halo", "travel-route-hover-dashed-halo"] as const;
+export const routeHoverCoreLayerIds = ["travel-route-hover-solid-core", "travel-route-hover-dashed-core"] as const;
+export const routeHoverLayerIds = [...routeHoverHaloLayerIds, ...routeHoverCoreLayerIds] as const;
+
+export function routeHighlightFeatureCollection<T>(feature: T | null) {
+  return { type: "FeatureCollection" as const, features: feature ? [feature] : [] };
+}
+
+export function routeColorExpression(property: "dayNumber" | "mode", entries: ReadonlyArray<readonly [string | number, string]>, fallback = "#64748b") {
+  return entries.length
+    ? ["match", ["get", property], ...entries.flatMap(([key, color]) => [key, color]), fallback]
+    : fallback;
+}
 
 export const routeLayerForMode = (mode: string) =>
   (dashedRouteModes as readonly string[]).includes(mode) ? "dashed" as const : "solid" as const;
@@ -29,7 +43,7 @@ export const routeHoverFromFeature = (feature: {
   id?: string | number;
   properties?: { id?: string; dayNumber?: string | number };
 }): RouteHover => {
-  const id = feature.id ?? feature.properties?.id;
+  const id = feature.properties?.id || feature.id;
   const dayNumber = Number(feature.properties?.dayNumber);
   return id !== undefined && Number.isInteger(dayNumber) && dayNumber > 0
     ? { id: String(id), dayNumber }

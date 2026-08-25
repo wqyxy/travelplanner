@@ -4,11 +4,12 @@ import type { Itinerary, ItineraryLanguage, MapEdge, MapState, MapVisit, Place, 
 import type { MapSelection } from "./Itinerary";
 import { placeNameLines } from "./Itinerary";
 import { clusterHiddenLabels, layoutLabels } from "./map-label-layout";
-import { approximateRouteDurationMinutes, dashedRouteModes, defaultCategoryVisibility, formatRouteDistance, formatRouteDuration, geometryDistanceKm, mapCategoryLegend, routeHoverFromFeature, routeLayerIds, visibleCategories, type MapCategory } from "./map-interactions";
+import { approximateRouteDurationMinutes, dashedRouteModes, defaultCategoryVisibility, formatRouteDistance, formatRouteDuration, geometryDistanceKm, mapCategoryLegend, routeColorExpression, routeHighlightFeatureCollection, routeHitLayerIds, routeHoverCoreLayerIds, routeHoverHaloLayerIds, routeHoverFromFeature, routeLayerIds, visibleCategories, type MapCategory } from "./map-interactions";
 
 const dayColors = ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#d97706", "#0891b2"];
 const modeColors: Record<TransportMode, string> = { walk: "#2563eb", drive: "#dc2626", bike: "#16a34a", transit: "#64748b", rail: "#475569", flight: "#7c3aed", ferry: "#0891b2", none: "#94a3b8" };
 const modeLabels: Record<TransportMode, string> = { walk: "步行", drive: "驾车", bike: "骑行", transit: "公共交通", rail: "铁路", flight: "航班", ferry: "轮渡", none: "无需交通" };
+const routeHighlightSourceId = "travel-route-highlight";
 
 export function categoryForPlace(kind: PlaceKind): MapCategory {
   return kind === "airport" || kind === "station" || kind === "port" ? "stop" : kind;
@@ -65,6 +66,12 @@ function routeFeature(line: RouteLine) {
   return { type: "Feature" as const, id: line.edge.id, geometry: line.route.geometry, properties: { id: line.edge.id, mode: line.edge.mode, dayNumber: line.dayNumber, distanceKm, durationMinutes, status: line.route.status, warning: line.route.warning || "" } };
 }
 
+type RouteFeature = ReturnType<typeof routeFeature>;
+
+function setRouteHighlightData(map: any, feature: RouteFeature | null) {
+  map.getSource(routeHighlightSourceId)?.setData(routeHighlightFeatureCollection(feature));
+}
+
 export function MapPanel({ itinerary, state, language, categoryColors, selection, fullscreen, onToggleFullscreen }: {
   itinerary: Itinerary | null;
   state: MapState | null;
@@ -80,6 +87,7 @@ export function MapPanel({ itinerary, state, language, categoryColors, selection
   const popupRef = useRef<any>(null);
   const routePopupRef = useRef<any>(null);
   const hoveredRoute = useRef<string | null>(null);
+  const routeFeaturesById = useRef(new Map<string, RouteFeature>());
   const fitKey = useRef("");
   const [ready, setReady] = useState(false);
   const [notice, setNotice] = useState("");
@@ -97,18 +105,32 @@ export function MapPanel({ itinerary, state, language, categoryColors, selection
       map = new lib.Map({ container: element.current, style: { version: 8, sources: { osm: { type: "raster", tiles: ["/api/map/tiles/{z}/{x}/{y}.png"], tileSize: 256, attribution: "© OpenStreetMap contributors" } }, layers: [{ id: "osm", type: "raster", source: "osm" }] }, center: [0, 20], zoom: 1.1 });
       map.addControl(new lib.NavigationControl({ showCompass: false }), "top-right");
       map.on("load", () => {
-        map.addSource("travel-routes", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-        const routePaint = { "line-color": "#64748b", "line-width": ["case", ["boolean", ["feature-state", "hover"], false], 6, 4], "line-opacity": ["case", ["==", ["get", "status"], "attention"], .55, .84] };
+        map.addSource("travel-routes", { type: "geojson", promoteId: "id", data: { type: "FeatureCollection", features: [] } });
+        map.addSource(routeHighlightSourceId, { type: "geojson", promoteId: "id", data: routeHighlightFeatureCollection(null) });
+        const routePaint = { "line-color": "#64748b", "line-width": 4, "line-opacity": ["case", ["==", ["get", "status"], "attention"], .55, .84] };
         const dashedFilter = ["in", ["get", "mode"], ["literal", dashedRouteModes]];
         map.addLayer({ id: "travel-routes-solid", type: "line", source: "travel-routes", filter: ["!", dashedFilter], paint: routePaint });
         map.addLayer({ id: "travel-routes-dashed", type: "line", source: "travel-routes", filter: dashedFilter, paint: { ...routePaint, "line-dasharray": [2, 2] } });
+        const hitPaint = { "line-color": "#000", "line-width": 18, "line-opacity": 0 };
+        map.addLayer({ id: routeHitLayerIds[0], type: "line", source: "travel-routes", filter: ["!", dashedFilter], paint: hitPaint });
+        map.addLayer({ id: routeHitLayerIds[1], type: "line", source: "travel-routes", filter: dashedFilter, paint: { ...hitPaint, "line-dasharray": [2, 2] } });
+        const hoverHaloPaint = { "line-color": "#fff", "line-width": 14, "line-opacity": 1 };
+        const hoverCorePaint = { "line-color": "#64748b", "line-width": 8, "line-opacity": 1 };
+        map.addLayer({ id: routeHoverHaloLayerIds[0], type: "line", source: routeHighlightSourceId, filter: ["!", dashedFilter], paint: hoverHaloPaint });
+        map.addLayer({ id: routeHoverHaloLayerIds[1], type: "line", source: routeHighlightSourceId, filter: dashedFilter, paint: { ...hoverHaloPaint, "line-dasharray": [2, 2] } });
+        map.addLayer({ id: routeHoverCoreLayerIds[0], type: "line", source: routeHighlightSourceId, filter: ["!", dashedFilter], paint: hoverCorePaint });
+        map.addLayer({ id: routeHoverCoreLayerIds[1], type: "line", source: routeHighlightSourceId, filter: dashedFilter, paint: { ...hoverCorePaint, "line-dasharray": [2, 2] } });
         map.addSource("travel-places", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
         map.addLayer({ id: "travel-places", type: "circle", source: "travel-places", paint: { "circle-radius": 7, "circle-color": "#1b4f78", "circle-stroke-width": 2, "circle-stroke-color": "#fff" } });
-        const clearRouteHover = () => { if (hoveredRoute.current) map.setFeatureState({ source: "travel-routes", id: hoveredRoute.current }, { hover: false }); hoveredRoute.current = null; routePopupRef.current?.remove(); routePopupRef.current = null; };
-        const showRouteHover = (event: any) => {
-          const hover = routeHoverFromFeature(event.features?.[0] || {}); if (!hover) return clearRouteHover();
-          if (hoveredRoute.current !== hover.id) { clearRouteHover(); map.setFeatureState({ source: "travel-routes", id: hover.id }, { hover: true }); hoveredRoute.current = hover.id; }
-          const feature = event.features?.[0]; const properties = feature?.properties || {}; const content = document.createElement("div"); content.className = "map-route-tooltip";
+        const clearRouteHover = () => { if (!hoveredRoute.current) return; setRouteHighlightData(map, null); hoveredRoute.current = null; routePopupRef.current?.remove(); routePopupRef.current = null; };
+        const showRouteHover = (event: any, feature: any) => {
+          const hover = routeHoverFromFeature(feature || {}); if (!hover) return clearRouteHover();
+          if (hoveredRoute.current !== hover.id) {
+            const route = routeFeaturesById.current.get(hover.id);
+            if (route) { setRouteHighlightData(map, route); hoveredRoute.current = hover.id; }
+            else { setRouteHighlightData(map, null); hoveredRoute.current = null; }
+          }
+          const properties = feature.properties || {}; const content = document.createElement("div"); content.className = "map-route-tooltip";
           const title = document.createElement("strong"); title.textContent = `Day ${hover.dayNumber} · ${modeLabels[properties.mode as TransportMode] || properties.mode || "路线"}`;
           const distanceValue = properties.distanceKm === null || properties.distanceKm === undefined ? Number.NaN : Number(properties.distanceKm);
           const durationValue = properties.durationMinutes === null || properties.durationMinutes === undefined ? Number.NaN : Number(properties.durationMinutes);
@@ -131,11 +153,16 @@ export function MapPanel({ itinerary, state, language, categoryColors, selection
         map.on("mouseenter", "travel-places", () => { map.getCanvas().style.cursor = "pointer"; });
         map.on("mouseleave", "travel-places", () => { map.getCanvas().style.cursor = ""; });
         map.on("click", "travel-places", showPlace);
-        for (const layerId of routeLayerIds) {
-          map.on("mouseenter", layerId, (event: any) => { map.getCanvas().style.cursor = "pointer"; showRouteHover(event); });
-          map.on("mousemove", layerId, showRouteHover);
-          map.on("mouseleave", layerId, () => { map.getCanvas().style.cursor = ""; clearRouteHover(); });
-        }
+        map.on("mousemove", (event: any) => {
+          const feature = map.queryRenderedFeatures(event.point, { layers: routeHitLayerIds })[0];
+          if (!feature) {
+            clearRouteHover();
+            map.getCanvas().style.cursor = map.queryRenderedFeatures(event.point, { layers: ["travel-places"] }).length ? "pointer" : "";
+            return;
+          }
+          map.getCanvas().style.cursor = "pointer"; showRouteHover(event, feature);
+        });
+        map.on("mouseout", () => { map.getCanvas().style.cursor = ""; clearRouteHover(); });
         setReady(true);
       });
       observer = new ResizeObserver(() => map.resize()); observer.observe(element.current); mapRef.current = map;
@@ -145,11 +172,14 @@ export function MapPanel({ itinerary, state, language, categoryColors, selection
 
   useEffect(() => {
     const map = mapRef.current; if (!ready || !map) return;
+    if (hoveredRoute.current) { setRouteHighlightData(map, null); hoveredRoute.current = null; routePopupRef.current?.remove(); routePopupRef.current = null; }
+    routeFeaturesById.current = new Map(routeFeatures.map((feature) => [String(feature.id), feature]));
     map.getSource("travel-places")?.setData({ type: "FeatureCollection", features: pointFeatures });
     map.getSource("travel-routes")?.setData({ type: "FeatureCollection", features: routeFeatures });
     map.setPaintProperty("travel-places", "circle-color", ["match", ["get", "kind"], ...Object.entries(categoryColors).flatMap(([kind, color]) => [kind, color]), "#1b4f78"]);
-    const routeColors = selection.scope === "all" ? [...new Map(presentation.routes.map((line) => [line.dayNumber, dayColors[(line.dayNumber - 1) % dayColors.length]])).entries()].flatMap(([dayNumber, color]) => [dayNumber, color]) : Object.entries(modeColors).flatMap(([mode, color]) => [mode, color]);
-    for (const layerId of routeLayerIds) map.setPaintProperty(layerId, "line-color", ["match", ["get", selection.scope === "all" ? "dayNumber" : "mode"], ...routeColors, "#64748b"]);
+    const routeColors = selection.scope === "all" ? [...new Map(presentation.routes.map((line) => [line.dayNumber, dayColors[(line.dayNumber - 1) % dayColors.length]])).entries()] : Object.entries(modeColors);
+    const routeColor = routeColorExpression(selection.scope === "all" ? "dayNumber" : "mode", routeColors);
+    for (const layerId of [...routeLayerIds, ...routeHoverCoreLayerIds]) map.setPaintProperty(layerId, "line-color", routeColor);
     const key = `${state?.generation ?? -1}:${selection.scope}:${selection.scope === "day" ? selection.dayNumber : "all"}:${pointFeatures.map((feature) => feature.id).join(",")}`;
     if (pointFeatures.length && fitKey.current !== key) void import("maplibre-gl").then((lib) => { if (mapRef.current !== map) return; const bounds = new lib.LngLatBounds(); for (const feature of pointFeatures) bounds.extend(feature.geometry.coordinates as [number, number]); if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 54, maxZoom: 13, duration: 500 }); fitKey.current = key; });
   }, [ready, pointFeatures, routeFeatures, categoryColors, selection, presentation.routes, state?.generation]);
