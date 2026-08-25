@@ -901,6 +901,15 @@ AI Chat 是唯一规划入口。删除：
 - 未定位或大致定位只显示非阻塞警告。
 - 地图自动同步，不提供独立 AI 启动按钮。
 
+#### 12.4.1 线路悬停高亮机制
+
+- `travel-routes` GeoJSON source 保存当前完整路线 Feature；路线的 `Feature.id`、`properties.id` 和 `edge.id` 必须保持一致，source 使用 `promoteId: "id"`，避免 MapLibre 矢量化后运行时 ID 与业务 ID 分离。
+- 基础路线分为普通实线和 flight/ferry 虚线图层；另设 18px、透明的命中图层，只用于 `queryRenderedFeatures`，不承担视觉绘制。
+- 高亮使用独立的 `travel-route-highlight` GeoJSON source，只写入当前命中的一条完整路线；白色 halo 和加粗 core 图层静态按实线/虚线过滤该 source，并位于基础路线之上。
+- `mousemove` 只查询命中图层；路线 ID 优先从 `properties.id` 读取，再用它索引当前完整路线。tooltip 使用命中 Feature 的属性独立生成，不得依赖高亮 source 写入成功。
+- 鼠标离开命中范围、地图数据/日程选择刷新和组件销毁时清空高亮 source 与 tooltip。
+- 不要把该机制改回 `feature-state` 或悬停时 `setFilter()`：前者容易受 source 数据刷新和 ID 映射影响，后者会触发 source reload，导致交互延迟或高亮不显示。
+
 ### 12.5 保留的非 AI 基础能力
 
 - 登录、退出、修改密码。

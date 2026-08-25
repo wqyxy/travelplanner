@@ -3,7 +3,7 @@
 更新时间：2026-08-25
 架构依据：`docs/AI-architecture-refactor.md` v2  
 当前 Phase：Phase 7 Follow-up — 地图与聊天交互缺陷修复
-状态：国家公园定位与聊天快捷按钮互斥修复已通过定向验证；其余地图展示改动仍待后续完整验证
+状态：国家公园定位、聊天快捷按钮互斥及线路悬停高亮修复已通过定向验证；其余地图展示改动仍待后续完整验证
 
 ## 开始新阶段前的固定检查
 
@@ -910,3 +910,27 @@ npm test -- apps/server/map-pipeline.test.ts apps/server/map-service.test.ts
 - 用户授权后执行 3 个定向 Vitest 文件：沙箱内首次因 esbuild 无权读取配置解析所需的父目录元数据而未启动，按相同范围受控重试后 3 个文件、13 个测试全部通过，耗时 5.04 秒。
 - 用户授权后执行 `npm run typecheck`，Web 与 Server TypeScript 检查全部通过。
 - 尚未执行全量 Vitest、生产 build 或真实浏览器/Codex 端到端验收。
+
+## Phase 7 Follow-up — 线路悬停高亮机制修复（2026-08-25）
+
+### 已完成内容
+
+- 确认 tooltip 曾能命中路线，但高亮方案在悬停时对基础路线 source 调用动态 `setFilter()`，会触发 MapLibre source reload；改为独立 `travel-route-highlight` GeoJSON source，只写入当前完整路线 Feature。
+- 基础路线、透明命中层和高亮 halo/core 分离；命中层使用 18px 透明线宽扩大交互范围，高亮层位于基础路线之上，并继续保留实线/虚线和按天/交通方式颜色规则。
+- 两个路线 source 均使用 `promoteId: "id"`；`routeHoverFromFeature()` 优先读取 `properties.id`，避免 MapLibre 运行时 ID 与业务 `edge.id` 冲突导致 tooltip 和高亮同时提前退出。
+- tooltip 生成不再依赖高亮索引是否命中；即使高亮数据暂时不可用，Day、距离、时间信息仍应显示。
+- 路线数据刷新、日程选择变化和鼠标离开时清空高亮 source 与 tooltip；tooltip 设置 `pointer-events:none`，避免覆盖层触发离开竞态。
+
+### 关键修改文件与提交
+
+- `apps/web/src/MapPanel.tsx`
+- `apps/web/src/map-interactions.ts`
+- `apps/web/src/map-interactions.test.ts`
+- `apps/web/src/styles.css`
+- Git 提交：`84e1bb5 Fix route hover highlighting`
+
+### 验证状态
+
+- 定向 `apps/web/src/map-interactions.test.ts`：8 个测试全部通过。
+- 用户已确认实际运行中 Day、距离、时间标签及线路高亮均恢复正常。
+- `git diff --check` 通过；未执行浏览器、全量 typecheck 或生产 build。
