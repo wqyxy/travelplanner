@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ChevronDown, ChevronUp, Filter, LoaderCircle, Maximize2, Minimize2 } from "lucide-react";
-import type { Itinerary, ItineraryLanguage, MapEdge, MapState, MapVisit, Place, PlaceKind, ResolvedPlace, TransportMode } from "./types";
+import type { DerivedMapRoute, GeoJsonGeometry, Itinerary, ItineraryLanguage, MapEdge, MapState, MapVisit, Place, PlaceKind, ResolvedPlace, TransportMode } from "./types";
 import type { MapSelection } from "./Itinerary";
 import { placeNameLines } from "./Itinerary";
 import { clusterHiddenLabels, layoutLabels } from "./map-label-layout";
@@ -16,8 +16,42 @@ export function categoryForPlace(kind: PlaceKind): MapCategory {
 }
 
 type Marker = { id: string; place: Place; resolved: ResolvedPlace; visits: MapVisit[]; category: MapCategory; label: string; dayLabel: string };
-type RouteLine = { edge: MapEdge; route: NonNullable<MapState["map"]>["routes"][number]; dayNumber: number; durationMinutes: number | null };
-export type MapPresentation = { markers: Marker[]; routes: RouteLine[]; visibleVisits: MapVisit[]; unresolvedPlaceIds: string[] };
+type RouteLeg = { edge: MapEdge; route: DerivedMapRoute; dayNumber: number; durationMinutes: number | null };
+type RouteGroup = { id: string; dayId: string; dayNumber: number; mode: TransportMode; edgeIds: string[]; lastEdge: MapEdge; geometry: GeoJsonGeometry; distanceKm: number | null; durationMinutes: number | null; estimated: boolean; status: DerivedMapRoute["status"]; warning: string | null };
+export type MapPresentation = { markers: Marker[]; routes: RouteGroup[]; visibleVisits: MapVisit[]; unresolvedPlaceIds: string[] };
+
+function geometryLines(geometry: GeoJsonGeometry) {
+  if (geometry.type === "LineString" && Array.isArray(geometry.coordinates)) return [geometry.coordinates];
+  if (geometry.type === "MultiLineString" && Array.isArray(geometry.coordinates)) return geometry.coordinates.filter(Array.isArray);
+  return [];
+}
+
+function groupedGeometry(left: GeoJsonGeometry, right: GeoJsonGeometry): GeoJsonGeometry {
+  const coordinates = [...geometryLines(left), ...geometryLines(right)];
+  return coordinates.length === 1 ? { type: "LineString", coordinates: coordinates[0] } : { type: "MultiLineString", coordinates };
+}
+
+function combinedWarning(left: string | null, right: string | null) {
+  const values = [...new Set([left, right].filter((value): value is string => Boolean(value)))];
+  return values.length ? values.join("；") : null;
+}
+
+function groupRouteLegs(legs: RouteLeg[]): RouteGroup[] {
+  const groups: RouteGroup[] = [];
+  for (const leg of [...legs].sort((left, right) => left.dayNumber - right.dayNumber || left.edge.order - right.edge.order || left.edge.id.localeCompare(right.edge.id))) {
+    const metrics = routeTravelMetrics(leg.route, leg.edge.mode, leg.durationMinutes);
+    const previous = groups.at(-1);
+    if (previous && previous.dayId === leg.edge.dayId && previous.mode === leg.edge.mode && previous.lastEdge.toVisitId === leg.edge.fromVisitId) {
+      previous.edgeIds.push(leg.edge.id); previous.lastEdge = leg.edge; previous.geometry = groupedGeometry(previous.geometry, leg.route.geometry!);
+      previous.distanceKm = previous.distanceKm === null || metrics.distanceKm === null ? null : previous.distanceKm + metrics.distanceKm;
+      previous.durationMinutes = previous.durationMinutes === null || metrics.durationMinutes === null ? null : previous.durationMinutes + metrics.durationMinutes;
+      previous.estimated ||= metrics.estimated; previous.status = previous.status === "attention" || leg.route.status === "attention" ? "attention" : "ready";
+      previous.warning = combinedWarning(previous.warning, leg.route.warning); continue;
+    }
+    groups.push({ id: `route-group:${leg.edge.id}`, dayId: leg.edge.dayId, dayNumber: leg.dayNumber, mode: leg.edge.mode, edgeIds: [leg.edge.id], lastEdge: leg.edge, geometry: leg.route.geometry!, distanceKm: metrics.distanceKm, durationMinutes: metrics.durationMinutes, estimated: metrics.estimated, status: leg.route.status, warning: leg.route.warning });
+  }
+  return groups;
+}
 
 export function buildMapPresentation(itinerary: Itinerary | null, state: MapState | null, selection: MapSelection, enabledCategories: MapCategory[]): MapPresentation {
   if (!itinerary || !state?.map) return { markers: [], routes: [], visibleVisits: [], unresolvedPlaceIds: [] };
@@ -40,14 +74,15 @@ export function buildMapPresentation(itinerary: Itinerary | null, state: MapStat
   const visits = new Map(state.map.visits.map((visit) => [visit.id, visit]));
   const stops = new Map(itinerary.days.flatMap((day) => day.stops.map((stop) => [stop.id, stop] as const)));
   const visibleDayIds = new Set(visibleVisits.map((visit) => visit.dayId));
-  const routes = state.map.routes.flatMap((route) => {
+  const dayNumbers = new Map(visibleVisits.map((visit) => [visit.dayId, visit.dayNumber]));
+  const legs = state.map.routes.flatMap((route): RouteLeg[] => {
     const edge = edges.get(route.edgeId);
     if (!edge || !route.geometry || !visibleDayIds.has(edge.dayId)) return [];
-    const dayNumber = visibleVisits.find((visit) => visit.dayId === edge.dayId)?.dayNumber;
+    const dayNumber = dayNumbers.get(edge.dayId);
     const destinationStop = stops.get(visits.get(edge.toVisitId)?.stopId ?? "");
     return dayNumber ? [{ edge, route, dayNumber, durationMinutes: destinationStop?.transportFromPrevious?.durationMinutes ?? null }] : [];
   });
-  return { markers, routes, visibleVisits, unresolvedPlaceIds };
+  return { markers, routes: groupRouteLegs(legs), visibleVisits, unresolvedPlaceIds };
 }
 
 function pointFeature(marker: Marker, itinerary: Itinerary, language: ItineraryLanguage) {
@@ -60,9 +95,8 @@ function pointFeature(marker: Marker, itinerary: Itinerary, language: ItineraryL
   return { type: "Feature" as const, id: marker.id, geometry: { type: "Point" as const, coordinates: [marker.resolved.lng!, marker.resolved.lat!] }, properties: { id: marker.id, name: `${displayName}${marker.resolved.resolution === "approximate" ? "（大致位置）" : ""}`, kind: marker.category, dayNumber: marker.visits[0]?.dayNumber || 0, detail: details.join("\n"), city: marker.place.city || "", region: marker.place.region || "", resolution: marker.resolved.resolution } };
 }
 
-function routeFeature(line: RouteLine) {
-  const metrics = routeTravelMetrics(line.route, line.edge.mode, line.durationMinutes);
-  return { type: "Feature" as const, id: line.edge.id, geometry: line.route.geometry, properties: { id: line.edge.id, mode: line.edge.mode, dayNumber: line.dayNumber, distanceKm: metrics.distanceKm, durationMinutes: metrics.durationMinutes, estimated: metrics.estimated, status: line.route.status, warning: line.route.warning || "" } };
+function routeFeature(group: RouteGroup) {
+  return { type: "Feature" as const, id: group.id, geometry: group.geometry, properties: { id: group.id, mode: group.mode, dayNumber: group.dayNumber, distanceKm: group.distanceKm, durationMinutes: group.durationMinutes, estimated: group.estimated, status: group.status, warning: group.warning || "" } };
 }
 
 type RouteFeature = ReturnType<typeof routeFeature>;

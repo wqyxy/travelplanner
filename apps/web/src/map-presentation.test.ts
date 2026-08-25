@@ -49,6 +49,43 @@ describe("map snapshot presentation", () => {
   it("uses day selection to scope both visits and routes", () => {
     const result = buildMapPresentation(itinerary, state, { scope: "day", dayNumber: 2 }, ["city"]);
     expect(result.visibleVisits.map((visit) => visit.id)).toEqual(["v3"]);
-    expect(result.routes.map((route) => route.edge.id)).toEqual(["e2"]);
+    expect(result.routes.map((route) => route.edgeIds)).toEqual([["e2"]]);
+  });
+
+  it("groups only contiguous same-day same-mode route legs and aggregates their presentation", () => {
+    const visits = [
+      { id: "g1", dayId: "d1", dayNumber: 1, stopId: "gs1", placeId: "p1", order: 0 },
+      { id: "g2", dayId: "d1", dayNumber: 1, stopId: "gs2", placeId: "p2", order: 1 },
+      { id: "g3", dayId: "d1", dayNumber: 1, stopId: "gs3", placeId: "p3", order: 2 },
+      { id: "g4", dayId: "d1", dayNumber: 1, stopId: "gs4", placeId: "p4", order: 3 },
+      { id: "g5", dayId: "d1", dayNumber: 1, stopId: "gs5", placeId: "p5", order: 4 },
+      { id: "g6", dayId: "d1", dayNumber: 1, stopId: "gs6", placeId: "p6", order: 5 },
+      { id: "g7", dayId: "d2", dayNumber: 2, stopId: "gs7", placeId: "p7", order: 0 },
+      { id: "g8", dayId: "d2", dayNumber: 2, stopId: "gs8", placeId: "p8", order: 1 },
+    ];
+    const groupedState: MapState = { ...state, map: {
+      visits,
+      edges: [
+        { id: "ge1", dayId: "d1", fromVisitId: "g1", toVisitId: "g2", mode: "drive", order: 0 },
+        { id: "ge2", dayId: "d1", fromVisitId: "g2", toVisitId: "g3", mode: "drive", order: 1 },
+        { id: "ge3", dayId: "d1", fromVisitId: "g3", toVisitId: "g4", mode: "walk", order: 2 },
+        { id: "ge4", dayId: "d1", fromVisitId: "g4", toVisitId: "g5", mode: "drive", order: 3 },
+        { id: "ge5", dayId: "d1", fromVisitId: "g5", toVisitId: "g6", mode: "drive", order: 4 },
+        { id: "ge6", dayId: "d2", fromVisitId: "g7", toVisitId: "g8", mode: "drive", order: 0 },
+      ],
+      routes: [
+        { edgeId: "ge5", routeKey: "gr5", geometry: { type: "LineString", coordinates: [[4, 0], [5, 0]] }, distanceKm: 5, durationMinutes: 10, status: "ready", warning: null },
+        { edgeId: "ge2", routeKey: "gr2", geometry: { type: "LineString", coordinates: [[1, 0], [2, 0]] }, distanceKm: 15, durationMinutes: 25, status: "attention", warning: "同一提醒" },
+        { edgeId: "ge1", routeKey: "gr1", geometry: { type: "LineString", coordinates: [[0, 0], [1, 0]] }, distanceKm: 10, durationMinutes: 20, status: "attention", warning: "同一提醒" },
+        { edgeId: "ge3", routeKey: "gr3", geometry: { type: "LineString", coordinates: [[2, 0], [3, 0]] }, distanceKm: 1, durationMinutes: 12, status: "ready", warning: null },
+        { edgeId: "ge4", routeKey: "gr4", geometry: null, distanceKm: null, durationMinutes: null, status: "attention", warning: "路线缺失" },
+        { edgeId: "ge6", routeKey: "gr6", geometry: { type: "LineString", coordinates: [[0, 1], [1, 1]] }, distanceKm: 8, durationMinutes: 16, status: "ready", warning: null },
+      ],
+    } };
+    const result = buildMapPresentation(itinerary, groupedState, { scope: "all" }, ["city"]);
+    expect(result.routes.map((route) => route.edgeIds)).toEqual([["ge1", "ge2"], ["ge3"], ["ge5"], ["ge6"]]);
+    expect(result.routes[0]).toMatchObject({ id: "route-group:ge1", dayNumber: 1, mode: "drive", distanceKm: 25, durationMinutes: 45, estimated: false, status: "attention", warning: "同一提醒" });
+    expect(result.routes[0].geometry).toEqual({ type: "MultiLineString", coordinates: [[[0, 0], [1, 0]], [[1, 0], [2, 0]]] });
+    expect(buildMapPresentation(itinerary, groupedState, { scope: "day", dayNumber: 2 }, ["city"]).routes.map((route) => route.edgeIds)).toEqual([["ge6"]]);
   });
 });

@@ -49,6 +49,35 @@ const minutesFromTime = (value: string) => {
   return hours * 60 + minutes;
 };
 
+export type DetailTimingReviewIssue = {
+  dayId: string;
+  dayNumber: number;
+  stopId: string;
+  stopIndex: number;
+  previousStopId: string;
+  previousEndTime: string;
+  startTime: string;
+  gapMinutes: number;
+  transportMinutes: number;
+};
+
+/**
+ * Flags, but does not reject, detailed itinerary gaps that are materially
+ * shorter than the model's own travel estimate. A 25% tolerance accounts for
+ * uncertain local timings while still making large contradictions visible.
+ */
+export function detailTimingReviewIssues(days: readonly Day[]): DetailTimingReviewIssue[] {
+  const issues: DetailTimingReviewIssue[] = [];
+  for (const day of days) for (const [stopIndex, stop] of day.stops.entries()) {
+    const previous = day.stops[stopIndex - 1];
+    const transportMinutes = stop.transportFromPrevious?.durationMinutes;
+    if (!previous?.endTime || !stop.startTime || transportMinutes === null || transportMinutes === undefined) continue;
+    const gapMinutes = minutesFromTime(stop.startTime) - minutesFromTime(previous.endTime);
+    if (gapMinutes >= 0 && gapMinutes * 4 < transportMinutes * 3) issues.push({ dayId: day.id, dayNumber: day.dayNumber, stopId: stop.id, stopIndex, previousStopId: previous.id, previousEndTime: previous.endTime, startTime: stop.startTime, gapMinutes, transportMinutes });
+  }
+  return issues;
+}
+
 function detailedDayIssues(day: Day, context: z.RefinementCtx, prefix: PropertyKey[] = []) {
   for (const [stopIndex, stop] of day.stops.entries()) {
     if (!stop.startTime || !stop.endTime || stop.durationMinutes === null || !stop.scheduleVerification) context.addIssue({ code: "custom", path: [...prefix, "stops", stopIndex], message: "detailed Stop 必须提供时间、停留时长和日程核验状态。" });
@@ -64,10 +93,9 @@ function detailedDayTimeIssues(day: Day, context: z.RefinementCtx, prefix: Prope
       else if (stop.durationMinutes !== end - start) context.addIssue({ code: "custom", path: [...prefix, "stops", stopIndex, "durationMinutes"], message: "detailed Stop 的停留时长必须等于开始和结束时间之差。" });
     }
     const previous = day.stops[stopIndex - 1];
-    if (stopIndex > 0 && previous?.endTime && stop.startTime && stop.transportFromPrevious?.durationMinutes !== null && stop.transportFromPrevious?.durationMinutes !== undefined) {
+    if (stopIndex > 0 && previous?.endTime && stop.startTime) {
       const gap = minutesFromTime(stop.startTime) - minutesFromTime(previous.endTime);
       if (gap < 0) context.addIssue({ code: "custom", path: [...prefix, "stops", stopIndex, "startTime"], message: "detailed Stop 必须按时间递增。" });
-      else if (gap < stop.transportFromPrevious.durationMinutes) context.addIssue({ code: "custom", path: [...prefix, "stops", stopIndex, "transportFromPrevious", "durationMinutes"], message: "相邻 Stop 的时间间隔必须能够容纳交通时长。" });
     }
   }
 }

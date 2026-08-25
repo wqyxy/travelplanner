@@ -41,6 +41,15 @@ describe("two-day detail workflow", () => {
     expect(last.dayIds).toEqual(["day-3"]); expect(completed.allDetailed).toBe(true); expect(completed.trip.itinerary.stage).toBe("detailed"); expect(store.listRevisions(trip.id)).toHaveLength(1); store.close();
   });
 
+  it("persists a material transport-gap mismatch as a reviewable detailed Day", async () => {
+    const { store, trip } = await seeded(); const oneDay = structuredClone(trip.itinerary); oneDay.days = oneDay.days.slice(0, 1); oneDay.trip.dates.end = "2026-10-01";
+    const saved = store.writeItinerary(trip.id, oneDay, trip.contentGeneration).trip; const request = nextDetailBatch(saved.itinerary)!; const value = output(saved.itinerary, request.batchId, request.dayIds, saved.contentGeneration);
+    value.days[0].stops[1] = { ...value.days[0].stops[1], startTime: "10:05", endTime: "11:05", durationMinutes: 60, transportFromPrevious: { ...value.days[0].stops[1].transportFromPrevious!, durationMinutes: 60 } };
+    const applied = applyDetailBatch(store, saved.id, request, value);
+    expect(applied.timingReviewIssues).toMatchObject([{ dayId: "day-1", stopIndex: 1, gapMinutes: 5, transportMinutes: 60 }]);
+    expect(applied.trip.itinerary.days[0].detailStatus).toBe("needs_review"); expect(applied.allDetailed).toBe(true); expect(applied.trip.itinerary.stage).toBe("detailed"); store.close();
+  });
+
   it("rejects stale or mismatched batches without changing canonical data", async () => {
     const { store, trip } = await seeded(); const request = nextDetailBatch(trip.itinerary)!; const value = output(trip.itinerary, request.batchId, request.dayIds, trip.contentGeneration);
     expect(() => applyDetailBatch(store, trip.id, { ...request, batchId: "other" }, value)).toThrow("指定批次");

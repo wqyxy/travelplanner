@@ -6,6 +6,7 @@ import {
   PlannerMutationSchema,
   PlannerOutputJsonSchema,
   PlannerOutputSchema,
+  detailTimingReviewIssues,
   emptyItinerary,
   type Day,
   type Itinerary,
@@ -62,15 +63,22 @@ describe("itinerary:v1 contracts", () => {
     expect(ItinerarySchema.safeParse({ ...value, days: [day("day-1", "detailed")] }).success).toBe(true);
   });
 
-  it("rejects objectively inconsistent detailed times without applying those rules to drafts", () => {
+  it("keeps objective detailed-time errors hard while surfacing material traffic-gap mismatches for review", () => {
     const detailed = day("day-1", "detailed");
     const reversed = { ...detailed, stops: detailed.stops.map((stop, index) => index === 1 ? { ...stop, startTime: "09:30", endTime: "10:30" } : stop) };
     const shortGap = { ...detailed, stops: detailed.stops.map((stop, index) => index === 1 ? { ...stop, startTime: "10:05", endTime: "11:05" } : stop) };
+    const acceptedBoundary = { ...detailed, stops: detailed.stops.map((stop, index) => index === 1 ? { ...stop, startTime: "10:15", endTime: "11:15", transportFromPrevious: { ...stop.transportFromPrevious!, durationMinutes: 20 } } : stop) };
+    const warnedBoundary = { ...acceptedBoundary, stops: acceptedBoundary.stops.map((stop, index) => index === 1 ? { ...stop, startTime: "10:14", endTime: "11:14" } : stop) };
+    const zeroTransport = { ...detailed, stops: detailed.stops.map((stop, index) => index === 1 ? { ...stop, transportFromPrevious: { ...stop.transportFromPrevious!, durationMinutes: 0 } } : stop) };
     const wrongDuration = { ...detailed, stops: detailed.stops.map((stop, index) => index === 1 ? { ...stop, durationMinutes: 45 } : stop) };
     const batch = (detailedDay: Day) => ({ schemaVersion: 1, baseGeneration: 3, batchId: "batch-time", dayIds: ["day-1"], placeUpserts: [], days: [detailedDay], assistantMessage: "已细化" });
     expect(DetailBatchOutputSchema.safeParse(batch(reversed)).success).toBe(false);
-    expect(DetailBatchOutputSchema.safeParse(batch(shortGap)).success).toBe(false);
+    expect(DetailBatchOutputSchema.safeParse(batch(shortGap)).success).toBe(true);
     expect(DetailBatchOutputSchema.safeParse(batch(wrongDuration)).success).toBe(false);
+    expect(detailTimingReviewIssues([shortGap])).toMatchObject([{ dayId: "day-1", stopIndex: 1, gapMinutes: 5, transportMinutes: 10 }]);
+    expect(detailTimingReviewIssues([acceptedBoundary])).toEqual([]);
+    expect(detailTimingReviewIssues([warnedBoundary])).toMatchObject([{ gapMinutes: 14, transportMinutes: 20 }]);
+    expect(detailTimingReviewIssues([zeroTransport])).toEqual([]);
     expect(ItinerarySchema.safeParse({ ...draft(), days: [reversed] }).success).toBe(true);
     const draftWithTimes = { ...draft(), days: [{ ...shortGap, detailLevel: "draft" as const }] };
     expect(ItinerarySchema.safeParse(draftWithTimes).success).toBe(true);

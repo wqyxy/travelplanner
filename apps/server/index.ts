@@ -8,7 +8,7 @@ import { loadConfig, mapCategoryColorDefaults, projectPaths, saveConfig, type Ap
 import { CodexClient, classifyCodexFailure, nextCodexRetry, structuredTurn, type ReasoningEffort, type RpcEnvelope } from "./codex-client.js";
 import { MapTileCache, TileFetchError } from "./map-tile-cache.js";
 import { aiErrorMessage, AiTaskMonitor, isRepairableAiOutputError, normalizePublicAiSummary } from "./ai-task-monitor.js";
-import { CandidateDecisionOutputJsonSchema, CandidateDecisionOutputSchema, DetailBatchOutputJsonSchema, type DetailCanonicalFeedback, type MapChangedEvent, type Place, PlannerOutputJsonSchema } from "./contracts.js";
+import { CandidateDecisionOutputJsonSchema, CandidateDecisionOutputSchema, DetailBatchOutputJsonSchema, DetailBatchOutputSchema, detailTimingReviewIssues, type DetailCanonicalFeedback, type DetailTimingReviewIssue, type MapChangedEvent, type Place, PlannerOutputJsonSchema } from "./contracts.js";
 import { applyDetailBatch, nextDetailBatch, type DetailBatchRequest } from "./detail-workflow.js";
 import { MapPipeline } from "./map-pipeline.js";
 import { MapService, type MapCandidate } from "./map-service.js";
@@ -30,7 +30,7 @@ const clients = new Set<WebSocket>();
 
 type RunState = { taskId: string; tripId: string; turnId?: string; content: string; contractAttempt: number; serviceFailures: number; failureMessage?: string; stopRequested: boolean; attemptToken: number; settledTurnIds: string[] };
 type PlannerRun = RunState & { kind: "planner"; messageId: string; userMessage: string };
-type DetailRun = RunState & { kind: "detailer"; threadId?: string; batch: DetailBatchRequest; batchInput: string; baselineGeneration: number; allDayIds: string[]; completedDayIds: string[]; usedTemporaryIds: string[] };
+type DetailRun = RunState & { kind: "detailer"; threadId?: string; batch: DetailBatchRequest; batchInput: string; baselineGeneration: number; allDayIds: string[]; completedDayIds: string[]; usedTemporaryIds: string[]; timingReviewAttempt: number; pendingTimingReviewIssues: DetailTimingReviewIssue[]; reviewDayIds: string[] };
 type ActiveRun = PlannerRun | DetailRun;
 type CandidateRun = { turnId?: string; content: string; settle: (value: ReturnType<typeof CandidateDecisionOutputSchema.parse> | null) => void; timer: NodeJS.Timeout };
 const active = new Map<string, ActiveRun>();
@@ -176,7 +176,16 @@ async function startTravelTurn(tripId: string, text: string) {
 }
 
 function detailMetadata(run: DetailRun, currentBatchId: string | null = run.batch.batchId) {
-  return { baselineGeneration: run.baselineGeneration, allDayIds: run.allDayIds, completedDayIds: run.completedDayIds, currentBatchId };
+  return { baselineGeneration: run.baselineGeneration, allDayIds: run.allDayIds, completedDayIds: run.completedDayIds, currentBatchId, timingReviewAttempt: run.timingReviewAttempt, reviewDayIds: run.reviewDayIds, reviewDayCount: run.reviewDayIds.length };
+}
+
+function timingReviewSummary(issues: DetailTimingReviewIssue[]) {
+  return issues.map((issue) => `Day ${issue.dayNumber} 第 ${issue.stopIndex + 1} 个 Stop：${issue.previousEndTime} 至 ${issue.startTime} 空档 ${issue.gapMinutes} 分钟，交通估时 ${issue.transportMinutes} 分钟`).join("；");
+}
+
+function detailCompletionSummary(run: DetailRun) {
+  const complete = `已完成 ${run.completedDayIds.length}/${run.allDayIds.length} 天细化`;
+  return run.reviewDayIds.length ? `${complete}；${run.reviewDayIds.length} 天需复核` : complete;
 }
 
 function initialDetailInput(tripId: string, batch: DetailBatchRequest) {
@@ -192,14 +201,20 @@ function failDetailRun(threadId: string, run: DetailRun, error: unknown) {
   removeRun(threadId, run); const detail = publicFailure(error); store.setAiTaskRetry(run.taskId, run.serviceFailures, null, detail); tasks.update(run.taskId, "failed", `行程细化失败：${detail}`, "detail:failed");
 }
 
-async function startDetailAttempt(threadId: string, run: DetailRun, repair?: { invalidOutput: string; validationError: string }) {
-  const repairText = repair ? `\n\n上一份输出未通过合同。只用同一 01 合同修正当前批次，不得建立 repair 流程。\n${JSON.stringify(repair)}` : "";
+async function startDetailAttempt(threadId: string, run: DetailRun, correction?: { invalidOutput: string; validationError: string } | { timingReviewIssues: DetailTimingReviewIssue[] }) {
+  const contractRepair = correction && "invalidOutput" in correction ? correction : null;
+  const timingReview = correction && "timingReviewIssues" in correction ? correction.timingReviewIssues : null;
+  const correctionText = contractRepair
+    ? `\n\n上一份输出未通过合同。只用同一 01 合同修正当前批次，不得建立 repair 流程。\n${JSON.stringify(contractRepair)}`
+    : timingReview
+      ? `\n\n当前批次存在时间安排复核提示，尚未写入 itinerary。请你自主重新判断并输出完整当前批次：可调整时刻、交通估时、活动、Stop 或路线顺序；不要由服务端替你顺延。交通在前一 Stop 结束与当前 Stop 开始之间发生，避免把同一段交通同时写成活动。以下偏差低于交通估时的 75%：\n${JSON.stringify(timingReview)}`
+      : "";
   const attemptToken = ++run.attemptToken; run.turnId = undefined; run.content = ""; run.failureMessage = undefined;
-  const result = await codex.call("turn/start", structuredTurn({ threadId, input: [{ type: "text", text: `${prompts.detailer.content}\n\n本批受控状态：\n${run.batchInput}${repairText}`, text_elements: [] }], outputSchema: DetailBatchOutputJsonSchema, ...modelOptions() }), 120000);
+  const result = await codex.call("turn/start", structuredTurn({ threadId, input: [{ type: "text", text: `${prompts.detailer.content}\n\n本批受控状态：\n${run.batchInput}${correctionText}`, text_elements: [] }], outputSchema: DetailBatchOutputJsonSchema, ...modelOptions() }), 120000);
   const turnId = String(result?.turn?.id || "");
   if (active.get(threadId) !== run || run.stopRequested || run.attemptToken !== attemptToken) { if (turnId && !run.settledTurnIds.includes(turnId)) void codex.call("turn/interrupt", { threadId, turnId }).catch(() => undefined); return; }
   run.turnId = turnId;
-  tasks.update(run.taskId, "running", repair ? "正在按合同修正当前两日批次" : `正在细化 ${run.batch.dayIds.length} 天`, repair ? "detail:contract-retry" : "detail:batch-started");
+  tasks.update(run.taskId, "running", contractRepair ? "正在按合同修正当前两日批次" : timingReview ? "正在请 AI 自主复核当前批次的时间安排" : `正在细化 ${run.batch.dayIds.length} 天`, contractRepair ? "detail:contract-retry" : timingReview ? "detail:timing-review" : "detail:batch-started");
 }
 
 async function launchDetailThread(activeKey: string, run: DetailRun) {
@@ -215,7 +230,7 @@ async function retryDetailRun(activeKey: string, run: DetailRun) {
   if (!run.threadId) return launchDetailThread(activeKey, run);
   await ensureCodex();
   await codex.call("thread/resume", { threadId: run.threadId, cwd: root, developerInstructions: agentInstructions, config: agentConfig, sandbox: "read-only", approvalPolicy: "never", ...modelOptions() });
-  await startDetailAttempt(run.threadId, run);
+  await startDetailAttempt(run.threadId, run, run.pendingTimingReviewIssues.length ? { timingReviewIssues: run.pendingTimingReviewIssues } : undefined);
 }
 
 function queueDetailServiceRetry(activeKey: string, run: DetailRun, error: unknown) {
@@ -235,16 +250,29 @@ async function completeDetailRun(threadId: string, status: string, reportedError
   if (run.stopRequested) { removeRun(threadId, run); tasks.metadata(run.taskId, detailMetadata(run)); tasks.update(run.taskId, "stopped", `已停止；保留已完成的 ${run.completedDayIds.length}/${run.allDayIds.length} 天`, "detail:stopped"); return; }
   if (status !== "completed") return queueDetailServiceRetry(threadId, run, reportedError || run.failureMessage || "细化 turn 未完成。");
   try {
-    const applied = applyDetailBatch(store, run.tripId, run.batch, JSON.parse(run.content), { forbiddenTemporaryIds: run.usedTemporaryIds });
+    run.pendingTimingReviewIssues = [];
+    const output = DetailBatchOutputSchema.parse(JSON.parse(run.content));
+    const timingIssues = detailTimingReviewIssues(output.days);
+    if (timingIssues.length && run.timingReviewAttempt < 1) {
+      run.timingReviewAttempt += 1; run.pendingTimingReviewIssues = timingIssues;
+      tasks.metadata(run.taskId, detailMetadata(run)); tasks.update(run.taskId, "running", `发现时间偏差，正在请 AI 自主复核：${timingReviewSummary(timingIssues)}`, "detail:timing-review-requested");
+      void startDetailAttempt(threadId, run, { timingReviewIssues: timingIssues }).catch((error) => queueDetailServiceRetry(threadId, run, error)); return;
+    }
+    const applied = applyDetailBatch(store, run.tripId, run.batch, output, { forbiddenTemporaryIds: run.usedTemporaryIds });
     run.usedTemporaryIds.push(...Object.keys(applied.feedback.idMappings));
     run.completedDayIds = applied.completedDayIds; run.contractAttempt = 0; run.serviceFailures = 0; clearRetry(run.taskId);
+    for (const dayId of applied.timingReviewIssues.map((issue) => issue.dayId)) if (!run.reviewDayIds.includes(dayId)) run.reviewDayIds.push(dayId);
+    if (applied.timingReviewIssues.length) {
+      tasks.metadata(run.taskId, detailMetadata(run));
+      tasks.update(run.taskId, "running", `时间安排需复核：${timingReviewSummary(applied.timingReviewIssues)}`, "detail:timing-warning");
+    }
     broadcast("travel.trip.updated", { tripId: run.tripId });
     syncMap(run.tripId, applied.trip.contentGeneration, applied.changedDayIds);
     if (applied.allDetailed) {
-      tasks.metadata(run.taskId, detailMetadata(run, null)); removeRun(threadId, run); tasks.update(run.taskId, "completed", `已完成 ${run.completedDayIds.length}/${run.allDayIds.length} 天细化`, "detail:completed"); return;
+      tasks.metadata(run.taskId, detailMetadata(run, null)); removeRun(threadId, run); tasks.update(run.taskId, "completed", detailCompletionSummary(run), "detail:completed"); return;
     }
     const batch = nextDetailBatch(applied.trip.itinerary); if (!batch) throw new Error("细化尚未完成，但找不到下一批 Day。");
-    run.batch = batch; run.batchInput = continuedDetailInput(applied.feedback, batch); run.turnId = undefined; run.content = "";
+    run.batch = batch; run.batchInput = continuedDetailInput(applied.feedback, batch); run.turnId = undefined; run.content = ""; run.timingReviewAttempt = 0; run.pendingTimingReviewIssues = [];
     tasks.metadata(run.taskId, detailMetadata(run)); tasks.update(run.taskId, "running", `已完成 ${run.completedDayIds.length}/${run.allDayIds.length} 天，继续下一批`, "detail:batch-completed");
     void startDetailAttempt(threadId, run).catch((error) => queueDetailServiceRetry(threadId, run, error));
   } catch (error) {
@@ -262,7 +290,7 @@ async function startDetailWorkflow(tripId: string) {
   const taskId = `detail:${randomUUID()}`; const allDayIds = trip.itinerary.days.map((day) => day.id); const completedDayIds = trip.itinerary.days.filter((day) => day.detailLevel === "detailed").map((day) => day.id);
   const batch = nextDetailBatch(trip.itinerary);
   if (!batch) throw new Error("行程没有需要细化的 Day。");
-  const run: DetailRun = { kind: "detailer", taskId, tripId, batch, batchInput: initialDetailInput(tripId, batch), baselineGeneration: trip.contentGeneration, allDayIds, completedDayIds, usedTemporaryIds: [], content: "", contractAttempt: 0, serviceFailures: 0, stopRequested: false, attemptToken: 0, settledTurnIds: [] };
+  const run: DetailRun = { kind: "detailer", taskId, tripId, batch, batchInput: initialDetailInput(tripId, batch), baselineGeneration: trip.contentGeneration, allDayIds, completedDayIds, usedTemporaryIds: [], timingReviewAttempt: 0, pendingTimingReviewIssues: [], reviewDayIds: [], content: "", contractAttempt: 0, serviceFailures: 0, stopRequested: false, attemptToken: 0, settledTurnIds: [] };
   tasks.start({ id: taskId, tripId, agent: "detailer", label: "行程细化", summary: `准备细化 ${allDayIds.length - completedDayIds.length} 天`, metadata: detailMetadata(run) });
   const pendingKey = `detail-pending:${taskId}`; active.set(pendingKey, run);
   try { await launchDetailThread(pendingKey, run); }

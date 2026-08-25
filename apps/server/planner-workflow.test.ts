@@ -15,6 +15,7 @@ const place = { id: "new-place-kyoto", nameZh: "京都", nameLocal: "京都", na
 const osaka = { ...place, id: "new-place-osaka", nameZh: "大阪", nameLocal: "大阪", nameEn: "Osaka", city: "大阪" };
 const stop = (id: string, role: Stop["role"], activity: string): Stop => ({ id, role, placeId: place.id, activity, period: "morning", startTime: null, endTime: null, durationMinutes: null, scheduleVerification: null, transportFromPrevious: null, costNote: null, costVerification: null, notes: null });
 function initialDraft(): Itinerary { const base = emptyItinerary(); return { ...base, stage: "draft", trip: { ...base.trip, title: "京都周末", destinationPlaceIds: [place.id], dates: { start: "2026-10-01", end: "2026-10-01", requestedDurationDays: null } }, places: [place], days: [{ id: "new-day-1", dayNumber: 1, date: "2026-10-01", title: "京都第一天", detailLevel: "draft", stops: [stop("new-stop-start", "start", "抵达"), stop("new-stop-visit", "visit", "游览"), stop("new-stop-end", "end", "住宿")] }] }; }
+function twoDayDraft(): Itinerary { const value = initialDraft(); value.trip.dates.end = "2026-10-02"; const first = value.days[0]; value.days.push({ ...structuredClone(first), id: "new-day-2", dayNumber: 2, date: "2026-10-02", title: "京都第二天", stops: first.stops.map((item) => ({ ...structuredClone(item), id: `day-2-${item.id}` })) }); return value; }
 function detailed(itinerary: Itinerary) { const value = structuredClone(itinerary); value.days = value.days.map((day) => ({ ...day, detailLevel: "detailed", stops: day.stops.map((item, index) => { const start = 9 * 60 + index * 75; const clock = (minutes: number) => `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`; return { ...item, startTime: clock(start), endTime: clock(start + 60), durationMinutes: 60, scheduleVerification: { status: "verified", checkedAt: "2026-09-01T00:00:00Z" }, transportFromPrevious: index === 0 ? null : { mode: "walk", durationMinutes: 15, note: null, verification: { status: "verified", checkedAt: "2026-09-01T00:00:00Z" } }, costNote: "1000 JPY", costVerification: { status: "verified", checkedAt: "2026-09-01T00:00:00Z" } }; }) })); return value; }
 
 describe("Planner workflow", () => {
@@ -28,6 +29,42 @@ describe("Planner workflow", () => {
     draft.places.push(osaka); draft.days[0].stops[1].placeId = osaka.id;
     expect(() => applyPlannerOutput(store, trip.id, { schemaVersion: 1, operation: "create_draft", assistantMessage: "错误初稿", baseGeneration: 0, mutations: null, draftItinerary: draft, nextAction: "none", suggestion: null })).toThrow(/Day 1.*京都 → 大阪.*transportFromPrevious 缺失/);
     expect(store.requireTrip(trip.id).contentGeneration).toBe(0); expect(store.listRevisions(trip.id)).toHaveLength(0); store.close();
+  });
+
+  it("rejects an initial draft whose adjacent Days do not share the same boundary Place", async () => {
+    const store = await open(); const trip = store.createTrip(); const draft = twoDayDraft();
+    draft.places.push(osaka); draft.days[0].stops.at(-1)!.placeId = osaka.id; draft.days[0].stops.at(-1)!.transportFromPrevious = { mode: "drive", durationMinutes: null, note: "前往大阪", verification: { status: "unverified", checkedAt: null } };
+    expect(() => applyPlannerOutput(store, trip.id, { schemaVersion: 1, operation: "create_draft", assistantMessage: "错误初稿", baseGeneration: 0, mutations: null, draftItinerary: draft, nextAction: "none", suggestion: null })).toThrow(/跨日路线无效.*Day 1.*大阪.*Day 2.*京都.*同一 Place/);
+    expect(store.requireTrip(trip.id).contentGeneration).toBe(0); expect(store.listRevisions(trip.id)).toHaveLength(0); store.close();
+  });
+
+  it("rejects a newly introduced Day boundary mismatch and accepts its atomic repair", async () => {
+    const store = await open(); const created = applyPlannerOutput(store, store.createTrip().id, { schemaVersion: 1, operation: "create_draft", assistantMessage: "初稿", baseGeneration: 0, mutations: null, draftItinerary: twoDayDraft(), nextAction: "none", suggestion: null }).trip;
+    const first = created.itinerary.days[0]; const second = created.itinerary.days[1]; const firstEnd = first.stops.at(-1)!; const secondVisit = second.stops[1];
+    const incomplete: PlannerMutation[] = [
+      { type: "add_entity", entity: "place", parentId: null, value: osaka },
+      { type: "replace_reference", entity: "stop", id: firstEnd.id, newReferenceId: osaka.id },
+      { type: "update_fields", entity: "stop", id: firstEnd.id, changes: { transportFromPrevious: { mode: "drive", durationMinutes: null, note: "前往大阪", verification: { status: "unverified", checkedAt: null } } } },
+    ];
+    expect(() => applyPlannerOutput(store, created.id, { schemaVersion: 1, operation: "mutate_itinerary", assistantMessage: "漏改次日起点", baseGeneration: created.contentGeneration, mutations: incomplete, draftItinerary: null, nextAction: "none", suggestion: null })).toThrow(/跨日路线无效.*大阪.*京都/);
+    expect(store.requireTrip(created.id).contentGeneration).toBe(created.contentGeneration); expect(store.listRevisions(created.id)).toHaveLength(1);
+    const repaired = applyPlannerOutput(store, created.id, { schemaVersion: 1, operation: "mutate_itinerary", assistantMessage: "已同步跨日衔接", baseGeneration: created.contentGeneration, mutations: [
+      ...incomplete,
+      { type: "replace_reference", entity: "stop", id: second.stops[0].id, newReferenceId: osaka.id },
+      { type: "update_fields", entity: "stop", id: secondVisit.id, changes: { transportFromPrevious: { mode: "drive", durationMinutes: null, note: "返回京都", verification: { status: "unverified", checkedAt: null } } } },
+    ], draftItinerary: null, nextAction: "none", suggestion: null });
+    expect(repaired.trip.itinerary.days[0].stops.at(-1)!.placeId).toBe(repaired.trip.itinerary.days[1].stops[0].placeId); expect(store.listRevisions(created.id)).toHaveLength(2); store.close();
+  });
+
+  it("grandfathers an unchanged legacy Day boundary mismatch but rejects changing it to another mismatch", async () => {
+    const store = await open(); const created = applyPlannerOutput(store, store.createTrip().id, { schemaVersion: 1, operation: "create_draft", assistantMessage: "初稿", baseGeneration: 0, mutations: null, draftItinerary: twoDayDraft(), nextAction: "none", suggestion: null }).trip;
+    const legacy = structuredClone(created.itinerary); const legacyOsaka = { ...legacy.places[0], id: "legacy-osaka", nameZh: "大阪", nameLocal: "大阪", nameEn: "Osaka", city: "大阪" }; legacy.places.push(legacyOsaka); legacy.days[0].stops.at(-1)!.placeId = legacyOsaka.id; legacy.days[0].stops.at(-1)!.transportFromPrevious = { mode: "drive", durationMinutes: null, note: "前往大阪", verification: { status: "unverified", checkedAt: null } };
+    const seeded = store.writeItinerary(created.id, legacy, created.contentGeneration).trip;
+    const unrelated = applyPlannerOutput(store, seeded.id, { schemaVersion: 1, operation: "mutate_itinerary", assistantMessage: "调整节奏", baseGeneration: seeded.contentGeneration, mutations: [{ type: "update_fields", entity: "trip", id: null, changes: { pace: "慢节奏" } }], draftItinerary: null, nextAction: "none", suggestion: null }).trip;
+    expect(unrelated.itinerary.trip.pace).toBe("慢节奏"); expect(unrelated.itinerary.days[0].stops.at(-1)!.placeId).toBe(legacyOsaka.id);
+    const nara = { ...osaka, id: "new-place-nara", nameZh: "奈良", nameLocal: "奈良", nameEn: "Nara", city: "奈良" };
+    expect(() => applyPlannerOutput(store, unrelated.id, { schemaVersion: 1, operation: "mutate_itinerary", assistantMessage: "改成另一个断点", baseGeneration: unrelated.contentGeneration, mutations: [{ type: "add_entity", entity: "place", parentId: null, value: nara }, { type: "replace_reference", entity: "stop", id: unrelated.itinerary.days[0].stops.at(-1)!.id, newReferenceId: nara.id }], draftItinerary: null, nextAction: "none", suggestion: null })).toThrow(/跨日路线无效.*奈良.*京都/);
+    expect(store.requireTrip(unrelated.id).contentGeneration).toBe(unrelated.contentGeneration); expect(store.listRevisions(unrelated.id)).toHaveLength(2); store.close();
   });
 
   it("rejects a cross-place route mutation with mode=none and accepts its complete repair atomically", async () => {

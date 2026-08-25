@@ -3,9 +3,9 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 export const PLANNER_PROMPT_ID = "travel-planner-agent";
-export const PLANNER_PROMPT_VERSION = 9;
+export const PLANNER_PROMPT_VERSION = 10;
 export const DETAIL_PROMPT_ID = "travel-itinerary-detail-agent";
-export const DETAIL_PROMPT_VERSION = 3;
+export const DETAIL_PROMPT_VERSION = 4;
 export const CANDIDATE_PROMPT_ID = "travel-map-candidate-agent";
 export const CANDIDATE_PROMPT_VERSION = 1;
 

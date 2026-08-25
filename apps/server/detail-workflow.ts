@@ -3,9 +3,11 @@ import {
   DetailBatchOutputSchema,
   DetailCanonicalFeedbackSchema,
   ItinerarySchema,
+  detailTimingReviewIssues,
   type Day,
   type DetailBatchOutput,
   type DetailCanonicalFeedback,
+  type DetailTimingReviewIssue,
   type Itinerary,
   type Place,
   type Stop,
@@ -25,6 +27,7 @@ export type DetailBatchApplyResult = {
   changedDayIds: string[];
   completedDayIds: string[];
   allDetailed: boolean;
+  timingReviewIssues: DetailTimingReviewIssue[];
 };
 
 const clone = <T>(value: T): T => structuredClone(value);
@@ -112,6 +115,7 @@ function clearUnreferencedPlaces(itinerary: Itinerary) {
 
 export function applyDetailBatch(store: TravelStore, tripId: string, request: DetailBatchRequest, value: unknown, options: { forbiddenTemporaryIds?: string[] } = {}): DetailBatchApplyResult {
   const output = DetailBatchOutputSchema.parse(value);
+  const timingReviewIssues = detailTimingReviewIssues(output.days);
   const trip = store.requireTrip(tripId);
   if (trip.itinerary.stage === "planning") throw new Error("01 不能细化 planning itinerary。");
   if (output.baseGeneration !== trip.contentGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
@@ -165,7 +169,7 @@ export function applyDetailBatch(store: TravelStore, tripId: string, request: De
     const returned = returnedDays.get(current.id);
     if (!returned) return current;
     const day = clone(returned);
-    day.detailStatus = "ready";
+    day.detailStatus = timingReviewIssues.some((issue) => issue.dayId === day.id) ? "needs_review" : "ready";
     day.stops = day.stops.map((stop): Stop => ({ ...stop, id: mapper.resolve(stop.id), placeId: mapper.resolve(stop.placeId) }));
     return day;
   });
@@ -192,5 +196,6 @@ export function applyDetailBatch(store: TravelStore, tripId: string, request: De
     changedDayIds: [...changedDayIds],
     completedDayIds: written.trip.itinerary.days.filter((day) => day.detailLevel === "detailed").map((day) => day.id),
     allDetailed,
+    timingReviewIssues,
   };
 }

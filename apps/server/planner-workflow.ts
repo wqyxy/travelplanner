@@ -139,6 +139,28 @@ function assertRoutableDays(itinerary: Itinerary, dayIds?: ReadonlySet<string>) 
   }
 }
 
+type DayBoundaryMismatch = { leftDay: Day; rightDay: Day; fromPlaceId: string; toPlaceId: string };
+const boundarySignature = (boundary: DayBoundaryMismatch) => `${boundary.leftDay.id}:${boundary.rightDay.id}:${boundary.fromPlaceId}:${boundary.toPlaceId}`;
+
+function dayBoundaryMismatches(itinerary: Itinerary): DayBoundaryMismatch[] {
+  const values: DayBoundaryMismatch[] = [];
+  for (let index = 1; index < itinerary.days.length; index += 1) {
+    const leftDay = itinerary.days[index - 1]; const rightDay = itinerary.days[index];
+    const fromPlaceId = leftDay.stops.at(-1)?.placeId; const toPlaceId = rightDay.stops[0]?.placeId;
+    if (fromPlaceId && toPlaceId && fromPlaceId !== toPlaceId) values.push({ leftDay, rightDay, fromPlaceId, toPlaceId });
+  }
+  return values;
+}
+
+function assertContinuousDayBoundaries(itinerary: Itinerary, allowedLegacy = new Set<string>()) {
+  const places = new Map(itinerary.places.map((place) => [place.id, place.nameZh]));
+  for (const boundary of dayBoundaryMismatches(itinerary)) {
+    if (allowedLegacy.has(boundarySignature(boundary))) continue;
+    const from = places.get(boundary.fromPlaceId) ?? boundary.fromPlaceId; const to = places.get(boundary.toPlaceId) ?? boundary.toPlaceId;
+    throw new Error(`跨日路线无效：Day ${boundary.leftDay.dayNumber}（${boundary.leftDay.title}）结束于${from}，但 Day ${boundary.rightDay.dayNumber}（${boundary.rightDay.title}）开始于${to}；前一日末 Stop 与后一日首 Stop 必须引用同一 Place。`);
+  }
+}
+
 function collectAddIds(mutations: MutationRecord[], mapper: ReturnType<typeof createIdMapper>) {
   for (const mutation of mutations) {
     if (mutation.type !== "add_entity") continue;
@@ -230,6 +252,7 @@ export function applyPlannerMutations(current: Itinerary, mutations: PlannerMuta
   }
   normalize(next);
   assertRoutableDays(next, changedDayIdsForValidation(before, next));
+  assertContinuousDayBoundaries(next, new Set(dayBoundaryMismatches(before).map(boundarySignature)));
   const beforeDays = new Map(before.days.map((day) => [day.id, day]));
   for (const day of next.days) if (beforeDays.get(day.id)?.date !== day.date) invalidateDayFacts(day, facts);
   const beforePlaces = new Map(before.places.map((place) => [place.id, place]));
@@ -259,6 +282,7 @@ function formalizeDraft(value: Itinerary) {
   draft.days = draft.days.map((day) => ({ ...day, id: mapper.resolve(day.id), detailLevel: "draft", detailStatus: undefined, stops: day.stops.map((stop) => ({ ...stop, id: mapper.resolve(stop.id), placeId: mapper.resolve(stop.placeId), transportFromPrevious: stop.transportFromPrevious })) }));
   normalize(draft); clearUnreferencedPlaces(draft);
   assertRoutableDays(draft);
+  assertContinuousDayBoundaries(draft);
   return { itinerary: ItinerarySchema.parse(draft), idMappings: Object.fromEntries(mapper.mappings) };
 }
 
