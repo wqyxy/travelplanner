@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { itineraryStageIndex, placeNameLines } from "./Itinerary";
+import { itineraryStageIndex, placeNameLines, shouldShowVerification } from "./Itinerary";
 import type { Place } from "./types";
 
 const place: Place = {
@@ -25,5 +25,12 @@ describe("itinerary place language", () => {
 
   it("maps the canonical stage to the three-step rail", () => {
     expect(["planning", "draft", "detailed"].map((stage) => itineraryStageIndex(stage as "planning" | "draft" | "detailed"))).toEqual([0, 1, 2]);
+  });
+
+  it("shows only completed verification badges", () => {
+    expect(shouldShowVerification(null)).toBe(false);
+    expect(shouldShowVerification({ status: "estimated", checkedAt: null })).toBe(false);
+    expect(shouldShowVerification({ status: "unverified", checkedAt: null })).toBe(false);
+    expect(shouldShowVerification({ status: "verified", checkedAt: "2026-08-25T00:00:00Z" })).toBe(true);
   });
 });

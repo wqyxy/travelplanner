@@ -1,3 +1,5 @@
+import type { DerivedMapRoute, Itinerary, MapState, TransportMode } from "./types";
+
 export const mapCategoryLegend = [
   ["city", "城市"],
   ["attraction", "景点"],
@@ -112,4 +114,45 @@ export function formatRouteDuration(durationMinutes: number | null): string | nu
   if (minutes < 60) return `${minutes} 分钟`;
   const hours = Math.floor(minutes / 60); const remainder = minutes % 60;
   return remainder ? `${hours} 小时 ${remainder} 分钟` : `${hours} 小时`;
+}
+
+export type RouteTravelMetrics = { distanceKm: number | null; durationMinutes: number | null; estimated: boolean; pending: boolean };
+const metric = (value: number | null | undefined) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+
+export function routeTravelMetrics(route: DerivedMapRoute | null | undefined, mode: TransportMode, itineraryMinutes: number | null): RouteTravelMetrics {
+  if (!route) return { distanceKm: null, durationMinutes: null, estimated: false, pending: true };
+  const providerDistance = metric(route.distanceKm); const providerDuration = metric(route.durationMinutes);
+  const geometryDistance = providerDistance === null ? geometryDistanceKm(route.geometry) : null;
+  const distanceKm = providerDistance ?? geometryDistance;
+  const durationMinutes = providerDuration ?? approximateRouteDurationMinutes(mode, distanceKm, itineraryMinutes);
+  return { distanceKm, durationMinutes, estimated: providerDistance === null || providerDuration === null, pending: distanceKm === null || durationMinutes === null };
+}
+
+export type DrivingMetrics = { byStopId: Map<string, RouteTravelMetrics>; byDayId: Map<string, RouteTravelMetrics & { routeCount: number }> };
+export function drivingMetricsForItinerary(itinerary: Itinerary, state: MapState | null, expectedGeneration?: number): DrivingMetrics {
+  const currentState = expectedGeneration === undefined || state?.generation === expectedGeneration ? state : null;
+  const visits = new Map((currentState?.map?.visits ?? []).map((visit) => [visit.id, visit]));
+  const edgesByDestinationStop = new Map((currentState?.map?.edges ?? []).flatMap((edge) => {
+    const stopId = visits.get(edge.toVisitId)?.stopId;
+    return stopId ? [[stopId, edge] as const] : [];
+  }));
+  const routes = new Map((currentState?.map?.routes ?? []).map((route) => [route.edgeId, route]));
+  const byStopId = new Map<string, RouteTravelMetrics>(); const byDayId = new Map<string, RouteTravelMetrics & { routeCount: number }>();
+  for (const day of itinerary.days) {
+    const values = day.stops.flatMap((stop) => {
+      if (stop.transportFromPrevious?.mode !== "drive") return [];
+      const edge = edgesByDestinationStop.get(stop.id); const value = routeTravelMetrics(edge ? routes.get(edge.id) : null, "drive", stop.transportFromPrevious.durationMinutes);
+      byStopId.set(stop.id, value); return [value];
+    });
+    if (!values.length) continue;
+    const pending = values.some((value) => value.pending);
+    byDayId.set(day.id, {
+      routeCount: values.length,
+      distanceKm: pending ? null : values.reduce((total, value) => total + value.distanceKm!, 0),
+      durationMinutes: pending ? null : values.reduce((total, value) => total + value.durationMinutes!, 0),
+      estimated: values.some((value) => value.estimated),
+      pending,
+    });
+  }
+  return { byStopId, byDayId };
 }

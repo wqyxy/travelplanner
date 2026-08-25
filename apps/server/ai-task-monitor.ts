@@ -1,3 +1,4 @@
+import { ZodError } from "zod";
 import type { AiAgentKind, AiTaskSnapshot, AiTaskStatus } from "./contracts.js";
 import type { TravelStore } from "./travel-store.js";
 
@@ -13,6 +14,17 @@ export function normalizePublicAiSummary(value: unknown) {
     .replace(/(?:account(?:Id)?|账户(?:名称|编号|ID))\s*[:=：]\s*[^\s,;，。]+/giu, "账户信息=[已隐藏]")
     .trim();
   return text.length <= LIMIT ? text : `${text.slice(0, LIMIT - 1).trimEnd()}…`;
+}
+
+export function aiErrorMessage(error: unknown) {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string" && error.trim()) return error.trim();
+  return "服务器请求失败。";
+}
+
+export function isRepairableAiOutputError(error: unknown) {
+  if (error instanceof SyntaxError || error instanceof ZodError) return true;
+  return error instanceof Error && error.constructor === Error && !("code" in error);
 }
 
 export class AiTaskMonitor {

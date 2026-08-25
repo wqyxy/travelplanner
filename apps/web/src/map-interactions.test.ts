@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   approximateRouteDurationMinutes,
   defaultCategoryVisibility,
+  drivingMetricsForItinerary,
   formatRouteDistance,
   formatRouteDuration,
   geometryDistanceKm,
@@ -14,8 +15,10 @@ import {
   routeHoverLayerIds,
   routeLayerIds,
   routeLayerForMode,
+  routeTravelMetrics,
   visibleCategories,
 } from "./map-interactions";
+import type { Itinerary, MapState } from "./types";
 
 describe("map interactions", () => {
   it("starts with every place category visible and excludes unchecked categories", () => {
@@ -72,5 +75,27 @@ describe("map interactions", () => {
   it("uses the short antimeridian crossing when measuring a route", () => {
     const distance = geometryDistanceKm({ type: "LineString", coordinates: [[179.9, 0], [180.1, 0]] });
     expect(distance).toBeCloseTo(22.24, 1);
+  });
+
+  it("prefers provider driving metrics and falls back to old route geometry", () => {
+    const provider = routeTravelMetrics({ edgeId: "edge-1", routeKey: "r1", geometry: null, distanceKm: 12.5, durationMinutes: 24, status: "ready", warning: null }, "drive", null);
+    expect(provider).toEqual({ distanceKm: 12.5, durationMinutes: 24, estimated: false, pending: false });
+    const legacy = routeTravelMetrics({ edgeId: "edge-2", routeKey: "r2", geometry: { type: "LineString", coordinates: [[116.397, 39.908], [116.407, 39.908]] }, status: "ready", warning: null }, "drive", 15);
+    expect(legacy.distanceKm).toBeCloseTo(.85, 1); expect(legacy.durationMinutes).toBe(15); expect(legacy.estimated).toBe(true); expect(legacy.pending).toBe(false);
+  });
+
+  it("aggregates only complete driving edges by Day and marks missing routes pending", () => {
+    const itinerary = {
+      schemaVersion: 1, stage: "draft", trip: { title: "路线", originPlaceId: null, destinationPlaceIds: [], dates: { start: null, end: null, requestedDurationDays: 1 }, travelers: { summary: "", adults: null, children: null }, budget: { amount: null, currency: null, note: null }, pace: null, themes: [], preferences: [], constraints: [], assumptions: [] }, places: [], warnings: [],
+      days: [{ id: "day-1", dayNumber: 1, date: null, title: "驾驶日", detailLevel: "draft", stops: [
+        { id: "stop-1", role: "start", placeId: "p1", activity: "出发", period: "morning", startTime: null, endTime: null, durationMinutes: null, scheduleVerification: null, transportFromPrevious: null, costNote: null, costVerification: null, notes: null },
+        { id: "stop-2", role: "visit", placeId: "p2", activity: "抵达", period: "afternoon", startTime: null, endTime: null, durationMinutes: null, scheduleVerification: null, transportFromPrevious: { mode: "drive", durationMinutes: null, note: null, verification: { status: "unverified", checkedAt: null } }, costNote: null, costVerification: null, notes: null },
+        { id: "stop-3", role: "end", placeId: "p3", activity: "结束", period: "evening", startTime: null, endTime: null, durationMinutes: null, scheduleVerification: null, transportFromPrevious: { mode: "walk", durationMinutes: null, note: null, verification: { status: "unverified", checkedAt: null } }, costNote: null, costVerification: null, notes: null },
+      ] }],
+    } as Itinerary;
+    const state = { generation: 1, resolvedPlaces: [], status: "ready", warnings: [], updatedAt: "2026-08-25T00:00:00Z", map: { visits: [{ id: "v1", dayId: "day-1", dayNumber: 1, stopId: "stop-1", placeId: "p1", order: 0 }, { id: "v2", dayId: "day-1", dayNumber: 1, stopId: "stop-2", placeId: "p2", order: 1 }], edges: [{ id: "edge-1", dayId: "day-1", fromVisitId: "v1", toVisitId: "v2", mode: "drive", order: 0 }], routes: [{ edgeId: "edge-1", routeKey: "r1", geometry: null, distanceKm: 88, durationMinutes: 95, status: "ready", warning: null }] } } as MapState;
+    expect(drivingMetricsForItinerary(itinerary, state).byDayId.get("day-1")).toMatchObject({ routeCount: 1, distanceKm: 88, durationMinutes: 95, estimated: false, pending: false });
+    expect(drivingMetricsForItinerary(itinerary, { ...state, map: { ...state.map!, routes: [] } }).byDayId.get("day-1")).toMatchObject({ routeCount: 1, distanceKm: null, durationMinutes: null, pending: true });
+    expect(drivingMetricsForItinerary(itinerary, state, 2).byDayId.get("day-1")).toMatchObject({ distanceKm: null, durationMinutes: null, pending: true });
   });
 });

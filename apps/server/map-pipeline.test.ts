@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Itinerary } from "./contracts.js";
-import { AUTO_SELECT_MIN_MARGIN, AUTO_SELECT_MIN_SCORE, MAP_RESOLUTION_VERSION, MapPipeline, buildMapQueries, chooseAutomatically, deduplicateMapCandidates, deriveMapGraph, filterMapCandidates, geoFingerprint, rankMapCandidates, routeCacheKey, straightGeometry } from "./map-pipeline.js";
+import { AUTO_SELECT_MIN_MARGIN, AUTO_SELECT_MIN_SCORE, MAP_RESOLUTION_VERSION, ROUTING_PROFILE_VERSION, MapPipeline, buildMapQueries, chooseAutomatically, deduplicateMapCandidates, deriveMapGraph, filterMapCandidates, geoFingerprint, rankMapCandidates, routeCacheKey, straightGeometry } from "./map-pipeline.js";
 import type { MapCandidate } from "./map-service.js";
 import { TravelStore } from "./travel-store.js";
 
@@ -107,6 +107,7 @@ describe("deterministic map derivation", () => {
   it("keeps antimeridian flights short and keys routes by mode, coordinates and profile", () => {
     expect(straightGeometry([179, 10], [-179, 10])).toEqual({ type: "LineString", coordinates: [[179, 10], [181, 10]] });
     expect(routeCacheKey("drive", [135, 35], [135.1, 35.1])).toContain("drive:135.000000,35.000000:135.100000,35.100000:");
+    expect(ROUTING_PROFILE_VERSION).toBe("v2");
   });
 
   it("orders ambiguous candidates by deterministic score before passing them to 02", async () => {
@@ -173,7 +174,7 @@ describe("generation-bound map pipeline", () => {
     let searches = 0; let routes = 0;
     const maps = {
       search: async (query: string) => { searches += 1; return [candidate(query.includes("Osaka") || query.includes("大阪") ? "osaka" : "kyoto", query.includes("Osaka") || query.includes("大阪") ? "Osaka" : "Kyoto", query.includes("Osaka") || query.includes("大阪") ? "Osaka" : "Kyoto")]; },
-      route: async () => { routes += 1; return { geometry: { type: "LineString", coordinates: [[135, 35], [135.1, 35.1]] }, warning: null }; },
+      route: async () => { routes += 1; return { geometry: { type: "LineString", coordinates: [[135, 35], [135.1, 35.1]] }, distanceKm: 42.5, durationMinutes: 55, warning: null }; },
     } as unknown as import("./map-service.js").MapService;
     const events: string[] = []; const pipeline = new MapPipeline({ store, maps, onChanged: (event) => events.push(event.status) });
     await pipeline.sync(trip.id, first.generation, ["day-1"]);
@@ -183,6 +184,7 @@ describe("generation-bound map pipeline", () => {
     await pipeline.sync(trip.id, second.contentGeneration, []);
     expect(searches).toBe(searchesAfterFirstSync); expect(routes).toBe(1);
     expect(store.getMapState(trip.id)?.generation).toBe(second.contentGeneration);
+    expect((store.getMapState(trip.id)?.map as { routes: Array<{ distanceKm?: number; durationMinutes?: number }> }).routes[0]).toMatchObject({ distanceKm: 42.5, durationMinutes: 55 });
     expect(events).toEqual(["syncing", "ready", "syncing", "ready"]);
     store.close();
   });
@@ -225,7 +227,7 @@ describe("generation-bound map pipeline", () => {
     store.close();
   });
 
-  it("keeps mode=none geometry-free and retries a prior attention route on the next generation", async () => {
+  it("flags a legacy cross-place mode=none edge and retries another attention route on the next generation", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "map-route-status-")); directories.push(directory);
     const store = new TravelStore(path.join(directory, "travel.sqlite3")); const trip = store.createTrip(); const draft = itinerary();
     draft.days[0].stops[1].transportFromPrevious = { mode: "none", durationMinutes: null, note: null, verification: { status: "unverified", checkedAt: null } };
@@ -237,12 +239,26 @@ describe("generation-bound map pipeline", () => {
     } as unknown as import("./map-service.js").MapService;
     const pipeline = new MapPipeline({ store, maps, onChanged: () => {} });
     await pipeline.sync(trip.id, first.generation, ["day-1"]);
-    const firstMap = store.getMapState(trip.id)!.map as { routes: Array<{ status: string; geometry: unknown; warning: string | null }> };
-    expect(firstMap.routes[0]).toMatchObject({ status: "ready", geometry: null, warning: null }); expect(routeCalls).toBe(1);
+    const firstMap = store.getMapState(trip.id)!.map as { routes: Array<{ status: string; geometry: unknown; distanceKm?: number | null; durationMinutes?: number | null; warning: string | null }> };
+    expect(firstMap.routes[0]).toMatchObject({ status: "attention", geometry: null, distanceKm: null, durationMinutes: null }); expect(firstMap.routes[0].warning).toContain("京都 → 大阪"); expect(firstMap.routes[0].warning).toContain("无需交通"); expect(routeCalls).toBe(1);
+    expect(store.getMapState(trip.id)?.warnings.some((warning) => warning.includes("无法计算路线"))).toBe(true);
     const second = store.rename(trip.id, "关西路线更新");
     await pipeline.sync(trip.id, second.contentGeneration, []);
     expect(routeCalls).toBe(2);
     store.close();
+  });
+
+  it("keeps same-place mode=none edges ready and geometry-free", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "map-same-place-none-")); directories.push(directory);
+    const store = new TravelStore(path.join(directory, "travel.sqlite3")); const trip = store.createTrip(); const draft = itinerary();
+    draft.places = [draft.places[0]]; draft.trip.destinationPlaceIds = ["place-a"];
+    draft.days[0].stops[1].placeId = "place-a"; draft.days[0].stops[1].transportFromPrevious = { mode: "none", durationMinutes: null, note: null, verification: { status: "unverified", checkedAt: null } };
+    draft.days[0].stops[2].placeId = "place-a"; draft.days[0].stops[2].transportFromPrevious = { mode: "none", durationMinutes: null, note: null, verification: { status: "unverified", checkedAt: null } };
+    const written = store.writeItinerary(trip.id, draft, 0); let routeCalls = 0;
+    const maps = { search: async () => [candidate("kyoto", "Kyoto")], route: async () => { routeCalls += 1; return { geometry: null, warning: null }; } } as unknown as import("./map-service.js").MapService;
+    await new MapPipeline({ store, maps, onChanged: () => {} }).sync(trip.id, written.generation, ["day-1"]);
+    const state = store.getMapState(trip.id)!; const routes = (state.map as { routes: Array<{ status: string; geometry: unknown; warning: string | null }> }).routes;
+    expect(routes).toHaveLength(2); expect(routes.every((route) => route.status === "ready" && route.geometry === null && route.warning === null)).toBe(true); expect(state.status).toBe("ready"); expect(routeCalls).toBe(0); store.close();
   });
 
   it("uses only a scored country-confirmed city or region center for approximate fallback", async () => {

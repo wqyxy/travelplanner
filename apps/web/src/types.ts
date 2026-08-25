@@ -48,7 +48,7 @@ export type AiTask = {
 export type MapVisit = { id: string; dayId: string; dayNumber: number; stopId: string; placeId: string; order: number };
 export type MapEdge = { id: string; dayId: string; fromVisitId: string; toVisitId: string; mode: TransportMode; order: number };
 export type GeoJsonGeometry = { type: string; coordinates: unknown };
-export type DerivedMapRoute = { edgeId: string; routeKey: string; geometry: GeoJsonGeometry | null; status: "ready" | "attention"; warning: string | null };
+export type DerivedMapRoute = { edgeId: string; routeKey: string; geometry: GeoJsonGeometry | null; distanceKm?: number | null; durationMinutes?: number | null; status: "ready" | "attention"; warning: string | null };
 export type DerivedMapSnapshot = { visits: MapVisit[]; edges: MapEdge[]; routes: DerivedMapRoute[] };
 export type ResolvedPlace = {
   placeId: string; geoFingerprint: string; provider: string; providerPlaceId: string | null; lat: number | null; lng: number | null;

@@ -7,7 +7,7 @@ import { createSessionKey, hashPassword, LoginRateLimiter, PersistentSessionStor
 import { loadConfig, mapCategoryColorDefaults, projectPaths, saveConfig, type AppConfig } from "./config.js";
 import { CodexClient, classifyCodexFailure, nextCodexRetry, structuredTurn, type ReasoningEffort, type RpcEnvelope } from "./codex-client.js";
 import { MapTileCache, TileFetchError } from "./map-tile-cache.js";
-import { AiTaskMonitor, normalizePublicAiSummary } from "./ai-task-monitor.js";
+import { aiErrorMessage, AiTaskMonitor, isRepairableAiOutputError, normalizePublicAiSummary } from "./ai-task-monitor.js";
 import { CandidateDecisionOutputJsonSchema, CandidateDecisionOutputSchema, DetailBatchOutputJsonSchema, type DetailCanonicalFeedback, type MapChangedEvent, type Place, PlannerOutputJsonSchema } from "./contracts.js";
 import { applyDetailBatch, nextDetailBatch, type DetailBatchRequest } from "./detail-workflow.js";
 import { MapPipeline } from "./map-pipeline.js";
@@ -59,7 +59,7 @@ const maps = new MapService(paths.cacheDb);
 const mapPipeline = new MapPipeline({ store, maps, decideCandidate: decideMapCandidate, onChanged: (event) => broadcast("travel.map.changed", event) });
 function json(response: ServerResponse, status: number, data: unknown) { response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); response.end(JSON.stringify({ data })); }
 function failure(response: ServerResponse, status: number, value: string, code?: string) { response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); response.end(JSON.stringify({ error: { message: value, ...(code ? { code } : {}) } })); }
-function message(error: unknown) { return error instanceof Error ? error.message : "服务器请求失败。"; }
+function message(error: unknown) { return aiErrorMessage(error); }
 function publicFailure(error: unknown) { return normalizePublicAiSummary(message(error)) || "服务请求失败。"; }
 async function body(request: IncomingMessage): Promise<Record<string, unknown>> { const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk)); if (!chunks.length) return {}; try { const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")); return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}; } catch { throw new Error("请求 JSON 无效。"); } }
 function cookies(request: IncomingMessage) { return Object.fromEntries((request.headers.cookie || "").split(";").map((item) => item.trim().split(/=(.*)/s, 2)).filter(([key]) => key).map(([key, value]) => [key, decodeURIComponent(value || "")])); }
@@ -139,7 +139,7 @@ async function retryPlannerRun(threadId: string, run: PlannerRun) {
 
 function queueServiceRetry(threadId: string, run: PlannerRun, error: unknown) {
   const kind = classifyCodexFailure(error); if (kind !== "transient") return failRun(threadId, run, error);
-  const retry = nextCodexRetry(run.serviceFailures); if (!retry) return failRun(threadId, run, `${publicFailure(error)}；已达到 3 次自动重试上限`);
+  const retry = nextCodexRetry(run.serviceFailures); if (!retry) return failRun(threadId, run, new Error(`${publicFailure(error)}；已达到 3 次自动重试上限`));
   run.serviceFailures = retry.attempt; run.turnId = undefined; const nextAttemptAt = new Date(Date.now() + retry.delayMs).toISOString(); const summary = `AI 服务暂时中断；第 ${retry.attempt}/3 次重试将在 ${Math.round(retry.delayMs / 1000)} 秒后进行`;
   store.setAiTaskRetry(run.taskId, retry.attempt, nextAttemptAt, publicFailure(error)); updateTurn(run, "starting", summary, publicFailure(error)); tasks.update(run.taskId, "waiting", summary, "planner:waiting");
   const timer = setTimeout(() => { retryTimers.delete(run.taskId); if (active.get(threadId) !== run) return; void retryPlannerRun(threadId, run).catch((failure) => { const activeThreadId = [...active.entries()].find(([, candidate]) => candidate === run)?.[0] ?? threadId; queueServiceRetry(activeThreadId, run, failure); }); }, retry.delayMs); timer.unref(); retryTimers.set(run.taskId, timer);
@@ -158,7 +158,8 @@ async function completePlannerRun(threadId: string, status: string, reportedErro
     if (applied.startDetailing) void startDetailWorkflow(run.tripId).catch((error) => console.warn("[Detail]", publicFailure(error)));
   } catch (error) {
     if (message(error) === "CONTENT_GENERATION_SUPERSEDED") { removeRun(threadId, run); updateTurn(run, "interrupted", "结果已被更新版本取代", "CONTENT_GENERATION_SUPERSEDED"); tasks.update(run.taskId, "cancelled_by_generation", "结果已被更新版本取代", "planner:superseded"); return; }
-    if (run.contractAttempt >= 1) return failRun(threadId, run, `Planner 合同修正仍未通过：${publicFailure(error)}`);
+    if (!isRepairableAiOutputError(error)) return failRun(threadId, run, error);
+    if (run.contractAttempt >= 1) return failRun(threadId, run, new Error(`Planner 合同修正仍未通过：${publicFailure(error)}`));
     run.contractAttempt += 1; tasks.update(run.taskId, "running", "正在用同一 Planner 合同定向修正输出", "planner:contract-retry"); updateTurn(run, "starting", "Planner 输出存在合同问题，正在修正");
     void startPlannerAttempt(threadId, run, { invalidOutput: run.content || "{}", validationError: message(error) }).catch((failure) => queueServiceRetry(threadId, run, failure));
   }
@@ -219,7 +220,7 @@ async function retryDetailRun(activeKey: string, run: DetailRun) {
 
 function queueDetailServiceRetry(activeKey: string, run: DetailRun, error: unknown) {
   const kind = classifyCodexFailure(error); if (kind !== "transient") return failDetailRun(activeKey, run, error);
-  const retry = nextCodexRetry(run.serviceFailures); if (!retry) return failDetailRun(activeKey, run, `${publicFailure(error)}；已达到 3 次自动重试上限`);
+  const retry = nextCodexRetry(run.serviceFailures); if (!retry) return failDetailRun(activeKey, run, new Error(`${publicFailure(error)}；已达到 3 次自动重试上限`));
   run.serviceFailures = retry.attempt; run.turnId = undefined; const nextAttemptAt = new Date(Date.now() + retry.delayMs).toISOString(); const summary = `细化服务暂时中断；第 ${retry.attempt}/3 次重试将在 ${Math.round(retry.delayMs / 1000)} 秒后进行`;
   store.setAiTaskRetry(run.taskId, retry.attempt, nextAttemptAt, publicFailure(error)); tasks.update(run.taskId, "waiting", summary, "detail:waiting");
   const timer = setTimeout(() => {
@@ -248,7 +249,8 @@ async function completeDetailRun(threadId: string, status: string, reportedError
     void startDetailAttempt(threadId, run).catch((error) => queueDetailServiceRetry(threadId, run, error));
   } catch (error) {
     if (message(error) === "CONTENT_GENERATION_SUPERSEDED") { removeRun(threadId, run); tasks.update(run.taskId, "cancelled_by_generation", "细化结果已被更新版本取代；已完成批次保持不变", "detail:superseded"); return; }
-    if (run.contractAttempt >= 1) return failDetailRun(threadId, run, `01 合同修正仍未通过：${publicFailure(error)}`);
+    if (!isRepairableAiOutputError(error)) return failDetailRun(threadId, run, error);
+    if (run.contractAttempt >= 1) return failDetailRun(threadId, run, new Error(`01 合同修正仍未通过：${publicFailure(error)}`));
     run.contractAttempt += 1; tasks.update(run.taskId, "running", "正在用同一 01 合同定向修正当前批次", "detail:contract-retry");
     void startDetailAttempt(threadId, run, { invalidOutput: run.content || "{}", validationError: message(error) }).catch((failure) => queueDetailServiceRetry(threadId, run, failure));
   }

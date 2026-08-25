@@ -20,7 +20,7 @@ export type MapCandidate = {
   timezone: string | null;
 };
 
-export type MapRouteResult = { geometry: unknown | null; warning: string | null };
+export type MapRouteResult = { geometry: unknown | null; distanceKm: number | null; durationMinutes: number | null; warning: string | null };
 
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 export const ROUTE_SUCCESS_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -119,16 +119,19 @@ export class MapService {
       url.searchParams.set("overview", "full"); url.searchParams.set("geometries", "geojson");
       const response = await this.fetcher(url, { headers: { "User-Agent": "AI-Travel-Planner/0.1 (personal local travel planner)", Accept: "application/json" } });
       if (!response.ok) {
-        const result = { geometry: null, warning: "路线服务暂时不可用。" };
+        const result: MapRouteResult = { geometry: null, distanceKm: null, durationMinutes: null, warning: "路线服务暂时不可用。" };
         this.save("route_cache", routeKey, result, ROUTE_FAILURE_CACHE_TTL_MS);
         return result;
       }
-      const payload = await response.json() as { code?: string; routes?: Array<{ geometry?: unknown }> };
-      const result = payload.code === "Ok" && payload.routes?.[0]?.geometry ? { geometry: payload.routes[0].geometry, warning: null } : { geometry: null, warning: "未能找到该路段的路线。" };
+      const payload = await response.json() as { code?: string; routes?: Array<{ geometry?: unknown; distance?: unknown; duration?: unknown }> };
+      const route = payload.routes?.[0]; const distance = typeof route?.distance === "number" ? route.distance : Number.NaN; const duration = typeof route?.duration === "number" ? route.duration : Number.NaN;
+      const result: MapRouteResult = payload.code === "Ok" && route?.geometry
+        ? { geometry: route.geometry, distanceKm: Number.isFinite(distance) && distance >= 0 ? distance / 1000 : null, durationMinutes: Number.isFinite(duration) && duration >= 0 ? duration / 60 : null, warning: null }
+        : { geometry: null, distanceKm: null, durationMinutes: null, warning: "未能找到该路段的路线。" };
       this.save("route_cache", routeKey, result, ROUTE_SUCCESS_CACHE_TTL_MS);
       return result;
     } catch {
-      const result = { geometry: null, warning: "路线服务暂时不可用。" };
+      const result: MapRouteResult = { geometry: null, distanceKm: null, durationMinutes: null, warning: "路线服务暂时不可用。" };
       this.save("route_cache", routeKey, result, ROUTE_FAILURE_CACHE_TTL_MS);
       return result;
     }

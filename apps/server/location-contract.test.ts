@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DetailBatchOutputSchema,
+  DerivedMapSnapshotSchema,
   ItinerarySchema,
   PlannerMutationSchema,
   PlannerOutputJsonSchema,
@@ -14,8 +15,8 @@ import {
 const place = { id: "city", nameZh: "京都", nameLocal: "京都", nameEn: "Kyoto", kind: "city" as const, city: "京都", region: null, country: "日本", countryCode: "JP", approximate: false };
 const estimated = { status: "estimated" as const, checkedAt: null };
 const draftStop = (id: string, role: Stop["role"], activity: string): Stop => ({ id, role, placeId: place.id, activity, period: "morning", startTime: null, endTime: null, durationMinutes: null, scheduleVerification: null, transportFromPrevious: null, costNote: null, costVerification: null, notes: null });
-const detailedStop = (id: string, role: Stop["role"], activity: string, first = false): Stop => ({ id, role, placeId: place.id, activity, period: "morning", startTime: "09:00", endTime: "10:00", durationMinutes: 60, scheduleVerification: estimated, transportFromPrevious: first ? null : { mode: "walk", durationMinutes: 10, note: null, verification: estimated }, costNote: null, costVerification: null, notes: null });
-const day = (id = "day-1", detailLevel: Day["detailLevel"] = "draft"): Day => ({ id, dayNumber: 1, date: null, title: "京都", detailLevel, stops: detailLevel === "detailed" ? [detailedStop(`${id}-start`, "start", "出发", true), detailedStop(`${id}-visit`, "visit", "游览"), detailedStop(`${id}-end`, "end", "住宿")] : [draftStop(`${id}-start`, "start", "出发"), draftStop(`${id}-visit`, "visit", "游览"), draftStop(`${id}-end`, "end", "住宿")] });
+const detailedStop = (id: string, role: Stop["role"], activity: string, startTime: string, endTime: string, first = false): Stop => ({ id, role, placeId: place.id, activity, period: "morning", startTime, endTime, durationMinutes: 60, scheduleVerification: estimated, transportFromPrevious: first ? null : { mode: "walk", durationMinutes: 10, note: null, verification: estimated }, costNote: null, costVerification: null, notes: null });
+const day = (id = "day-1", detailLevel: Day["detailLevel"] = "draft"): Day => ({ id, dayNumber: 1, date: null, title: "京都", detailLevel, stops: detailLevel === "detailed" ? [detailedStop(`${id}-start`, "start", "出发", "09:00", "10:00", true), detailedStop(`${id}-visit`, "visit", "游览", "10:10", "11:10"), detailedStop(`${id}-end`, "end", "住宿", "11:20", "12:20")] : [draftStop(`${id}-start`, "start", "出发"), draftStop(`${id}-visit`, "visit", "游览"), draftStop(`${id}-end`, "end", "住宿")] });
 const draft = (): Itinerary => ({ ...emptyItinerary(), stage: "draft", places: [place], days: [day()] });
 
 function expectClosedRequiredObjects(value: unknown) {
@@ -61,9 +62,29 @@ describe("itinerary:v1 contracts", () => {
     expect(ItinerarySchema.safeParse({ ...value, days: [day("day-1", "detailed")] }).success).toBe(true);
   });
 
+  it("rejects objectively inconsistent detailed times without applying those rules to drafts", () => {
+    const detailed = day("day-1", "detailed");
+    const reversed = { ...detailed, stops: detailed.stops.map((stop, index) => index === 1 ? { ...stop, startTime: "09:30", endTime: "10:30" } : stop) };
+    const shortGap = { ...detailed, stops: detailed.stops.map((stop, index) => index === 1 ? { ...stop, startTime: "10:05", endTime: "11:05" } : stop) };
+    const wrongDuration = { ...detailed, stops: detailed.stops.map((stop, index) => index === 1 ? { ...stop, durationMinutes: 45 } : stop) };
+    const batch = (detailedDay: Day) => ({ schemaVersion: 1, baseGeneration: 3, batchId: "batch-time", dayIds: ["day-1"], placeUpserts: [], days: [detailedDay], assistantMessage: "已细化" });
+    expect(DetailBatchOutputSchema.safeParse(batch(reversed)).success).toBe(false);
+    expect(DetailBatchOutputSchema.safeParse(batch(shortGap)).success).toBe(false);
+    expect(DetailBatchOutputSchema.safeParse(batch(wrongDuration)).success).toBe(false);
+    expect(ItinerarySchema.safeParse({ ...draft(), days: [reversed] }).success).toBe(true);
+    const draftWithTimes = { ...draft(), days: [{ ...shortGap, detailLevel: "draft" as const }] };
+    expect(ItinerarySchema.safeParse(draftWithTimes).success).toBe(true);
+  });
+
   it("keeps the detailed lifecycle when every Day later needs re-detailing", () => {
     const value = draft();
     expect(ItinerarySchema.safeParse({ ...value, stage: "detailed", days: value.days.map((item) => ({ ...item, detailLevel: "draft", detailStatus: "needs_review" as const })) }).success).toBe(true);
+  });
+
+  it("accepts legacy map routes without persisted metrics", () => {
+    const legacy = { visits: [], edges: [], routes: [{ edgeId: "edge-1", routeKey: "drive:legacy:v1", geometry: null, status: "ready", warning: null }] };
+    expect(DerivedMapSnapshotSchema.safeParse(legacy).success).toBe(true);
+    expect(DerivedMapSnapshotSchema.safeParse({ ...legacy, routes: [{ ...legacy.routes[0], distanceKm: 12.5, durationMinutes: 20 }] }).success).toBe(true);
   });
 
   it("requires a detail batch to return the exact requested detailed day set", () => {

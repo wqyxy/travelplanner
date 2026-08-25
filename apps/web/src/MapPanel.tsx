@@ -4,7 +4,7 @@ import type { Itinerary, ItineraryLanguage, MapEdge, MapState, MapVisit, Place, 
 import type { MapSelection } from "./Itinerary";
 import { placeNameLines } from "./Itinerary";
 import { clusterHiddenLabels, layoutLabels } from "./map-label-layout";
-import { approximateRouteDurationMinutes, dashedRouteModes, defaultCategoryVisibility, formatRouteDistance, formatRouteDuration, geometryDistanceKm, mapCategoryLegend, routeColorExpression, routeHighlightFeatureCollection, routeHitLayerIds, routeHoverCoreLayerIds, routeHoverHaloLayerIds, routeHoverFromFeature, routeLayerIds, visibleCategories, type MapCategory } from "./map-interactions";
+import { dashedRouteModes, defaultCategoryVisibility, formatRouteDistance, formatRouteDuration, mapCategoryLegend, routeColorExpression, routeHighlightFeatureCollection, routeHitLayerIds, routeHoverCoreLayerIds, routeHoverHaloLayerIds, routeHoverFromFeature, routeLayerIds, routeTravelMetrics, visibleCategories, type MapCategory } from "./map-interactions";
 
 const dayColors = ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#d97706", "#0891b2"];
 const modeColors: Record<TransportMode, string> = { walk: "#2563eb", drive: "#dc2626", bike: "#16a34a", transit: "#64748b", rail: "#475569", flight: "#7c3aed", ferry: "#0891b2", none: "#94a3b8" };
@@ -61,9 +61,8 @@ function pointFeature(marker: Marker, itinerary: Itinerary, language: ItineraryL
 }
 
 function routeFeature(line: RouteLine) {
-  const distanceKm = geometryDistanceKm(line.route.geometry);
-  const durationMinutes = approximateRouteDurationMinutes(line.edge.mode, distanceKm, line.durationMinutes);
-  return { type: "Feature" as const, id: line.edge.id, geometry: line.route.geometry, properties: { id: line.edge.id, mode: line.edge.mode, dayNumber: line.dayNumber, distanceKm, durationMinutes, status: line.route.status, warning: line.route.warning || "" } };
+  const metrics = routeTravelMetrics(line.route, line.edge.mode, line.durationMinutes);
+  return { type: "Feature" as const, id: line.edge.id, geometry: line.route.geometry, properties: { id: line.edge.id, mode: line.edge.mode, dayNumber: line.dayNumber, distanceKm: metrics.distanceKm, durationMinutes: metrics.durationMinutes, estimated: metrics.estimated, status: line.route.status, warning: line.route.warning || "" } };
 }
 
 type RouteFeature = ReturnType<typeof routeFeature>;

@@ -14,7 +14,7 @@ describe("public route cache", () => {
     const filename = path.join(directory, "public-cache.sqlite3");
     const maps = new MapService(filename, async () => new Response("unavailable", { status: 503 }));
     const startedAt = Date.now();
-    await expect(maps.route("drive", [135, 35], [135.1, 35.1], "route-key")).resolves.toEqual({ geometry: null, warning: "路线服务暂时不可用。" });
+    await expect(maps.route("drive", [135, 35], [135.1, 35.1], "route-key")).resolves.toEqual({ geometry: null, distanceKm: null, durationMinutes: null, warning: "路线服务暂时不可用。" });
     expect(ROUTE_FAILURE_CACHE_TTL_MS).toBeLessThan(ROUTE_SUCCESS_CACHE_TTL_MS);
     maps.close();
     const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
@@ -23,6 +23,17 @@ describe("public route cache", () => {
     expect(row.expires_at).toBeGreaterThanOrEqual(startedAt + ROUTE_FAILURE_CACHE_TTL_MS);
     expect(row.expires_at).toBeLessThan(startedAt + ROUTE_SUCCESS_CACHE_TTL_MS);
     db.close();
+  });
+
+  it("keeps provider distance and duration with the cached route geometry", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "map-route-metrics-")); directories.push(directory);
+    const filename = path.join(directory, "public-cache.sqlite3"); let fetches = 0;
+    const geometry = { type: "LineString", coordinates: [[135, 35], [135.1, 35.1]] };
+    const maps = new MapService(filename, async () => { fetches += 1; return Response.json({ code: "Ok", routes: [{ geometry, distance: 12345, duration: 4560 }] }); });
+    const expected = { geometry, distanceKm: 12.345, durationMinutes: 76, warning: null };
+    await expect(maps.route("drive", [135, 35], [135.1, 35.1], "route-metrics-v2")).resolves.toEqual(expected);
+    await expect(maps.route("drive", [135, 35], [135.1, 35.1], "route-metrics-v2")).resolves.toEqual(expected);
+    expect(fetches).toBe(1); maps.close();
   });
 });
 

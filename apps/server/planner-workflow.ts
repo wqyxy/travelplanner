@@ -118,6 +118,27 @@ function topology(itinerary: Itinerary) {
   return values;
 }
 
+function changedDayIdsForValidation(before: Itinerary, after: Itinerary) {
+  const beforeDays = new Map(before.days.map((day) => [day.id, day]));
+  return new Set(after.days.filter((day) => JSON.stringify(beforeDays.get(day.id)) !== JSON.stringify(day)).map((day) => day.id));
+}
+
+function assertRoutableDays(itinerary: Itinerary, dayIds?: ReadonlySet<string>) {
+  const places = new Map(itinerary.places.map((place) => [place.id, place]));
+  const label = (placeId: string) => places.get(placeId)?.nameZh ?? placeId;
+  for (const day of itinerary.days) {
+    if (dayIds && !dayIds.has(day.id)) continue;
+    for (let stopIndex = 1; stopIndex < day.stops.length; stopIndex += 1) {
+      const previous = day.stops[stopIndex - 1]; const stop = day.stops[stopIndex];
+      if (previous.placeId === stop.placeId) continue;
+      const mode = stop.transportFromPrevious?.mode;
+      if (mode && mode !== "none") continue;
+      const problem = mode === "none" ? "mode 不能为 none（无需交通）" : "transportFromPrevious 缺失";
+      throw new Error(`Day ${day.dayNumber}（${day.title}）的路线无效：${label(previous.placeId)} → ${label(stop.placeId)} 对应 Stop ${stop.id} 的 ${problem}；跨地点相邻 Stop 必须提供非 none 的交通方式。`);
+    }
+  }
+}
+
 function collectAddIds(mutations: MutationRecord[], mapper: ReturnType<typeof createIdMapper>) {
   for (const mutation of mutations) {
     if (mutation.type !== "add_entity") continue;
@@ -208,6 +229,7 @@ export function applyPlannerMutations(current: Itinerary, mutations: PlannerMuta
     else throw new Error(`未知 mutation 类型：${type}`);
   }
   normalize(next);
+  assertRoutableDays(next, changedDayIdsForValidation(before, next));
   const beforeDays = new Map(before.days.map((day) => [day.id, day]));
   for (const day of next.days) if (beforeDays.get(day.id)?.date !== day.date) invalidateDayFacts(day, facts);
   const beforePlaces = new Map(before.places.map((place) => [place.id, place]));
@@ -236,6 +258,7 @@ function formalizeDraft(value: Itinerary) {
   draft.trip.destinationPlaceIds = draft.trip.destinationPlaceIds.map(mapper.resolve);
   draft.days = draft.days.map((day) => ({ ...day, id: mapper.resolve(day.id), detailLevel: "draft", detailStatus: undefined, stops: day.stops.map((stop) => ({ ...stop, id: mapper.resolve(stop.id), placeId: mapper.resolve(stop.placeId), transportFromPrevious: stop.transportFromPrevious })) }));
   normalize(draft); clearUnreferencedPlaces(draft);
+  assertRoutableDays(draft);
   return { itinerary: ItinerarySchema.parse(draft), idMappings: Object.fromEntries(mapper.mappings) };
 }
 

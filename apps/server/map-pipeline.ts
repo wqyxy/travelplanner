@@ -16,7 +16,7 @@ import type { TravelStore } from "./travel-store.js";
 
 export const AUTO_SELECT_MIN_SCORE = 65;
 export const AUTO_SELECT_MIN_MARGIN = 15;
-export const ROUTING_PROFILE_VERSION = "v1";
+export const ROUTING_PROFILE_VERSION = "v2";
 export const MAP_RESOLUTION_VERSION = "v4";
 
 export type ScoredCandidate = { candidate: MapCandidate; score: number };
@@ -252,18 +252,21 @@ export class MapPipeline {
       if (!from || !to) continue;
       const fromPlace = resolved.get(from.placeId); const toPlace = resolved.get(to.placeId);
       const fromCoordinate = fromPlace ? coordinate(fromPlace) : null; const toCoordinate = toPlace ? coordinate(toPlace) : null;
-      if (edge.mode === "none") { routes.push({ edgeId: edge.id, routeKey: `none:${edge.id}:${ROUTING_PROFILE_VERSION}`, geometry: null, status: "ready", warning: null }); continue; }
-      if (from.placeId === to.placeId) { routes.push({ edgeId: edge.id, routeKey: `same:${from.placeId}:${edge.mode}:${ROUTING_PROFILE_VERSION}`, geometry: null, status: "ready", warning: "同一地点内移动。" }); continue; }
-      if (!fromCoordinate || !toCoordinate) { routes.push({ edgeId: edge.id, routeKey: `${edge.mode}:unresolved:${edge.id}:${ROUTING_PROFILE_VERSION}`, geometry: null, status: "attention", warning: `${placeLabel(places.get(from.placeId))} → ${placeLabel(places.get(to.placeId))}：路线端点尚未可靠定位。` }); continue; }
+      if (edge.mode === "none") {
+        const inconsistent = from.placeId !== to.placeId;
+        routes.push({ edgeId: edge.id, routeKey: `none:${edge.id}:${ROUTING_PROFILE_VERSION}`, geometry: null, distanceKm: null, durationMinutes: null, status: inconsistent ? "attention" : "ready", warning: inconsistent ? `${placeLabel(places.get(from.placeId))} → ${placeLabel(places.get(to.placeId))}：不同地点之间的交通方式为“无需交通”，无法计算路线。` : null }); continue;
+      }
+      if (from.placeId === to.placeId) { routes.push({ edgeId: edge.id, routeKey: `same:${from.placeId}:${edge.mode}:${ROUTING_PROFILE_VERSION}`, geometry: null, distanceKm: null, durationMinutes: null, status: "ready", warning: "同一地点内移动。" }); continue; }
+      if (!fromCoordinate || !toCoordinate) { routes.push({ edgeId: edge.id, routeKey: `${edge.mode}:unresolved:${edge.id}:${ROUTING_PROFILE_VERSION}`, geometry: null, distanceKm: null, durationMinutes: null, status: "attention", warning: `${placeLabel(places.get(from.placeId))} → ${placeLabel(places.get(to.placeId))}：路线端点尚未可靠定位。` }); continue; }
       const key = routeCacheKey(edge.mode, fromCoordinate, toCoordinate); const previous = existing.get(key);
       if (previous?.status === "ready") { routes.push({ ...previous, edgeId: edge.id }); continue; }
-      if (edge.mode === "flight") { routes.push({ edgeId: edge.id, routeKey: key, geometry: straightGeometry(fromCoordinate, toCoordinate), status: "ready", warning: null }); continue; }
+      if (edge.mode === "flight") { routes.push({ edgeId: edge.id, routeKey: key, geometry: straightGeometry(fromCoordinate, toCoordinate), distanceKm: null, durationMinutes: null, status: "ready", warning: null }); continue; }
       if (edge.mode === "walk" || edge.mode === "drive" || edge.mode === "bike") {
         const result = await this.options.maps.route(edge.mode, fromCoordinate, toCoordinate, key);
-        routes.push({ edgeId: edge.id, routeKey: key, geometry: result.geometry, status: result.warning ? "attention" : "ready", warning: result.warning }); continue;
+        routes.push({ edgeId: edge.id, routeKey: key, geometry: result.geometry, distanceKm: result.distanceKm ?? null, durationMinutes: result.durationMinutes ?? null, status: result.warning ? "attention" : "ready", warning: result.warning }); continue;
       }
       const warning = edge.mode === "ferry" ? "渡轮仅显示直线建议连线，班次与航线尚未实时核验。" : "公共交通仅显示建议连线，尚未实时核验。";
-      routes.push({ edgeId: edge.id, routeKey: key, geometry: straightGeometry(fromCoordinate, toCoordinate), status: "attention", warning });
+      routes.push({ edgeId: edge.id, routeKey: key, geometry: straightGeometry(fromCoordinate, toCoordinate), distanceKm: null, durationMinutes: null, status: "attention", warning });
     }
     return routes;
   }

@@ -44,15 +44,37 @@ export const TripFactsSchema = z.object({
 }).strict();
 export type TripFacts = z.infer<typeof TripFactsSchema>;
 
+const minutesFromTime = (value: string) => {
+  const [hours, minutes] = value.split(":").map(Number);
+  return hours * 60 + minutes;
+};
+
 function detailedDayIssues(day: Day, context: z.RefinementCtx, prefix: PropertyKey[] = []) {
   for (const [stopIndex, stop] of day.stops.entries()) {
     if (!stop.startTime || !stop.endTime || stop.durationMinutes === null || !stop.scheduleVerification) context.addIssue({ code: "custom", path: [...prefix, "stops", stopIndex], message: "detailed Stop 必须提供时间、停留时长和日程核验状态。" });
     if (stopIndex > 0 && (!stop.transportFromPrevious || stop.transportFromPrevious.durationMinutes === null)) context.addIssue({ code: "custom", path: [...prefix, "stops", stopIndex, "transportFromPrevious"], message: "detailed 非首 Stop 必须提供交通和时长。" });
   }
 }
+
+function detailedDayTimeIssues(day: Day, context: z.RefinementCtx, prefix: PropertyKey[] = []) {
+  for (const [stopIndex, stop] of day.stops.entries()) {
+    if (stop.startTime && stop.endTime && stop.durationMinutes !== null) {
+      const start = minutesFromTime(stop.startTime); const end = minutesFromTime(stop.endTime);
+      if (end <= start) context.addIssue({ code: "custom", path: [...prefix, "stops", stopIndex, "endTime"], message: "detailed Stop 必须在同一自然日内结束，且结束时间必须晚于开始时间。" });
+      else if (stop.durationMinutes !== end - start) context.addIssue({ code: "custom", path: [...prefix, "stops", stopIndex, "durationMinutes"], message: "detailed Stop 的停留时长必须等于开始和结束时间之差。" });
+    }
+    const previous = day.stops[stopIndex - 1];
+    if (stopIndex > 0 && previous?.endTime && stop.startTime && stop.transportFromPrevious?.durationMinutes !== null && stop.transportFromPrevious?.durationMinutes !== undefined) {
+      const gap = minutesFromTime(stop.startTime) - minutesFromTime(previous.endTime);
+      if (gap < 0) context.addIssue({ code: "custom", path: [...prefix, "stops", stopIndex, "startTime"], message: "detailed Stop 必须按时间递增。" });
+      else if (gap < stop.transportFromPrevious.durationMinutes) context.addIssue({ code: "custom", path: [...prefix, "stops", stopIndex, "transportFromPrevious", "durationMinutes"], message: "相邻 Stop 的时间间隔必须能够容纳交通时长。" });
+    }
+  }
+}
 export const DetailedDaySchema = DaySchema.superRefine((day, context) => {
   if (day.detailLevel !== "detailed") context.addIssue({ code: "custom", path: ["detailLevel"], message: "细化批次只能返回 detailed Day。" });
   detailedDayIssues(day, context);
+  detailedDayTimeIssues(day, context);
 });
 export const ItinerarySchema = z.object({ schemaVersion: z.literal(1), stage: z.enum(["planning", "draft", "detailed"]), trip: TripFactsSchema, places: z.array(PlaceSchema).max(1800), days: z.array(DaySchema).max(90), warnings: z.array(TextSchema.max(700)).max(100) }).strict().superRefine((value, context) => {
   const placeIds = new Set<string>();
@@ -132,7 +154,7 @@ export const ResolvedPlaceSchema = z.object({ placeId: IdSchema, geoFingerprint:
 export type ResolvedPlace = z.infer<typeof ResolvedPlaceSchema>;
 export const MapVisitSchema = z.object({ id: IdSchema, dayId: IdSchema, dayNumber: z.number().int().min(1), stopId: IdSchema, placeId: IdSchema, order: z.number().int().min(0) }).strict(); export type MapVisit = z.infer<typeof MapVisitSchema>;
 export const MapEdgeSchema = z.object({ id: IdSchema, dayId: IdSchema, fromVisitId: IdSchema, toVisitId: IdSchema, mode: TransportModeSchema, order: z.number().int().min(0) }).strict(); export type MapEdge = z.infer<typeof MapEdgeSchema>;
-export const DerivedMapRouteSchema = z.object({ edgeId: IdSchema, routeKey: z.string().min(1).max(1000), geometry: z.unknown().nullable(), status: z.enum(["ready", "attention"]), warning: z.string().max(700).nullable() }).strict(); export type DerivedMapRoute = z.infer<typeof DerivedMapRouteSchema>;
+export const DerivedMapRouteSchema = z.object({ edgeId: IdSchema, routeKey: z.string().min(1).max(1000), geometry: z.unknown().nullable(), distanceKm: z.number().finite().nonnegative().nullable().optional(), durationMinutes: z.number().finite().nonnegative().nullable().optional(), status: z.enum(["ready", "attention"]), warning: z.string().max(700).nullable() }).strict(); export type DerivedMapRoute = z.infer<typeof DerivedMapRouteSchema>;
 export const DerivedMapSnapshotSchema = z.object({ visits: z.array(MapVisitSchema).max(7200), edges: z.array(MapEdgeSchema).max(7200), routes: z.array(DerivedMapRouteSchema).max(7200) }).strict(); export type DerivedMapSnapshot = z.infer<typeof DerivedMapSnapshotSchema>;
 export const CandidateDecisionOutputSchema = z.object({ schemaVersion: z.literal(1), providerPlaceId: z.string().max(200).nullable(), reason: TextSchema.max(700) }).strict(); export type CandidateDecisionOutput = z.infer<typeof CandidateDecisionOutputSchema>;
 export const MapChangedEventSchema = z.object({ tripId: IdSchema, generation: z.number().int().min(0), changedDayIds: z.array(IdSchema).max(90), status: z.enum(["syncing", "ready", "attention"]), summary: TextSchema.max(700) }).strict(); export type MapChangedEvent = z.infer<typeof MapChangedEventSchema>;

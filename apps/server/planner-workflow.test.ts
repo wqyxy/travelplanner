@@ -2,7 +2,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { emptyItinerary, type Itinerary, type Stop } from "./contracts.js";
+import { emptyItinerary, type Itinerary, type PlannerMutation, type Stop } from "./contracts.js";
+import { deriveMapGraph } from "./map-pipeline.js";
 import { applyPlannerOutput } from "./planner-workflow.js";
 import { TravelStore } from "./travel-store.js";
 
@@ -11,14 +12,38 @@ async function open() { const directory = await mkdtemp(path.join(os.tmpdir(), "
 afterEach(async () => { await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))); });
 
 const place = { id: "new-place-kyoto", nameZh: "京都", nameLocal: "京都", nameEn: "Kyoto", kind: "city" as const, city: "京都", region: null, country: "日本", countryCode: "JP", approximate: false };
+const osaka = { ...place, id: "new-place-osaka", nameZh: "大阪", nameLocal: "大阪", nameEn: "Osaka", city: "大阪" };
 const stop = (id: string, role: Stop["role"], activity: string): Stop => ({ id, role, placeId: place.id, activity, period: "morning", startTime: null, endTime: null, durationMinutes: null, scheduleVerification: null, transportFromPrevious: null, costNote: null, costVerification: null, notes: null });
 function initialDraft(): Itinerary { const base = emptyItinerary(); return { ...base, stage: "draft", trip: { ...base.trip, title: "京都周末", destinationPlaceIds: [place.id], dates: { start: "2026-10-01", end: "2026-10-01", requestedDurationDays: null } }, places: [place], days: [{ id: "new-day-1", dayNumber: 1, date: "2026-10-01", title: "京都第一天", detailLevel: "draft", stops: [stop("new-stop-start", "start", "抵达"), stop("new-stop-visit", "visit", "游览"), stop("new-stop-end", "end", "住宿")] }] }; }
-function detailed(itinerary: Itinerary) { const value = structuredClone(itinerary); value.days = value.days.map((day) => ({ ...day, detailLevel: "detailed", stops: day.stops.map((item, index) => ({ ...item, startTime: `${String(9 + index).padStart(2, "0")}:00`, endTime: `${String(10 + index).padStart(2, "0")}:00`, durationMinutes: 60, scheduleVerification: { status: "verified", checkedAt: "2026-09-01T00:00:00Z" }, transportFromPrevious: index === 0 ? null : { mode: "walk", durationMinutes: 15, note: null, verification: { status: "verified", checkedAt: "2026-09-01T00:00:00Z" } }, costNote: "1000 JPY", costVerification: { status: "verified", checkedAt: "2026-09-01T00:00:00Z" } })) })); return value; }
+function detailed(itinerary: Itinerary) { const value = structuredClone(itinerary); value.days = value.days.map((day) => ({ ...day, detailLevel: "detailed", stops: day.stops.map((item, index) => { const start = 9 * 60 + index * 75; const clock = (minutes: number) => `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`; return { ...item, startTime: clock(start), endTime: clock(start + 60), durationMinutes: 60, scheduleVerification: { status: "verified", checkedAt: "2026-09-01T00:00:00Z" }, transportFromPrevious: index === 0 ? null : { mode: "walk", durationMinutes: 15, note: null, verification: { status: "verified", checkedAt: "2026-09-01T00:00:00Z" } }, costNote: "1000 JPY", costVerification: { status: "verified", checkedAt: "2026-09-01T00:00:00Z" } }; }) })); return value; }
 
 describe("Planner workflow", () => {
   it("creates a canonical draft with server-owned IDs and a revision", async () => {
     const store = await open(); const trip = store.createTrip(); const result = applyPlannerOutput(store, trip.id, { schemaVersion: 1, operation: "create_draft", assistantMessage: "已生成初稿", baseGeneration: 0, mutations: null, draftItinerary: initialDraft(), nextAction: "none", suggestion: null });
     expect(result.saved).toBe(true); expect(result.trip.contentGeneration).toBe(1); expect(result.trip.itinerary.stage).toBe("draft"); expect(result.trip.itinerary.places[0].id).not.toBe(place.id); expect(result.trip.itinerary.days[0].id).not.toBe("new-day-1"); expect(result.trip.itinerary.days[0].stops[1].placeId).toBe(result.trip.itinerary.places[0].id); expect(store.listRevisions(trip.id)).toHaveLength(1); store.close();
+  });
+
+  it("rejects an initial draft whose cross-place edge has no transport", async () => {
+    const store = await open(); const trip = store.createTrip(); const draft = initialDraft();
+    draft.places.push(osaka); draft.days[0].stops[1].placeId = osaka.id;
+    expect(() => applyPlannerOutput(store, trip.id, { schemaVersion: 1, operation: "create_draft", assistantMessage: "错误初稿", baseGeneration: 0, mutations: null, draftItinerary: draft, nextAction: "none", suggestion: null })).toThrow(/Day 1.*京都 → 大阪.*transportFromPrevious 缺失/);
+    expect(store.requireTrip(trip.id).contentGeneration).toBe(0); expect(store.listRevisions(trip.id)).toHaveLength(0); store.close();
+  });
+
+  it("rejects a cross-place route mutation with mode=none and accepts its complete repair atomically", async () => {
+    const store = await open(); const created = applyPlannerOutput(store, store.createTrip().id, { schemaVersion: 1, operation: "create_draft", assistantMessage: "初稿", baseGeneration: 0, mutations: null, draftItinerary: initialDraft(), nextAction: "none", suggestion: null }).trip;
+    const day = created.itinerary.days[0]; const visit = day.stops[1];
+    const incomplete: PlannerMutation[] = [
+      { type: "add_entity" as const, entity: "place" as const, parentId: null, value: osaka },
+      { type: "update_fields" as const, entity: "day" as const, id: day.id, changes: { title: "京都至大阪" } },
+      { type: "replace_reference" as const, entity: "stop" as const, id: visit.id, newReferenceId: osaka.id },
+      { type: "replace_reference" as const, entity: "stop" as const, id: day.stops[2].id, newReferenceId: osaka.id },
+      { type: "update_fields" as const, entity: "stop" as const, id: visit.id, changes: { transportFromPrevious: { mode: "none" as const, durationMinutes: null, note: null, verification: { status: "unverified" as const, checkedAt: null } } } },
+    ];
+    expect(() => applyPlannerOutput(store, created.id, { schemaVersion: 1, operation: "mutate_itinerary", assistantMessage: "错误路线", baseGeneration: created.contentGeneration, mutations: incomplete, draftItinerary: null, nextAction: "none", suggestion: null })).toThrow(/Day 1.*京都 → 大阪.*mode 不能为 none/);
+    expect(store.requireTrip(created.id).contentGeneration).toBe(created.contentGeneration); expect(store.listRevisions(created.id)).toHaveLength(1);
+    const repaired = applyPlannerOutput(store, created.id, { schemaVersion: 1, operation: "mutate_itinerary", assistantMessage: "路线已修正", baseGeneration: created.contentGeneration, mutations: incomplete.map((mutation) => mutation.type === "update_fields" && mutation.entity === "stop" ? { ...mutation, changes: { transportFromPrevious: { mode: "drive" as const, durationMinutes: null, note: "前往大阪", verification: { status: "unverified" as const, checkedAt: null } } } } : mutation), draftItinerary: null, nextAction: "none", suggestion: null });
+    expect(repaired.trip.contentGeneration).toBe(created.contentGeneration + 1); expect(repaired.changedDayIds).toEqual([day.id]); expect(repaired.trip.itinerary.days[0].stops[1].transportFromPrevious?.mode).toBe("drive"); expect(deriveMapGraph(repaired.trip.itinerary).edges[0].mode).toBe("drive"); store.close();
   });
 
   it("applies all mutations atomically and preserves untouched fields", async () => {

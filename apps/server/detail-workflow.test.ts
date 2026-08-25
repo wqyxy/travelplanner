@@ -12,14 +12,15 @@ afterEach(async () => { await Promise.all(directories.splice(0).map((directory) 
 
 const place = (id: string, nameZh: string): Place => ({ id, nameZh, nameLocal: nameZh, nameEn: null, kind: "attraction", city: "京都", region: null, country: "日本", countryCode: "JP", approximate: false });
 const draftStop = (id: string, role: Stop["role"], placeId: string): Stop => ({ id, role, placeId, activity: "初稿活动", period: "morning", startTime: null, endTime: null, durationMinutes: null, scheduleVerification: null, transportFromPrevious: null, costNote: null, costVerification: null, notes: null });
-const detailedStop = (source: Stop, index: number): Stop => ({ ...source, activity: `详细活动 ${index + 1}`, startTime: `${String(9 + index).padStart(2, "0")}:00`, endTime: `${String(10 + index).padStart(2, "0")}:00`, durationMinutes: 60, scheduleVerification: { status: "unverified", checkedAt: null }, transportFromPrevious: index === 0 ? null : { mode: "walk", durationMinutes: 15, note: null, verification: { status: "estimated", checkedAt: null } } });
+const clock = (minutes: number) => `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+const detailedStop = (source: Stop, index: number): Stop => { const start = 9 * 60 + index * 75; return { ...source, activity: `详细活动 ${index + 1}`, startTime: clock(start), endTime: clock(start + 60), durationMinutes: 60, scheduleVerification: { status: "unverified", checkedAt: null }, transportFromPrevious: index === 0 ? null : { mode: "walk", durationMinutes: 15, note: null, verification: { status: "estimated", checkedAt: null } } }; };
 function itinerary(): Itinerary {
   const base = emptyItinerary(); const places = [place("place-a", "地点甲"), place("place-b", "地点乙")];
   const days: Day[] = [1, 2, 3].map((number) => ({ id: `day-${number}`, dayNumber: number, date: `2026-10-0${number}`, title: `第 ${number} 天`, detailLevel: "draft", stops: [draftStop(`start-${number}`, "start", "place-a"), draftStop(`visit-${number}`, "visit", "place-b"), draftStop(`end-${number}`, "end", "place-a")] }));
   return { ...base, stage: "draft", trip: { ...base.trip, title: "京都三日", destinationPlaceIds: ["place-a", "place-b"], dates: { start: "2026-10-01", end: "2026-10-03", requestedDurationDays: null } }, places, days };
 }
 function output(source: Itinerary, batchId: string, dayIds: string[], generation: number, addPlace = false) {
-  return { schemaVersion: 1, baseGeneration: generation, batchId, dayIds, placeUpserts: addPlace ? [place("new-place", "新增地点")] : [], days: dayIds.map((id) => { const day = source.days.find((item) => item.id === id)!; const stops = day.stops.map(detailedStop); if (addPlace && id === dayIds[0]) stops.splice(stops.length - 1, 0, detailedStop(draftStop("new-stop", "visit", "new-place"), 2)); return { ...day, detailLevel: "detailed" as const, stops }; }), assistantMessage: "本批已细化" };
+  return { schemaVersion: 1, baseGeneration: generation, batchId, dayIds, placeUpserts: addPlace ? [place("new-place", "新增地点")] : [], days: dayIds.map((id) => { const day = source.days.find((item) => item.id === id)!; const sources = [...day.stops]; if (addPlace && id === dayIds[0]) sources.splice(sources.length - 1, 0, draftStop("new-stop", "visit", "new-place")); return { ...day, detailLevel: "detailed" as const, stops: sources.map(detailedStop) }; }), assistantMessage: "本批已细化" };
 }
 async function seeded() { const store = await open(); const trip = store.createTrip(); return { store, trip: store.writeItinerary(trip.id, itinerary(), 0).trip }; }
 
