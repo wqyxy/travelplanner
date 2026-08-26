@@ -1,15 +1,12 @@
 # TravelPlanner v3：候选地点优先旅行工作台
 
 > 状态：已确认目标设计
-> 基线：`main@b2eb9a20a821408d6c2cdf34cda04478f0ba1745`
 > 产品依据：用户提供的《AI 旅行计划网页版产品方案》
 > 实施依据：用户提供的《AI 大型项目重构实施工作流》
 
 ## 1. 产品定义
 
 TravelPlanner v3 是一个以地图和结构化计划为核心的旅行规划工作台。用户先发现并筛选地点，再由 AI 排程；坐标和路线由地图服务产生；拖拽、增删、换天与 Anchor 调整由确定性程序执行；AI 调整必须先形成 Proposal，用户 Apply 后才写入正式计划。
-
-核心流程：
 
 ```text
 旅行需求
@@ -34,9 +31,9 @@ TravelPlanner v3 是一个以地图和结构化计划为核心的旅行规划工
 - 动态事实不得伪装成实时已核验事实。
 - AI 不直接产生可信坐标、路线 geometry、距离或 Provider 交通时长。
 - 所有 AI 输出必须经 Zod 与业务规则校验。
-- 正式 ID 由服务端分配；写入使用 `contentGeneration` CAS。
+- 正式 ID 由服务端分配；canonical 写入使用 `contentGeneration` CAS。
 - 不引入开放式 JSON Patch、平行事实源、额外业务 stage 或未经确认的新 Agent。
-- 数据迁移代码可以实现和测试，但不得在本次实施中读取、迁移、重置或删除用户真实 `private_data/`。
+- **不支持旧行程或旧数据库迁移。** v3 只创建和读取全新的 TravelPlan v2 数据库；遇到旧或未知数据库必须明确停止，不得兼容读取、双写或静默重建。
 
 ## 3. 三个产品阶段
 
@@ -69,7 +66,7 @@ Canonical Travel Plan Document v2 保存：
 - PlaceResolution、Provider Place ID、坐标、地址
 - DayRoute、geometry、距离、Provider 时长
 - 地图 Marker / Route presentation
-- `routeDirty`（由当前 Day fingerprint 与已计算 Route fingerprint 比较得出）
+- `routeDirty`（由当前 Day fingerprint 与已有 Route fingerprint 比较得出）
 - AI Proposal Diff
 
 操作记录独立保存：
@@ -93,7 +90,7 @@ type TravelPlanDocument = {
 };
 ```
 
-### Place
+### 5.1 Place
 
 Place 只描述语义身份，不保存坐标：
 
@@ -112,7 +109,7 @@ type Place = {
 };
 ```
 
-### TripCandidate
+### 5.2 TripCandidate
 
 ```ts
 type CandidatePreference = "must_go" | "want_to_go" | "optional" | "excluded";
@@ -121,7 +118,7 @@ type TripCandidate = {
   id: string;
   placeId: string;
   preference: CandidatePreference;
-  source: "ai" | "user" | "migration";
+  source: "ai" | "user";
   aiReason: string | null;
   aiScore: number | null;
   suggestedDurationMinutes: number | null;
@@ -131,7 +128,7 @@ type TripCandidate = {
 
 `aiScore` 是 AI 推荐度，不得冒充地图平台评分。非 `excluded` Candidate 可进入排程；`must_go` 必须排入。
 
-### Day、Anchor 与 Stop
+### 5.3 Day、Anchor 与 Stop
 
 ```ts
 type DayAnchor = {
@@ -156,7 +153,7 @@ type Day = {
 
 - Stop 数组顺序是唯一顺序来源。
 - Anchor 可以为空；酒店未知时不得伪造酒店。
-- 不再强制前一日末地点等于后一日首地点。
+- 不强制前一日末地点等于后一日首地点。
 - 从 Candidate 生成的 Stop 保留 `candidateId`。
 
 ## 6. PlaceResolution
@@ -181,7 +178,7 @@ type PlaceResolution = {
 
 P0 允许 Provider 自动匹配、用户选择 Provider 候选、地图点选和手工坐标。AI 只能补充搜索提示或从已注入候选中选择，不能输出经纬度。
 
-## 7. DayRoute
+## 7. DayRoute 与 Route Dirty
 
 ```ts
 type DayRoute = {
@@ -205,7 +202,7 @@ type DayRoute = {
 routeDirty = !dayRoute || dayRoute.inputFingerprint !== buildCurrentDayRouteFingerprint(day, resolutions);
 ```
 
-初次生成计划后可自动计算；用户拖拽、添加、删除、Anchor 或地点解析变化后只进入 dirty，必须由用户点击“更新路线”。
+初次生成计划后可以自动计算；用户拖拽、添加、删除、Anchor 或地点解析变化后只进入 dirty，必须由用户点击“更新路线”。
 
 ## 8. 确定性 PlanCommand
 
@@ -215,12 +212,15 @@ routeDirty = !dayRoute || dayRoute.inputFingerprint !== buildCurrentDayRouteFing
 - `bulk_set_candidate_preference`
 - `add_candidate`
 - `remove_candidate`
+- `update_candidate`
+- `update_place`
 - `set_day_anchor`
 - `add_day_stop`
 - `update_day_stop`
 - `move_day_stop`
 - `remove_day_stop`
 - `move_day`
+- `update_day`
 
 请求必须携带 `expectedGeneration`。服务端在副本上原子应用、标准化、校验、GC、写 Revision，再递增 generation。把已排程 Candidate 改为 `excluded` 时，必须在同一事务中删除相关 Stop。
 
@@ -263,9 +263,32 @@ type AiProposal = {
 };
 ```
 
-Apply 时重新校验 generation、Scope 和全部命令；任一失败则整份不应用。Undo 通过恢复 Apply 前 Revision 完成。
+Apply 时重新校验 generation、Scope 和全部命令；任一失败则整份不应用。每次 canonical 写入都生成 Revision；Undo 只在 Proposal 之后没有新的 canonical 写入时恢复 Apply 前 Revision，避免覆盖用户后续修改。
 
-## 11. API 方向
+## 11. Store 与数据库
+
+TravelStore v2 只接受空数据库或结构完全匹配的 v2 数据库，核心表：
+
+- `trips.current_plan_json`
+- `plan_revisions`
+- `place_resolutions`
+- `day_routes`
+- `ai_proposals`
+- `messages`
+- `ai_tasks` / `ai_progress_events`
+
+约束：
+
+- canonical 写入使用事务和 expectedGeneration CAS。
+- 标题索引和 canonical plan 同事务维护。
+- 每次 canonical 写入生成 Revision，并使其他 pending Proposal 进入 superseded。
+- PlaceResolution / DayRoute 是派生数据，不递增 contentGeneration。
+- 异步派生写入必须校验 expectedGeneration。
+- canonical 删除 Place / Day 时，同事务删除失去引用的 Resolution / Route。
+- 数据库中不得保存 `routeDirty` 布尔值。
+- 不提供 v1 转换器、迁移 API、自动迁移、旧库兼容或双写。
+
+## 12. API 方向
 
 - `GET /api/trips/:id/workspace`
 - `POST /api/trips/:id/candidates/discover`
@@ -284,7 +307,7 @@ Apply 时重新校验 generation、Scope 和全部命令；任一失败则整份
 
 WebSocket 至少广播 document、resolution、route、proposal、task 和 turn 的变化。
 
-## 12. 前端
+## 13. 前端
 
 桌面工作区保持左地图、右内容；右侧为 `[地点] [行程]` 双 Tab，底部 AI Composer 带显式 Scope。
 
@@ -310,32 +333,18 @@ Proposal：
 - Apply / Reject
 - Apply 后提供 Undo
 
-## 13. 数据库与迁移
-
-目标数据库版本为 v2，核心保存：
-
-- `trips.current_plan_json`
-- `place_resolutions`
-- `day_routes`
-- `ai_proposals`
-- `messages`
-- `ai_tasks` / progress
-- `plan_revisions`
-
-必须提供 v1→v2 纯转换器与事务迁移代码，并在临时 SQLite 上测试。真实 `private_data/travel.sqlite3` 不在本次自动实施中执行迁移；未知版本、损坏数据或不满足前置条件时必须停止，不得静默重建。
-
 ## 14. 实施顺序
 
 1. 目标冻结与仓库映射。
-2. Contracts v2 与纯迁移转换器。
-3. TravelStore v2 与安全迁移代码。
+2. Contracts v2。
+3. TravelStore v2；删除旧数据转换与迁移范围。
 4. Candidate discovery 与 Place resolution 后端。
 5. Candidate UI 与地图 Candidate 模式。
 6. Plan generation 与 Day/Anchor UI。
 7. 确定性编辑与 Route Dirty。
 8. AI Scope Proposal / Preview / Apply / Undo。
 9. 细化适配、旧链路删除与 UI 收尾。
-10. 临时数据库迁移验证、完整测试、build 和最终 Review。
+10. 完整测试、build 和最终 Review。
 
 ## 15. P0 Definition of Done
 
@@ -349,4 +358,5 @@ Proposal：
 - AI 支持 Candidate/Place/Day/Trip Scope，并只生成 Preview Proposal。
 - Apply 原子写入，generation 变化时 Proposal superseded，Undo 可恢复。
 - 03 坐标 Agent、旧直接 draft 快捷动作、旧直接 mutation 写入和自动全路线重算入口删除。
+- 不存在旧数据迁移或兼容读取路径。
 - 定向测试、全量测试、typecheck 和生产 build 通过。
