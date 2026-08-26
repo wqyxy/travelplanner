@@ -1,0 +1,43 @@
+name: v3 branch CI
+
+on:
+  push:
+    branches:
+      - codex/v3-candidate-workbench
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Tests
+        run: npm test
+      - name: Production build
+        run: npm run build
+      - name: Upload source snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: travelplanner-source-${{ github.sha }}
+          path: |
+            .
+            !node_modules
+            !dist
+            !private_data
+          include-hidden-files: true
+          retention-days: 2
