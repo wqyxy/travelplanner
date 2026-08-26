@@ -24,7 +24,9 @@ jobs:
         id: bundle
         shell: bash
         run: |
-          if [[ -f .github/v3-change-bundle.tar.gz.b64 ]]; then
+          shopt -s nullglob
+          parts=(.github/v3-change-bundle.part-*)
+          if [[ -f .github/v3-change-bundle.tar.gz.b64 || ${#parts[@]} -gt 0 ]]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
@@ -39,7 +41,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          base64 --decode .github/v3-change-bundle.tar.gz.b64 > /tmp/v3-change-bundle.tar.gz
+          shopt -s nullglob
+          parts=(.github/v3-change-bundle.part-*)
+          if [[ -f .github/v3-change-bundle.tar.gz.b64 ]]; then
+            cp .github/v3-change-bundle.tar.gz.b64 /tmp/v3-change-bundle.b64
+          elif [[ ${#parts[@]} -gt 0 ]]; then
+            printf '%s\n' "${parts[@]}" | sort | xargs cat > /tmp/v3-change-bundle.b64
+          else
+            echo 'Bundle disappeared before validation.' >&2
+            exit 1
+          fi
+          base64 --decode /tmp/v3-change-bundle.b64 > /tmp/v3-change-bundle.tar.gz
           rm -rf /tmp/v3-change-bundle
           mkdir -p /tmp/v3-change-bundle
           python - <<'PY'
@@ -70,7 +82,7 @@ jobs:
             done < /tmp/v3-change-bundle/.v3-delete-paths
           fi
           rsync -a --exclude='.v3-delete-paths' --exclude='.v3-commit-message' /tmp/v3-change-bundle/ ./
-          rm .github/v3-change-bundle.tar.gz.b64
+          rm -f .github/v3-change-bundle.tar.gz.b64 .github/v3-change-bundle.part-*
       - name: Install dependencies
         if: steps.bundle.outputs.present == 'true'
         run: npm ci
