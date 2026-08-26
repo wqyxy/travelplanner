@@ -1,0 +1,87 @@
+name: Apply verified Phase 4 blob bundle
+
+on:
+  push:
+    branches:
+      - codex/v3-candidate-workbench
+    paths:
+      - .github/workflows/v3-apply-phase4-blobs.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Reconstruct verified Phase 4 bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          : > /tmp/v3-phase4.b64
+          for sha in \
+            6fb1918b11c59484ee928c2fae71a542a7b04e14 \
+            74668547ed99cfc1d70d05358f717464697ba19d \
+            bfba78f9e39b728ebf59cd20a2cf8cbbba241feb \
+            f9bb8db3b8049f23c65e01b640b8c4a823eb4921 \
+            3824493f56c31146c87276dbdb08c8b05df96569 \
+            def6f0ada041f5b2de142b1322328d3ef72a5829 \
+            5e63b33c424f27e73d0419016d783545ac477a90 \
+            45addc0d33307facf46ca3150fcd332870f59e99 \
+            c99e66ffdf8b4240fc869410196a0c155715f30e \
+            b9fa6a92ca779dc52cd12e2c4f99fd7f97185667 \
+            d422434df7772dc11f0db6c2383682712f5b826e \
+            ccd3a93715c45f2568fc123dc1b7177f8a2a97f2 \
+            4f48f6a6a1a7748fc7ffec9c7385d25b8797444c \
+            12c6a4e309c8a65a7e7f2902806a897df10736e7 \
+            5078c45d83a9cccd649d4eb59579dbca93b4063a \
+            aafc7401b06386e38862d190b8f6be18fd5bfb52 \
+            a996753e1e1626ec03e5010c5e11d090d7f8bd48 \
+            3dc9455ff3a8561215dbf2635c4c1bdd9da3b2cd \
+            c5849a9186372a29cfc9aa9280aedf74a8505cc8 \
+            0a71002afdb6752de1dd0c787e22770def5a5958 \
+            a8836317f8b91712edf725698f352483596d8a2b
+          do
+            gh api "repos/${GITHUB_REPOSITORY}/git/blobs/${sha}" --jq .content \
+              | tr -d '\n' \
+              | base64 -d >> /tmp/v3-phase4.b64
+          done
+          base64 -d /tmp/v3-phase4.b64 > /tmp/v3-phase4.tar.gz
+          echo 'dbf7c3ae016a42d62dfcdd73c9ab61737a902a44642c79878d5bdddb40f7d300  /tmp/v3-phase4.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/v3-phase4.tar.gz
+
+          if [[ -f .v3-delete-paths ]]; then
+            while IFS= read -r target; do
+              [[ -z "$target" ]] || rm -rf -- "$target"
+            done < .v3-delete-paths
+          fi
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+      - name: Commit verified Phase 4
+        run: |
+          set -euo pipefail
+          message=$(cat .v3-commit-message)
+          rm -f .v3-commit-message .v3-delete-paths
+          rm -f .github/v3-change-bundle.tar.gz.b64 .github/v3-change-bundle.part-*
+          rm -f .github/workflows/v3-apply-phase4-blobs.yml
+          git add -A
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m "$message"
+          git push
