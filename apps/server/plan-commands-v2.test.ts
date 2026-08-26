@@ -1,0 +1,125 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { TravelPlanDocumentSchema, emptyTravelPlan, type TravelPlanDocument } from "./contracts-v2.js";
+import { applyPlanCommandBatchToStore, applyPlanCommands, assertCommandsWithinScope } from "./plan-commands-v2.js";
+import { TravelStoreV2 } from "./travel-store-v2.js";
+
+const roots: string[] = [];
+afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
+
+function databasePath() {
+  const root = mkdtempSync(path.join(tmpdir(), "plan-commands-v2-"));
+  roots.push(root);
+  return path.join(root, "travel.sqlite3");
+}
+
+function plan(): TravelPlanDocument {
+  const value = emptyTravelPlan();
+  value.stage = "itinerary_planning";
+  value.trip.title = "关西三日游";
+  value.places.push(
+    { id: "p-kyoto", nameZh: "清水寺", nameLocal: null, nameEn: "Kiyomizu-dera", kind: "attraction", city: "京都", region: null, country: "日本", countryCode: "JP", approximate: false },
+    { id: "p-osaka", nameZh: "大阪城", nameLocal: null, nameEn: "Osaka Castle", kind: "attraction", city: "大阪", region: null, country: "日本", countryCode: "JP", approximate: false },
+    { id: "p-hotel", nameZh: "京都酒店", nameLocal: null, nameEn: null, kind: "lodging", city: "京都", region: null, country: "日本", countryCode: "JP", approximate: false },
+  );
+  value.candidates.push(
+    { id: "c-kyoto", placeId: "p-kyoto", preference: "must_go", source: "ai", aiReason: "代表景点", aiScore: 95, suggestedDurationMinutes: 90, tags: [] },
+    { id: "c-osaka", placeId: "p-osaka", preference: "want_to_go", source: "ai", aiReason: "城市地标", aiScore: 80, suggestedDurationMinutes: 90, tags: [] },
+  );
+  value.days.push(
+    {
+      id: "d-1", dayNumber: 1, date: null, title: "京都", detailLevel: "planned", detailStatus: null,
+      startAnchor: { id: "a-1-start", placeId: "p-hotel", label: null, notes: null },
+      stops: [{ id: "s-kyoto", candidateId: "c-kyoto", placeId: "p-kyoto", activity: "参观清水寺", period: "morning", startTime: null, endTime: null, durationMinutes: 90, transportFromPrevious: { mode: "transit", durationMinutes: null, note: null, verification: { status: "unverified", checkedAt: null } }, scheduleVerification: null, costNote: null, costVerification: null, notes: null }],
+      endAnchor: { id: "a-1-end", placeId: "p-hotel", label: null, notes: null },
+    },
+    {
+      id: "d-2", dayNumber: 2, date: null, title: "大阪", detailLevel: "planned", detailStatus: null,
+      startAnchor: { id: "a-2-start", placeId: null, label: "大阪住宿待定", notes: null },
+      stops: [{ id: "s-osaka", candidateId: "c-osaka", placeId: "p-osaka", activity: "参观大阪城", period: "afternoon", startTime: null, endTime: null, durationMinutes: 90, transportFromPrevious: null, scheduleVerification: null, costNote: null, costVerification: null, notes: null }],
+      endAnchor: { id: "a-2-end", placeId: null, label: "大阪住宿待定", notes: null },
+    },
+  );
+  return TravelPlanDocumentSchema.parse(value);
+}
+
+describe("applyPlanCommands", () => {
+  it("formalizes new Place, Candidate and Stop IDs owned by the server", () => {
+    const applied = applyPlanCommands(plan(), [
+      {
+        type: "add_candidate",
+        place: { id: "new-place", nameZh: "伏见稻荷大社", nameLocal: null, nameEn: "Fushimi Inari Taisha", kind: "attraction", city: "京都", region: null, country: "日本", countryCode: "JP", approximate: false },
+        candidate: { id: "new-candidate", placeId: "new-place", preference: "optional", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: 120, tags: [] },
+      },
+      {
+        type: "add_day_stop", dayId: "d-1", index: 1,
+        stop: { id: "new-stop", candidateId: "new-candidate", placeId: "new-place", activity: "参观伏见稻荷", period: "afternoon", startTime: null, endTime: null, durationMinutes: 120, transportFromPrevious: { mode: "transit", durationMinutes: null, note: null, verification: { status: "unverified", checkedAt: null } }, scheduleVerification: null, costNote: null, costVerification: null, notes: null },
+      },
+    ]);
+    expect(applied.idMappings).toEqual(expect.objectContaining({ "new-place": expect.any(String), "new-candidate": expect.any(String), "new-stop": expect.any(String) }));
+    const addedCandidate = applied.plan.candidates.find((candidate) => candidate.id === applied.idMappings["new-candidate"]);
+    expect(addedCandidate?.placeId).toBe(applied.idMappings["new-place"]);
+    expect(applied.plan.days[0].stops[1]).toMatchObject({ id: applied.idMappings["new-stop"], candidateId: applied.idMappings["new-candidate"], placeId: applied.idMappings["new-place"] });
+    expect(applied.effects.routeDirtyDayIds).toContain("d-1");
+  });
+
+  it("removes scheduled Stops atomically when a Candidate becomes excluded", () => {
+    const applied = applyPlanCommands(plan(), [{ type: "set_candidate_preference", candidateId: "c-osaka", preference: "excluded" }]);
+    expect(applied.plan.candidates.find((candidate) => candidate.id === "c-osaka")?.preference).toBe("excluded");
+    expect(applied.plan.days[1].stops).toEqual([]);
+    expect(applied.effects.changedDayIds).toContain("d-2");
+    expect(applied.effects.routeDirtyDayIds).toContain("d-2");
+  });
+
+  it("moves a Stop across Days without changing its stable ID", () => {
+    const applied = applyPlanCommands(plan(), [{ type: "move_day_stop", stopId: "s-osaka", targetDayId: "d-1", targetIndex: 1 }]);
+    expect(applied.plan.days[0].stops.map((stop) => stop.id)).toEqual(["s-kyoto", "s-osaka"]);
+    expect(applied.plan.days[1].stops).toEqual([]);
+    expect(new Set(applied.effects.routeDirtyDayIds)).toEqual(new Set(["d-1", "d-2"]));
+  });
+
+  it("clears an old Candidate link when the Stop Place is changed directly", () => {
+    const applied = applyPlanCommands(plan(), [{ type: "update_day_stop", stopId: "s-osaka", changes: { placeId: "p-hotel" } }]);
+    expect(applied.plan.days[1].stops[0]).toMatchObject({ placeId: "p-hotel", candidateId: null });
+  });
+
+  it("garbage collects a Place after its Candidate and all other references are removed", () => {
+    const applied = applyPlanCommands(plan(), [{ type: "remove_candidate", candidateId: "c-osaka" }]);
+    expect(applied.plan.candidates.some((candidate) => candidate.id === "c-osaka")).toBe(false);
+    expect(applied.plan.places.some((place) => place.id === "p-osaka")).toBe(false);
+    expect(applied.effects.removedPlaceIds).toEqual(["p-osaka"]);
+  });
+
+  it("rejects duplicate semantic Places instead of silently creating aliases", () => {
+    expect(() => applyPlanCommands(plan(), [{
+      type: "add_candidate",
+      place: { id: "new-place", nameZh: "清水寺", nameLocal: null, nameEn: "Kiyomizu-dera", kind: "attraction", city: "京都", region: null, country: "日本", countryCode: "JP", approximate: false },
+      candidate: { id: "new-candidate", placeId: "new-place", preference: "optional", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: null, tags: [] },
+    }])).toThrow(/地点已存在/);
+  });
+
+  it("keeps Proposal commands inside their declared Scope", () => {
+    expect(assertCommandsWithinScope(plan(), { type: "day", id: "d-1" }, [{ type: "update_day", dayId: "d-1", changes: { title: "京都东山" } }])).toHaveLength(1);
+    expect(() => assertCommandsWithinScope(plan(), { type: "day", id: "d-1" }, [{ type: "move_day_stop", stopId: "s-kyoto", targetDayId: "d-2", targetIndex: 0 }])).toThrow(/超出 Day Scope/);
+    expect(() => assertCommandsWithinScope(plan(), { type: "candidate_pool", id: null }, [{ type: "remove_day_stop", stopId: "s-kyoto" }])).toThrow(/不能修改 Day/);
+  });
+});
+
+describe("applyPlanCommandBatchToStore", () => {
+  it("writes one atomic revision with generation CAS", () => {
+    const store = new TravelStoreV2(databasePath());
+    const created = store.createTrip();
+    const seeded = store.writePlan(created.id, plan(), 0, { source: "test", summary: "seed" });
+    const result = applyPlanCommandBatchToStore(store, created.id, {
+      expectedGeneration: seeded.generation,
+      commands: [{ type: "set_day_anchor", dayId: "d-1", anchor: "end", placeId: null, label: "京都站附近", notes: null }],
+    });
+    expect(result.generation).toBe(2);
+    expect(result.trip.plan.days[0].endAnchor).toMatchObject({ placeId: null, label: "京都站附近" });
+    expect(store.listRevisions(created.id)).toHaveLength(3);
+    expect(() => applyPlanCommandBatchToStore(store, created.id, { expectedGeneration: seeded.generation, commands: [{ type: "update_day", dayId: "d-1", changes: { title: "过期写入" } }] })).toThrow("CONTENT_GENERATION_SUPERSEDED");
+    store.close();
+  });
+});

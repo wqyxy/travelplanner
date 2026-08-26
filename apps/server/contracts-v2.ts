@@ -112,7 +112,7 @@ export const TripCandidateSchema = z.object({
   id: IdSchema,
   placeId: IdSchema,
   preference: CandidatePreferenceSchema,
-  source: z.enum(["ai", "user", "migration"]),
+  source: z.enum(["ai", "user"]),
   aiReason: z.string().trim().min(1).max(1000).nullable(),
   aiScore: z.number().finite().min(0).max(100).nullable(),
   suggestedDurationMinutes: z.number().int().min(0).max(10080).nullable(),
@@ -356,6 +356,27 @@ export const ProviderPlaceCandidateSchema = z.object({
 }).strict();
 export type ProviderPlaceCandidate = z.infer<typeof ProviderPlaceCandidateSchema>;
 
+export const ProviderResolutionSelectionInputSchema = z.object({
+  expectedGeneration: z.number().int().min(0),
+  providerPlaceId: z.string().trim().min(1).max(240),
+}).strict();
+export type ProviderResolutionSelectionInput = z.infer<typeof ProviderResolutionSelectionInputSchema>;
+
+export const DirectPlaceResolutionInputSchema = z.object({
+  expectedGeneration: z.number().int().min(0),
+  method: z.enum(["map_pick", "manual_coordinates"]),
+  latitude: z.number().finite().min(-90).max(90),
+  longitude: z.number().finite().min(-180).max(180),
+  address: z.string().trim().min(1).max(1000).nullable(),
+}).strict();
+export type DirectPlaceResolutionInput = z.infer<typeof DirectPlaceResolutionInputSchema>;
+
+export const PlaceResolutionRetryInputSchema = z.object({
+  expectedGeneration: z.number().int().min(0),
+  placeIds: z.array(IdSchema).min(1).max(200),
+}).strict();
+export type PlaceResolutionRetryInput = z.infer<typeof PlaceResolutionRetryInputSchema>;
+
 export const RouteLegSchema = z.object({
   id: IdSchema,
   fromNodeId: IdSchema,
@@ -456,6 +477,12 @@ export const PlanCommandRequestSchema = z.object({
   command: PlanCommandSchema,
 }).strict();
 export type PlanCommandRequest = z.infer<typeof PlanCommandRequestSchema>;
+
+export const PlanCommandBatchRequestSchema = z.object({
+  expectedGeneration: z.number().int().min(0),
+  commands: z.array(PlanCommandSchema).min(1).max(100),
+}).strict();
+export type PlanCommandBatchRequest = z.infer<typeof PlanCommandBatchRequestSchema>;
 
 export const ProposalDiffSchema = z.object({
   summary: TextSchema.max(1000),
