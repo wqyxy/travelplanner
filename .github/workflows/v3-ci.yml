@@ -41,3 +41,11 @@ jobs:
             !private_data
           include-hidden-files: true
           retention-days: 2
+      - name: Upload Node 24 dependency snapshot
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: travelplanner-node-modules-node24
+          path: node_modules
+          include-hidden-files: true
+          retention-days: 1
