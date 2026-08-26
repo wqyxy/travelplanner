@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   DetailBatchOutputSchema,
   DerivedMapSnapshotSchema,
+  CoordinateResearchOutputSchema,
   ItinerarySchema,
   PlannerMutationSchema,
   PlannerOutputJsonSchema,
   PlannerOutputSchema,
+  ResolvedPlaceSchema,
   detailTimingReviewIssues,
   emptyItinerary,
   type Day,
@@ -67,7 +69,7 @@ describe("itinerary:v1 contracts", () => {
     const detailed = day("day-1", "detailed");
     const reversed = { ...detailed, stops: detailed.stops.map((stop, index) => index === 1 ? { ...stop, startTime: "09:30", endTime: "10:30" } : stop) };
     const shortGap = { ...detailed, stops: detailed.stops.map((stop, index) => index === 1 ? { ...stop, startTime: "10:05", endTime: "11:05" } : stop) };
-    const acceptedBoundary = { ...detailed, stops: detailed.stops.map((stop, index) => index === 1 ? { ...stop, startTime: "10:15", endTime: "11:15", transportFromPrevious: { ...stop.transportFromPrevious!, durationMinutes: 20 } } : stop) };
+    const acceptedBoundary = { ...detailed, stops: detailed.stops.map((stop, index) => index === 1 ? { ...stop, startTime: "10:15", endTime: "11:15", transportFromPrevious: { ...stop.transportFromPrevious!, durationMinutes: 20 } } : index === 2 ? { ...stop, startTime: "11:25", endTime: "12:25" } : stop) };
     const warnedBoundary = { ...acceptedBoundary, stops: acceptedBoundary.stops.map((stop, index) => index === 1 ? { ...stop, startTime: "10:14", endTime: "11:14" } : stop) };
     const zeroTransport = { ...detailed, stops: detailed.stops.map((stop, index) => index === 1 ? { ...stop, transportFromPrevious: { ...stop.transportFromPrevious!, durationMinutes: 0 } } : stop) };
     const wrongDuration = { ...detailed, stops: detailed.stops.map((stop, index) => index === 1 ? { ...stop, durationMinutes: 45 } : stop) };
@@ -93,6 +95,21 @@ describe("itinerary:v1 contracts", () => {
     const legacy = { visits: [], edges: [], routes: [{ edgeId: "edge-1", routeKey: "drive:legacy:v1", geometry: null, status: "ready", warning: null }] };
     expect(DerivedMapSnapshotSchema.safeParse(legacy).success).toBe(true);
     expect(DerivedMapSnapshotSchema.safeParse({ ...legacy, routes: [{ ...legacy.routes[0], distanceKm: 12.5, durationMinutes: 20 }] }).success).toBe(true);
+  });
+
+  it("keeps candidate decisions separate from source-backed coordinate research", () => {
+    const coordinates = { schemaVersion: 1, action: "use_coordinates", canonicalName: "Mount Example", coordinates: { latitude: -43.1, longitude: 171.2 }, sourceUrl: "https://example.com/place", sourceTitle: "Example place", reason: "来源提供该地点坐标。" };
+    expect(CoordinateResearchOutputSchema.safeParse(coordinates).success).toBe(true);
+    expect(CoordinateResearchOutputSchema.safeParse({ ...coordinates, sourceUrl: "http://example.com/place" }).success).toBe(false);
+    expect(CoordinateResearchOutputSchema.safeParse({ ...coordinates, action: "ignore", canonicalName: null, coordinates: null, sourceUrl: null, sourceTitle: null }).success).toBe(true);
+    expect(CoordinateResearchOutputSchema.safeParse({ ...coordinates, action: "ignore" }).success).toBe(false);
+  });
+
+  it("requires persisted map coordinates to be complete pairs", () => {
+    const unresolved = { placeId: "place-map", geoFingerprint: "v5|place-map", provider: "nominatim", providerPlaceId: null, lat: null, lng: null, timezone: null, resolution: "unresolved", confidence: null, resolvedAt: null };
+    expect(ResolvedPlaceSchema.safeParse(unresolved).success).toBe(true);
+    expect(ResolvedPlaceSchema.safeParse({ ...unresolved, lat: 35 }).success).toBe(false);
+    expect(ResolvedPlaceSchema.safeParse({ ...unresolved, lng: 135 }).success).toBe(false);
   });
 
   it("requires a detail batch to return the exact requested detailed day set", () => {

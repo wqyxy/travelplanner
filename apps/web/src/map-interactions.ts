@@ -131,6 +131,7 @@ export function routeTravelMetrics(route: DerivedMapRoute | null | undefined, mo
 export type DrivingMetrics = { byStopId: Map<string, RouteTravelMetrics>; byDayId: Map<string, RouteTravelMetrics & { routeCount: number }> };
 export function drivingMetricsForItinerary(itinerary: Itinerary, state: MapState | null, expectedGeneration?: number): DrivingMetrics {
   const currentState = expectedGeneration === undefined || state?.generation === expectedGeneration ? state : null;
+  const ignoredPlaceIds = new Set((currentState?.resolvedPlaces ?? []).filter((place) => place.resolution === "ignored").map((place) => place.placeId));
   const visits = new Map((currentState?.map?.visits ?? []).map((visit) => [visit.id, visit]));
   const edgesByDestinationStop = new Map((currentState?.map?.edges ?? []).flatMap((edge) => {
     const stopId = visits.get(edge.toVisitId)?.stopId;
@@ -141,6 +142,7 @@ export function drivingMetricsForItinerary(itinerary: Itinerary, state: MapState
   for (const day of itinerary.days) {
     const values = day.stops.flatMap((stop) => {
       if (stop.transportFromPrevious?.mode !== "drive") return [];
+      if (ignoredPlaceIds.has(stop.placeId)) return [];
       const edge = edgesByDestinationStop.get(stop.id); const value = routeTravelMetrics(edge ? routes.get(edge.id) : null, "drive", stop.transportFromPrevious.durationMinutes);
       byStopId.set(stop.id, value); return [value];
     });

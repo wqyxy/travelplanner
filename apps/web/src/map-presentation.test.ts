@@ -52,6 +52,40 @@ describe("map snapshot presentation", () => {
     expect(result.routes.map((route) => route.edgeIds)).toEqual([["e2"]]);
   });
 
+  it("keeps ignored canonical visits auditable but hides their marker and exposes straight fallback routes", () => {
+    const ignoredState: MapState = { ...state, resolvedPlaces: [
+      state.resolvedPlaces[0],
+      { ...state.resolvedPlaces[1], resolution: "ignored", decisionReason: "这是没有唯一身份的途中休息安排。" },
+    ], map: {
+      ...state.map!, visualComplete: true,
+      routes: [{ ...state.map!.routes[0], geometrySource: "straight", status: "attention", warning: "路线服务暂时不可用，以直线示意。" }],
+    } };
+    const result = buildMapPresentation(itinerary, ignoredState, { scope: "all" }, ["city", "attraction"]);
+    expect(result.visibleVisits.map((visit) => visit.placeId)).toContain("museum");
+    expect(result.ignoredPlaceIds).toEqual(["museum"]); expect(result.markers.map((marker) => marker.id)).toEqual(["tokyo"]);
+    expect(result.routes[0]).toMatchObject({ geometrySource: "straight", status: "attention" });
+  });
+
+  it("does not merge provider geometry with a contiguous straight fallback", () => {
+    const splitState: MapState = { ...state, map: {
+      visits: [
+        { id: "sv1", dayId: "d1", dayNumber: 1, stopId: "ss1", placeId: "tokyo", order: 0 },
+        { id: "sv2", dayId: "d1", dayNumber: 1, stopId: "ss2", placeId: "tokyo", order: 1 },
+        { id: "sv3", dayId: "d1", dayNumber: 1, stopId: "ss3", placeId: "tokyo", order: 2 },
+      ],
+      edges: [
+        { id: "se1", dayId: "d1", fromVisitId: "sv1", toVisitId: "sv2", mode: "drive", order: 0 },
+        { id: "se2", dayId: "d1", fromVisitId: "sv2", toVisitId: "sv3", mode: "drive", order: 1 },
+      ],
+      routes: [
+        { edgeId: "se1", routeKey: "sr1", geometry: { type: "LineString", coordinates: [[0, 0], [1, 0]] }, geometrySource: "provider", status: "ready", warning: null },
+        { edgeId: "se2", routeKey: "sr2", geometry: { type: "LineString", coordinates: [[1, 0], [2, 0]] }, geometrySource: "straight", status: "attention", warning: "直线示意" },
+      ],
+    } };
+    const result = buildMapPresentation(itinerary, splitState, { scope: "all" }, ["city"]);
+    expect(result.routes.map((route) => [route.edgeIds, route.geometrySource])).toEqual([[["se1"], "provider"], [["se2"], "straight"]]);
+  });
+
   it("groups only contiguous same-day same-mode route legs and aggregates their presentation", () => {
     const visits = [
       { id: "g1", dayId: "d1", dayNumber: 1, stopId: "gs1", placeId: "p1", order: 0 },

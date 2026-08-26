@@ -17,8 +17,8 @@ export function categoryForPlace(kind: PlaceKind): MapCategory {
 
 type Marker = { id: string; place: Place; resolved: ResolvedPlace; visits: MapVisit[]; category: MapCategory; label: string; dayLabel: string };
 type RouteLeg = { edge: MapEdge; route: DerivedMapRoute; dayNumber: number; durationMinutes: number | null };
-type RouteGroup = { id: string; dayId: string; dayNumber: number; mode: TransportMode; edgeIds: string[]; lastEdge: MapEdge; geometry: GeoJsonGeometry; distanceKm: number | null; durationMinutes: number | null; estimated: boolean; status: DerivedMapRoute["status"]; warning: string | null };
-export type MapPresentation = { markers: Marker[]; routes: RouteGroup[]; visibleVisits: MapVisit[]; unresolvedPlaceIds: string[] };
+type RouteGroup = { id: string; dayId: string; dayNumber: number; mode: TransportMode; edgeIds: string[]; lastEdge: MapEdge; geometry: GeoJsonGeometry; geometrySource: "provider" | "straight"; distanceKm: number | null; durationMinutes: number | null; estimated: boolean; status: DerivedMapRoute["status"]; warning: string | null };
+export type MapPresentation = { markers: Marker[]; routes: RouteGroup[]; visibleVisits: MapVisit[]; unresolvedPlaceIds: string[]; ignoredPlaceIds: string[] };
 
 function geometryLines(geometry: GeoJsonGeometry) {
   if (geometry.type === "LineString" && Array.isArray(geometry.coordinates)) return [geometry.coordinates];
@@ -41,29 +41,31 @@ function groupRouteLegs(legs: RouteLeg[]): RouteGroup[] {
   for (const leg of [...legs].sort((left, right) => left.dayNumber - right.dayNumber || left.edge.order - right.edge.order || left.edge.id.localeCompare(right.edge.id))) {
     const metrics = routeTravelMetrics(leg.route, leg.edge.mode, leg.durationMinutes);
     const previous = groups.at(-1);
-    if (previous && previous.dayId === leg.edge.dayId && previous.mode === leg.edge.mode && previous.lastEdge.toVisitId === leg.edge.fromVisitId) {
+    const geometrySource = leg.route.geometrySource || "provider";
+    if (previous && previous.dayId === leg.edge.dayId && previous.mode === leg.edge.mode && previous.geometrySource === geometrySource && previous.lastEdge.toVisitId === leg.edge.fromVisitId) {
       previous.edgeIds.push(leg.edge.id); previous.lastEdge = leg.edge; previous.geometry = groupedGeometry(previous.geometry, leg.route.geometry!);
       previous.distanceKm = previous.distanceKm === null || metrics.distanceKm === null ? null : previous.distanceKm + metrics.distanceKm;
       previous.durationMinutes = previous.durationMinutes === null || metrics.durationMinutes === null ? null : previous.durationMinutes + metrics.durationMinutes;
       previous.estimated ||= metrics.estimated; previous.status = previous.status === "attention" || leg.route.status === "attention" ? "attention" : "ready";
       previous.warning = combinedWarning(previous.warning, leg.route.warning); continue;
     }
-    groups.push({ id: `route-group:${leg.edge.id}`, dayId: leg.edge.dayId, dayNumber: leg.dayNumber, mode: leg.edge.mode, edgeIds: [leg.edge.id], lastEdge: leg.edge, geometry: leg.route.geometry!, distanceKm: metrics.distanceKm, durationMinutes: metrics.durationMinutes, estimated: metrics.estimated, status: leg.route.status, warning: leg.route.warning });
+    groups.push({ id: `route-group:${leg.edge.id}`, dayId: leg.edge.dayId, dayNumber: leg.dayNumber, mode: leg.edge.mode, edgeIds: [leg.edge.id], lastEdge: leg.edge, geometry: leg.route.geometry!, geometrySource, distanceKm: metrics.distanceKm, durationMinutes: metrics.durationMinutes, estimated: metrics.estimated, status: leg.route.status, warning: leg.route.warning });
   }
   return groups;
 }
 
 export function buildMapPresentation(itinerary: Itinerary | null, state: MapState | null, selection: MapSelection, enabledCategories: MapCategory[]): MapPresentation {
-  if (!itinerary || !state?.map) return { markers: [], routes: [], visibleVisits: [], unresolvedPlaceIds: [] };
+  if (!itinerary || !state?.map) return { markers: [], routes: [], visibleVisits: [], unresolvedPlaceIds: [], ignoredPlaceIds: [] };
   const visibleVisits = state.map.visits.filter((visit) => selection.scope === "all" || visit.dayNumber === selection.dayNumber);
   const visitsByPlace = new Map<string, MapVisit[]>();
   for (const visit of visibleVisits) visitsByPlace.set(visit.placeId, [...(visitsByPlace.get(visit.placeId) || []), visit]);
   const places = new Map(itinerary.places.map((place) => [place.id, place]));
   const resolved = new Map(state.resolvedPlaces.map((place) => [place.placeId, place]));
   const markers: Marker[] = [];
-  const unresolvedPlaceIds: string[] = [];
+  const unresolvedPlaceIds: string[] = []; const ignoredPlaceIds: string[] = [];
   for (const [placeId, visits] of visitsByPlace) {
     const place = places.get(placeId); const point = resolved.get(placeId);
+    if (point?.resolution === "ignored") { ignoredPlaceIds.push(placeId); continue; }
     if (!place || !point || point.lat === null || point.lng === null) { unresolvedPlaceIds.push(placeId); continue; }
     const category = categoryForPlace(place.kind);
     if (!enabledCategories.includes(category)) continue;
@@ -82,7 +84,7 @@ export function buildMapPresentation(itinerary: Itinerary | null, state: MapStat
     const destinationStop = stops.get(visits.get(edge.toVisitId)?.stopId ?? "");
     return dayNumber ? [{ edge, route, dayNumber, durationMinutes: destinationStop?.transportFromPrevious?.durationMinutes ?? null }] : [];
   });
-  return { markers, routes: groupRouteLegs(legs), visibleVisits, unresolvedPlaceIds };
+  return { markers, routes: groupRouteLegs(legs), visibleVisits, unresolvedPlaceIds, ignoredPlaceIds };
 }
 
 function pointFeature(marker: Marker, itinerary: Itinerary, language: ItineraryLanguage) {
@@ -92,11 +94,11 @@ function pointFeature(marker: Marker, itinerary: Itinerary, language: ItineraryL
     return `Day ${visit.dayNumber}${stop?.startTime ? ` ${stop.startTime}` : ""}${stop?.activity ? ` · ${stop.activity}` : ""}`;
   });
   const displayName = placeNameLines(marker.place, marker.place.nameZh, language).join(" · ");
-  return { type: "Feature" as const, id: marker.id, geometry: { type: "Point" as const, coordinates: [marker.resolved.lng!, marker.resolved.lat!] }, properties: { id: marker.id, name: `${displayName}${marker.resolved.resolution === "approximate" ? "（大致位置）" : ""}`, kind: marker.category, dayNumber: marker.visits[0]?.dayNumber || 0, detail: details.join("\n"), city: marker.place.city || "", region: marker.place.region || "", resolution: marker.resolved.resolution } };
+  return { type: "Feature" as const, id: marker.id, geometry: { type: "Point" as const, coordinates: [marker.resolved.lng!, marker.resolved.lat!] }, properties: { id: marker.id, name: `${displayName}${marker.resolved.resolution === "approximate" ? "（大致位置）" : ""}`, kind: marker.category, dayNumber: marker.visits[0]?.dayNumber || 0, detail: details.join("\n"), city: marker.place.city || "", region: marker.place.region || "", resolution: marker.resolved.resolution, sourceUrl: marker.resolved.sourceUrl || "", sourceTitle: marker.resolved.sourceTitle || "" } };
 }
 
 function routeFeature(group: RouteGroup) {
-  return { type: "Feature" as const, id: group.id, geometry: group.geometry, properties: { id: group.id, mode: group.mode, dayNumber: group.dayNumber, distanceKm: group.distanceKm, durationMinutes: group.durationMinutes, estimated: group.estimated, status: group.status, warning: group.warning || "" } };
+  return { type: "Feature" as const, id: group.id, geometry: group.geometry, properties: { id: group.id, mode: group.mode, dayNumber: group.dayNumber, distanceKm: group.distanceKm, durationMinutes: group.durationMinutes, estimated: group.estimated, geometrySource: group.geometrySource, status: group.status, warning: group.warning || "" } };
 }
 
 type RouteFeature = ReturnType<typeof routeFeature>;
@@ -105,7 +107,7 @@ function setRouteHighlightData(map: any, feature: RouteFeature | null) {
   map.getSource(routeHighlightSourceId)?.setData(routeHighlightFeatureCollection(feature));
 }
 
-export function MapPanel({ itinerary, state, language, categoryColors, selection, fullscreen, onToggleFullscreen }: {
+export function MapPanel({ itinerary, state, language, categoryColors, selection, fullscreen, onToggleFullscreen, onRetry }: {
   itinerary: Itinerary | null;
   state: MapState | null;
   language: ItineraryLanguage;
@@ -113,6 +115,7 @@ export function MapPanel({ itinerary, state, language, categoryColors, selection
   selection: MapSelection;
   fullscreen: boolean;
   onToggleFullscreen: () => void;
+  onRetry: () => void;
 }) {
   const element = useRef<HTMLDivElement>(null);
   const labels = useRef<HTMLDivElement>(null);
@@ -141,7 +144,7 @@ export function MapPanel({ itinerary, state, language, categoryColors, selection
         map.addSource("travel-routes", { type: "geojson", promoteId: "id", data: { type: "FeatureCollection", features: [] } });
         map.addSource(routeHighlightSourceId, { type: "geojson", promoteId: "id", data: routeHighlightFeatureCollection(null) });
         const routePaint = { "line-color": "#64748b", "line-width": 4, "line-opacity": ["case", ["==", ["get", "status"], "attention"], .55, .84] };
-        const dashedFilter = ["in", ["get", "mode"], ["literal", dashedRouteModes]];
+        const dashedFilter = ["any", ["in", ["get", "mode"], ["literal", dashedRouteModes]], ["==", ["get", "geometrySource"], "straight"]];
         map.addLayer({ id: "travel-routes-solid", type: "line", source: "travel-routes", filter: ["!", dashedFilter], paint: routePaint });
         map.addLayer({ id: "travel-routes-dashed", type: "line", source: "travel-routes", filter: dashedFilter, paint: { ...routePaint, "line-dasharray": [2, 2] } });
         const hitPaint = { "line-color": "#000", "line-width": 18, "line-opacity": 0 };
@@ -178,10 +181,12 @@ export function MapPanel({ itinerary, state, language, categoryColors, selection
           const feature = event.features?.[0]; if (!feature) return;
           const properties = feature.properties || {}; const content = document.createElement("div"); content.className = "map-popup-content";
           const title = document.createElement("strong"); title.textContent = properties.name || "地点";
-          const meta = document.createElement("small"); meta.textContent = [properties.city, properties.region, properties.resolution === "approximate" ? "大致定位" : "已定位"].filter(Boolean).join(" · ");
+          const meta = document.createElement("small"); meta.textContent = [properties.city, properties.region, properties.resolution === "approximate" ? "大致定位" : properties.resolution === "researched" ? "联网研究定位" : "已定位"].filter(Boolean).join(" · ");
           const detail = document.createElement("p"); detail.textContent = properties.detail || "";
           const link = document.createElement("a"); link.textContent = "在 OpenStreetMap 查看"; link.href = `https://www.openstreetmap.org/?mlat=${event.lngLat.lat}&mlon=${event.lngLat.lng}#map=16/${event.lngLat.lat}/${event.lngLat.lng}`; link.target = "_blank"; link.rel = "noreferrer";
-          content.append(title, meta, detail, link); popupRef.current?.remove(); popupRef.current = new lib.Popup({ offset: 14 }).setLngLat(event.lngLat).setDOMContent(content).addTo(map);
+          content.append(title, meta, detail, link);
+          if (properties.sourceUrl) { const source = document.createElement("a"); source.textContent = properties.sourceTitle || "查看坐标来源"; source.href = properties.sourceUrl; source.target = "_blank"; source.rel = "noreferrer"; content.append(source); }
+          popupRef.current?.remove(); popupRef.current = new lib.Popup({ offset: 14 }).setLngLat(event.lngLat).setDOMContent(content).addTo(map);
         };
         map.on("mouseenter", "travel-places", () => { map.getCanvas().style.cursor = "pointer"; });
         map.on("mouseleave", "travel-places", () => { map.getCanvas().style.cursor = ""; });
@@ -235,15 +240,16 @@ export function MapPanel({ itinerary, state, language, categoryColors, selection
   useEffect(() => { const resize = () => mapRef.current?.resize?.(); window.addEventListener("travel-workspace-resize", resize); return () => window.removeEventListener("travel-workspace-resize", resize); }, []);
 
   const status = state?.status || "idle";
-  const statusLabel = status === "ready" ? "已同步地图" : status === "attention" ? "地图需要注意" : status === "syncing" ? "正在同步地图" : itinerary?.days.length ? "等待地图同步" : "等待行程";
+  const visualComplete = state?.visualComplete ?? state?.map?.visualComplete ?? false;
+  const statusLabel = status === "ready" ? "地图已完整同步" : status === "attention" ? visualComplete ? "地图已完整同步（含提示）" : "地图未完整生成" : status === "syncing" ? "正在同步地图" : itinerary?.days.length ? "等待地图同步" : "等待行程";
   const uniqueVisiblePlaces = new Set(presentation.visibleVisits.map((visit) => visit.placeId)).size;
   return <section className="map-panel">
-    <div className="map-heading"><h2 className={`map-status ${status}`} aria-live="polite">{statusLabel}</h2>{uniqueVisiblePlaces > 0 && <small className="map-progress">已定位 {presentation.markers.length}/{uniqueVisiblePlaces} · 路线 {presentation.routes.length}</small>}
+    <div className="map-heading"><h2 className={`map-status ${status}`} aria-live="polite">{statusLabel}</h2>{uniqueVisiblePlaces > 0 && <small className="map-progress">已定位 {presentation.markers.length}/{uniqueVisiblePlaces} · 已忽略 {presentation.ignoredPlaceIds.length} · 路线 {presentation.routes.length}</small>}
       <fieldset className="map-category-filter"><legend><Filter size={13}/>地点筛选</legend><div className="map-category-options">{mapCategoryLegend.map(([kind, label]) => <label key={kind}><input type="checkbox" checked={categoryVisibility[kind]} onChange={() => setCategoryVisibility((current) => ({ ...current, [kind]: !current[kind] }))}/><i style={{ background: categoryColors[kind] }}/>{label}</label>)}</div></fieldset>
-      <div className="map-actions"><button className="icon-button panel-fullscreen" type="button" aria-label={fullscreen ? "退出地图全屏" : "地图全屏"} onClick={onToggleFullscreen}>{fullscreen ? <Minimize2 size={17}/> : <Maximize2 size={17}/>}</button></div>
+      <div className="map-actions">{itinerary?.days.length && !visualComplete && status !== "syncing" && <button className="button small" type="button" onClick={onRetry}>重新生成地图</button>}<button className="icon-button panel-fullscreen" type="button" aria-label={fullscreen ? "退出地图全屏" : "地图全屏"} onClick={onToggleFullscreen}>{fullscreen ? <Minimize2 size={17}/> : <Maximize2 size={17}/>}</button></div>
     </div>
     <div className="map-canvas-wrap"><div ref={element} className="map-canvas"/><div ref={labels} className="map-label-overlay"/><div className={`map-legend ${legendOpen ? "open" : ""}`}><button className="map-legend-toggle" type="button" aria-expanded={legendOpen} onClick={() => setLegendOpen((open) => !open)}>图例 {legendOpen ? <ChevronUp size={14}/> : <ChevronDown size={14}/>}</button>{legendOpen && <div><strong>{selection.scope === "all" ? "路线（按天）" : "路线（按交通）"}</strong><div className="map-legend-items">{selection.scope === "all" ? itinerary?.days.map((day) => <span key={day.id}><i style={{ background: dayColors[(day.dayNumber - 1) % dayColors.length] }}/>Day {day.dayNumber}</span>) : Object.entries(modeLabels).filter(([mode]) => mode !== "none").map(([mode, label]) => <span key={mode}><i style={{ background: modeColors[mode as TransportMode] }}/>{label}</span>)}</div><strong>地点</strong><div className="map-legend-items">{mapCategoryLegend.map(([kind, label]) => <span key={kind}><i style={{ background: categoryColors[kind] }}/>{label}</span>)}</div></div>}</div></div>
-    <p className={`map-notice ${status}`}>{status === "syncing" ? <LoaderCircle className="spin" size={13}/> : status === "attention" || notice ? <AlertTriangle size={13}/> : null}<span>{notice || (presentation.unresolvedPlaceIds.length ? `${presentation.unresolvedPlaceIds.length} 个地点尚未可靠定位；行程仍可继续编辑。` : status === "ready" ? "地图已从当前 canonical itinerary 自动派生。" : "生成初稿后会自动建立地图。")}</span></p>
+    <p className={`map-notice ${status}`}>{status === "syncing" ? <LoaderCircle className="spin" size={13}/> : status === "attention" || notice ? <AlertTriangle size={13}/> : null}<span>{notice || (presentation.unresolvedPlaceIds.length ? `${presentation.unresolvedPlaceIds.length} 个地点尚未可靠定位；可重新生成地图。` : presentation.ignoredPlaceIds.length ? `${presentation.ignoredPlaceIds.length} 个地点已从地图路线忽略，路线已跨接。` : status === "ready" ? "地图已从当前 canonical itinerary 自动派生。" : "生成初稿后会自动建立地图。")}</span></p>
     {state?.warnings.length ? <div className="map-warning-list">{state.warnings.map((warning) => <p key={warning}>{warning}</p>)}</div> : null}
   </section>;
 }

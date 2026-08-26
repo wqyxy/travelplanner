@@ -23,11 +23,11 @@ function itinerary(): Itinerary {
 }
 
 describe("deterministic map derivation", () => {
-  it("derives stable Visits and adjacent Edges from Stops", () => {
+  it("keeps all Visits but omits same-place visual edges", () => {
     const graph = deriveMapGraph(itinerary());
     expect(graph.visits.map((visit) => visit.id)).toEqual(["stop-a", "stop-b", "stop-c"]);
-    expect(graph.edges).toHaveLength(2);
-    expect(graph.edges.map((edge) => edge.mode)).toEqual(["drive", "walk"]);
+    expect(graph.edges).toHaveLength(1);
+    expect(graph.edges.map((edge) => edge.mode)).toEqual(["drive"]);
     expect(graph.edges[0].id).toBe(deriveMapGraph(itinerary()).edges[0].id);
   });
 
@@ -107,7 +107,7 @@ describe("deterministic map derivation", () => {
   it("keeps antimeridian flights short and keys routes by mode, coordinates and profile", () => {
     expect(straightGeometry([179, 10], [-179, 10])).toEqual({ type: "LineString", coordinates: [[179, 10], [181, 10]] });
     expect(routeCacheKey("drive", [135, 35], [135.1, 35.1])).toContain("drive:135.000000,35.000000:135.100000,35.100000:");
-    expect(ROUTING_PROFILE_VERSION).toBe("v2");
+    expect(ROUTING_PROFILE_VERSION).toBe("v3");
   });
 
   it("orders ambiguous candidates by deterministic score before passing them to 02", async () => {
@@ -239,16 +239,16 @@ describe("generation-bound map pipeline", () => {
     } as unknown as import("./map-service.js").MapService;
     const pipeline = new MapPipeline({ store, maps, onChanged: () => {} });
     await pipeline.sync(trip.id, first.generation, ["day-1"]);
-    const firstMap = store.getMapState(trip.id)!.map as { routes: Array<{ status: string; geometry: unknown; distanceKm?: number | null; durationMinutes?: number | null; warning: string | null }> };
-    expect(firstMap.routes[0]).toMatchObject({ status: "attention", geometry: null, distanceKm: null, durationMinutes: null }); expect(firstMap.routes[0].warning).toContain("京都 → 大阪"); expect(firstMap.routes[0].warning).toContain("无需交通"); expect(routeCalls).toBe(1);
-    expect(store.getMapState(trip.id)?.warnings.some((warning) => warning.includes("无法计算路线"))).toBe(true);
+    const firstMap = store.getMapState(trip.id)!.map as { routes: Array<{ status: string; geometry: unknown; geometrySource?: string; distanceKm?: number | null; durationMinutes?: number | null; warning: string | null }> };
+    expect(firstMap.routes[0]).toMatchObject({ status: "attention", geometrySource: "straight", distanceKm: null, durationMinutes: null }); expect(firstMap.routes[0].geometry).not.toBeNull(); expect(firstMap.routes[0].warning).toContain("京都 → 大阪"); expect(firstMap.routes[0].warning).toContain("无需交通"); expect(routeCalls).toBe(1);
+    expect(store.getMapState(trip.id)?.warnings.some((warning) => warning.includes("示意线"))).toBe(true);
     const second = store.rename(trip.id, "关西路线更新");
     await pipeline.sync(trip.id, second.contentGeneration, []);
     expect(routeCalls).toBe(2);
     store.close();
   });
 
-  it("keeps same-place mode=none edges ready and geometry-free", async () => {
+  it("does not create visual edges for same-place movement", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "map-same-place-none-")); directories.push(directory);
     const store = new TravelStore(path.join(directory, "travel.sqlite3")); const trip = store.createTrip(); const draft = itinerary();
     draft.places = [draft.places[0]]; draft.trip.destinationPlaceIds = ["place-a"];
@@ -257,8 +257,55 @@ describe("generation-bound map pipeline", () => {
     const written = store.writeItinerary(trip.id, draft, 0); let routeCalls = 0;
     const maps = { search: async () => [candidate("kyoto", "Kyoto")], route: async () => { routeCalls += 1; return { geometry: null, warning: null }; } } as unknown as import("./map-service.js").MapService;
     await new MapPipeline({ store, maps, onChanged: () => {} }).sync(trip.id, written.generation, ["day-1"]);
-    const state = store.getMapState(trip.id)!; const routes = (state.map as { routes: Array<{ status: string; geometry: unknown; warning: string | null }> }).routes;
-    expect(routes).toHaveLength(2); expect(routes.every((route) => route.status === "ready" && route.geometry === null && route.warning === null)).toBe(true); expect(state.status).toBe("ready"); expect(routeCalls).toBe(0); store.close();
+    const state = store.getMapState(trip.id)!; const routes = (state.map as { edges: unknown[]; routes: Array<{ status: string; geometry: unknown; warning: string | null }>; visualComplete?: boolean }).routes;
+    expect(routes).toHaveLength(0); expect((state.map as { edges: unknown[] }).edges).toHaveLength(0); expect(state.visualComplete).toBe(true); expect(routeCalls).toBe(0); store.close();
+  });
+
+  it("uses 03 after 02, then bridges a mixed-transport ignored Stop with a straight route", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "map-coordinate-research-")); directories.push(directory);
+    const store = new TravelStore(path.join(directory, "travel.sqlite3")); const trip = store.createTrip(); const draft = itinerary();
+    const rest = { ...place("place-rest", "途中休息点", "Roadside Rest Stop", "Canterbury"), kind: "stop" as const, approximate: true };
+    draft.places.splice(1, 0, rest); draft.days[0].stops.splice(1, 0, { ...draft.days[0].stops[1], id: "stop-rest", placeId: rest.id, activity: "短暂休息", transportFromPrevious: { mode: "drive", durationMinutes: null, note: null, verification: { status: "unverified", checkedAt: null } } });
+    draft.days[0].stops[2].transportFromPrevious = { mode: "walk", durationMinutes: null, note: null, verification: { status: "unverified", checkedAt: null } };
+    const written = store.writeItinerary(trip.id, draft, 0); let candidateCalls = 0; let researchCalls = 0; let routeCalls = 0;
+    const maps = { search: async (query: string) => query.includes("Osaka") || query.includes("大阪") ? [candidate("osaka", "Osaka", "Osaka")] : query.includes("Kyoto") || query.includes("京都") ? [candidate("kyoto", "Kyoto")] : query.includes("Roadside") ? [candidate("rest", "Unrelated Rest", "Canterbury")] : [], reverse: async () => null, route: async () => { routeCalls += 1; return { geometry: { type: "LineString", coordinates: [[135, 35], [135.1, 35.1]] }, distanceKm: 10, durationMinutes: 15, warning: null }; } } as unknown as import("./map-service.js").MapService;
+    await new MapPipeline({ store, maps, decideCandidate: async () => { candidateCalls += 1; return null; }, researchCoordinates: async () => { researchCalls += 1; return { schemaVersion: 1, action: "ignore", canonicalName: null, coordinates: null, sourceUrl: null, sourceTitle: null, reason: "没有唯一可核验的休息点。" }; }, onChanged: () => {} }).sync(trip.id, written.generation, ["day-1"]);
+    const state = store.getMapState(trip.id)!; const map = state.map as { edges: Array<{ viaIgnoredVisitIds?: string[]; bridgedTransportMismatch?: boolean }>; routes: Array<{ geometry: unknown; geometrySource?: string; warning: string | null }>; visualComplete: boolean };
+    expect(candidateCalls).toBe(1); expect(researchCalls).toBe(1); expect(routeCalls).toBe(0); expect(state.resolvedPlaces.find((entry) => entry.placeId === rest.id)?.resolution).toBe("ignored"); expect(map.edges).toHaveLength(1); expect(map.edges[0]).toMatchObject({ viaIgnoredVisitIds: ["stop-rest"], bridgedTransportMismatch: true }); expect(map.routes[0]).toMatchObject({ geometrySource: "straight" }); expect(map.routes[0].geometry).not.toBeNull(); expect(map.routes[0].warning).toContain("交通方式不一致"); expect(state.warnings.some((warning) => warning.includes("Day 1（2026-10-01）"))).toBe(true); expect(map.visualComplete).toBe(true); store.close();
+  });
+
+  it("retries one invalid 03 coordinate before accepting a Nominatim-verified researched location", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "map-coordinate-correction-")); directories.push(directory);
+    const store = new TravelStore(path.join(directory, "travel.sqlite3")); const trip = store.createTrip(); const draft = itinerary();
+    draft.places[0] = { ...draft.places[0], nameZh: "难以定位地点", nameLocal: "Difficult Place", nameEn: "Difficult Place", kind: "attraction" };
+    const written = store.writeItinerary(trip.id, draft, 0); let researchCalls = 0;
+    const researchedCandidate = { ...candidate("research-kyoto", "Research Kyoto"), latitude: 35, longitude: 135 };
+    const maps = {
+      search: async (query: string) => query.includes("Osaka") || query.includes("大阪") ? [candidate("osaka", "Osaka", "Osaka")] : query.includes("Research Kyoto") ? [researchedCandidate] : [],
+      reverse: async (latitude: number) => latitude === 35 ? researchedCandidate : { ...researchedCandidate, providerPlaceId: "wrong-country", countryCode: "us", displayName: "Research Kyoto, United States" },
+      route: async () => ({ geometry: { type: "LineString", coordinates: [[135, 35], [135.1, 35.1]] }, distanceKm: 10, durationMinutes: 15, warning: null }),
+    } as unknown as import("./map-service.js").MapService;
+    await new MapPipeline({ store, maps, researchCoordinates: async () => {
+      researchCalls += 1;
+      return { schemaVersion: 1, action: "use_coordinates", canonicalName: "Research Kyoto", coordinates: { latitude: researchCalls === 1 ? 1 : 35, longitude: 135 }, sourceUrl: "https://example.com/research-kyoto", sourceTitle: "Research Kyoto", reason: "来源明确给出了该地点坐标。" };
+    }, onChanged: () => {} }).sync(trip.id, written.generation, ["day-1"]);
+    const resolved = store.getMapState(trip.id)!.resolvedPlaces.find((entry) => entry.placeId === "place-a")!;
+    expect(researchCalls).toBe(2); expect(resolved).toMatchObject({ resolution: "researched", sourceUrl: "https://example.com/research-kyoto", sourceTitle: "Research Kyoto" }); expect(resolved.lat).toBe(35); store.close();
+  });
+
+  it("keeps a 03 technical failure unresolved instead of silently using a city approximation", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "map-coordinate-failure-")); directories.push(directory);
+    const store = new TravelStore(path.join(directory, "travel.sqlite3")); const trip = store.createTrip(); const draft = itinerary();
+    draft.places[0] = { ...draft.places[0], nameZh: "未知酒店", nameLocal: "Unknown Hotel", nameEn: "Unknown Hotel", kind: "lodging", city: "Kyoto" };
+    const written = store.writeItinerary(trip.id, draft, 0); let researchCalls = 0;
+    const maps = {
+      search: async (query: string) => query.includes("Osaka") || query.includes("大阪") ? [candidate("osaka", "Osaka", "Osaka")] : [],
+      reverse: async () => null,
+      route: async () => ({ geometry: null, warning: null }),
+    } as unknown as import("./map-service.js").MapService;
+    await new MapPipeline({ store, maps, researchCoordinates: async () => { researchCalls += 1; return null; }, onChanged: () => {} }).sync(trip.id, written.generation, ["day-1"]);
+    const state = store.getMapState(trip.id)!;
+    expect(researchCalls).toBe(1); expect(state.resolvedPlaces.find((entry) => entry.placeId === "place-a")?.resolution).toBe("unresolved"); expect(state.visualComplete).toBe(false); store.close();
   });
 
   it("uses only a scored country-confirmed city or region center for approximate fallback", async () => {

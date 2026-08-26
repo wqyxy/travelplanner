@@ -98,4 +98,18 @@ describe("map interactions", () => {
     expect(drivingMetricsForItinerary(itinerary, { ...state, map: { ...state.map!, routes: [] } }).byDayId.get("day-1")).toMatchObject({ routeCount: 1, distanceKm: null, durationMinutes: null, pending: true });
     expect(drivingMetricsForItinerary(itinerary, state, 2).byDayId.get("day-1")).toMatchObject({ distanceKm: null, durationMinutes: null, pending: true });
   });
+
+  it("skips ignored driving Stops and attributes their bridged edge to the next retained Stop", () => {
+    const itinerary = {
+      schemaVersion: 1, stage: "draft", trip: { title: "路线", originPlaceId: null, destinationPlaceIds: [], dates: { start: null, end: null, requestedDurationDays: 1 }, travelers: { summary: "", adults: null, children: null }, budget: { amount: null, currency: null, note: null }, pace: null, themes: [], preferences: [], constraints: [], assumptions: [] }, places: [], warnings: [],
+      days: [{ id: "day-1", dayNumber: 1, date: null, title: "驾驶日", detailLevel: "draft", stops: [
+        { id: "stop-1", role: "start", placeId: "p1", activity: "出发", period: "morning", startTime: null, endTime: null, durationMinutes: null, scheduleVerification: null, transportFromPrevious: null, costNote: null, costVerification: null, notes: null },
+        { id: "stop-2", role: "visit", placeId: "p2", activity: "忽略点", period: "afternoon", startTime: null, endTime: null, durationMinutes: null, scheduleVerification: null, transportFromPrevious: { mode: "drive", durationMinutes: null, note: null, verification: { status: "unverified", checkedAt: null } }, costNote: null, costVerification: null, notes: null },
+        { id: "stop-3", role: "end", placeId: "p3", activity: "抵达", period: "evening", startTime: null, endTime: null, durationMinutes: null, scheduleVerification: null, transportFromPrevious: { mode: "drive", durationMinutes: null, note: null, verification: { status: "unverified", checkedAt: null } }, costNote: null, costVerification: null, notes: null },
+      ] }],
+    } as Itinerary;
+    const state = { generation: 1, resolvedPlaces: [{ placeId: "p2", geoFingerprint: "ignored", provider: "ai-web", providerPlaceId: null, lat: null, lng: null, timezone: null, resolution: "ignored", confidence: null, resolvedAt: null, decisionReason: "没有唯一身份。" }], status: "attention", warnings: [], updatedAt: "2026-08-25T00:00:00Z", map: { visits: [{ id: "v1", dayId: "day-1", dayNumber: 1, stopId: "stop-1", placeId: "p1", order: 0 }, { id: "v2", dayId: "day-1", dayNumber: 1, stopId: "stop-2", placeId: "p2", order: 1 }, { id: "v3", dayId: "day-1", dayNumber: 1, stopId: "stop-3", placeId: "p3", order: 2 }], edges: [{ id: "edge-1", dayId: "day-1", fromVisitId: "v1", toVisitId: "v3", mode: "drive", order: 0, viaIgnoredVisitIds: ["v2"] }], routes: [{ edgeId: "edge-1", routeKey: "r1", geometry: null, distanceKm: 120, durationMinutes: 130, status: "ready", warning: null }] } } as MapState;
+    const metrics = drivingMetricsForItinerary(itinerary, state);
+    expect(metrics.byStopId.has("stop-2")).toBe(false); expect(metrics.byStopId.get("stop-3")).toMatchObject({ distanceKm: 120, durationMinutes: 130, pending: false }); expect(metrics.byDayId.get("day-1")).toMatchObject({ routeCount: 1, distanceKm: 120, durationMinutes: 130, pending: false });
+  });
 });

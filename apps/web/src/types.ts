@@ -46,14 +46,15 @@ export type AiTask = {
   metadata?: Record<string, unknown>; events: AiProgressEvent[];
 };
 export type MapVisit = { id: string; dayId: string; dayNumber: number; stopId: string; placeId: string; order: number };
-export type MapEdge = { id: string; dayId: string; fromVisitId: string; toVisitId: string; mode: TransportMode; order: number };
+export type MapEdge = { id: string; dayId: string; fromVisitId: string; toVisitId: string; mode: TransportMode; order: number; viaIgnoredVisitIds?: string[]; bridgedTransportMismatch?: boolean };
 export type GeoJsonGeometry = { type: string; coordinates: unknown };
-export type DerivedMapRoute = { edgeId: string; routeKey: string; geometry: GeoJsonGeometry | null; distanceKm?: number | null; durationMinutes?: number | null; status: "ready" | "attention"; warning: string | null };
-export type DerivedMapSnapshot = { visits: MapVisit[]; edges: MapEdge[]; routes: DerivedMapRoute[] };
+export type DerivedMapRoute = { edgeId: string; routeKey: string; geometry: GeoJsonGeometry | null; geometrySource?: "provider" | "straight"; distanceKm?: number | null; durationMinutes?: number | null; status: "ready" | "attention"; warning: string | null };
+export type DerivedMapSnapshot = { visits: MapVisit[]; edges: MapEdge[]; routes: DerivedMapRoute[]; visualComplete?: boolean };
 export type ResolvedPlace = {
   placeId: string; geoFingerprint: string; provider: string; providerPlaceId: string | null; lat: number | null; lng: number | null;
-  timezone: string | null; resolution: "exact" | "approximate" | "unresolved"; confidence: number | null; resolvedAt: string | null;
+  timezone: string | null; resolution: "exact" | "approximate" | "researched" | "ignored" | "unresolved"; confidence: number | null; resolvedAt: string | null;
+  sourceUrl?: string | null; sourceTitle?: string | null; decisionReason?: string | null;
 };
-export type MapState = { generation: number; resolvedPlaces: ResolvedPlace[]; map: DerivedMapSnapshot | null; status: "idle" | "syncing" | "ready" | "attention"; warnings: string[]; updatedAt: string };
+export type MapState = { generation: number; resolvedPlaces: ResolvedPlace[]; map: DerivedMapSnapshot | null; status: "idle" | "syncing" | "ready" | "attention"; warnings: string[]; visualComplete?: boolean; updatedAt: string };
 export type UiSettings = { workspaceSplitRatio: number; theme: "light" | "dark"; sidebarOpen: boolean; mapCategoryColors: Record<string, string> };
 export type AppSettings = { ai: { model: string; reasoningEffort: string }; ui: UiSettings };

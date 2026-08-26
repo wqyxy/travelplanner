@@ -38,6 +38,16 @@ export function nominatimSearchUrl(query: string, countryCode?: string | null, l
   return url;
 }
 
+export function nominatimReverseUrl(latitude: number, longitude: number, language = "en") {
+  const url = new URL("https://nominatim.openstreetmap.org/reverse");
+  url.searchParams.set("format", "jsonv2");
+  url.searchParams.set("addressdetails", "1");
+  url.searchParams.set("accept-language", language);
+  url.searchParams.set("lat", String(latitude));
+  url.searchParams.set("lon", String(longitude));
+  return url;
+}
+
 function candidateFromNominatim(value: unknown): MapCandidate | null {
   if (!value || typeof value !== "object") return null;
   const item = value as Record<string, unknown>;
@@ -108,6 +118,19 @@ export class MapService {
     });
     this.save("geocode_cache", key, candidates, 30 * 24 * 60 * 60 * 1000);
     return candidates;
+  }
+
+  async reverse(latitude: number, longitude: number): Promise<MapCandidate | null> {
+    const key = `${GEOCODE_CACHE_VERSION}:reverse:${latitude.toFixed(6)},${longitude.toFixed(6)}`;
+    const cached = this.cached<MapCandidate | null>("geocode_cache", key);
+    if (cached !== null) return cached;
+    const candidate = await this.request(async () => {
+      const response = await this.fetcher(nominatimReverseUrl(latitude, longitude), { headers: { "User-Agent": "AI-Travel-Planner/0.1 (personal local travel planner)", Accept: "application/json" } });
+      if (!response.ok) throw new Error("公开地点服务暂时不可用。");
+      return candidateFromNominatim(await response.json() as unknown);
+    });
+    this.save("geocode_cache", key, candidate, 30 * 24 * 60 * 60 * 1000);
+    return candidate;
   }
 
   async route(mode: "walk" | "drive" | "bike", from: [number, number], to: [number, number], routeKey: string): Promise<MapRouteResult> {
