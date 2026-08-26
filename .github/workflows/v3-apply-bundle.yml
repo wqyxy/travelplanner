@@ -1,0 +1,104 @@
+name: Apply verified v3 change bundle
+
+on:
+  push:
+    branches:
+      - codex/v3-candidate-workbench
+
+permissions:
+  contents: write
+
+concurrency:
+  group: v3-change-bundle
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect bundle
+        id: bundle
+        shell: bash
+        run: |
+          if [[ -f .github/v3-change-bundle.tar.gz.b64 ]]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@v4
+        if: steps.bundle.outputs.present == 'true'
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Validate and apply bundle
+        if: steps.bundle.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 --decode .github/v3-change-bundle.tar.gz.b64 > /tmp/v3-change-bundle.tar.gz
+          rm -rf /tmp/v3-change-bundle
+          mkdir -p /tmp/v3-change-bundle
+          python - <<'PY'
+          from pathlib import PurePosixPath
+          import tarfile
+
+          archive = tarfile.open('/tmp/v3-change-bundle.tar.gz', 'r:gz')
+          for member in archive.getmembers():
+              path = PurePosixPath(member.name)
+              if path.is_absolute() or '..' in path.parts:
+                  raise SystemExit(f'unsafe bundle path: {member.name}')
+              if member.issym() or member.islnk() or member.isdev():
+                  raise SystemExit(f'unsupported bundle member: {member.name}')
+          archive.extractall('/tmp/v3-change-bundle', filter='data')
+          PY
+          if [[ -f /tmp/v3-change-bundle/.v3-delete-paths ]]; then
+            while IFS= read -r target || [[ -n "$target" ]]; do
+              [[ -z "$target" || "$target" == \#* ]] && continue
+              python - "$target" <<'PY'
+          from pathlib import PurePosixPath
+          import sys
+          value = sys.argv[1]
+          path = PurePosixPath(value)
+          if path.is_absolute() or '..' in path.parts or value in {'.', ''}:
+              raise SystemExit(f'unsafe delete path: {value}')
+          PY
+              rm -rf -- "$target"
+            done < /tmp/v3-change-bundle/.v3-delete-paths
+          fi
+          rsync -a --exclude='.v3-delete-paths' --exclude='.v3-commit-message' /tmp/v3-change-bundle/ ./
+          rm .github/v3-change-bundle.tar.gz.b64
+      - name: Install dependencies
+        if: steps.bundle.outputs.present == 'true'
+        run: npm ci
+      - name: Typecheck
+        if: steps.bundle.outputs.present == 'true'
+        run: npm run typecheck
+      - name: Tests
+        if: steps.bundle.outputs.present == 'true'
+        run: npm test
+      - name: Production build
+        if: steps.bundle.outputs.present == 'true'
+        run: npm run build
+      - name: Commit verified bundle
+        if: steps.bundle.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          message='Apply verified v3 change bundle'
+          if [[ -s /tmp/v3-change-bundle/.v3-commit-message ]]; then
+            message="$(head -n 1 /tmp/v3-change-bundle/.v3-commit-message)"
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo 'Bundle produced no changes.'
+            exit 0
+          fi
+          git commit -m "$message"
+          git push origin HEAD:codex/v3-candidate-workbench
