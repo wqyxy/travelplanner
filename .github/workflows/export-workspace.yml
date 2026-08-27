@@ -25,7 +25,7 @@ jobs:
       - name: Package workspace
         run: |
           set -euo pipefail
-          tar --exclude=.git --exclude=dist -czf /tmp/travelplanner-workspace.tar.gz .
+          tar --exclude='./.git' --exclude='./dist' -czf /tmp/travelplanner-workspace.tar.gz .
       - uses: actions/upload-artifact@v4
         with:
           name: travelplanner-workspace
