@@ -2,6 +2,7 @@ import { Check, ChevronRight, LocateFixed, MapPin, Plus, RefreshCw, Search, Spar
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CandidatePreference, PlaceKind, ProviderPlaceCandidate, Workspace } from "./v2-types";
 import {
+  candidateAreaGroups,
   candidateCounts,
   candidateRows,
   filterCandidateRows,
@@ -9,6 +10,7 @@ import {
   resolutionStatus,
   selectedUnresolvedRows,
   type CandidateFilter,
+  type CandidateRow,
 } from "./workspace-v2";
 
 const preferenceLabels: Record<CandidatePreference, string> = { must_go: "必去", want_to_go: "想去", optional: "可选", excluded: "不去" };
@@ -102,12 +104,14 @@ export function CandidatePanel({
   const [filter, setFilter] = useState<CandidateFilter>("all");
   const [query, setQuery] = useState("");
   const [checked, setChecked] = useState<Set<string>>(new Set());
+  const [collapsedAreas, setCollapsedAreas] = useState<Set<string>>(new Set());
   const [choice, setChoice] = useState<ChoiceState>(null);
   const [manual, setManual] = useState<ManualDraft | null>(null);
   const [newCandidate, setNewCandidate] = useState<NewCandidateForm | null>(null);
   const [newCandidateError, setNewCandidateError] = useState("");
   const cards = useRef(new Map<string, HTMLElement>());
   const visible = useMemo(() => filterCandidateRows(rows, filter, query), [rows, filter, query]);
+  const groups = useMemo(() => candidateAreaGroups(visible), [visible]);
   const unresolvedSelected = useMemo(() => selectedUnresolvedRows(rows), [rows]);
   const visibleIds = useMemo(() => visible.map((row) => row.candidate.id), [visible]);
   const allVisibleChecked = visibleIds.length > 0 && visibleIds.every((id) => checked.has(id));
@@ -117,8 +121,19 @@ export function CandidatePanel({
   }, [rows]);
   useEffect(() => {
     if (!selectedCandidateId) return;
+    const group = groups.find((item) => item.rows.some((row) => row.candidate.id === selectedCandidateId));
+    if (!group) return;
+    setCollapsedAreas((current) => {
+      if (!current.has(group.key)) return current;
+      const next = new Set(current);
+      next.delete(group.key);
+      return next;
+    });
+  }, [groups, selectedCandidateId]);
+  useEffect(() => {
+    if (!selectedCandidateId) return;
     cards.current.get(selectedCandidateId)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, [selectedCandidateId]);
+  }, [collapsedAreas, selectedCandidateId]);
 
   const toggleChecked = (id: string) => setChecked((current) => {
     const next = new Set(current);
@@ -129,6 +144,11 @@ export function CandidatePanel({
     const next = new Set(current);
     if (allVisibleChecked) visibleIds.forEach((id) => next.delete(id));
     else visibleIds.forEach((id) => next.add(id));
+    return next;
+  });
+  const toggleArea = (key: string) => setCollapsedAreas((current) => {
+    const next = new Set(current);
+    if (next.has(key)) next.delete(key); else next.add(key);
     return next;
   });
   const setBulk = async (preference: CandidatePreference) => {
@@ -188,9 +208,32 @@ export function CandidatePanel({
     }
   };
 
+  const renderCandidate = (row: CandidateRow, areaExcluded: boolean) => {
+    const status = resolutionStatus(row);
+    const selected = selectedCandidateId === row.candidate.id;
+    const macroCity = row.place.kind === "city";
+    return <article
+      ref={(node) => { if (node) cards.current.set(row.candidate.id, node); else cards.current.delete(row.candidate.id); }}
+      className={`candidate-card preference-${row.candidate.preference} ${selected ? "selected" : ""} ${macroCity ? "city-macro" : ""} ${areaExcluded && !macroCity ? "area-suppressed" : ""}`}
+      key={row.candidate.id}
+      onClick={() => onSelectCandidate(row.candidate.id)}
+    >
+      <label className="candidate-check" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={checked.has(row.candidate.id)} onChange={() => toggleChecked(row.candidate.id)}/><span/></label>
+      <div className="candidate-main">
+        <div className="candidate-title-line"><span className="candidate-mark">{preferenceMarks[row.candidate.preference]}</span><div><h3>{row.place.nameZh}{macroCity && <em className="candidate-area-badge">宏观规划</em>}</h3>{(row.place.nameLocal || row.place.nameEn) && <small>{row.place.nameLocal || row.place.nameEn}</small>}</div>{row.candidate.aiScore !== null && <b className="candidate-score" title="AI 推荐度，不是地图平台用户评分">{Math.round(row.candidate.aiScore)}</b>}</div>
+        <p>{areaExcluded && !macroCity ? "所属城市已标记为不去，生成时该地点不会参与规划。" : row.candidate.aiReason || "用户添加地点"}</p>
+        <div className="candidate-meta"><span>{macroCity ? "城市 / 区域规划节点" : row.place.city || row.place.region || row.place.country || "区域待确认"}</span>{formatDuration(row.candidate.suggestedDurationMinutes) && <span>{formatDuration(row.candidate.suggestedDurationMinutes)}</span>}{row.candidate.tags.slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}</div>
+        <div className={`resolution-line ${status}`}>{status === "resolved" ? <><Check size={14}/><span>{macroCity ? "城市位置已定位" : "已定位"}</span><small>{row.resolution?.address || `${row.resolution?.latitude?.toFixed(5)}, ${row.resolution?.longitude?.toFixed(5)}`}</small></> : status === "resolving" ? <><RefreshCw className="spin" size={14}/><span>定位中</span></> : <><MapPin size={14}/><span>{macroCity ? "城市位置未定位" : "未定位"}</span><small>{row.resolution?.errorMessage || "生成时会自动尝试定位"}</small></>}</div>
+        {status === "unresolved" && <div className="resolution-actions" onClick={(event) => event.stopPropagation()}><button disabled={busy} onClick={() => void onRetry([row.place.id])}><RefreshCw size={13}/>重新识别</button><button disabled={busy} onClick={() => void openChoices(row.place.id)}><LocateFixed size={13}/>选择地图地点</button><button disabled={busy} onClick={() => onBeginMapPick(row.place.id)}><MapPin size={13}/>地图点选</button><button disabled={busy} onClick={() => setManual({ placeId: row.place.id, name: row.place.nameZh, latitude: "", longitude: "", address: "" })}>手工坐标</button></div>}
+      </div>
+      <div className="candidate-preference" onClick={(event) => event.stopPropagation()}>{(Object.keys(preferenceLabels) as CandidatePreference[]).map((preference) => <button type="button" className={row.candidate.preference === preference ? "active" : ""} title={preferenceLabels[preference]} disabled={busy} key={preference} onClick={() => void onSetPreference([row.candidate.id], preference)}>{preferenceMarks[preference]}</button>)}</div>
+      <ChevronRight className="candidate-chevron" size={16}/>
+    </article>;
+  };
+
   return <section className="candidate-panel" aria-label="候选地点">
     <header className="candidate-panel-head">
-      <div><p className="eyebrow">DISCOVER & CURATE</p><h2>地点推荐</h2><small>可按需调整必去 / 想去 / 可选 / 不去，然后直接生成行程与路线。</small></div>
+      <div><p className="eyebrow">DISCOVER & CURATE</p><h2>地点推荐</h2><small>城市控制宏观路线，具体景点控制城市内行程；调整优先级后可直接生成。</small></div>
       <div className="candidate-head-actions">
         <button className="button small" type="button" disabled={busy} onClick={() => setNewCandidate(emptyCandidateForm())}><Plus size={15}/>手动添加</button>
         <button className="button small" type="button" disabled={busy} onClick={() => void onDiscover()}><WandSparkles size={15}/>{rows.length ? "补充推荐" : "AI 推荐地点"}</button>
@@ -213,28 +256,22 @@ export function CandidatePanel({
     {checked.size > 0 && <div className="candidate-bulk-bar"><span>已选择 {checked.size} 个</span><button onClick={() => void setBulk("must_go")}>★ 必去</button><button onClick={() => void setBulk("want_to_go")}>✓ 想去</button><button onClick={() => void setBulk("optional")}>○ 可选</button><button onClick={() => void setBulk("excluded")}>× 不去</button><button aria-label="清除批量选择" onClick={() => setChecked(new Set())}><X size={14}/></button></div>}
 
     <div className="candidate-list">
-      {!rows.length && <div className="candidate-empty"><Sparkles size={34}/><h3>先生成一组值得考虑的地点</h3><p>AI 只会推荐语义地点；坐标由地图服务解析。</p><div><button className="button" disabled={busy} onClick={() => setNewCandidate(emptyCandidateForm())}>手动添加地点</button><button className="button primary" disabled={busy} onClick={() => void onDiscover()}>生成地点推荐</button></div></div>}
+      {!rows.length && <div className="candidate-empty"><Sparkles size={34}/><h3>先生成一组城市和具体地点</h3><p>AI 会同时建立宏观城市节点和城市内具体景点；坐标仍由地图服务解析。</p><div><button className="button" disabled={busy} onClick={() => setNewCandidate(emptyCandidateForm())}>手动添加地点</button><button className="button primary" disabled={busy} onClick={() => void onDiscover()}>生成地点推荐</button></div></div>}
       {rows.length > 0 && !visible.length && <div className="candidate-empty compact"><Search size={24}/><p>当前筛选条件下没有地点。</p></div>}
-      {visible.map((row) => {
-        const status = resolutionStatus(row);
-        const selected = selectedCandidateId === row.candidate.id;
-        return <article
-          ref={(node) => { if (node) cards.current.set(row.candidate.id, node); else cards.current.delete(row.candidate.id); }}
-          className={`candidate-card preference-${row.candidate.preference} ${selected ? "selected" : ""}`}
-          key={row.candidate.id}
-          onClick={() => onSelectCandidate(row.candidate.id)}
-        >
-          <label className="candidate-check" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={checked.has(row.candidate.id)} onChange={() => toggleChecked(row.candidate.id)}/><span/></label>
-          <div className="candidate-main">
-            <div className="candidate-title-line"><span className="candidate-mark">{preferenceMarks[row.candidate.preference]}</span><div><h3>{row.place.nameZh}</h3>{(row.place.nameLocal || row.place.nameEn) && <small>{row.place.nameLocal || row.place.nameEn}</small>}</div>{row.candidate.aiScore !== null && <b className="candidate-score" title="AI 推荐度，不是地图平台用户评分">{Math.round(row.candidate.aiScore)}</b>}</div>
-            <p>{row.candidate.aiReason || "用户添加地点"}</p>
-            <div className="candidate-meta"><span>{row.place.city || row.place.region || row.place.country || "区域待确认"}</span>{formatDuration(row.candidate.suggestedDurationMinutes) && <span>{formatDuration(row.candidate.suggestedDurationMinutes)}</span>}{row.candidate.tags.slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}</div>
-            <div className={`resolution-line ${status}`}>{status === "resolved" ? <><Check size={14}/><span>已定位</span><small>{row.resolution?.address || `${row.resolution?.latitude?.toFixed(5)}, ${row.resolution?.longitude?.toFixed(5)}`}</small></> : status === "resolving" ? <><RefreshCw className="spin" size={14}/><span>定位中</span></> : <><MapPin size={14}/><span>未定位</span><small>{row.resolution?.errorMessage || "生成时会自动尝试定位"}</small></>}</div>
-            {status === "unresolved" && <div className="resolution-actions" onClick={(event) => event.stopPropagation()}><button disabled={busy} onClick={() => void onRetry([row.place.id])}><RefreshCw size={13}/>重新识别</button><button disabled={busy} onClick={() => void openChoices(row.place.id)}><LocateFixed size={13}/>选择地图地点</button><button disabled={busy} onClick={() => onBeginMapPick(row.place.id)}><MapPin size={13}/>地图点选</button><button disabled={busy} onClick={() => setManual({ placeId: row.place.id, name: row.place.nameZh, latitude: "", longitude: "", address: "" })}>手工坐标</button></div>}
-          </div>
-          <div className="candidate-preference" onClick={(event) => event.stopPropagation()}>{(Object.keys(preferenceLabels) as CandidatePreference[]).map((preference) => <button type="button" className={row.candidate.preference === preference ? "active" : ""} title={preferenceLabels[preference]} disabled={busy} key={preference} onClick={() => void onSetPreference([row.candidate.id], preference)}>{preferenceMarks[preference]}</button>)}</div>
-          <ChevronRight className="candidate-chevron" size={16}/>
-        </article>;
+      {groups.map((group) => {
+        const collapsed = collapsedAreas.has(group.key);
+        const cityPreference = group.cityRow?.candidate.preference ?? null;
+        const areaExcluded = cityPreference === "excluded";
+        const concreteCount = group.rows.filter((row) => row.place.kind !== "city").length;
+        const participatingCount = areaExcluded ? 0 : group.rows.filter((row) => row.candidate.preference !== "excluded").length;
+        return <section className={`candidate-area-group ${areaExcluded ? "excluded" : ""}`} key={group.key}>
+          <button className="candidate-area-head" type="button" onClick={() => toggleArea(group.key)}>
+            <ChevronRight className={collapsed ? "" : "open"} size={16}/>
+            <span><strong>{group.label}</strong><small>{group.cityRow ? "城市级规划 · " : "区域分组 · "}{concreteCount} 个具体地点 · {participatingCount} 个参与规划{areaExcluded ? " · 整座城市不去" : ""}</small></span>
+            {group.cityRow && <em>{preferenceMarks[group.cityRow.candidate.preference]} {preferenceLabels[group.cityRow.candidate.preference]}</em>}
+          </button>
+          {!collapsed && <div className="candidate-area-cards">{group.rows.map((row) => renderCandidate(row, areaExcluded))}</div>}
+        </section>;
       })}
     </div>
 
@@ -247,7 +284,7 @@ export function CandidatePanel({
 
     {manual && <div className="candidate-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setManual(null); }}><section className="candidate-dialog manual-coordinate-dialog"><header><div><strong>手工输入坐标</strong><small>{manual.name}</small></div><button className="icon-button" onClick={() => setManual(null)}><X size={18}/></button></header><div className="manual-coordinate-form"><label>纬度<input inputMode="decimal" value={manual.latitude} onChange={(event) => setManual({ ...manual, latitude: event.target.value })} placeholder="例如 34.994856"/></label><label>经度<input inputMode="decimal" value={manual.longitude} onChange={(event) => setManual({ ...manual, longitude: event.target.value })} placeholder="例如 135.785046"/></label><label className="wide">地址备注（可选）<input value={manual.address} onChange={(event) => setManual({ ...manual, address: event.target.value })} placeholder="地图地址或用户备注"/></label></div><footer><button className="button" onClick={() => setManual(null)}>取消</button><button className="button primary" disabled={busy || !manual.latitude || !manual.longitude} onClick={() => void submitManual()}>保存坐标</button></footer></section></div>}
 
-    {newCandidate && <div className="candidate-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setNewCandidate(null); }}><section className="candidate-dialog manual-coordinate-dialog"><header><div><strong>手动添加地点</strong><small>先创建语义地点，保存后由地图服务自动定位</small></div><button className="icon-button" onClick={() => setNewCandidate(null)}><X size={18}/></button></header><div className="manual-coordinate-form">
+    {newCandidate && <div className="candidate-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setNewCandidate(null); }}><section className="candidate-dialog manual-coordinate-dialog"><header><div><strong>手动添加地点</strong><small>城市用于宏观规划；景点、住宿和交通点用于真实线路</small></div><button className="icon-button" onClick={() => setNewCandidate(null)}><X size={18}/></button></header><div className="manual-coordinate-form">
       <label className="wide">地点名称（必填）<input value={newCandidate.nameZh} onChange={(event) => setNewCandidate({ ...newCandidate, nameZh: event.target.value })} placeholder="例如：京都铁道博物馆"/></label>
       <label>本地名称<input value={newCandidate.nameLocal} onChange={(event) => setNewCandidate({ ...newCandidate, nameLocal: event.target.value })} placeholder="Kyoto Railway Museum"/></label>
       <label>英文名称<input value={newCandidate.nameEn} onChange={(event) => setNewCandidate({ ...newCandidate, nameEn: event.target.value })} placeholder="可选"/></label>
