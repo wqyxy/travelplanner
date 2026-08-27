@@ -2,6 +2,7 @@ import { Component, StrictMode, type ErrorInfo, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import "./v3-fixes.css";
+import "./workspace-v4.css";
 import App from "./App";
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
