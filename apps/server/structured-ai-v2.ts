@@ -1,4 +1,4 @@
-import type { ZodType } from "zod";
+import { z, type ZodType } from "zod";
 import {
   CodexClient,
   structuredTurn,
@@ -36,6 +36,10 @@ type ActiveRun<T = unknown> = {
   turnId: string | null;
   content: string;
   schema: ZodType<T>;
+  outputSchema: Record<string, unknown>;
+  model?: string;
+  effort?: ReasoningEffort;
+  repairAttempts: number;
   settle: (value: T) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
@@ -43,6 +47,111 @@ type ActiveRun<T = unknown> = {
 };
 
 const safeError = (value: unknown) => value instanceof Error ? value : new Error(String(value ?? "AI 请求失败。"));
+const PATCH_KEY = "__patch";
+const MAX_STRUCTURED_REPAIRS = 2;
+const FORBIDDEN_SCHEMA_KEYS = new Set(["allOf", "not", "if", "then", "else", "dependentRequired", "dependentSchemas"]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function isObjectSchema(record: Record<string, unknown>) {
+  return record.type === "object" || (Array.isArray(record.type) && record.type.includes("object"));
+}
+
+function transportSchema(value: unknown, path: string[] = []): unknown {
+  if (Array.isArray(value)) return value.map((item, index) => transportSchema(item, [...path, String(index)]));
+  if (!isRecord(value)) return value;
+
+  const record = Object.fromEntries(Object.entries(value).map(([key, item]) => [key, transportSchema(item, [...path, key])])) as Record<string, unknown>;
+  delete record.$schema;
+
+  if (Array.isArray(record.oneOf)) {
+    if (record.anyOf !== undefined) throw new Error(`AI output schema 同时包含 oneOf/anyOf：${path.join(".") || "root"}`);
+    record.anyOf = record.oneOf;
+    delete record.oneOf;
+  }
+
+  for (const key of FORBIDDEN_SCHEMA_KEYS) {
+    if (record[key] !== undefined) throw new Error(`AI output schema 不支持 ${key}：${path.join(".") || "root"}`);
+  }
+
+  if (isObjectSchema(record) && isRecord(record.properties)) {
+    const properties = record.properties;
+    const keys = Object.keys(properties);
+    if (keys.includes(PATCH_KEY)) throw new Error(`业务 Schema 不得使用保留字段 ${PATCH_KEY}：${path.join(".") || "root"}`);
+    const required = new Set(Array.isArray(record.required) ? record.required.filter((item): item is string => typeof item === "string") : []);
+    const optionalKeys = keys.filter((key) => !required.has(key));
+
+    if (optionalKeys.length) {
+      if (required.size) throw new Error(`AI output object 不能混用 required/optional 字段：${path.join(".") || "root"}`);
+      if (!keys.length) throw new Error(`AI output optional object 没有可修改字段：${path.join(".") || "root"}`);
+      return {
+        type: "object",
+        properties: {
+          [PATCH_KEY]: {
+            type: "array",
+            minItems: 1,
+            maxItems: keys.length,
+            items: {
+              anyOf: keys.map((key) => ({
+                type: "object",
+                properties: {
+                  field: { type: "string", const: key },
+                  value: properties[key],
+                },
+                required: ["field", "value"],
+                additionalProperties: false,
+              })),
+            },
+          },
+        },
+        required: [PATCH_KEY],
+        additionalProperties: false,
+      };
+    }
+
+    if (required.size !== keys.length) throw new Error(`AI output object required 与 properties 不一致：${path.join(".") || "root"}`);
+    record.required = keys;
+    record.additionalProperties = false;
+  }
+
+  return record;
+}
+
+export function buildOpenAiStructuredOutputSchema(schema: ZodType<unknown>): Record<string, unknown> {
+  const converted = transportSchema(z.toJSONSchema(schema));
+  if (!isRecord(converted) || !isObjectSchema(converted)) throw new Error("AI output schema 根节点必须是 object。");
+  return converted;
+}
+
+export function normalizeStructuredOutputTransport(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normalizeStructuredOutputTransport);
+  if (!isRecord(value)) return value;
+  const keys = Object.keys(value);
+  if (keys.length === 1 && keys[0] === PATCH_KEY) {
+    const entries = value[PATCH_KEY];
+    if (!Array.isArray(entries) || !entries.length) throw new Error("AI patch 至少需要一个字段修改。");
+    const result: Record<string, unknown> = {};
+    for (const entry of entries) {
+      if (!isRecord(entry) || typeof entry.field !== "string" || !("value" in entry)) throw new Error("AI patch 项格式无效。");
+      if (entry.field in result) throw new Error(`AI patch 字段重复：${entry.field}`);
+      result[entry.field] = normalizeStructuredOutputTransport(entry.value);
+    }
+    return result;
+  }
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, normalizeStructuredOutputTransport(item)]));
+}
+
+function repairMessage(error: Error, attempt: number) {
+  const detail = error.message.replace(/\s+/g, " ").slice(0, 4000);
+  return [
+    `上一轮结构化输出未通过服务端校验，正在进行第 ${attempt}/${MAX_STRUCTURED_REPAIRS} 次修正。`,
+    `校验错误：${detail}`,
+    "请根据当前线程中的原始任务和状态修正输出。",
+    "只返回符合本轮同一 JSON Schema 的完整 JSON；不要解释，不要使用 Markdown。",
+  ].join("\n");
+}
 
 export class StructuredAiRunnerV2 {
   private readonly active = new Map<string, ActiveRun>();
@@ -93,11 +202,36 @@ export class StructuredAiRunnerV2 {
         return;
       }
       try {
-        const parsed = JSON.parse(run.content);
+        const parsed = normalizeStructuredOutputTransport(JSON.parse(run.content));
         this.finish(threadId, null, run.schema.parse(parsed));
       } catch (error) {
-        this.finish(threadId, safeError(error));
+        const normalized = safeError(error);
+        if (run.repairAttempts < MAX_STRUCTURED_REPAIRS) {
+          void this.repair(threadId, normalized);
+          return;
+        }
+        this.finish(threadId, normalized);
       }
+    }
+  }
+
+  private async repair(threadId: string, error: Error) {
+    const run = this.active.get(threadId);
+    if (!run) return;
+    run.repairAttempts += 1;
+    run.content = "";
+    run.onProgress?.({ kind: "turn:repair", text: `结构化结果校验失败，正在自动修正（${run.repairAttempts}/${MAX_STRUCTURED_REPAIRS}）` });
+    try {
+      const turn = await this.client.call("turn/start", structuredTurn({
+        threadId,
+        input: [{ type: "text", text: repairMessage(error, run.repairAttempts), text_elements: [] }],
+        outputSchema: run.outputSchema,
+        ...(run.model ? { model: run.model } : {}),
+        ...(run.effort ? { effort: run.effort } : {}),
+      }), 120_000);
+      run.turnId = String(turn?.turn?.id ?? run.turnId ?? "") || null;
+    } catch (repairError) {
+      this.finish(threadId, safeError(repairError));
     }
   }
 
@@ -112,6 +246,7 @@ export class StructuredAiRunnerV2 {
 
   async start<T>(options: StructuredAiRunOptions<T>): Promise<StructuredAiRun<T>> {
     await this.ensureStarted();
+    const outputSchema = buildOpenAiStructuredOutputSchema(options.schema as ZodType<unknown>);
     const common = {
       cwd: options.cwd,
       developerInstructions: options.developerInstructions,
@@ -152,14 +287,27 @@ export class StructuredAiRunnerV2 {
       this.finish(threadId, new Error("AI 结构化请求超时。"));
     }, options.timeoutMs ?? 180_000);
     timer.unref();
-    const run: ActiveRun<T> = { threadId, turnId: null, content: "", schema: options.schema, settle, reject, timer, onProgress: options.onProgress };
+    const run: ActiveRun<T> = {
+      threadId,
+      turnId: null,
+      content: "",
+      schema: options.schema,
+      outputSchema,
+      model: options.model,
+      effort: options.effort,
+      repairAttempts: 0,
+      settle,
+      reject,
+      timer,
+      onProgress: options.onProgress,
+    };
     this.active.set(threadId, run as ActiveRun);
     try {
       const state = typeof options.state === "string" ? options.state : JSON.stringify(options.state, null, 2);
       const turn = await this.client.call("turn/start", structuredTurn({
         threadId,
         input: [{ type: "text", text: `${options.prompt}\n\n本轮受控状态：\n${state}`, text_elements: [] }],
-        outputSchema: options.outputSchema,
+        outputSchema,
         ...(options.model ? { model: options.model } : {}),
         ...(options.effort ? { effort: options.effort } : {}),
       }), 120_000);
