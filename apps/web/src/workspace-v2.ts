@@ -2,6 +2,7 @@ import type { CandidatePreference, DayRoute, Place, PlaceResolution, RouteState,
 
 export type CandidateFilter = "all" | CandidatePreference | "unresolved";
 export type CandidateRow = { candidate: TripCandidate; place: Place; resolution: PlaceResolution | null };
+export type CandidateAreaGroup = { key: string; label: string; cityRow: CandidateRow | null; rows: CandidateRow[] };
 
 export const preferenceOrder: Record<CandidatePreference, number> = { must_go: 0, want_to_go: 1, optional: 2, excluded: 3 };
 
@@ -14,6 +15,75 @@ export function candidateRows(workspace: Workspace): CandidateRow[] {
   }).sort((left, right) => preferenceOrder[left.candidate.preference] - preferenceOrder[right.candidate.preference]
     || (right.candidate.aiScore ?? -1) - (left.candidate.aiScore ?? -1)
     || left.place.nameZh.localeCompare(right.place.nameZh, "zh-CN"));
+}
+
+const normalizeArea = (value: string | null | undefined) => (value ?? "")
+  .normalize("NFKC")
+  .trim()
+  .toLocaleLowerCase()
+  .replace(/[\p{P}\p{S}\s]+/gu, "");
+
+export function candidateAreaGroups(rows: CandidateRow[]): CandidateAreaGroup[] {
+  const cityRows = rows.filter((row) => row.place.kind === "city");
+  const aliases = new Map<string, CandidateRow | null>();
+  for (const row of cityRows) {
+    for (const value of [row.place.nameZh, row.place.nameLocal, row.place.nameEn, row.place.city]) {
+      const alias = normalizeArea(value);
+      if (!alias) continue;
+      if (!aliases.has(alias)) aliases.set(alias, row);
+      else if (aliases.get(alias)?.place.id !== row.place.id) aliases.set(alias, null);
+    }
+  }
+
+  const groups = new Map<string, CandidateAreaGroup>();
+  for (const row of rows) {
+    let key: string;
+    let label: string;
+    let cityRow: CandidateRow | null = null;
+    if (row.place.kind === "city") {
+      key = `city:${row.place.id}`;
+      label = row.place.nameZh;
+      cityRow = row;
+    } else {
+      const cityAlias = normalizeArea(row.place.city);
+      const matched = cityAlias ? aliases.get(cityAlias) ?? null : null;
+      if (matched) {
+        key = `city:${matched.place.id}`;
+        label = matched.place.nameZh;
+        cityRow = matched;
+      } else if (cityAlias) {
+        key = `city-name:${normalizeArea(row.place.countryCode ?? row.place.country)}:${cityAlias}`;
+        label = row.place.city ?? "城市";
+      } else if (row.place.region) {
+        key = `region:${normalizeArea(row.place.countryCode ?? row.place.country)}:${normalizeArea(row.place.region)}`;
+        label = row.place.region;
+      } else if (row.place.country || row.place.countryCode) {
+        key = `country:${normalizeArea(row.place.countryCode ?? row.place.country)}`;
+        label = row.place.country ?? row.place.countryCode ?? "区域";
+      } else {
+        key = `place:${row.place.id}`;
+        label = "其他地点";
+      }
+    }
+    const group = groups.get(key) ?? { key, label, cityRow, rows: [] };
+    if (!group.cityRow && cityRow) group.cityRow = cityRow;
+    group.rows.push(row);
+    groups.set(key, group);
+  }
+
+  return [...groups.values()]
+    .map((group) => ({
+      ...group,
+      rows: [...group.rows].sort((left, right) => Number(right.place.kind === "city") - Number(left.place.kind === "city")
+        || preferenceOrder[left.candidate.preference] - preferenceOrder[right.candidate.preference]
+        || (right.candidate.aiScore ?? -1) - (left.candidate.aiScore ?? -1)
+        || left.place.nameZh.localeCompare(right.place.nameZh, "zh-CN")),
+    }))
+    .sort((left, right) => {
+      const leftPreference = Math.min(...left.rows.map((row) => preferenceOrder[row.candidate.preference]));
+      const rightPreference = Math.min(...right.rows.map((row) => preferenceOrder[row.candidate.preference]));
+      return leftPreference - rightPreference || left.label.localeCompare(right.label, "zh-CN");
+    });
 }
 
 export function resolutionStatus(row: CandidateRow) {
