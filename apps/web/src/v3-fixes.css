@@ -18,6 +18,108 @@
   flex-wrap: wrap;
 }
 
+.candidate-area-group {
+  margin: 7px 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--surface-subtle);
+  overflow: hidden;
+}
+
+.candidate-area-group.excluded {
+  opacity: .78;
+}
+
+.candidate-area-head {
+  display: grid;
+  width: 100%;
+  min-height: 48px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 0;
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+}
+
+.candidate-area-head:hover {
+  background: color-mix(in srgb, var(--primary-soft) 52%, transparent);
+}
+
+.candidate-area-head > svg {
+  color: var(--muted);
+  transition: transform .15s ease;
+}
+
+.candidate-area-head > svg.open {
+  transform: rotate(90deg);
+}
+
+.candidate-area-head > span {
+  min-width: 0;
+}
+
+.candidate-area-head strong,
+.candidate-area-head small {
+  display: block;
+}
+
+.candidate-area-head strong {
+  font-size: 13px;
+}
+
+.candidate-area-head small {
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.candidate-area-head em {
+  padding: 4px 6px;
+  border-radius: 7px;
+  color: var(--primary);
+  background: var(--primary-soft);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.candidate-area-cards {
+  padding: 0 7px 7px;
+}
+
+.candidate-area-cards .candidate-card {
+  margin: 5px 0;
+}
+
+.candidate-card.city-macro {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--primary-soft) 42%, var(--surface));
+}
+
+.candidate-card.area-suppressed {
+  opacity: .56;
+}
+
+.candidate-area-badge {
+  display: inline-flex;
+  margin-left: 6px;
+  padding: 2px 5px;
+  border-radius: 6px;
+  color: var(--primary);
+  background: var(--primary-soft);
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 800;
+  vertical-align: middle;
+}
+
 .manual-coordinate-form select {
   width: 100%;
   min-height: 38px;
@@ -66,6 +168,15 @@
   .candidate-head-actions,
   .itinerary-head-actions {
     justify-content: flex-start;
+  }
+
+  .candidate-area-head {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .candidate-area-head em {
+    grid-column: 2;
+    justify-self: start;
   }
 
   .workspace-map-v2 footer .muted:last-child {
