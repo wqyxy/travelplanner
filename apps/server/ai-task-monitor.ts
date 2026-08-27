@@ -36,14 +36,16 @@ export class AiTaskMonitor {
     this.store.appendAiProgress(input.id, "starting", "task:started", summary); this.buffers.delete(input.id); this.emit(this.store.getAiTask(input.id)!); return snapshot;
   }
   update(id: string, status: AiTaskStatus, summary: unknown, kind = "status") {
+    if (!id) return null;
     const value = normalizePublicAiSummary(summary); if (!value) return this.store.getAiTask(id);
     const snapshot = this.store.appendAiProgress(id, status, kind, value); if (snapshot) this.emit(snapshot); if (TERMINAL.has(status)) this.buffers.delete(id); return snapshot;
   }
   append(id: string, segment: string, delta: unknown) {
+    if (!id) return null;
     const value = String(delta ?? ""); if (!value) return this.store.getAiTask(id);
     const segments = this.buffers.get(id) ?? new Map<string, string>(); const combined = `${segments.get(segment) ?? ""}${value}`.slice(-2400); segments.set(segment, combined); this.buffers.set(id, segments);
     return this.update(id, "running", combined, segment);
   }
-  metadata(id: string, value: Record<string, unknown>) { const snapshot = this.store.setAiTaskMetadata(id, value); if (snapshot) this.emit(snapshot); return snapshot; }
+  metadata(id: string, value: Record<string, unknown>) { if (!id) return null; const snapshot = this.store.setAiTaskMetadata(id, value); if (snapshot) this.emit(snapshot); return snapshot; }
   list(tripId: string) { return this.store.listAiTasks(tripId); }
 }
