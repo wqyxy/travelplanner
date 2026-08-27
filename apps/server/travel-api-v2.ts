@@ -65,7 +65,11 @@ export async function dispatchTravelApiV2(
   if (method === "POST" && match) return { status: 202, data: deps.runtime.startConversation(decode(match[1]), String(body.message ?? "")) };
 
   match = /^\/api\/trips\/([^/]+)\/candidates\/discover$/.exec(pathname);
-  if (method === "POST" && match) return { status: 202, data: deps.runtime.startCandidateDiscovery(decode(match[1]), typeof body.message === "string" ? body.message : null) };
+  if (method === "POST" && match) {
+    if (body.mode !== "macro" && body.mode !== "micro") throw new Error("候选地点发现 mode 必须是 macro 或 micro。");
+    const planningAreaCandidateIds = Array.isArray(body.planningAreaCandidateIds) ? body.planningAreaCandidateIds.map(String) : [];
+    return { status: 202, data: deps.runtime.startCandidateDiscovery(decode(match[1]), body.mode, planningAreaCandidateIds, typeof body.message === "string" ? body.message : null) };
+  }
   match = /^\/api\/trips\/([^/]+)\/candidates\/batch$/.exec(pathname);
   if (method === "POST" && match) {
     const preference = CandidatePreferenceSchema.parse(body.preference);

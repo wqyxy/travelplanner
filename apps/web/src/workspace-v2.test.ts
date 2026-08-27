@@ -14,13 +14,13 @@ function workspace(): Workspace {
           { id: "p2", nameZh: "铁道博物馆", nameLocal: null, nameEn: null, kind: "attraction", city: "京都", region: null, country: "日本", countryCode: "JP", approximate: false },
         ],
         candidates: [
-          { id: "c1", placeId: "p1", preference: "must_go", source: "ai", aiReason: "经典", aiScore: 92, suggestedDurationMinutes: 90, tags: ["寺院"] },
-          { id: "c2", placeId: "p2", preference: "optional", source: "ai", aiReason: "亲子", aiScore: 96, suggestedDurationMinutes: 150, tags: ["亲子"] },
+          { id: "c1", placeId: "p1", planningAreaCandidateId: null, preference: "must_go", source: "ai", aiReason: "经典", aiScore: 92, suggestedDurationMinutes: 90, tags: ["寺院"] },
+          { id: "c2", placeId: "p2", planningAreaCandidateId: null, preference: "optional", source: "ai", aiReason: "亲子", aiScore: 96, suggestedDurationMinutes: 150, tags: ["亲子"] },
         ], days: [], warnings: [],
       },
     },
     resolutions: [{ tripId: "t", placeId: "p1", geoFingerprint: "g", status: "resolved", method: "provider_match", provider: "osm", providerPlaceId: "1", latitude: 1, longitude: 2, address: "京都", confidence: .9, resolvedAt: "2026-08-27T00:00:00Z", errorMessage: null }],
-    routes: [], routeStates: [], proposals: [], messages: [], tasks: [], revisions: [],
+    routes: [], routeStates: [], proposals: [], messages: [], tasks: [], revisions: [], coverage: [],
   };
 }
 

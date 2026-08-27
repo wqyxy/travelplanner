@@ -26,20 +26,45 @@
 
 ### `discover_candidates`
 
-根据 TripFacts、现有 Candidate 和用户补充要求生成地点池。地点池同时包含宏观城市 / 区域节点和城市内可实际访问的具体地点。
+根据服务端注入的 `task.discoveryMode` 执行分层地点发现。**Macro 与 Micro 不得在同一轮混合生成。**
+
+#### `discoveryMode=macro`
+
+只生成“这趟旅行去哪里”的 Macro 目的地候选：城市、区域、景区、岛屿或 road-trip 中具有独立停留意义的目的地。
+
+P0 为保持现有 Place kind 合同，Macro 统一使用 `kind=city` 表达；名称可以是城市或明确区域名。
 
 要求：
 
-- 首次发现生成 10–80 个 Candidate；补充推荐可以少于 10 个，但单次仍不得超过 80 个；
-- 对行程中的主要停留城市，优先生成一个 `kind=city` 的城市 Place，作为宏观规划节点；城市 Place 代表“这趟旅行是否进入并停留于该城市”，不是“去城市中心游览”；
-- 每个主要城市同时推荐若干可实际访问、可定位的具体景点 / 住宿区域 / 交通节点；不要只返回城市名；
-- 城市内具体 Place 的 `city` 字段必须稳定、明确，并尽量与对应城市 Place 的本地名 / 英文名 / 中文名保持可匹配；
-- 只生成语义 Place 和 TripCandidate 推荐元数据；
+- 只生成 Macro，不生成具体景点、酒店、车站等 Micro Place；
+- 每个输出 Candidate 的 `planningAreaCandidateId` 必须为 `null`；
+- 根据旅行天数与用户需求控制数量，优先给出少而清晰的目的地集合，不为凑数量过度拆分；
+- 避免与当前已有 Macro 语义重复；
+- 默认 preference 固定为 `optional`；
+- 不生成坐标、Provider Place ID 或地图平台评分。
+
+#### `discoveryMode=micro`
+
+只围绕 `task.planningAreaCandidates` 中明确注入的 Macro 目的地，生成“到了这里具体玩什么”的可实际访问、可地图解析的 Micro Place。
+
+要求：
+
+- 不生成 `kind=city`；只生成 attraction / lodging / airport / station / port / waypoint / meal / stop 等具体地点；
+- 每个输出 Candidate 的 `planningAreaCandidateId` **必须精确引用一个本轮注入的 Macro Candidate 正式 ID**；
+- 不允许仅靠 `Place.city` 文本暗示归属；显式父引用是 canonical 归属；
+- 对每个目标 Macro 优先推荐若干真正有旅行价值、可搜索、可定位的地点；不要为了数量生成模糊实体；
+- 用户要求“补充推荐”时优先补当前池中缺失的类型或区域，不重复已有地点；
 - 给出明确推荐理由、0–100 AI 推荐分、建议停留时间和标签；
 - 默认 preference 固定为 `optional`；
+- `Place.city / region / country` 仍应尽可能准确，用于显示与地图搜索，但不是父子关系来源；
+- 不生成坐标、地址坐标、Provider Place ID 或平台评分。
+
+两种模式共同要求：
+
+- 只生成语义 Place 和 TripCandidate 推荐元数据；
 - 避免与现有地点或本轮其他地点语义重复；
-- 不生成坐标、地址坐标、Provider Place ID 或平台评分；
-- 不生成“附近商场”“某个咖啡馆”等无法定位的模糊实体。
+- 不生成“附近商场”“某个咖啡馆”等无法定位的模糊实体；
+- 只返回服务端指定结构，不解释内部推理。
 
 ### `generate_plan`
 
@@ -84,7 +109,7 @@
 
 - Scope 必须与输入完全一致；
 - 命令必须局限于 Scope；
-- Candidate Pool Scope 只能新增、移除或更新候选地点，不能替用户修改 preference；
+- Candidate Pool Scope 只能新增、移除或更新候选地点，不能替用户修改 preference；新增 Macro Candidate 的 `planningAreaCandidateId` 必须为 null，新增 Micro Candidate 必须指向已有 Macro Candidate；
 - Candidate Scope 只能更新/替换目标 Candidate 及对应 Place，不能修改 Day；
 - Place Scope 只能修改目标 Place 的语义字段，不能修改坐标、Candidate preference 或 Day；
 - Day Scope 只能修改目标 Day 内部，跨日移动和 Day 重排必须使用 Trip Scope；

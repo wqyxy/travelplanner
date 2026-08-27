@@ -43,6 +43,28 @@ const parse = <T>(value: unknown, fallback: T): T => {
   }
 };
 
+function normalizeCandidateAreaLinks(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  const cloned = structuredClone(value) as unknown;
+  const visit = (node: unknown) => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
+    const record = node as Record<string, unknown>;
+    if ("id" in record && "placeId" in record && "preference" in record && "source" in record && "tags" in record && !("planningAreaCandidateId" in record)) {
+      record.planningAreaCandidateId = null;
+    }
+    Object.values(record).forEach(visit);
+  };
+  visit(cloned);
+  return cloned;
+}
+
+const parseTravelPlanJson = (value: unknown) => TravelPlanDocumentSchema.parse(normalizeCandidateAreaLinks(parse(value, null)));
+const parseProposalJson = (value: unknown) => AiProposalSchema.parse(normalizeCandidateAreaLinks(parse(value, null)));
+
 export type TripStateV2 = "active" | "trashed";
 export type PlanLanguage = "zh" | "en" | "bilingual";
 export type TripSummaryV2 = {
@@ -221,7 +243,7 @@ export class TravelStoreV2 {
   }
 
   private rowToTrip(row: Row): TripSummaryV2 {
-    const plan = TravelPlanDocumentSchema.parse(parse(row.current_plan_json, null));
+    const plan = parseTravelPlanJson(row.current_plan_json);
     if (String(row.title) !== plan.trip.title) {
       throw new Error("travel.sqlite3 的标题索引与 canonical plan 不一致；已停止读取，避免传播损坏状态。");
     }
@@ -377,7 +399,7 @@ export class TravelStoreV2 {
       createdAt: String(row.created_at),
       source: String(row.source),
       summary: String(row.summary),
-      plan: TravelPlanDocumentSchema.parse(parse(row.plan_json, null)),
+      plan: parseTravelPlanJson(row.plan_json),
     } : null;
   }
 
@@ -559,7 +581,7 @@ export class TravelStoreV2 {
   }
 
   private rowToProposal(row: Row) {
-    const proposal = AiProposalSchema.parse(parse(row.proposal_json, null));
+    const proposal = parseProposalJson(row.proposal_json);
     if (proposal.id !== String(row.id) || proposal.tripId !== String(row.trip_id) || proposal.baseGeneration !== Number(row.base_generation) || proposal.status !== String(row.status) || proposal.appliedRevisionVersion !== (row.applied_revision_version === null ? null : Number(row.applied_revision_version))) {
       throw new Error("AI Proposal 索引与 proposal JSON 不一致；已停止读取损坏状态。");
     }

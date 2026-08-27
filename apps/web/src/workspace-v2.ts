@@ -25,6 +25,7 @@ const normalizeArea = (value: string | null | undefined) => (value ?? "")
 
 export function candidateAreaGroups(rows: CandidateRow[]): CandidateAreaGroup[] {
   const cityRows = rows.filter((row) => row.place.kind === "city");
+  const rowsByCandidateId = new Map(rows.map((row) => [row.candidate.id, row]));
   const aliases = new Map<string, CandidateRow | null>();
   for (const row of cityRows) {
     for (const value of [row.place.nameZh, row.place.nameLocal, row.place.nameEn, row.place.city]) {
@@ -45,24 +46,31 @@ export function candidateAreaGroups(rows: CandidateRow[]): CandidateAreaGroup[] 
       label = row.place.nameZh;
       cityRow = row;
     } else {
-      const cityAlias = normalizeArea(row.place.city);
-      const matched = cityAlias ? aliases.get(cityAlias) ?? null : null;
-      if (matched) {
-        key = `city:${matched.place.id}`;
-        label = matched.place.nameZh;
-        cityRow = matched;
-      } else if (cityAlias) {
-        key = `city-name:${normalizeArea(row.place.countryCode ?? row.place.country)}:${cityAlias}`;
-        label = row.place.city ?? "城市";
-      } else if (row.place.region) {
-        key = `region:${normalizeArea(row.place.countryCode ?? row.place.country)}:${normalizeArea(row.place.region)}`;
-        label = row.place.region;
-      } else if (row.place.country || row.place.countryCode) {
-        key = `country:${normalizeArea(row.place.countryCode ?? row.place.country)}`;
-        label = row.place.country ?? row.place.countryCode ?? "区域";
+      const explicitParent = row.candidate.planningAreaCandidateId ? rowsByCandidateId.get(row.candidate.planningAreaCandidateId) ?? null : null;
+      if (explicitParent?.place.kind === "city") {
+        key = `city:${explicitParent.place.id}`;
+        label = explicitParent.place.nameZh;
+        cityRow = explicitParent;
       } else {
-        key = `place:${row.place.id}`;
-        label = "其他地点";
+        const cityAlias = normalizeArea(row.place.city);
+        const matched = cityAlias ? aliases.get(cityAlias) ?? null : null;
+        if (matched) {
+          key = `city:${matched.place.id}`;
+          label = matched.place.nameZh;
+          cityRow = matched;
+        } else if (cityAlias) {
+          key = `city-name:${normalizeArea(row.place.countryCode ?? row.place.country)}:${cityAlias}`;
+          label = row.place.city ?? "城市";
+        } else if (row.place.region) {
+          key = `region:${normalizeArea(row.place.countryCode ?? row.place.country)}:${normalizeArea(row.place.region)}`;
+          label = row.place.region;
+        } else if (row.place.country || row.place.countryCode) {
+          key = `country:${normalizeArea(row.place.countryCode ?? row.place.country)}`;
+          label = row.place.country ?? row.place.countryCode ?? "区域";
+        } else {
+          key = `place:${row.place.id}`;
+          label = "其他地点";
+        }
       }
     }
     const group = groups.get(key) ?? { key, label, cityRow, rows: [] };
@@ -111,9 +119,9 @@ export function filterCandidateRows(rows: CandidateRow[], filter: CandidateFilte
   });
 }
 
-export function candidateCounts(rows: CandidateRow[]) {
-  const participating = participatingCandidateIds(rows);
-  const result = { all: rows.length, must_go: 0, want_to_go: 0, optional: 0, excluded: 0, unresolved: 0, selected: participating.size };
+export function candidateCounts(rows: CandidateRow[], contextRows: CandidateRow[] = rows) {
+  const participating = participatingCandidateIds(contextRows);
+  const result = { all: rows.length, must_go: 0, want_to_go: 0, optional: 0, excluded: 0, unresolved: 0, selected: rows.filter((row) => participating.has(row.candidate.id)).length };
   for (const row of rows) {
     result[row.candidate.preference] += 1;
     if (resolutionStatus(row) === "unresolved") result.unresolved += 1;
@@ -121,8 +129,8 @@ export function candidateCounts(rows: CandidateRow[]) {
   return result;
 }
 
-export function selectedUnresolvedRows(rows: CandidateRow[]) {
-  const participating = participatingCandidateIds(rows);
+export function selectedUnresolvedRows(rows: CandidateRow[], contextRows: CandidateRow[] = rows) {
+  const participating = participatingCandidateIds(contextRows);
   return rows.filter((row) => participating.has(row.candidate.id) && resolutionStatus(row) !== "resolved");
 }
 

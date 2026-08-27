@@ -10,10 +10,10 @@ const places = [
 ] as TravelPlanDocument["places"];
 
 const candidates = [
-  { id: "city-c", placeId: "city", preference: "optional", source: "ai", aiReason: "城市", aiScore: 80, suggestedDurationMinutes: null, tags: [] },
-  { id: "a-c", placeId: "a", preference: "optional", source: "ai", aiReason: "A", aiScore: 80, suggestedDurationMinutes: 60, tags: [] },
-  { id: "b-c", placeId: "b", preference: "optional", source: "ai", aiReason: "B", aiScore: 80, suggestedDurationMinutes: 60, tags: [] },
-  { id: "c-c", placeId: "c", preference: "optional", source: "ai", aiReason: "C", aiScore: 80, suggestedDurationMinutes: 60, tags: [] },
+  { id: "city-c", placeId: "city", planningAreaCandidateId: null, preference: "optional", source: "ai", aiReason: "城市", aiScore: 80, suggestedDurationMinutes: null, tags: [] },
+  { id: "a-c", placeId: "a", planningAreaCandidateId: null, preference: "optional", source: "ai", aiReason: "A", aiScore: 80, suggestedDurationMinutes: 60, tags: [] },
+  { id: "b-c", placeId: "b", planningAreaCandidateId: null, preference: "optional", source: "ai", aiReason: "B", aiScore: 80, suggestedDurationMinutes: 60, tags: [] },
+  { id: "c-c", placeId: "c", planningAreaCandidateId: null, preference: "optional", source: "ai", aiReason: "C", aiScore: 80, suggestedDurationMinutes: 60, tags: [] },
 ] as TravelPlanDocument["candidates"];
 
 const trip = {

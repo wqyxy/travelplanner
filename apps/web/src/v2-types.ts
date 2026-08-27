@@ -32,6 +32,7 @@ export type CandidatePreference = "must_go" | "want_to_go" | "optional" | "exclu
 export type TripCandidate = {
   id: string;
   placeId: string;
+  planningAreaCandidateId: string | null;
   preference: CandidatePreference;
   source: "ai" | "user";
   aiReason: string | null;
@@ -212,6 +213,17 @@ export type AiProposal = {
   appliedRevisionVersion: number | null;
 };
 export type Revision = { version: number; createdAt: string; source: string; summary: string };
+export type PlanningCoverageStatus = "ready" | "attention" | "blocked";
+export type PlanningAreaCoverage = {
+  areaKey: string;
+  label: string;
+  macroCandidateId: string;
+  preference: CandidatePreference;
+  microCandidateCount: number;
+  resolvedMicroCount: number;
+  participatingResolvedMicroCount: number;
+  status: PlanningCoverageStatus;
+};
 export type Workspace = {
   trip: Trip;
   resolutions: PlaceResolution[];
@@ -221,6 +233,7 @@ export type Workspace = {
   messages: Chat[];
   tasks: AiTask[];
   revisions: Revision[];
+  coverage: PlanningAreaCoverage[];
 };
 export type WorkspaceSelection =
   | { type: "trip"; id: null }

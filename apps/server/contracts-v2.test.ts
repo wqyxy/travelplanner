@@ -11,7 +11,7 @@ import {
 } from "./contracts-v2.js";
 
 const place = (id: string) => ({ id, nameZh: id, nameLocal: null, nameEn: null, kind: "attraction" as const, city: "京都", region: null, country: "日本", countryCode: "JP", approximate: false });
-const candidate = (id: string, placeId: string, preference: "must_go" | "want_to_go" | "optional" | "excluded" = "optional") => ({ id, placeId, preference, source: "ai" as const, aiReason: "推荐", aiScore: 80, suggestedDurationMinutes: 90, tags: [] });
+const candidate = (id: string, placeId: string, preference: "must_go" | "want_to_go" | "optional" | "excluded" = "optional", planningAreaCandidateId: string | null = null) => ({ id, placeId, planningAreaCandidateId, preference, source: "ai" as const, aiReason: "推荐", aiScore: 80, suggestedDurationMinutes: 90, tags: [] });
 
 function containsForbiddenCoordinateKey(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(containsForbiddenCoordinateKey);
