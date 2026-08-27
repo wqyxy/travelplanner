@@ -1,4 +1,27 @@
-import type { CandidatePreference, Place, TravelPlanDocument } from "./contracts-v2.js";
+export type PlanningCandidatePreference = "must_go" | "want_to_go" | "optional" | "excluded";
+
+export type PlanningAreaPlace = {
+  id: string;
+  nameZh: string;
+  nameLocal: string | null;
+  nameEn: string | null;
+  kind: string;
+  city: string | null;
+  region: string | null;
+  country: string | null;
+  countryCode: string | null;
+};
+
+export type PlanningAreaCandidate = {
+  id: string;
+  placeId: string;
+  preference: PlanningCandidatePreference;
+};
+
+export type PlanningAreaPlan = {
+  places: PlanningAreaPlace[];
+  candidates: PlanningAreaCandidate[];
+};
 
 const normalizeAreaText = (value: string | null | undefined) => (value ?? "")
   .normalize("NFKC")
@@ -6,7 +29,7 @@ const normalizeAreaText = (value: string | null | undefined) => (value ?? "")
   .toLocaleLowerCase()
   .replace(/[\p{P}\p{S}\s]+/gu, "");
 
-const preferenceRank: Record<CandidatePreference, number> = {
+const preferenceRank: Record<PlanningCandidatePreference, number> = {
   must_go: 0,
   want_to_go: 1,
   optional: 2,
@@ -22,7 +45,7 @@ export type PlanningAreaV2 = {
   childCandidateIds: string[];
   participatingCandidateIds: string[];
   suppressedCandidateIds: string[];
-  effectivePreference: CandidatePreference;
+  effectivePreference: PlanningCandidatePreference;
 };
 
 export type PlanningAreaContextV2 = {
@@ -36,13 +59,13 @@ export type PlanningAreaContextV2 = {
 
 type AreaIdentity = { key: string; label: string; cityPlaceId: string | null };
 
-function cityAliases(place: Place) {
+function cityAliases(place: PlanningAreaPlace) {
   return [place.nameZh, place.nameLocal, place.nameEn, place.city]
     .map(normalizeAreaText)
     .filter(Boolean);
 }
 
-function uniqueCityAliases(places: Place[]) {
+function uniqueCityAliases(places: PlanningAreaPlace[]) {
   const candidates = new Map<string, Set<string>>();
   for (const place of places) {
     if (place.kind !== "city") continue;
@@ -59,7 +82,7 @@ function uniqueCityAliases(places: Place[]) {
   return result;
 }
 
-function areaIdentity(place: Place, placesById: Map<string, Place>, cityByAlias: Map<string, string>): AreaIdentity {
+function areaIdentity(place: PlanningAreaPlace, placesById: Map<string, PlanningAreaPlace>, cityByAlias: Map<string, string>): AreaIdentity {
   if (place.kind === "city") return { key: `city:${place.id}`, label: place.nameZh, cityPlaceId: place.id };
 
   const city = normalizeAreaText(place.city);
@@ -77,7 +100,7 @@ function areaIdentity(place: Place, placesById: Map<string, Place>, cityByAlias:
   return { key: `place:${place.id}`, label: "其他地点", cityPlaceId: null };
 }
 
-export function buildPlanningAreaContext(plan: TravelPlanDocument): PlanningAreaContextV2 {
+export function buildPlanningAreaContext(plan: PlanningAreaPlan): PlanningAreaContextV2 {
   const placesById = new Map(plan.places.map((place) => [place.id, place]));
   const candidatesById = new Map(plan.candidates.map((candidate) => [candidate.id, candidate]));
   const cityByAlias = uniqueCityAliases(plan.places);
@@ -137,7 +160,8 @@ export function buildPlanningAreaContext(plan: TravelPlanDocument): PlanningArea
     }
 
     const participating = draft.candidateIds.filter((candidateId) => candidatesById.get(candidateId)?.preference !== "excluded");
-    const suppressed = draft.candidateIds.filter((candidateId) => !participating.includes(candidateId));
+    const participatingSet = new Set(participating);
+    const suppressed = draft.candidateIds.filter((candidateId) => !participatingSet.has(candidateId));
     participating.forEach((candidateId) => participatingCandidateIds.add(candidateId));
     suppressed.forEach((candidateId) => suppressedCandidateIds.add(candidateId));
     const effectivePreference = participating
