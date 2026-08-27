@@ -32,7 +32,7 @@ describe("planning areas", () => {
     expect(context.areas).toHaveLength(1);
     expect(context.areas[0]).toMatchObject({ cityCandidateId: "city-c", effectivePreference: "must_go" });
     expect(context.areas[0].childCandidateIds).toEqual(expect.arrayContaining(["skyline-c", "gardens-c"]));
-    expect(fulfilledMacroCityCandidateIds(context, new Set(["skyline-c"]))).toContain("city-c");
+    expect(fulfilledMacroCityCandidateIds(context, new Set(["skyline-c"])).has("city-c")).toBe(true);
   });
 
   it("suppresses a city's children when the city is excluded", () => {
