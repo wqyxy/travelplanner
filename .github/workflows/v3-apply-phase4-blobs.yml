@@ -3,7 +3,7 @@ name: Apply verified Phase 4 blob bundle
 on:
   push:
     branches:
-      - codex/v3-candidate-workbench
+      - codex/v3-runtime-ui-completion
     paths:
       - .github/workflows/v3-apply-phase4-blobs.yml
 
