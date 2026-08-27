@@ -111,7 +111,12 @@ export function CandidatePanel({
   const [newCandidateError, setNewCandidateError] = useState("");
   const cards = useRef(new Map<string, HTMLElement>());
   const visible = useMemo(() => filterCandidateRows(rows, filter, query), [rows, filter, query]);
-  const groups = useMemo(() => candidateAreaGroups(visible), [visible]);
+  const groups = useMemo(() => {
+    const visibleCandidateIds = new Set(visible.map((row) => row.candidate.id));
+    return candidateAreaGroups(rows)
+      .map((group) => ({ ...group, rows: group.rows.filter((row) => visibleCandidateIds.has(row.candidate.id)) }))
+      .filter((group) => group.rows.length > 0);
+  }, [rows, visible]);
   const unresolvedSelected = useMemo(() => selectedUnresolvedRows(rows), [rows]);
   const visibleIds = useMemo(() => visible.map((row) => row.candidate.id), [visible]);
   const allVisibleChecked = visibleIds.length > 0 && visibleIds.every((id) => checked.has(id));
