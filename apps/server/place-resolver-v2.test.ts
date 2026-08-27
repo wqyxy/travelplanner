@@ -19,7 +19,7 @@ function seededStore() {
   const created = store.createTrip();
   const plan = emptyTravelPlan();
   plan.places.push(place);
-  plan.candidates.push({ id: "c-1", placeId: "p-1", preference: "optional", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: 90, tags: [] });
+  plan.candidates.push({ id: "c-1", placeId: "p-1", planningAreaCandidateId: null, preference: "optional", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: 90, tags: [] });
   const written = store.writePlan(created.id, plan, 0, { source: "test", summary: "seed place" });
   return { store, tripId: created.id, generation: written.generation };
 }

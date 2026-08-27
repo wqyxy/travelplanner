@@ -32,7 +32,7 @@ import { DayRouteServiceV2 } from "./day-route-v2.js";
 import { AiTaskMonitor, aiErrorMessage, normalizePublicAiSummary } from "./ai-task-monitor.js";
 import { applyPlanCommandBatchToStore, applyPlanCommands } from "./plan-commands-v2.js";
 import { optimizeGeneratedSightseeingOrder } from "./plan-route-order-v2.js";
-import { buildPlanningAreaContext } from "./planning-areas-v2.js";
+import { buildPlanningAreaContext, buildPlanningCoverage } from "./planning-areas-v2.js";
 import type { AgentPromptsV2 } from "./prompt-contract-v2.js";
 import { resolutionIsCurrent, type PlaceResolverV2 } from "./place-resolver-v2.js";
 import { assertProposalCommandsWithinScope } from "./proposal-scope-policy-v2.js";
@@ -50,6 +50,7 @@ export type RuntimeEventV2 =
   | { kind: "ai-task.updated"; payload: unknown };
 
 export type ModelOptionsV2 = { model?: string; effort?: ReasoningEffort };
+export type CandidateDiscoveryModeV2 = "macro" | "micro";
 export type RuntimeAiHandle<T> = StructuredAiRun<T>;
 export type GeoClusterV2 = {
   key: string;
@@ -61,7 +62,7 @@ export type GeoClusterV2 = {
 
 export interface TravelAiV2 {
   conversation(input: { trip: TripDetailV2; message: string }, progress?: (value: StructuredAiProgress) => void): Promise<RuntimeAiHandle<ConversationOutput>>;
-  discoverCandidates(input: { trip: TripDetailV2; message: string | null }, progress?: (value: StructuredAiProgress) => void): Promise<RuntimeAiHandle<CandidateDiscoveryOutput>>;
+  discoverCandidates(input: { trip: TripDetailV2; message: string | null; mode: CandidateDiscoveryModeV2; planningAreaCandidateIds: string[] }, progress?: (value: StructuredAiProgress) => void): Promise<RuntimeAiHandle<CandidateDiscoveryOutput>>;
   generatePlan(input: { trip: TripDetailV2; resolutions: PlaceResolution[]; geoClusters: GeoClusterV2[] }, progress?: (value: StructuredAiProgress) => void): Promise<RuntimeAiHandle<PlanGenerationOutput>>;
   detailDays(input: { trip: TripDetailV2; dayIds: string[] }, progress?: (value: StructuredAiProgress) => void): Promise<RuntimeAiHandle<DetailBatchOutputV2>>;
   proposeAdjustment(input: { trip: TripDetailV2; scope: ProposalScope; message: string }, progress?: (value: StructuredAiProgress) => void): Promise<RuntimeAiHandle<AdjustmentProposalOutput>>;
@@ -144,14 +145,19 @@ export class CodexTravelAiV2 implements TravelAiV2 {
     });
   }
 
-  discoverCandidates(input: { trip: TripDetailV2; message: string | null }, progress?: (value: StructuredAiProgress) => void) {
+  discoverCandidates(input: { trip: TripDetailV2; message: string | null; mode: CandidateDiscoveryModeV2; planningAreaCandidateIds: string[] }, progress?: (value: StructuredAiProgress) => void) {
     return this.plannerRun<CandidateDiscoveryOutput>({
       trip: input.trip,
       taskMode: "discover_candidates",
       task: {
         userRequest: input.message,
-        initialDiscovery: input.trip.plan.candidates.length === 0,
+        discoveryMode: input.mode,
+        initialDiscovery: input.mode === "macro" && !input.trip.plan.candidates.some((candidate) => input.trip.plan.places.find((place) => place.id === candidate.placeId)?.kind === "city"),
         existingCandidatePlaceIds: input.trip.plan.candidates.map((item) => item.placeId),
+        planningAreaCandidateIds: input.planningAreaCandidateIds,
+        planningAreaCandidates: input.trip.plan.candidates
+          .filter((candidate) => input.planningAreaCandidateIds.includes(candidate.id))
+          .map((candidate) => ({ ...candidate, place: input.trip.plan.places.find((place) => place.id === candidate.placeId) ?? null })),
       },
       schema: CandidateDiscoveryOutputSchema,
       outputSchema: CandidateDiscoveryOutputJsonSchema,
@@ -366,9 +372,11 @@ export class TravelPlannerRuntimeV2 {
 
   workspace(tripId: string) {
     const workspace = this.options.store.getWorkspace(tripId);
+    const resolutions = currentResolutions(workspace.trip, workspace.resolutions);
     return {
       ...workspace,
-      resolutions: currentResolutions(workspace.trip, workspace.resolutions),
+      resolutions,
+      coverage: buildPlanningCoverage(workspace.trip.plan, new Set(resolutions.map((resolution) => resolution.placeId))),
       routeStates: this.options.routes.workspaceRouteState(tripId),
       messages: this.options.store.listMessages(tripId),
       tasks: this.options.tasks.list(tripId),
@@ -476,24 +484,72 @@ export class TravelPlannerRuntimeV2 {
     return result;
   }
 
-  startCandidateDiscovery(tripId: string, message: string | null = null) {
+  private candidateDiscoveryTargets(trip: TripDetailV2, mode: CandidateDiscoveryModeV2, requestedIds: string[]) {
+    if (mode === "macro") return [];
+    const places = new Map(trip.plan.places.map((place) => [place.id, place]));
+    const activeMacroIds = trip.plan.candidates
+      .filter((candidate) => candidate.preference !== "excluded" && places.get(candidate.placeId)?.kind === "city")
+      .map((candidate) => candidate.id);
+    const targetIds = [...new Set(requestedIds.length ? requestedIds : activeMacroIds)];
+    if (!targetIds.length) throw new Error("请先在“目的地”步骤生成并保留至少一个目的地。");
+    for (const candidateId of targetIds) {
+      const candidate = trip.plan.candidates.find((item) => item.id === candidateId);
+      const place = candidate ? places.get(candidate.placeId) : null;
+      if (!candidate || candidate.preference === "excluded" || place?.kind !== "city") {
+        throw new Error(`详细兴趣点只能围绕有效 Macro 目的地生成：${candidateId}`);
+      }
+    }
+    return targetIds;
+  }
+
+  private validateCandidateDiscoveryScope(trip: TripDetailV2, output: CandidateDiscoveryOutput, mode: CandidateDiscoveryModeV2, targetIds: string[]) {
+    const outputPlaces = new Map(output.places.map((place) => [place.id, place]));
+    const allowedParents = new Set(targetIds);
+    for (const candidate of output.candidates) {
+      const place = outputPlaces.get(candidate.placeTemporaryId);
+      if (!place) continue;
+      if (mode === "macro") {
+        if (place.kind !== "city") throw new Error(`目的地发现只能生成 Macro 节点，不能直接生成具体地点：${place.nameZh}`);
+        if (candidate.planningAreaCandidateId !== null) throw new Error("Macro Candidate 的 planningAreaCandidateId 必须为 null。");
+        continue;
+      }
+      if (place.kind === "city") throw new Error(`详细兴趣点阶段不得再次生成 Macro 城市：${place.nameZh}`);
+      if (!candidate.planningAreaCandidateId || !allowedParents.has(candidate.planningAreaCandidateId)) {
+        throw new Error(`详细兴趣点必须显式归属于本次指定的 Macro Candidate：${place.nameZh}`);
+      }
+    }
+    if (output.baseGeneration !== trip.contentGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
+  }
+
+  private async applyScopedCandidateDiscovery(tripId: string, output: CandidateDiscoveryOutput, mode: CandidateDiscoveryModeV2, requestedIds: string[]) {
+    const before = this.options.store.requireTrip(tripId);
+    const targetIds = this.candidateDiscoveryTargets(before, mode, requestedIds);
+    if (output.candidates.length > 80) throw new Error("单次候选地点最多 80 个。");
+    this.validateCandidateDiscoveryScope(before, output, mode, targetIds);
+    const applied = applyCandidateDiscoveryToStore(this.options.store, tripId, output);
+    this.emit("travel.document.changed", { tripId, generation: applied.generation, changedDayIds: [] });
+    const placeIds = [...new Set([
+      ...applied.addedPlaceIds,
+      ...applied.updatedCandidateIds.map((candidateId) => applied.trip.plan.candidates.find((candidate) => candidate.id === candidateId)?.placeId).filter((id): id is string => Boolean(id)),
+    ])];
+    await this.resolveChangedPlaces(tripId, placeIds, applied.generation);
+    return applied;
+  }
+
+  startCandidateDiscovery(tripId: string, mode: CandidateDiscoveryModeV2 = "macro", planningAreaCandidateIds: string[] = [], message: string | null = null) {
     const taskHolder = { id: "" };
+    const label = mode === "macro" ? "生成目的地建议" : "生成详细兴趣点";
     const result = this.begin({
       tripId,
-      label: "发现候选地点",
-      run: async () => this.options.ai.discoverCandidates({ trip: this.options.store.requireTrip(tripId), message: message?.trim() || null }, this.progress(taskHolder.id)),
+      label,
+      run: async () => {
+        const trip = this.options.store.requireTrip(tripId);
+        const targetIds = this.candidateDiscoveryTargets(trip, mode, planningAreaCandidateIds);
+        return this.options.ai.discoverCandidates({ trip, message: message?.trim() || null, mode, planningAreaCandidateIds: targetIds }, this.progress(taskHolder.id));
+      },
       complete: async (output: CandidateDiscoveryOutput) => {
-        const before = this.options.store.requireTrip(tripId);
-        if (output.candidates.length > 80) throw new Error("单次候选地点最多 80 个。");
-        if (!before.plan.candidates.length && output.candidates.length < 10) throw new Error("首次地点发现至少应返回 10 个候选地点（含城市和具体地点）。");
-        const applied = applyCandidateDiscoveryToStore(this.options.store, tripId, output);
-        this.options.store.createAssistantMessage(tripId, output.assistantMessage, { mode: "discover_candidates", addedCandidateIds: applied.addedCandidateIds });
-        this.emit("travel.document.changed", { tripId, generation: applied.generation, changedDayIds: [] });
-        const placeIds = [...new Set([
-          ...applied.addedPlaceIds,
-          ...applied.updatedCandidateIds.map((candidateId) => applied.trip.plan.candidates.find((candidate) => candidate.id === candidateId)?.placeId).filter((id): id is string => Boolean(id)),
-        ])];
-        await this.resolveChangedPlaces(tripId, placeIds, applied.generation);
+        const applied = await this.applyScopedCandidateDiscovery(tripId, output, mode, planningAreaCandidateIds);
+        this.options.store.createAssistantMessage(tripId, output.assistantMessage, { mode: "discover_candidates", discoveryMode: mode, addedCandidateIds: applied.addedCandidateIds });
       },
     });
     taskHolder.id = result.taskId;
@@ -525,14 +581,39 @@ export class TravelPlannerRuntimeV2 {
           for (const item of resolutionResults) this.emit("travel.resolution.changed", { tripId, placeId: item.resolution.placeId });
         }
 
-        const latestTrip = this.options.store.requireTrip(tripId);
+        let latestTrip = this.options.store.requireTrip(tripId);
         if (latestTrip.contentGeneration !== trip.contentGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
+        let resolutions = currentResolutions(latestTrip, this.options.store.listPlaceResolutions(tripId));
+        let coverage = buildPlanningCoverage(latestTrip.plan, new Set(resolutions.map((resolution) => resolution.placeId)));
+        const supplementMacroIds = coverage
+          .filter((item) => item.status === "blocked" || (item.status === "attention" && item.preference === "want_to_go"))
+          .map((item) => item.macroCandidateId);
+
+        if (supplementMacroIds.length) {
+          this.options.tasks.update(taskHolder.id, "running", `正在为 ${supplementMacroIds.length} 个目的地自动补充具体兴趣点`, "coverage:supplementing");
+          try {
+            const supplementTrip = this.options.store.requireTrip(tripId);
+            const handle = await this.options.ai.discoverCandidates({
+              trip: supplementTrip,
+              message: "自动补全缺少可用于真实路线的具体兴趣点；只补充本次指定的目的地，不修改其他目的地。",
+              mode: "micro",
+              planningAreaCandidateIds: supplementMacroIds,
+            }, this.progress(taskHolder.id));
+            const discoveryOutput = await handle.result;
+            await this.applyScopedCandidateDiscovery(tripId, discoveryOutput, "micro", supplementMacroIds);
+          } catch (error) {
+            const summary = normalizePublicAiSummary(aiErrorMessage(error)) || "自动补充兴趣点失败";
+            this.options.tasks.update(taskHolder.id, "running", `自动补充未完成：${summary}；继续检查可生成性`, "coverage:attention");
+          }
+          latestTrip = this.options.store.requireTrip(tripId);
+          resolutions = currentResolutions(latestTrip, this.options.store.listPlaceResolutions(tripId));
+          coverage = buildPlanningCoverage(latestTrip.plan, new Set(resolutions.map((resolution) => resolution.placeId)));
+        }
+
         const latestAreas = buildPlanningAreaContext(latestTrip.plan);
-        if (latestAreas.conflicts.length) throw new Error(`城市与具体地点偏好冲突：${latestAreas.conflicts.join("；")}`);
-        const resolutions = currentResolutions(latestTrip, this.options.store.listPlaceResolutions(tripId));
+        if (latestAreas.conflicts.length) throw new Error(`目的地与具体兴趣点偏好冲突：${latestAreas.conflicts.join("；")}`);
         const latestResolvedIds = new Set(resolutions.map((resolution) => resolution.placeId));
         const places = new Map(latestTrip.plan.places.map((place) => [place.id, place]));
-        const candidates = new Map(latestTrip.plan.candidates.map((candidate) => [candidate.id, candidate]));
 
         const unresolvedConcreteMustGo = latestTrip.plan.candidates.filter((candidate) => {
           if (!latestAreas.participatingCandidateIds.has(candidate.id) || candidate.preference !== "must_go") return false;
@@ -541,24 +622,15 @@ export class TravelPlannerRuntimeV2 {
         });
         if (unresolvedConcreteMustGo.length) {
           const names = unresolvedConcreteMustGo.map((candidate) => places.get(candidate.placeId)?.nameZh ?? candidate.id).join("、");
-          throw new Error(`以下“必去”具体地点自动定位失败，请先确认地图地点后再生成：${names}`);
+          throw new Error(`以下“必去”具体地点自动定位失败，请先在右侧兴趣点步骤修复定位：${names}`);
         }
 
-        const unavailableMustGoAreas = latestAreas.areas.filter((area) => {
-          if (!area.cityCandidateId) return false;
-          const cityCandidate = candidates.get(area.cityCandidateId);
-          if (cityCandidate?.preference !== "must_go") return false;
-          return !area.childCandidateIds.some((candidateId) => {
-            if (!area.participatingCandidateIds.includes(candidateId)) return false;
-            const candidate = candidates.get(candidateId);
-            return Boolean(candidate && latestResolvedIds.has(candidate.placeId));
-          });
-        });
+        const unavailableMustGoAreas = coverage.filter((item) => item.status === "blocked");
         if (unavailableMustGoAreas.length) {
-          throw new Error(`以下“必去”城市缺少可用于真实线路的已定位具体地点，请先补充推荐或修复定位：${unavailableMustGoAreas.map((area) => area.label).join("、")}`);
+          throw new Error(`自动补充后，以下“必去”目的地仍缺少可用于真实线路的已定位具体地点：${unavailableMustGoAreas.map((item) => item.label).join("、")}。请在右侧“兴趣点”步骤补充推荐、手动添加或修复定位。`);
         }
 
-        this.options.tasks.update(taskHolder.id, "running", "正在规划城市顺序、停留天数和城市内景点", "plan:generating");
+        this.options.tasks.update(taskHolder.id, "running", "正在规划目的地顺序、停留天数和区域内兴趣点", "plan:generating");
         return this.options.ai.generatePlan({ trip: latestTrip, resolutions, geoClusters: buildGeoClusters(latestTrip, resolutions) }, this.progress(taskHolder.id));
       },
       complete: async (output: PlanGenerationOutput) => {

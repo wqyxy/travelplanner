@@ -42,6 +42,7 @@ type NewCandidateForm = {
   countryCode: string;
   duration: string;
   tags: string;
+  planningAreaCandidateId: string;
 };
 
 export type NewCandidateDraft = {
@@ -55,6 +56,7 @@ export type NewCandidateDraft = {
   countryCode: string;
   suggestedDurationMinutes: number | null;
   tags: string[];
+  planningAreaCandidateId: string | null;
 };
 
 const emptyCandidateForm = (kind: PlaceKind = "attraction"): NewCandidateForm => ({
@@ -68,6 +70,7 @@ const emptyCandidateForm = (kind: PlaceKind = "attraction"): NewCandidateForm =>
   countryCode: "",
   duration: "",
   tags: "",
+  planningAreaCandidateId: "",
 });
 
 export function CandidatePanel({
@@ -103,8 +106,10 @@ export function CandidatePanel({
 }) {
   const allRows = useMemo(() => candidateRows(workspace), [workspace]);
   const rows = useMemo(() => allRows.filter((row) => view === "macro" ? row.place.kind === "city" : row.place.kind !== "city"), [allRows, view]);
-  const counts = useMemo(() => candidateCounts(rows), [rows]);
+  const counts = useMemo(() => candidateCounts(rows, allRows), [rows, allRows]);
   const isMacro = view === "macro";
+  const macroRows = useMemo(() => allRows.filter((row) => row.place.kind === "city" && row.candidate.preference !== "excluded"), [allRows]);
+  const coverageByMacroId = useMemo(() => new Map(workspace.coverage.map((item) => [item.macroCandidateId, item])), [workspace.coverage]);
   const [filter, setFilter] = useState<CandidateFilter>("all");
   const [query, setQuery] = useState("");
   const [checked, setChecked] = useState<Set<string>>(new Set());
@@ -117,11 +122,11 @@ export function CandidatePanel({
   const visible = useMemo(() => filterCandidateRows(rows, filter, query), [rows, filter, query]);
   const groups = useMemo(() => {
     const visibleCandidateIds = new Set(visible.map((row) => row.candidate.id));
-    return candidateAreaGroups(rows)
+    return candidateAreaGroups(allRows)
       .map((group) => ({ ...group, rows: group.rows.filter((row) => visibleCandidateIds.has(row.candidate.id)) }))
       .filter((group) => group.rows.length > 0);
-  }, [rows, visible]);
-  const unresolvedSelected = useMemo(() => selectedUnresolvedRows(rows), [rows]);
+  }, [allRows, visible]);
+  const unresolvedSelected = useMemo(() => selectedUnresolvedRows(rows, allRows), [rows, allRows]);
   const visibleIds = useMemo(() => visible.map((row) => row.candidate.id), [visible]);
   const allVisibleChecked = visibleIds.length > 0 && visibleIds.every((id) => checked.has(id));
 
@@ -190,6 +195,7 @@ export function CandidatePanel({
     const duration = newCandidate.duration.trim() ? Number(newCandidate.duration) : null;
     const countryCode = newCandidate.countryCode.trim().toUpperCase();
     if (!nameZh) { setNewCandidateError("请输入具体地点名称。"); return; }
+    if (!isMacro && !newCandidate.planningAreaCandidateId) { setNewCandidateError("请选择这个兴趣点所属的目的地。"); return; }
     if (duration !== null && (!Number.isInteger(duration) || duration < 0 || duration > 10080)) {
       setNewCandidateError("建议停留时间必须是 0–10080 的整数分钟。");
       return;
@@ -210,6 +216,7 @@ export function CandidatePanel({
         countryCode,
         suggestedDurationMinutes: duration,
         tags: [...new Set(newCandidate.tags.split(/[，,]/u).map((tag) => tag.trim()).filter(Boolean))].slice(0, 30),
+        planningAreaCandidateId: isMacro ? null : newCandidate.planningAreaCandidateId,
       });
       setNewCandidate(null);
     } catch (error) {
@@ -268,12 +275,13 @@ export function CandidatePanel({
         const collapsed = collapsedAreas.has(group.key);
         const cityPreference = group.cityRow?.candidate.preference ?? null;
         const areaExcluded = cityPreference === "excluded";
-        const concreteCount = group.rows.filter((row) => row.place.kind !== "city").length;
+        const coverage = group.cityRow ? coverageByMacroId.get(group.cityRow.candidate.id) ?? null : null;
+        const concreteCount = coverage?.microCandidateCount ?? group.rows.filter((row) => row.place.kind !== "city").length;
         const participatingCount = areaExcluded ? 0 : group.rows.filter((row) => row.candidate.preference !== "excluded").length;
         return <section className={`candidate-area-group ${areaExcluded ? "excluded" : ""}`} key={group.key}>
           <button className="candidate-area-head" type="button" onClick={() => toggleArea(group.key)}>
             <ChevronRight className={collapsed ? "" : "open"} size={16}/>
-            <span><strong>{group.label}</strong><small>{group.cityRow ? "城市级规划 · " : "区域分组 · "}{concreteCount} 个具体地点 · {participatingCount} 个参与规划{areaExcluded ? " · 整座城市不去" : ""}</small></span>
+            <span><strong>{group.label}</strong><small>{group.cityRow ? "目的地规划 · " : "区域分组 · "}{concreteCount} 个具体地点{coverage ? ` · ${coverage.participatingResolvedMicroCount} 个已定位可用` : ` · ${participatingCount} 个参与规划`}{areaExcluded ? " · 本次不去" : coverage?.status === "blocked" ? " · 需要补充具体地点" : coverage?.status === "attention" ? " · 建议补充具体地点" : ""}</small></span>
             {group.cityRow && <em>{preferenceMarks[group.cityRow.candidate.preference]} {preferenceLabels[group.cityRow.candidate.preference]}</em>}
           </button>
           {!collapsed && <div className="candidate-area-cards">{group.rows.map((row) => renderCandidate(row, areaExcluded))}</div>}
@@ -294,7 +302,8 @@ export function CandidatePanel({
       <label className="wide">地点名称（必填）<input value={newCandidate.nameZh} onChange={(event) => setNewCandidate({ ...newCandidate, nameZh: event.target.value })} placeholder="例如：京都铁道博物馆"/></label>
       <label>本地名称<input value={newCandidate.nameLocal} onChange={(event) => setNewCandidate({ ...newCandidate, nameLocal: event.target.value })} placeholder="Kyoto Railway Museum"/></label>
       <label>英文名称<input value={newCandidate.nameEn} onChange={(event) => setNewCandidate({ ...newCandidate, nameEn: event.target.value })} placeholder="可选"/></label>
-      <label>类型<select value={newCandidate.kind} onChange={(event) => setNewCandidate({ ...newCandidate, kind: event.target.value as PlaceKind })}>{(Object.keys(kindLabels) as PlaceKind[]).map((kind) => <option value={kind} key={kind}>{kindLabels[kind]}</option>)}</select></label>
+      {!isMacro && <label className="wide">所属目的地<select value={newCandidate.planningAreaCandidateId} onChange={(event) => setNewCandidate({ ...newCandidate, planningAreaCandidateId: event.target.value })}><option value="">请选择目的地</option>{macroRows.map((row) => <option key={row.candidate.id} value={row.candidate.id}>{row.place.nameZh}</option>)}</select></label>}
+      <label>类型<select value={newCandidate.kind} disabled={isMacro} onChange={(event) => setNewCandidate({ ...newCandidate, kind: event.target.value as PlaceKind })}>{(Object.keys(kindLabels) as PlaceKind[]).filter((kind) => isMacro ? kind === "city" : kind !== "city").map((kind) => <option value={kind} key={kind}>{kindLabels[kind]}</option>)}</select></label>
       <label>城市<input value={newCandidate.city} onChange={(event) => setNewCandidate({ ...newCandidate, city: event.target.value })} placeholder="京都"/></label>
       <label>区域<input value={newCandidate.region} onChange={(event) => setNewCandidate({ ...newCandidate, region: event.target.value })} placeholder="京都府"/></label>
       <label>国家<input value={newCandidate.country} onChange={(event) => setNewCandidate({ ...newCandidate, country: event.target.value })} placeholder="日本"/></label>

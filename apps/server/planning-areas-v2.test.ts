@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildPlanningAreaContext, fulfilledMacroCityCandidateIds } from "./planning-areas-v2.js";
+import { buildPlanningAreaContext, buildPlanningCoverage, fulfilledMacroCityCandidateIds } from "./planning-areas-v2.js";
 
 const place = (id: string, nameZh: string, kind: string, city: string | null) => ({
   id,
@@ -13,7 +13,7 @@ const place = (id: string, nameZh: string, kind: string, city: string | null) =>
   countryCode: "NZ",
 });
 
-const candidate = (id: string, placeId: string, preference: "must_go" | "want_to_go" | "optional" | "excluded") => ({ id, placeId, preference });
+const candidate = (id: string, placeId: string, preference: "must_go" | "want_to_go" | "optional" | "excluded", planningAreaCandidateId: string | null = null) => ({ id, placeId, planningAreaCandidateId, preference });
 
 describe("planning areas", () => {
   it("groups concrete attractions under a matching city candidate", () => {
@@ -53,4 +53,27 @@ describe("planning areas", () => {
     expect(context.conflicts).toHaveLength(1);
     expect(context.conflicts[0]).toContain("但尼丁火车站");
   });
+
+  it("uses explicit Macro relation even when Micro city text does not match", () => {
+    const plan = {
+      places: [
+        place("franz", "弗朗茨·约瑟夫冰川地区", "city", "Franz Josef"),
+        { ...place("glacier", "Franz Josef Glacier Walk", "attraction", "Westland"), region: "West Coast" },
+      ],
+      candidates: [
+        candidate("franz-c", "franz", "must_go"),
+        candidate("glacier-c", "glacier", "optional", "franz-c"),
+      ],
+    };
+    const context = buildPlanningAreaContext(plan);
+    expect(context.areas).toHaveLength(1);
+    expect(context.areas[0].cityCandidateId).toBe("franz-c");
+    expect(context.areas[0].childCandidateIds).toEqual(["glacier-c"]);
+    expect(buildPlanningCoverage(plan, new Set(["glacier"]))[0]).toMatchObject({
+      macroCandidateId: "franz-c",
+      participatingResolvedMicroCount: 1,
+      status: "ready",
+    });
+  });
+
 });

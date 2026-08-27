@@ -80,15 +80,29 @@ export function applyCandidateDiscovery(current: TravelPlanDocument, value: unkn
   }
 
   const candidateByPlaceId = new Map(plan.candidates.map((candidate) => [candidate.placeId, candidate]));
+  const canonicalCandidateById = new Map(plan.candidates.map((candidate) => [candidate.id, candidate]));
   const addedCandidateIds: string[] = [];
   const updatedCandidateIds = new Set<string>();
 
   for (const source of output.candidates) {
     const placeId = idMappings.get(source.placeTemporaryId);
     if (!placeId) throw new Error(`Candidate Discovery 未能正式化 Place：${source.placeTemporaryId}`);
+    const parentId = source.planningAreaCandidateId;
+    if (parentId) {
+      const parent = canonicalCandidateById.get(parentId);
+      const parentPlace = parent ? plan.places.find((place) => place.id === parent.placeId) : null;
+      if (!parent || parentPlace?.kind !== "city") throw new Error(`Candidate Discovery 引用无效 Macro Candidate：${parentId}`);
+    }
     const existing = candidateByPlaceId.get(placeId);
     if (existing) {
       idMappings.set(source.temporaryId, existing.id);
+      if (parentId && existing.planningAreaCandidateId && existing.planningAreaCandidateId !== parentId) {
+        throw new Error(`Candidate 已归属其他 Macro，拒绝静默重关联：${existing.id}`);
+      }
+      if (parentId && !existing.planningAreaCandidateId) {
+        existing.planningAreaCandidateId = parentId;
+        updatedCandidateIds.add(existing.id);
+      }
       const previousScore = existing.aiScore ?? -1;
       if (source.aiScore >= previousScore) {
         existing.aiReason = source.aiReason;
@@ -103,12 +117,14 @@ export function applyCandidateDiscovery(current: TravelPlanDocument, value: unkn
     const candidate: TripCandidate = {
       id: randomUUID(),
       placeId,
+      planningAreaCandidateId: parentId,
       preference: "optional",
       source: "ai",
       ...candidateMetadata(source),
     };
     plan.candidates.push(candidate);
     candidateByPlaceId.set(placeId, candidate);
+    canonicalCandidateById.set(candidate.id, candidate);
     idMappings.set(source.temporaryId, candidate.id);
     addedCandidateIds.push(candidate.id);
   }

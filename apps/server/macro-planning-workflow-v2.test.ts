@@ -23,8 +23,8 @@ const plan = TravelPlanDocumentSchema.parse({
     { id: "skyline", nameZh: "皇后镇天空缆车", nameLocal: "Skyline Queenstown", nameEn: "Skyline Queenstown", kind: "attraction", city: "Queenstown", region: "Otago", country: "新西兰", countryCode: "NZ", approximate: false },
   ],
   candidates: [
-    { id: "queenstown-c", placeId: "queenstown", preference: "must_go", source: "user", aiReason: "必须去皇后镇", aiScore: 95, suggestedDurationMinutes: null, tags: [] },
-    { id: "skyline-c", placeId: "skyline", preference: "optional", source: "ai", aiReason: "代表景点", aiScore: 90, suggestedDurationMinutes: 120, tags: [] },
+    { id: "queenstown-c", placeId: "queenstown", planningAreaCandidateId: null, preference: "must_go", source: "user", aiReason: "必须去皇后镇", aiScore: 95, suggestedDurationMinutes: null, tags: [] },
+    { id: "skyline-c", placeId: "skyline", planningAreaCandidateId: null, preference: "optional", source: "ai", aiReason: "代表景点", aiScore: 90, suggestedDurationMinutes: 120, tags: [] },
   ],
   days: [],
   warnings: [],

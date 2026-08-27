@@ -18,7 +18,7 @@ const plan: TravelPlanDocument = {
     budget: { amount: null, currency: null, note: null }, pace: null, themes: [], preferences: [], constraints: [], assumptions: [],
   },
   places: ["p1", "p2", "p3", "p4"].map((id) => ({ id, nameZh: id, nameLocal: null, nameEn: null, kind: "attraction", city: null, region: null, country: null, countryCode: null, approximate: false })),
-  candidates: [{ id: "c4", placeId: "p4", preference: "want_to_go", source: "ai", aiReason: null, aiScore: 80, suggestedDurationMinutes: 90, tags: [] }],
+  candidates: [{ id: "c4", placeId: "p4", planningAreaCandidateId: null, preference: "want_to_go", source: "ai", aiReason: null, aiScore: 80, suggestedDurationMinutes: 90, tags: [] }],
   days: [
     { id: "d1", dayNumber: 1, date: null, title: "第一天", detailLevel: "planned", detailStatus: null, startAnchor: { id: "a1", placeId: null, label: null, notes: null }, stops: [stop("s1", "p1"), stop("s2", "p2"), stop("s3", "p3")], endAnchor: { id: "a2", placeId: null, label: null, notes: null } },
     { id: "d2", dayNumber: 2, date: null, title: "第二天", detailLevel: "planned", detailStatus: null, startAnchor: { id: "a3", placeId: null, label: null, notes: null }, stops: [], endAnchor: { id: "a4", placeId: null, label: null, notes: null } },

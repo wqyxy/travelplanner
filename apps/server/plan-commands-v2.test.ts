@@ -25,8 +25,8 @@ function plan(): TravelPlanDocument {
     { id: "p-hotel", nameZh: "京都酒店", nameLocal: null, nameEn: null, kind: "lodging", city: "京都", region: null, country: "日本", countryCode: "JP", approximate: false },
   );
   value.candidates.push(
-    { id: "c-kyoto", placeId: "p-kyoto", preference: "must_go", source: "ai", aiReason: "代表景点", aiScore: 95, suggestedDurationMinutes: 90, tags: [] },
-    { id: "c-osaka", placeId: "p-osaka", preference: "want_to_go", source: "ai", aiReason: "城市地标", aiScore: 80, suggestedDurationMinutes: 90, tags: [] },
+    { id: "c-kyoto", placeId: "p-kyoto", planningAreaCandidateId: null, preference: "must_go", source: "ai", aiReason: "代表景点", aiScore: 95, suggestedDurationMinutes: 90, tags: [] },
+    { id: "c-osaka", placeId: "p-osaka", planningAreaCandidateId: null, preference: "want_to_go", source: "ai", aiReason: "城市地标", aiScore: 80, suggestedDurationMinutes: 90, tags: [] },
   );
   value.days.push(
     {
@@ -51,7 +51,7 @@ describe("applyPlanCommands", () => {
       {
         type: "add_candidate",
         place: { id: "new-place", nameZh: "伏见稻荷大社", nameLocal: null, nameEn: "Fushimi Inari Taisha", kind: "attraction", city: "京都", region: null, country: "日本", countryCode: "JP", approximate: false },
-        candidate: { id: "new-candidate", placeId: "new-place", preference: "optional", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: 120, tags: [] },
+        candidate: { id: "new-candidate", placeId: "new-place", planningAreaCandidateId: null, preference: "optional", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: 120, tags: [] },
       },
       {
         type: "add_day_stop", dayId: "d-1", index: 1,
@@ -96,7 +96,7 @@ describe("applyPlanCommands", () => {
     expect(() => applyPlanCommands(plan(), [{
       type: "add_candidate",
       place: { id: "new-place", nameZh: "清水寺", nameLocal: null, nameEn: "Kiyomizu-dera", kind: "attraction", city: "京都", region: null, country: "日本", countryCode: "JP", approximate: false },
-      candidate: { id: "new-candidate", placeId: "new-place", preference: "optional", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: null, tags: [] },
+      candidate: { id: "new-candidate", placeId: "new-place", planningAreaCandidateId: null, preference: "optional", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: null, tags: [] },
     }])).toThrow(/地点已存在/);
   });
 

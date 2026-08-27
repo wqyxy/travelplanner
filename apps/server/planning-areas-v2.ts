@@ -15,6 +15,7 @@ export type PlanningAreaPlace = {
 export type PlanningAreaCandidate = {
   id: string;
   placeId: string;
+  planningAreaCandidateId: string | null;
   preference: PlanningCandidatePreference;
 };
 
@@ -110,7 +111,11 @@ export function buildPlanningAreaContext(plan: PlanningAreaPlan): PlanningAreaCo
   for (const candidate of plan.candidates) {
     const place = placesById.get(candidate.placeId);
     if (!place) continue;
-    const identity = areaIdentity(place, placesById, cityByAlias);
+    const parentCandidate = candidate.planningAreaCandidateId ? candidatesById.get(candidate.planningAreaCandidateId) ?? null : null;
+    const parentPlace = parentCandidate ? placesById.get(parentCandidate.placeId) ?? null : null;
+    const identity = parentPlace?.kind === "city"
+      ? { key: `city:${parentPlace.id}`, label: parentPlace.nameZh, cityPlaceId: parentPlace.id }
+      : areaIdentity(place, placesById, cityByAlias);
     const draft = drafts.get(identity.key) ?? { identity, candidateIds: [], childCandidateIds: [] };
     draft.candidateIds.push(candidate.id);
     if (place.kind !== "city") draft.childCandidateIds.push(candidate.id);
@@ -183,6 +188,52 @@ export function buildPlanningAreaContext(plan: PlanningAreaPlan): PlanningAreaCo
 
   areas.sort((left, right) => preferenceRank[left.effectivePreference] - preferenceRank[right.effectivePreference] || left.label.localeCompare(right.label, "zh-CN"));
   return { areas, areaKeyByCandidateId, participatingCandidateIds, suppressedCandidateIds, cityCandidateIds, conflicts };
+}
+
+
+export type PlanningCoverageStatusV2 = "ready" | "attention" | "blocked";
+export type PlanningAreaCoverageV2 = {
+  areaKey: string;
+  label: string;
+  macroCandidateId: string;
+  preference: PlanningCandidatePreference;
+  microCandidateCount: number;
+  resolvedMicroCount: number;
+  participatingResolvedMicroCount: number;
+  status: PlanningCoverageStatusV2;
+};
+
+export function buildPlanningCoverage(plan: PlanningAreaPlan, resolvedPlaceIds: Set<string>): PlanningAreaCoverageV2[] {
+  const context = buildPlanningAreaContext(plan);
+  const candidatesById = new Map(plan.candidates.map((candidate) => [candidate.id, candidate]));
+  return context.areas.flatMap((area) => {
+    if (!area.cityCandidateId) return [];
+    const macro = candidatesById.get(area.cityCandidateId);
+    if (!macro) return [];
+    const microCandidateIds = area.childCandidateIds;
+    const participatingMicroCandidateIds = microCandidateIds.filter((candidateId) => area.participatingCandidateIds.includes(candidateId));
+    const resolvedMicroCount = microCandidateIds.filter((candidateId) => {
+      const candidate = candidatesById.get(candidateId);
+      return Boolean(candidate && resolvedPlaceIds.has(candidate.placeId));
+    }).length;
+    const participatingResolvedMicroCount = participatingMicroCandidateIds.filter((candidateId) => {
+      const candidate = candidatesById.get(candidateId);
+      return Boolean(candidate && resolvedPlaceIds.has(candidate.placeId));
+    }).length;
+    const status: PlanningCoverageStatusV2 = macro.preference === "excluded" || participatingResolvedMicroCount > 0
+      ? "ready"
+      : macro.preference === "must_go" ? "blocked" : "attention";
+    return [{
+      areaKey: area.key,
+      label: area.label,
+      macroCandidateId: macro.id,
+      preference: macro.preference,
+      microCandidateCount: microCandidateIds.length,
+      resolvedMicroCount,
+      participatingResolvedMicroCount,
+      status,
+    }];
+  });
 }
 
 export function fulfilledMacroCityCandidateIds(context: PlanningAreaContextV2, scheduledCandidateIds: Set<string>) {

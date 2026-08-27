@@ -112,6 +112,7 @@ export type CandidatePreference = z.infer<typeof CandidatePreferenceSchema>;
 export const TripCandidateSchema = z.object({
   id: IdSchema,
   placeId: IdSchema,
+  planningAreaCandidateId: IdSchema.nullable(),
   preference: CandidatePreferenceSchema,
   source: z.enum(["ai", "user"]),
   aiReason: z.string().trim().min(1).max(1000).nullable(),
@@ -206,6 +207,7 @@ function addDocumentIssues(value: {
     placeIds.add(place.id);
   }
 
+  const placesById = new Map(value.places.map((place) => [place.id, place]));
   const candidateIds = new Set<string>();
   const candidatePlaces = new Set<string>();
   const candidates = new Map<string, TripCandidate>();
@@ -216,6 +218,23 @@ function addDocumentIssues(value: {
     candidateIds.add(candidate.id);
     candidatePlaces.add(candidate.placeId);
     candidates.set(candidate.id, candidate);
+  }
+
+  for (const [index, candidate] of value.candidates.entries()) {
+    if (!candidate.planningAreaCandidateId) continue;
+    const parent = candidates.get(candidate.planningAreaCandidateId);
+    const parentPlace = parent ? placesById.get(parent.placeId) : null;
+    if (!parent || parent.id === candidate.id) {
+      context.addIssue({ code: "custom", path: ["candidates", index, "planningAreaCandidateId"], message: "Micro Candidate 必须引用另一条已存在的 Macro Candidate。" });
+      continue;
+    }
+    if (parentPlace?.kind !== "city") {
+      context.addIssue({ code: "custom", path: ["candidates", index, "planningAreaCandidateId"], message: "planningAreaCandidateId 必须指向 Macro 目的地 Candidate。" });
+    }
+    const ownPlace = placesById.get(candidate.placeId);
+    if (ownPlace?.kind === "city") {
+      context.addIssue({ code: "custom", path: ["candidates", index, "planningAreaCandidateId"], message: "Macro Candidate 不得再归属于其他 Macro Candidate。" });
+    }
   }
 
   const tripRefs = [value.trip.originPlaceId, ...value.trip.destinationPlaceIds].filter((item): item is string => Boolean(item));
@@ -548,6 +567,7 @@ export const CandidateDiscoveryOutputSchema = z.object({
   candidates: z.array(z.object({
     temporaryId: IdSchema,
     placeTemporaryId: IdSchema,
+    planningAreaCandidateId: IdSchema.nullable(),
     aiReason: TextSchema.max(1000),
     aiScore: z.number().finite().min(0).max(100),
     suggestedDurationMinutes: z.number().int().min(0).max(10080).nullable(),

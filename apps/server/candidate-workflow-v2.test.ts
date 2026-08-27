@@ -19,8 +19,8 @@ const discovery = (generation = 0): CandidateDiscoveryOutput => ({
     { id: "tmp-place-2", nameZh: "伏见稻荷大社", nameLocal: null, nameEn: "Fushimi Inari Taisha", kind: "attraction", city: "京都", region: null, country: "日本", countryCode: "JP", approximate: false },
   ],
   candidates: [
-    { temporaryId: "tmp-candidate-1", placeTemporaryId: "tmp-place-1", aiReason: "京都代表寺院", aiScore: 95, suggestedDurationMinutes: 90, tags: ["寺院"], defaultPreference: "optional" },
-    { temporaryId: "tmp-candidate-2", placeTemporaryId: "tmp-place-2", aiReason: "千本鸟居", aiScore: 92, suggestedDurationMinutes: 120, tags: ["神社"], defaultPreference: "optional" },
+    { temporaryId: "tmp-candidate-1", placeTemporaryId: "tmp-place-1", aiReason: "京都代表寺院", aiScore: 95, suggestedDurationMinutes: 90, tags: ["寺院"], planningAreaCandidateId: null, defaultPreference: "optional" },
+    { temporaryId: "tmp-candidate-2", placeTemporaryId: "tmp-place-2", aiReason: "千本鸟居", aiScore: 92, suggestedDurationMinutes: 120, tags: ["神社"], planningAreaCandidateId: null, defaultPreference: "optional" },
   ],
 });
 
@@ -71,7 +71,7 @@ describe("Candidate discovery", () => {
     const second = applyCandidateDiscovery(current, {
       ...discovery(),
       places: [{ id: "again-place", nameZh: "清水寺", nameLocal: null, nameEn: "Kiyomizu-dera", kind: "attraction", city: "京都", region: null, country: "日本", countryCode: "JP", approximate: false }],
-      candidates: [{ temporaryId: "again-candidate", placeTemporaryId: "again-place", aiReason: "更新理由", aiScore: 99, suggestedDurationMinutes: 100, tags: ["世界遗产"], defaultPreference: "optional" }],
+      candidates: [{ temporaryId: "again-candidate", placeTemporaryId: "again-place", aiReason: "更新理由", aiScore: 99, suggestedDurationMinutes: 100, tags: ["世界遗产"], planningAreaCandidateId: null, defaultPreference: "optional" }],
     });
     expect(second.plan.places).toHaveLength(2);
     expect(second.plan.candidates).toHaveLength(2);

@@ -26,7 +26,7 @@ function plannedDocument(): TravelPlanDocument {
   plan.stage = "itinerary_planning";
   plan.trip.title = "京都两日游";
   plan.places.push({ id: "place-1", nameZh: "清水寺", nameLocal: null, nameEn: "Kiyomizu-dera", kind: "attraction", city: "京都", region: null, country: "日本", countryCode: "JP", approximate: false });
-  plan.candidates.push({ id: "candidate-1", placeId: "place-1", preference: "want_to_go", source: "ai", aiReason: "京都代表景点", aiScore: 90, suggestedDurationMinutes: 90, tags: ["寺院"] });
+  plan.candidates.push({ id: "candidate-1", placeId: "place-1", planningAreaCandidateId: null, preference: "want_to_go", source: "ai", aiReason: "京都代表景点", aiScore: 90, suggestedDurationMinutes: 90, tags: ["寺院"] });
   plan.days.push({
     id: "day-1",
     dayNumber: 1,

@@ -233,12 +233,15 @@ export default function App() {
     const active = tasks.find((task) => ACTIVE_TASKS.has(task.status));
     if (active) await stopTask(active.id);
   };
-  const discover = async () => {
+  const discover = async (mode: "macro" | "micro", planningAreaCandidateIds: string[] = []) => {
     if (!trip) return;
     await runAction(async () => {
-      await api(`/api/trips/${trip.id}/candidates/discover`, { method: "POST", body: "{}" });
+      await api(`/api/trips/${trip.id}/candidates/discover`, {
+        method: "POST",
+        body: JSON.stringify({ mode, planningAreaCandidateIds }),
+      });
       await refreshWorkspace();
-    }, "无法生成地点推荐。");
+    }, mode === "macro" ? "无法生成目的地建议。" : "无法生成详细兴趣点。");
   };
   const setPreference = async (candidateIds: string[], preference: CandidatePreference) => {
     if (!trip || !candidateIds.length) return;
@@ -374,6 +377,7 @@ export default function App() {
         aiScore: null,
         suggestedDurationMinutes: draft.suggestedDurationMinutes,
         tags: draft.tags,
+        planningAreaCandidateId: draft.kind === "city" ? null : draft.planningAreaCandidateId,
       },
     });
   };
@@ -498,8 +502,8 @@ export default function App() {
                 <div><dt>同行者</dt><dd>{trip?.plan.trip.travelers.summary || "待补充"}</dd></div>
                 <div><dt>节奏</dt><dd>{trip?.plan.trip.pace || "待补充"}</dd></div>
               </dl>
-              <button className="button primary workspace-primary-cta-v3" type="button" disabled={working || !trip} onClick={() => void (async () => { await discover(); setStep("destinations"); setSelection({ type: "candidate_pool", id: null }); })()}><Sparkles size={15}/>生成目的地建议</button>
-            </section> : step === "destinations" ? <CandidatePanel view="macro" workspace={workspace} selectedCandidateId={selectedCandidateId} busy={working} onSelectCandidate={(candidateId) => setSelection({ type: "candidate", id: candidateId })} onSetPreference={setPreference} onDiscover={discover} onAddCandidate={addCandidate} onContinue={async () => { const places = new Map(workspace.trip.plan.places.map((place) => [place.id, place])); const hasMicro = workspace.trip.plan.candidates.some((candidate) => places.get(candidate.placeId)?.kind !== "city"); if (!hasMicro) await discover(); setStep("interests"); setSelection({ type: "candidate_pool", id: null }); }} onRetry={retryResolutions} onSearchCandidates={searchResolutionCandidates} onSelectResolution={selectResolution} onManualResolution={(placeId, latitude, longitude, address) => setManualResolution(placeId, latitude, longitude, address)} onBeginMapPick={(placeId) => { setMapPickPlaceId(placeId); setFocus("map"); }}/> : step === "interests" ? <CandidatePanel view="micro" workspace={workspace} selectedCandidateId={selectedCandidateId} busy={working} onSelectCandidate={(candidateId) => setSelection({ type: "candidate", id: candidateId })} onSetPreference={setPreference} onDiscover={discover} onAddCandidate={addCandidate} onContinue={generatePlan} onRetry={retryResolutions} onSearchCandidates={searchResolutionCandidates} onSelectResolution={selectResolution} onManualResolution={(placeId, latitude, longitude, address) => setManualResolution(placeId, latitude, longitude, address)} onBeginMapPick={(placeId) => { setMapPickPlaceId(placeId); setFocus("map"); }}/> : <ItineraryPanelV2 workspace={workspace} selectedDayId={selectedDayId} selectedStopId={selectedStopId} busy={working} onSelectDay={(dayId) => setSelection({ type: "day", id: dayId })} onSelectStop={(stopId) => setSelection({ type: "stop", id: stopId })} onRecalculate={recalculateRoute} onRecalculateDirty={recalculateDirtyRoutes} onRefine={refine} onCommand={runPlanCommand}/>}
+              <button className="button primary workspace-primary-cta-v3" type="button" disabled={working || !trip} onClick={() => void (async () => { await discover("macro"); setStep("destinations"); setSelection({ type: "candidate_pool", id: null }); })()}><Sparkles size={15}/>生成目的地建议</button>
+            </section> : step === "destinations" ? <CandidatePanel view="macro" workspace={workspace} selectedCandidateId={selectedCandidateId} busy={working} onSelectCandidate={(candidateId) => setSelection({ type: "candidate", id: candidateId })} onSetPreference={setPreference} onDiscover={() => discover("macro")} onAddCandidate={addCandidate} onContinue={async () => { const places = new Map(workspace.trip.plan.places.map((place) => [place.id, place])); const macroIds = workspace.trip.plan.candidates.filter((candidate) => candidate.preference !== "excluded" && places.get(candidate.placeId)?.kind === "city").map((candidate) => candidate.id); await discover("micro", macroIds); setStep("interests"); setSelection({ type: "candidate_pool", id: null }); }} onRetry={retryResolutions} onSearchCandidates={searchResolutionCandidates} onSelectResolution={selectResolution} onManualResolution={(placeId, latitude, longitude, address) => setManualResolution(placeId, latitude, longitude, address)} onBeginMapPick={(placeId) => { setMapPickPlaceId(placeId); setFocus("map"); }}/> : step === "interests" ? <CandidatePanel view="micro" workspace={workspace} selectedCandidateId={selectedCandidateId} busy={working} onSelectCandidate={(candidateId) => setSelection({ type: "candidate", id: candidateId })} onSetPreference={setPreference} onDiscover={() => { const places = new Map(workspace.trip.plan.places.map((place) => [place.id, place])); const macroIds = workspace.trip.plan.candidates.filter((candidate) => candidate.preference !== "excluded" && places.get(candidate.placeId)?.kind === "city").map((candidate) => candidate.id); return discover("micro", macroIds); }} onAddCandidate={addCandidate} onContinue={generatePlan} onRetry={retryResolutions} onSearchCandidates={searchResolutionCandidates} onSelectResolution={selectResolution} onManualResolution={(placeId, latitude, longitude, address) => setManualResolution(placeId, latitude, longitude, address)} onBeginMapPick={(placeId) => { setMapPickPlaceId(placeId); setFocus("map"); }}/> : <ItineraryPanelV2 workspace={workspace} selectedDayId={selectedDayId} selectedStopId={selectedStopId} busy={working} onSelectDay={(dayId) => setSelection({ type: "day", id: dayId })} onSelectStop={(stopId) => setSelection({ type: "stop", id: stopId })} onRecalculate={recalculateRoute} onRecalculateDirty={recalculateDirtyRoutes} onRefine={refine} onCommand={runPlanCommand}/>}
           </div>
           <WorkspaceAssistantV2 title={trip?.title || null} workspace={workspace} selection={selection} chat={messages} busy={working} error={error} onSend={send} onCreateProposal={createProposal} onProposalAction={proposalAction} onStop={stopLatestTask}/>
           </> : <div className="workspace-empty-v3"><span className="brand-mark">✦</span><h2>选择一趟旅行</h2><p>所有规划操作都会出现在这个右侧控制台。</p></div>}
