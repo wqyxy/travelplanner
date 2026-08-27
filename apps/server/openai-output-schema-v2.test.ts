@@ -11,7 +11,7 @@ import {
 import {
   buildOpenAiStructuredOutputSchema,
   normalizeStructuredOutputTransport,
-} from "./openai-output-schema-v2.js";
+} from "./structured-ai-v2.js";
 
 const outputSchemas = [
   ConversationOutputSchema,
