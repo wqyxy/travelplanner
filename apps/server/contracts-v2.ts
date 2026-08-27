@@ -255,7 +255,7 @@ function addDocumentIssues(value: {
   }
 
   const areaContext = buildPlanningAreaContext({ places: value.places, candidates: value.candidates });
-  const fulfilledMacroCityCandidateIds = fulfilledMacroCityCandidateIds(areaContext, scheduledCandidateIds);
+  const fulfilledMacroCities = fulfilledMacroCityCandidateIds(areaContext, scheduledCandidateIds);
 
   if (value.stage !== "place_selection" && !value.days.length) {
     context.addIssue({ code: "custom", path: ["days"], message: "行程规划和细化阶段必须有 Day。" });
@@ -265,7 +265,7 @@ function addDocumentIssues(value: {
       if (areaContext.suppressedCandidateIds.has(candidate.id) && scheduledCandidateIds.has(candidate.id)) {
         context.addIssue({ code: "custom", path: ["candidates", index], message: "所属城市已标记为不去，该 Candidate 不得排入行程。" });
       }
-      if (candidate.preference === "must_go" && !scheduledCandidateIds.has(candidate.id) && !fulfilledMacroCityCandidateIds.has(candidate.id)) {
+      if (candidate.preference === "must_go" && !scheduledCandidateIds.has(candidate.id) && !fulfilledMacroCities.has(candidate.id)) {
         context.addIssue({ code: "custom", path: ["candidates", index], message: "must_go Candidate 必须排入行程；城市级 Candidate 可以由该城市内具体地点满足。" });
       }
     }
