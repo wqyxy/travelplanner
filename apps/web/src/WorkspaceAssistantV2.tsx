@@ -20,7 +20,7 @@ export function WorkspaceAssistantV2({ title, workspace, selection, chat, busy, 
   onProposalAction: (proposalId: string, action: ProposalAction) => Promise<void>;
   onStop: (taskOrMessageId: string) => Promise<void>;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true);
   const [mode, setMode] = useState<AssistantMode>("conversation");
   const [input, setInput] = useState("");
   const [scopeKey, setScopeKey] = useState("");

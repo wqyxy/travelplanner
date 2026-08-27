@@ -638,7 +638,7 @@ export class TravelPlannerRuntimeV2 {
           appliedRevisionVersion: null,
         });
         this.options.store.createAssistantMessage(tripId, output.assistantMessage, { mode: "propose_adjustment", proposalId: proposal.id });
-        this.emit("travel.proposal.changed", { tripId, proposalId });
+        this.emit("travel.proposal.changed", { tripId, proposalId: proposal.id });
       },
     });
     taskHolder.id = result.taskId;

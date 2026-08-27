@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
-import { History, KeyRound, Menu, Moon, Plus, RefreshCw, Sun, Trash2 } from "lucide-react";
+import { History, KeyRound, Menu, Moon, Plus, RefreshCw, Sparkles, Sun, Trash2 } from "lucide-react";
 import { api } from "./api";
 import { AiTaskTopbar } from "./AiTaskTopbar";
 import { CandidatePanel, type NewCandidateDraft } from "./CandidatePanel";
@@ -26,10 +26,17 @@ type User = { id: string; username: string };
 type Model = { model: string; displayName?: string; supportedReasoningEfforts?: Array<string | { reasoningEffort?: string }> };
 type CodexStatus = { signedIn: boolean; models: Model[]; error?: string };
 type Bootstrap = { authenticated: boolean; configured: boolean; user: User | null; settings: AppSettings };
-type WorkspaceTab = "places" | "itinerary";
+type WorkspaceStep = "requirements" | "destinations" | "interests" | "itinerary";
 type WorkspaceFocus = null | "map" | "panel";
 const ACTIVE_TASKS = new Set(["starting", "running", "waiting", "reconnecting"]);
 const tripStateLabels = { active: "当前行程", trashed: "回收站" } as const;
+function defaultWorkspaceStep(workspace: Workspace): WorkspaceStep {
+  if (workspace.trip.plan.days.length) return "itinerary";
+  const places = new Map(workspace.trip.plan.places.map((place) => [place.id, place]));
+  if (workspace.trip.plan.candidates.some((candidate) => places.get(candidate.placeId)?.kind !== "city")) return "interests";
+  if (workspace.trip.plan.candidates.length) return "destinations";
+  return "requirements";
+}
 const defaultSettings: AppSettings = {
   ai: { model: "", reasoningEffort: "medium" },
   ui: { workspaceSplitRatio: .56, theme: "light", sidebarOpen: true, mapCategoryColors: {} },
@@ -67,7 +74,7 @@ export default function App() {
   const [codex, setCodex] = useState<CodexStatus | null>(null);
   const [trips, setTrips] = useState<Trip[]>([]);
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
-  const [tab, setTab] = useState<WorkspaceTab>("places");
+  const [step, setStep] = useState<WorkspaceStep>("requirements");
   const [selection, setSelection] = useState<WorkspaceSelection>({ type: "candidate_pool", id: null });
   const [mapPickPlaceId, setMapPickPlaceId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -116,13 +123,10 @@ export default function App() {
       setWorkspace(next);
       setMenu(null);
       if (resetSelection) {
-        if (next.trip.plan.days[0]) {
-          setSelection({ type: "day", id: next.trip.plan.days[0].id });
-          setTab("itinerary");
-        } else {
-          setSelection({ type: "candidate_pool", id: null });
-          setTab("places");
-        }
+        const nextStep = defaultWorkspaceStep(next);
+        setStep(nextStep);
+        if (nextStep === "itinerary" && next.trip.plan.days[0]) setSelection({ type: "day", id: next.trip.plan.days[0].id });
+        else setSelection({ type: "candidate_pool", id: null });
       }
       if (window.matchMedia("(max-width: 900px)").matches) setSidebar(false);
     } catch (cause) {
@@ -299,7 +303,7 @@ export default function App() {
     if (!trip) return;
     await runAction(async () => {
       await api(`/api/trips/${trip.id}/plan/generate`, { method: "POST", body: JSON.stringify({ expectedGeneration: trip.contentGeneration }) });
-      setTab("itinerary");
+      setStep("itinerary");
       await refreshWorkspace();
     }, "无法生成按天行程。");
   };
@@ -457,18 +461,50 @@ export default function App() {
     <section className="main-panel">
       <header className="topbar">
         <div className="topbar-page-identity"><button className="icon-button sidebar-toggle" aria-label={sidebar ? "收起旅行菜单" : "打开旅行菜单"} onClick={() => void saveUi({ sidebarOpen: !sidebar })}><Menu size={21}/></button><div><h1>{trip?.title || (trash ? "回收站" : "旅行工作台")}</h1><small>{trip ? `${tripStateLabels[trip.state]} · ${trip.plan.stage === "place_selection" ? "地点选择" : trip.plan.stage === "itinerary_planning" ? "行程规划" : "行程细化"}` : "先发现想去的地方，再由 AI 安排路线"}</small></div></div>
-        {trip && <AiTaskTopbar tasks={tasks} onStop={stopTask}/>}<div className="model-status"><span className={codex?.signedIn ? "status-dot connected" : "status-dot"}/>
+        <div className="model-status"><span className={codex?.signedIn ? "status-dot connected" : "status-dot"}/>
           {codex?.signedIn ? <><select aria-label="AI 模型" value={settings.ai.model} onChange={(event) => void api<{ settings: AppSettings }>("/api/settings/ai-model", { method: "PUT", body: JSON.stringify({ model: event.target.value, reasoningEffort: settings.ai.reasoningEffort }) }).then((value) => applySettings(value.settings))}>{models.map((model) => <option key={model.model} value={model.model}>{model.displayName || model.model}</option>)}</select><select aria-label="推理强度" value={settings.ai.reasoningEffort} onChange={(event) => void api<{ settings: AppSettings }>("/api/settings/ai-model", { method: "PUT", body: JSON.stringify({ model: settings.ai.model, reasoningEffort: event.target.value }) }).then((value) => applySettings(value.settings))}>{efforts.map((item) => <option key={item}>{item}</option>)}</select></> : <><button className="button small" onClick={() => void api<{ authUrl: string }>("/api/codex/login/browser", { method: "POST", body: "{}" }).then((value) => window.open(value.authUrl, "_blank", "noopener,noreferrer"))}>浏览器登录</button><button className="button small" onClick={() => void api<{ verificationUrl?: string; userCode?: string }>("/api/codex/login/device", { method: "POST", body: "{}" }).then((value) => { if (value.verificationUrl) window.open(value.verificationUrl, "_blank", "noopener,noreferrer"); window.prompt("请在打开的页面输入设备代码", value.userCode || ""); })}>设备码</button></>}
           <button className="icon-button" aria-label="刷新 Codex 状态" onClick={() => void refreshCodex()}><RefreshCw size={16}/></button><button className="icon-button" aria-label="切换主题" onClick={() => void saveUi({ theme: settings.ui.theme === "light" ? "dark" : "light" })}>{settings.ui.theme === "light" ? <Moon size={18}/> : <Sun size={18}/>}</button><button className="icon-button" aria-label="版本历史" disabled={!trip} onClick={() => setHistoryOpen(true)}><History size={18}/></button><button className="icon-button" aria-label="修改密码" onClick={() => setPasswordOpen(true)}><KeyRound size={17}/></button>
         </div>
       </header>
       <div className="main-workspace main-workspace-v3"><div className={`travel-workspace travel-workspace-v3 ${focus ? `focus-${focus}` : ""}`} ref={workspaceElement} style={{ gridTemplateColumns: `${settings.ui.workspaceSplitRatio}fr 10px ${1 - settings.ui.workspaceSplitRatio}fr` }}>
-        {workspace ? <WorkspaceMapV2 workspace={workspace} selectedCandidateId={selectedCandidateId} selectedDayId={selectedDayId} selectedStopId={selectedStopId} mapPickPlaceId={mapPickPlaceId} fullscreen={focus === "map"} onSelectCandidate={(candidateId) => { setSelection({ type: "candidate", id: candidateId }); setTab("places"); }} onSelectStop={(stopId) => { setSelection({ type: "stop", id: stopId }); setTab("itinerary"); }} onMapPick={(placeId, latitude, longitude) => void setManualResolution(placeId, latitude, longitude, null, "map_pick")} onToggleFullscreen={() => setFocus((current) => current === "map" ? null : "map")}/> : <section className="workspace-map-v2 no-trip"><div className="map-empty-overlay"><span className="brand-mark">✦</span><strong>地图与计划会在这里同步</strong><span>新建或选择一趟旅行开始</span></div></section>}
-        <div className="splitter" onPointerDown={resize}/><div className="workspace-side-v3"><header className="workspace-tabs-v3"><div role="tablist"><button role="tab" aria-selected={tab === "places"} className={tab === "places" ? "active" : ""} onClick={() => { setTab("places"); setSelection({ type: "candidate_pool", id: null }); }}>地点{trip && <span>{trip.plan.candidates.length}</span>}</button><button role="tab" aria-selected={tab === "itinerary"} className={tab === "itinerary" ? "active" : ""} onClick={() => { setTab("itinerary"); if (trip?.plan.days[0]) setSelection({ type: "day", id: trip.plan.days[0].id }); }}>行程{trip && <span>{trip.plan.days.length}</span>}</button></div>{trip && <select aria-label="地点名称语言" value={trip.planLanguage} onChange={(event) => void saveLanguage(event.target.value as Trip["planLanguage"])}><option value="zh">中文</option><option value="en">English</option><option value="bilingual">中英对照</option></select>}</header>
-          <div className="workspace-tab-content">{workspace ? tab === "places" ? <CandidatePanel workspace={workspace} selectedCandidateId={selectedCandidateId} busy={working} onSelectCandidate={(candidateId) => setSelection({ type: "candidate", id: candidateId })} onSetPreference={setPreference} onDiscover={discover} onAddCandidate={addCandidate} onGenerate={generatePlan} onRetry={retryResolutions} onSearchCandidates={searchResolutionCandidates} onSelectResolution={selectResolution} onManualResolution={(placeId, latitude, longitude, address) => setManualResolution(placeId, latitude, longitude, address)} onBeginMapPick={(placeId) => { setMapPickPlaceId(placeId); setFocus("map"); }}/> : <ItineraryPanelV2 workspace={workspace} selectedDayId={selectedDayId} selectedStopId={selectedStopId} busy={working} onSelectDay={(dayId) => setSelection({ type: "day", id: dayId })} onSelectStop={(stopId) => setSelection({ type: "stop", id: stopId })} onRecalculate={recalculateRoute} onRecalculateDirty={recalculateDirtyRoutes} onRefine={refine} onOpenCandidates={() => { setTab("places"); setSelection({ type: "candidate_pool", id: null }); }} onCommand={runPlanCommand}/> : <div className="workspace-empty-v3"><span className="brand-mark">✦</span><h2>选择一趟旅行</h2><p>你会先看到 Candidate Pool，而不是一份无法控制的一键攻略。</p></div>}</div>
+        {workspace ? <WorkspaceMapV2 workspace={workspace} selectedCandidateId={selectedCandidateId} selectedDayId={selectedDayId} selectedStopId={selectedStopId} mapPickPlaceId={mapPickPlaceId} fullscreen={focus === "map"} onSelectCandidate={(candidateId) => {
+          const candidate = workspace.trip.plan.candidates.find((item) => item.id === candidateId);
+          const place = candidate ? workspace.trip.plan.places.find((item) => item.id === candidate.placeId) : null;
+          setSelection({ type: "candidate", id: candidateId });
+          setStep(place?.kind === "city" ? "destinations" : "interests");
+        }} onSelectStop={(stopId) => { setSelection({ type: "stop", id: stopId }); setStep("itinerary"); }} onMapPick={(placeId, latitude, longitude) => void setManualResolution(placeId, latitude, longitude, null, "map_pick")} onToggleFullscreen={() => setFocus((current) => current === "map" ? null : "map")}/> : <section className="workspace-map-v2 no-trip"><div className="map-empty-overlay"><span className="brand-mark">✦</span><strong>地图只展示规划结果</strong><span>所有旅行操作都从右侧开始</span></div></section>}
+        <div className="splitter" onPointerDown={resize}/>
+        <div className="workspace-side-v3">
+          {workspace ? <>
+          <header className="workspace-flow-head-v3">
+            <nav className="workspace-flow-nav-v3" aria-label="旅行规划步骤">
+              <button type="button" className={step === "requirements" ? "active" : ""} onClick={() => { setStep("requirements"); setSelection({ type: "trip", id: null }); }}><span>1</span>需求</button>
+              <button type="button" className={step === "destinations" ? "active" : ""} disabled={!workspace} onClick={() => { setStep("destinations"); setSelection({ type: "candidate_pool", id: null }); }}><span>2</span>目的地</button>
+              <button type="button" className={step === "interests" ? "active" : ""} disabled={!workspace.trip.plan.candidates.length} onClick={() => { setStep("interests"); setSelection({ type: "candidate_pool", id: null }); }}><span>3</span>兴趣点</button>
+              <button type="button" className={step === "itinerary" ? "active" : ""} disabled={!workspace.trip.plan.days.length} onClick={() => { setStep("itinerary"); if (workspace.trip.plan.days[0]) setSelection({ type: "day", id: workspace.trip.plan.days[0].id }); }}><span>4</span>行程</button>
+            </nav>
+            <div className="workspace-flow-tools-v3">
+              <small>{step === "requirements" ? "先告诉 AI 这趟旅行想怎么玩" : step === "destinations" ? "决定这趟旅行去哪些城市或区域" : step === "interests" ? "决定每个目的地具体玩什么" : "查看并调整每天的真实路线"}</small>
+              <select aria-label="地点名称语言" value={workspace.trip.planLanguage} onChange={(event) => void saveLanguage(event.target.value as Trip["planLanguage"])}><option value="zh">中文</option><option value="en">English</option><option value="bilingual">中英对照</option></select>
+            </div>
+          </header>
+          {trip && tasks.length > 0 && <div className="workspace-task-strip-v3"><AiTaskTopbar tasks={tasks} onStop={stopTask}/></div>}
+          <div className="workspace-step-content-v3">
+            {step === "requirements" ? <section className="workspace-requirements-v3">
+              <div><p className="eyebrow">START HERE</p><h2>旅行需求</h2><p>所有操作都在这里开始。先在下方告诉 AI 目的地、天数、同行者、节奏和明确偏好；确认后再生成目的地建议。</p></div>
+              <dl>
+                <div><dt>旅行</dt><dd>{trip?.plan.trip.title || "未命名旅行"}</dd></div>
+                <div><dt>日期 / 天数</dt><dd>{trip?.plan.trip.dates.start && trip.plan.trip.dates.end ? `${trip.plan.trip.dates.start} → ${trip.plan.trip.dates.end}` : trip?.plan.trip.dates.requestedDurationDays ? `${trip.plan.trip.dates.requestedDurationDays} 天` : "待补充"}</dd></div>
+                <div><dt>同行者</dt><dd>{trip?.plan.trip.travelers.summary || "待补充"}</dd></div>
+                <div><dt>节奏</dt><dd>{trip?.plan.trip.pace || "待补充"}</dd></div>
+              </dl>
+              <button className="button primary workspace-primary-cta-v3" type="button" disabled={working || !trip} onClick={() => void (async () => { await discover(); setStep("destinations"); setSelection({ type: "candidate_pool", id: null }); })()}><Sparkles size={15}/>生成目的地建议</button>
+            </section> : step === "destinations" ? <CandidatePanel view="macro" workspace={workspace} selectedCandidateId={selectedCandidateId} busy={working} onSelectCandidate={(candidateId) => setSelection({ type: "candidate", id: candidateId })} onSetPreference={setPreference} onDiscover={discover} onAddCandidate={addCandidate} onContinue={async () => { const places = new Map(workspace.trip.plan.places.map((place) => [place.id, place])); const hasMicro = workspace.trip.plan.candidates.some((candidate) => places.get(candidate.placeId)?.kind !== "city"); if (!hasMicro) await discover(); setStep("interests"); setSelection({ type: "candidate_pool", id: null }); }} onRetry={retryResolutions} onSearchCandidates={searchResolutionCandidates} onSelectResolution={selectResolution} onManualResolution={(placeId, latitude, longitude, address) => setManualResolution(placeId, latitude, longitude, address)} onBeginMapPick={(placeId) => { setMapPickPlaceId(placeId); setFocus("map"); }}/> : step === "interests" ? <CandidatePanel view="micro" workspace={workspace} selectedCandidateId={selectedCandidateId} busy={working} onSelectCandidate={(candidateId) => setSelection({ type: "candidate", id: candidateId })} onSetPreference={setPreference} onDiscover={discover} onAddCandidate={addCandidate} onContinue={generatePlan} onRetry={retryResolutions} onSearchCandidates={searchResolutionCandidates} onSelectResolution={selectResolution} onManualResolution={(placeId, latitude, longitude, address) => setManualResolution(placeId, latitude, longitude, address)} onBeginMapPick={(placeId) => { setMapPickPlaceId(placeId); setFocus("map"); }}/> : <ItineraryPanelV2 workspace={workspace} selectedDayId={selectedDayId} selectedStopId={selectedStopId} busy={working} onSelectDay={(dayId) => setSelection({ type: "day", id: dayId })} onSelectStop={(stopId) => setSelection({ type: "stop", id: stopId })} onRecalculate={recalculateRoute} onRecalculateDirty={recalculateDirtyRoutes} onRefine={refine} onCommand={runPlanCommand}/>}
+          </div>
+          <WorkspaceAssistantV2 title={trip?.title || null} workspace={workspace} selection={selection} chat={messages} busy={working} error={error} onSend={send} onCreateProposal={createProposal} onProposalAction={proposalAction} onStop={stopLatestTask}/>
+          </> : <div className="workspace-empty-v3"><span className="brand-mark">✦</span><h2>选择一趟旅行</h2><p>所有规划操作都会出现在这个右侧控制台。</p></div>}
         </div>
       </div></div>
-      <WorkspaceAssistantV2 title={trip?.title || null} workspace={workspace} selection={selection} chat={messages} busy={working} error={error} onSend={send} onCreateProposal={createProposal} onProposalAction={proposalAction} onStop={stopLatestTask}/>
     </section>
     <VersionDrawerV2 tripId={trip?.id || null} open={historyOpen} onClose={() => setHistoryOpen(false)} onRestored={() => { if (trip) void loadTrip(trip.id, false); void refreshTrips(false); }}/>
     <PasswordDrawer open={passwordOpen} onClose={() => setPasswordOpen(false)}/>

@@ -84,7 +84,7 @@ export class TravelPlannerRuntimeV2 extends CoreTravelPlannerRuntimeV2 {
     this.runtimeOptions.emit(event);
   }
 
-  private async resolveChangedPlaces(tripId: string, placeIds: string[], expectedGeneration: number) {
+  private async resolveChangedPlacesAfterMutation(tripId: string, placeIds: string[], expectedGeneration: number) {
     const trip = this.runtimeOptions.store.requireTrip(tripId);
     if (trip.contentGeneration !== expectedGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
     const stored = new Map(this.runtimeOptions.store.listPlaceResolutions(tripId).map((resolution) => [resolution.placeId, resolution]));
@@ -205,7 +205,7 @@ export class TravelPlannerRuntimeV2 extends CoreTravelPlannerRuntimeV2 {
   override async applyCommands(tripId: string, input: unknown) {
     const applied = applyPreparedPlanCommandBatchToStore(this.runtimeOptions.store, tripId, input);
     this.emitEvent({ kind: "travel.document.changed", payload: { tripId, generation: applied.generation, changedDayIds: applied.effects.changedDayIds } });
-    await this.resolveChangedPlaces(tripId, applied.effects.changedPlaceIds, applied.generation);
+    await this.resolveChangedPlacesAfterMutation(tripId, applied.effects.changedPlaceIds, applied.generation);
     return applied;
   }
 
@@ -219,7 +219,7 @@ export class TravelPlannerRuntimeV2 extends CoreTravelPlannerRuntimeV2 {
     const stored = this.runtimeOptions.store.applyProposalPlan(proposalId, applied.plan, `应用 AI 建议：${proposal.title}`);
     this.emitEvent({ kind: "travel.document.changed", payload: { tripId, generation: stored.generation, changedDayIds: applied.effects.changedDayIds } });
     this.emitEvent({ kind: "travel.proposal.changed", payload: { tripId, proposalId } });
-    await this.resolveChangedPlaces(tripId, applied.effects.changedPlaceIds, stored.generation);
+    await this.resolveChangedPlacesAfterMutation(tripId, applied.effects.changedPlaceIds, stored.generation);
     return { ...stored, effects: applied.effects };
   }
 

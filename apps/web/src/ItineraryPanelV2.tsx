@@ -160,7 +160,6 @@ export function ItineraryPanelV2({
   onRecalculate,
   onRecalculateDirty,
   onRefine,
-  onOpenCandidates,
   onCommand,
 }: {
   workspace: Workspace;
@@ -172,7 +171,6 @@ export function ItineraryPanelV2({
   onRecalculate: (dayId: string) => Promise<void>;
   onRecalculateDirty: () => Promise<void>;
   onRefine: (dayIds?: string[]) => Promise<void>;
-  onOpenCandidates: () => void;
   onCommand: (command: PlanCommand) => Promise<void>;
 }) {
   const plan = workspace.trip.plan;
@@ -198,7 +196,7 @@ export function ItineraryPanelV2({
     if (command) void onCommand(command);
   };
 
-  if (!plan.days.length) return <section className="itinerary-v2-panel empty"><div><Sparkles size={38}/><h2>先选择地点，再生成按天行程</h2><p>地点池让你先确认“去哪里”；AI 排程只会使用你保留并完成定位的地点。</p><button className="button primary" onClick={onOpenCandidates}>返回地点选择</button></div></section>;
+  if (!plan.days.length) return <section className="itinerary-v2-panel empty"><div><Sparkles size={38}/><h2>还没有按天行程</h2><p>请使用右侧顶部“兴趣点”步骤完成地点选择并生成行程。</p></div></section>;
 
   return <section className="itinerary-v2-panel">
     <header className="itinerary-v2-head">
@@ -207,7 +205,6 @@ export function ItineraryPanelV2({
         {dirtyStates.length > 0 && <button className="button small" disabled={busy} onClick={() => void onRecalculateDirty()}><RefreshCw size={13}/>更新全部变更路线 {dirtyStates.length}</button>}
         <button className="button small" disabled={busy || !pendingDetailDays.length} onClick={() => void onRefine()}><CalendarDays size={13}/>{pendingDetailDays.length ? `细化下一批（剩余 ${pendingDetailDays.length} 天）` : "细化已完成"}</button>
       </div>
-      <div className="plan-stage-badge"><span className="complete"><CheckCircle2 size={14}/>地点选择</span><span className={plan.stage === "itinerary_refinement" ? "complete" : "active"}><Route size={14}/>行程规划</span><span className={plan.stage === "itinerary_refinement" ? "active" : ""}><CalendarDays size={14}/>细化</span></div>
     </header>
     <div className="itinerary-v2-days">
       {plan.days.map((day, dayIndex) => {
@@ -259,7 +256,6 @@ export function ItineraryPanelV2({
               {addableCandidates.map((candidate) => <option key={candidate.id} value={candidate.placeId}>{placeName(places.get(candidate.placeId), workspace.trip.planLanguage)} · {candidate.preference === "must_go" ? "必去" : candidate.preference === "want_to_go" ? "想去" : "可选"}</option>)}
             </select>
             <button className="button small" disabled={busy || !addPlaceByDay[day.id]} onClick={() => { const command = buildAddStopCommand(plan, day.id, addPlaceByDay[day.id]); if (command) { void onCommand(command); setAddPlaceByDay((current) => ({ ...current, [day.id]: "" })); } }}><Plus size={13}/>添加一次到访</button>
-            <button className="button small ghost" onClick={onOpenCandidates}>管理地点池</button>
           </div>
           {!state.dirty && route?.warnings.length ? <div className="day-route-warnings">{route.warnings.map((warning) => <p key={warning}><AlertTriangle size={13}/>{warning}</p>)}</div> : null}
         </article>;
