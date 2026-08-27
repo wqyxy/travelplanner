@@ -182,7 +182,21 @@ export type ProposalScope =
   | { type: "place"; id: string }
   | { type: "day"; id: string }
   | { type: "trip"; id: null };
-export type PlanCommand = Record<string, unknown> & { type: string };
+export type DayStopChanges = Partial<Omit<DayStop, "id">>;
+export type PlanCommand =
+  | { type: "set_candidate_preference"; candidateId: string; preference: CandidatePreference }
+  | { type: "bulk_set_candidate_preference"; candidateIds: string[]; preference: CandidatePreference }
+  | { type: "add_candidate"; place: Place; candidate: TripCandidate }
+  | { type: "remove_candidate"; candidateId: string }
+  | { type: "update_candidate"; candidateId: string; changes: Partial<Pick<TripCandidate, "aiReason" | "aiScore" | "suggestedDurationMinutes" | "tags">> }
+  | { type: "update_place"; placeId: string; changes: Partial<Omit<Place, "id">> }
+  | { type: "set_day_anchor"; dayId: string; anchor: "start" | "end"; placeId: string | null; label: string | null; notes: string | null }
+  | { type: "add_day_stop"; dayId: string; index: number; stop: DayStop }
+  | { type: "update_day_stop"; stopId: string; changes: DayStopChanges }
+  | { type: "move_day_stop"; stopId: string; targetDayId: string; targetIndex: number }
+  | { type: "remove_day_stop"; stopId: string }
+  | { type: "move_day"; dayId: string; targetIndex: number }
+  | { type: "update_day"; dayId: string; changes: Partial<Pick<Day, "title" | "date">> };
 export type AiProposal = {
   id: string;
   tripId: string;

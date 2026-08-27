@@ -1,5 +1,8 @@
-import { AlertTriangle, CalendarDays, CheckCircle2, Flag, Hotel, MapPin, RefreshCw, Route, Sparkles } from "lucide-react";
-import type { DayAnchor, ItineraryLanguage, Place, TransportMode, Workspace } from "./v2-types";
+import { useEffect, useMemo, useState } from "react";
+import type { DragEvent } from "react";
+import { AlertTriangle, ArrowDown, ArrowUp, CalendarDays, CheckCircle2, Flag, GripVertical, Hotel, MapPin, Pencil, Plus, RefreshCw, Route, Save, Sparkles, Trash2 } from "lucide-react";
+import type { Day, DayAnchor, DayStop, ItineraryLanguage, Place, PlanCommand, TransportMode, TravelPlanDocument, Workspace } from "./v2-types";
+import { buildAddStopCommand, buildMoveStopByOffsetCommand, buildMoveStopCommand, buildMoveStopToDayCommand } from "./editor-actions-v2";
 import { formatDistance, formatRouteDuration, routeStateForDay } from "./workspace-v2";
 
 const modeLabels: Record<TransportMode, string> = { walk: "步行", drive: "驾车", bike: "骑行", transit: "公共交通", rail: "铁路", flight: "航班", ferry: "轮渡", none: "交通待定" };
@@ -18,33 +21,138 @@ function anchorName(anchor: DayAnchor, places: Map<string, Place>, language: Iti
   return anchor.label || "Anchor 待设置";
 }
 
-export function ItineraryPanelV2({ workspace, selectedDayId, busy, onSelectDay, onRecalculate, onOpenCandidates }: {
+function AnchorEditor({ day, anchorType, places, busy, onCommand }: {
+  day: Day;
+  anchorType: "start" | "end";
+  places: Place[];
+  busy: boolean;
+  onCommand: (command: PlanCommand) => Promise<void>;
+}) {
+  const anchor = anchorType === "start" ? day.startAnchor : day.endAnchor;
+  const [placeId, setPlaceId] = useState(anchor.placeId ?? "");
+  const [label, setLabel] = useState(anchor.label ?? "");
+  const [notes, setNotes] = useState(anchor.notes ?? "");
+  useEffect(() => { setPlaceId(anchor.placeId ?? ""); setLabel(anchor.label ?? ""); setNotes(anchor.notes ?? ""); }, [anchor.placeId, anchor.label, anchor.notes]);
+  const save = () => onCommand({
+    type: "set_day_anchor",
+    dayId: day.id,
+    anchor: anchorType,
+    placeId: placeId || null,
+    label: placeId ? null : label.trim() || null,
+    notes: notes.trim() || null,
+  });
+  return <div className="anchor-editor-v2" onClick={(event) => event.stopPropagation()}>
+    <label><span>{anchorType === "start" ? "出发 Anchor" : "结束 Anchor"}</span><select value={placeId} disabled={busy} onChange={(event) => setPlaceId(event.target.value)}><option value="">不绑定地点</option>{places.map((place) => <option value={place.id} key={place.id}>{place.nameZh}{place.city ? ` · ${place.city}` : ""}</option>)}</select></label>
+    {!placeId && <label><span>自定义名称</span><input value={label} disabled={busy} placeholder={anchorType === "start" ? "例如：京都酒店" : "例如：大阪酒店"} onChange={(event) => setLabel(event.target.value)}/></label>}
+    <label><span>备注</span><input value={notes} disabled={busy} placeholder="可选" onChange={(event) => setNotes(event.target.value)}/></label>
+    <button className="button small" disabled={busy} onClick={() => void save()}><Save size={13}/>保存</button>
+  </div>;
+}
+
+function StopEditor({ stop, day, plan, places, language, busy, onCommand }: {
+  stop: DayStop;
+  day: Day;
+  plan: TravelPlanDocument;
+  places: Map<string, Place>;
+  language: ItineraryLanguage;
+  busy: boolean;
+  onCommand: (command: PlanCommand) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [activity, setActivity] = useState(stop.activity);
+  const [duration, setDuration] = useState(stop.durationMinutes === null ? "" : String(stop.durationMinutes));
+  const [mode, setMode] = useState<TransportMode | "">(stop.transportFromPrevious?.mode ?? "");
+  useEffect(() => {
+    setActivity(stop.activity);
+    setDuration(stop.durationMinutes === null ? "" : String(stop.durationMinutes));
+    setMode(stop.transportFromPrevious?.mode ?? "");
+  }, [stop.activity, stop.durationMinutes, stop.transportFromPrevious?.mode]);
+  const save = async () => {
+    const parsedDuration = duration.trim() ? Number(duration) : null;
+    if (!activity.trim()) return;
+    if (parsedDuration !== null && (!Number.isInteger(parsedDuration) || parsedDuration < 0 || parsedDuration > 1440)) return;
+    await onCommand({
+      type: "update_day_stop",
+      stopId: stop.id,
+      changes: {
+        activity: activity.trim(),
+        durationMinutes: parsedDuration,
+        transportFromPrevious: mode ? {
+          mode,
+          durationMinutes: stop.transportFromPrevious?.durationMinutes ?? null,
+          note: stop.transportFromPrevious?.note ?? null,
+          verification: { status: "estimated", checkedAt: null },
+        } : null,
+      },
+    });
+    setOpen(false);
+  };
+  return <div className="stop-editor-v2" onClick={(event) => event.stopPropagation()}>
+    <div className="stop-editor-actions">
+      <button className="icon-button compact" aria-label={`上移 ${placeName(places.get(stop.placeId), language)}`} disabled={busy || day.stops[0]?.id === stop.id} onClick={() => { const command = buildMoveStopByOffsetCommand(plan, stop.id, -1); if (command) void onCommand(command); }}><ArrowUp size={14}/></button>
+      <button className="icon-button compact" aria-label={`下移 ${placeName(places.get(stop.placeId), language)}`} disabled={busy || day.stops.at(-1)?.id === stop.id} onClick={() => { const command = buildMoveStopByOffsetCommand(plan, stop.id, 1); if (command) void onCommand(command); }}><ArrowDown size={14}/></button>
+      <select aria-label={`移动 ${placeName(places.get(stop.placeId), language)} 到其他日期`} value={day.id} disabled={busy} onChange={(event) => { const command = buildMoveStopToDayCommand(plan, stop.id, event.target.value); if (command) void onCommand(command); }}>
+        {plan.days.map((item) => <option key={item.id} value={item.id}>Day {item.dayNumber}</option>)}
+      </select>
+      <button className="icon-button compact" aria-label="编辑地点安排" disabled={busy} onClick={() => setOpen((value) => !value)}><Pencil size={14}/></button>
+      <button className="icon-button compact danger" aria-label="删除地点" disabled={busy} onClick={() => { if (window.confirm(`从行程中删除“${placeName(places.get(stop.placeId), language)}”？`)) void onCommand({ type: "remove_day_stop", stopId: stop.id }); }}><Trash2 size={14}/></button>
+    </div>
+    {open && <div className="stop-editor-form">
+      <label><span>活动</span><input value={activity} disabled={busy} onChange={(event) => setActivity(event.target.value)}/></label>
+      <label><span>停留分钟</span><input type="number" min="0" max="1440" value={duration} disabled={busy} onChange={(event) => setDuration(event.target.value)}/></label>
+      <label><span>到达方式</span><select value={mode} disabled={busy} onChange={(event) => setMode(event.target.value as TransportMode | "")}><option value="">待定</option>{Object.entries(modeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+      <button className="button small primary" disabled={busy || !activity.trim()} onClick={() => void save()}><Save size={13}/>保存修改</button>
+    </div>}
+  </div>;
+}
+
+export function ItineraryPanelV2({ workspace, selectedDayId, busy, onSelectDay, onRecalculate, onOpenCandidates, onCommand }: {
   workspace: Workspace;
   selectedDayId: string | null;
   busy: boolean;
   onSelectDay: (dayId: string) => void;
   onRecalculate: (dayId: string) => Promise<void>;
   onOpenCandidates: () => void;
+  onCommand: (command: PlanCommand) => Promise<void>;
 }) {
   const plan = workspace.trip.plan;
-  const places = new Map(plan.places.map((place) => [place.id, place]));
+  const places = useMemo(() => new Map(plan.places.map((place) => [place.id, place])), [plan.places]);
+  const [dragStopId, setDragStopId] = useState<string | null>(null);
+  const [addPlaceByDay, setAddPlaceByDay] = useState<Record<string, string>>({});
+  const scheduledPlaceIds = useMemo(() => new Set(plan.days.flatMap((day) => day.stops.map((stop) => stop.placeId))), [plan.days]);
+  const addableCandidates = plan.candidates.filter((candidate) => candidate.preference !== "excluded" && !scheduledPlaceIds.has(candidate.placeId));
+
+  const drop = (event: DragEvent, dayId: string, index: number) => {
+    event.preventDefault(); event.stopPropagation();
+    const stopId = dragStopId || event.dataTransfer.getData("text/plain");
+    setDragStopId(null);
+    const command = buildMoveStopCommand(plan, stopId, dayId, index);
+    if (command) void onCommand(command);
+  };
+
   if (!plan.days.length) return <section className="itinerary-v2-panel empty"><div><Sparkles size={38}/><h2>先选择地点，再生成按天行程</h2><p>地点池让你先确认“去哪里”；AI 排程只会使用你保留并完成定位的地点。</p><button className="button primary" onClick={onOpenCandidates}>返回地点选择</button></div></section>;
 
   return <section className="itinerary-v2-panel">
-    <header className="itinerary-v2-head"><div><p className="eyebrow">PLAN & ROUTE</p><h2>按天行程</h2><small>{plan.days.length} 天 · {plan.stage === "itinerary_refinement" ? "行程细化" : "行程规划"}</small></div><div className="plan-stage-badge"><span className="complete"><CheckCircle2 size={14}/>地点选择</span><span className="active"><Route size={14}/>行程规划</span><span><CalendarDays size={14}/>细化</span></div></header>
+    <header className="itinerary-v2-head"><div><p className="eyebrow">PLAN & ROUTE</p><h2>按天行程</h2><small>{plan.days.length} 天 · 拖动或使用按钮调整，路线不会自动重算</small></div><div className="plan-stage-badge"><span className="complete"><CheckCircle2 size={14}/>地点选择</span><span className="active"><Route size={14}/>行程规划</span><span><CalendarDays size={14}/>细化</span></div></header>
     <div className="itinerary-v2-days">
-      {plan.days.map((day) => {
+      {plan.days.map((day, dayIndex) => {
         const state = routeStateForDay(workspace.routeStates, day.id);
         const route = state.route;
         const selected = selectedDayId === day.id;
-        return <article className={`itinerary-day-v2 ${selected ? "selected" : ""}`} key={day.id} onClick={() => onSelectDay(day.id)}>
-          <header><div className="day-number-v2"><span>DAY</span><strong>{day.dayNumber}</strong></div><div><h3>{day.title}</h3><small>{day.date || "日期待定"}</small></div><div className={`route-state-pill ${state.dirty ? "dirty" : route?.status || "idle"}`}>{state.dirty ? <><AlertTriangle size={13}/>路线有变更</> : route?.status === "ready" ? <><CheckCircle2 size={13}/>路线已更新</> : route?.status === "attention" ? <><AlertTriangle size={13}/>路线需注意</> : <><Route size={13}/>路线待生成</>}</div></header>
+        return <article className={`itinerary-day-v2 ${selected ? "selected" : ""} ${dragStopId ? "drag-active" : ""}`} key={day.id} onClick={() => onSelectDay(day.id)} onDragOver={(event) => event.preventDefault()}>
+          <header><div className="day-number-v2"><span>DAY</span><strong>{day.dayNumber}</strong></div><div><h3>{day.title}</h3><small>{day.date || "日期待定"}</small></div><div className="day-order-actions" onClick={(event) => event.stopPropagation()}><button className="icon-button compact" aria-label={`Day ${day.dayNumber} 前移`} disabled={busy || dayIndex === 0} onClick={() => void onCommand({ type: "move_day", dayId: day.id, targetIndex: dayIndex - 1 })}><ArrowUp size={14}/></button><button className="icon-button compact" aria-label={`Day ${day.dayNumber} 后移`} disabled={busy || dayIndex === plan.days.length - 1} onClick={() => void onCommand({ type: "move_day", dayId: day.id, targetIndex: dayIndex + 1 })}><ArrowDown size={14}/></button></div><div className={`route-state-pill ${state.dirty ? "dirty" : route?.status || "idle"}`}>{state.dirty ? <><AlertTriangle size={13}/>路线有变更</> : route?.status === "ready" ? <><CheckCircle2 size={13}/>路线已更新</> : route?.status === "attention" ? <><AlertTriangle size={13}/>路线需注意</> : <><Route size={13}/>路线待生成</>}</div></header>
           <div className="day-route-summary">{route ? <><span>{formatDistance(route.distanceKm)}</span><span>{formatRouteDuration(route.durationMinutes)}</span>{route.calculatedAt && <small>更新于 {new Date(route.calculatedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</small>}</> : <span>尚未计算当天路线</span>}<button className="button small" disabled={busy} onClick={(event) => { event.stopPropagation(); void onRecalculate(day.id); }}><RefreshCw size={13}/>{state.dirty || !route ? "更新路线" : "重新计算"}</button></div>
+          <details className="day-editor-v2" onClick={(event) => event.stopPropagation()}><summary>编辑 Day、Anchor 与地点</summary><div className="day-editor-grid"><label><span>Day 标题</span><div className="inline-save"><input defaultValue={day.title} id={`day-title-${day.id}`} disabled={busy}/><button className="icon-button compact" aria-label="保存 Day 标题" disabled={busy} onClick={() => { const element = document.getElementById(`day-title-${day.id}`) as HTMLInputElement | null; const title = element?.value.trim(); if (title && title !== day.title) void onCommand({ type: "update_day", dayId: day.id, changes: { title } }); }}><Save size={14}/></button></div></label><AnchorEditor day={day} anchorType="start" places={plan.places} busy={busy} onCommand={onCommand}/><AnchorEditor day={day} anchorType="end" places={plan.places} busy={busy} onCommand={onCommand}/></div></details>
           <div className="day-timeline-v2">
             <div className="timeline-node anchor"><i><Hotel size={14}/></i><div><small>出发 Anchor</small><strong>{anchorName(day.startAnchor, places, workspace.trip.planLanguage)}</strong>{day.startAnchor.notes && <p>{day.startAnchor.notes}</p>}</div></div>
-            {day.stops.map((stop, index) => <div className="timeline-node stop" key={stop.id}><div className="timeline-connector"><span>{stop.transportFromPrevious ? modeLabels[stop.transportFromPrevious.mode] : index === 0 ? "前往" : "交通待定"}{stop.transportFromPrevious?.durationMinutes !== null && stop.transportFromPrevious?.durationMinutes !== undefined ? ` · ${stop.transportFromPrevious.durationMinutes} 分钟` : ""}</span></div><i><MapPin size={14}/></i><div><small>{stop.startTime && stop.endTime ? `${stop.startTime}–${stop.endTime}` : stop.period ? periodLabels[stop.period] : "时间待定"}</small><strong>{placeName(places.get(stop.placeId), workspace.trip.planLanguage)}</strong><p>{stop.activity}{stop.durationMinutes !== null ? ` · 停留 ${stop.durationMinutes} 分钟` : ""}</p>{stop.notes && <em>{stop.notes}</em>}</div></div>)}
+            <div className={`stop-drop-zone ${dragStopId ? "visible" : ""}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => drop(event, day.id, 0)}>放到 Day {day.dayNumber} 首位</div>
+            {day.stops.map((stop, index) => <div key={stop.id}>
+              <div className="timeline-node stop editable-stop" draggable={!busy} onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", stop.id); setDragStopId(stop.id); }} onDragEnd={() => setDragStopId(null)}><div className="timeline-connector"><span>{stop.transportFromPrevious ? modeLabels[stop.transportFromPrevious.mode] : index === 0 ? "前往" : "交通待定"}{stop.transportFromPrevious?.durationMinutes !== null && stop.transportFromPrevious?.durationMinutes !== undefined ? ` · ${stop.transportFromPrevious.durationMinutes} 分钟` : ""}</span></div><i className="drag-handle" aria-label="拖动地点"><GripVertical size={14}/></i><div className="stop-copy"><small>{stop.startTime && stop.endTime ? `${stop.startTime}–${stop.endTime}` : stop.period ? periodLabels[stop.period] : "时间待定"}</small><strong>{placeName(places.get(stop.placeId), workspace.trip.planLanguage)}</strong><p>{stop.activity}{stop.durationMinutes !== null ? ` · 停留 ${stop.durationMinutes} 分钟` : ""}</p>{stop.notes && <em>{stop.notes}</em>}</div><StopEditor stop={stop} day={day} plan={plan} places={places} language={workspace.trip.planLanguage} busy={busy} onCommand={onCommand}/></div>
+              <div className={`stop-drop-zone ${dragStopId ? "visible" : ""}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => drop(event, day.id, index + 1)}>放到此处</div>
+            </div>)}
             <div className="timeline-node anchor"><div className="timeline-connector"><span>结束当天</span></div><i><Flag size={14}/></i><div><small>结束 Anchor</small><strong>{anchorName(day.endAnchor, places, workspace.trip.planLanguage)}</strong>{day.endAnchor.notes && <p>{day.endAnchor.notes}</p>}</div></div>
           </div>
+          <div className="add-stop-v2" onClick={(event) => event.stopPropagation()}><select value={addPlaceByDay[day.id] || ""} disabled={busy || !addableCandidates.length} onChange={(event) => setAddPlaceByDay((current) => ({ ...current, [day.id]: event.target.value }))}><option value="">{addableCandidates.length ? "从地点池选择未排程地点" : "地点池中没有未排程地点"}</option>{addableCandidates.map((candidate) => <option key={candidate.id} value={candidate.placeId}>{placeName(places.get(candidate.placeId), workspace.trip.planLanguage)}</option>)}</select><button className="button small" disabled={busy || !addPlaceByDay[day.id]} onClick={() => { const command = buildAddStopCommand(plan, day.id, addPlaceByDay[day.id]); if (command) { void onCommand(command); setAddPlaceByDay((current) => ({ ...current, [day.id]: "" })); } }}><Plus size={13}/>添加地点</button><button className="button small ghost" onClick={onOpenCandidates}>管理地点池</button></div>
           {route?.warnings.length ? <div className="day-route-warnings">{route.warnings.map((warning) => <p key={warning}><AlertTriangle size={13}/>{warning}</p>)}</div> : null}
         </article>;
       })}

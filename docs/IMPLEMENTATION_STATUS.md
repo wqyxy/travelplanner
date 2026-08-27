@@ -10,7 +10,7 @@
 
 ## Current Phase
 
-Phase 6 — 确定性行程编辑、拖拽与 Route Dirty UI。
+Phase 7 — AI Scope Proposal、Preview、Apply、Reject 与 Undo UI。
 
 ## Completed
 
@@ -58,6 +58,17 @@ Phase 6 — 确定性行程编辑、拖拽与 Route Dirty UI。
 - 修复版本历史抽屉，使其读取 v2 Revision 的 `plan`。
 - GitHub CI 已扩展到当前实施分支。
 
+### Phase 6 — 确定性行程编辑、拖拽与 Route Dirty UI
+
+- 行程 Tab 支持原生拖拽 Stop；同一天与跨 Day 放置都转换成固定 `move_day_stop` 命令。
+- 新增键盘/按钮替代操作：Stop 上移、下移、选择目标 Day，Day 前移和后移。
+- 新增 Day 标题、start/end Anchor、Stop 活动、停留时间和到达方式编辑。
+- 新增从未排程 Candidate 添加 Stop，以及删除 Stop；新增 Stop 使用临时 ID，正式 ID 继续由服务端分配。
+- 所有编辑统一 POST `/commands`，请求携带 `expectedGeneration` 和单元素 `commands` 数组；不调用 AI。
+- 拖拽和基础编辑只更新 canonical plan；Route Dirty 继续由服务端 fingerprint 比较派生。
+- 编辑后不自动调用 Route Provider；只有用户点击“更新路线/重新计算”才请求路线。
+- 新增纯编辑动作构造器，集中处理同日删除后的目标索引修正、跨日目标位置、临时 Stop 和 generation CAS 请求体。
+
 ## Important Decisions
 
 - Canonical 使用 `TravelPlanDocument schemaVersion=2`。
@@ -87,6 +98,16 @@ Phase 5 关键文件：
 - `.github/workflows/v3-ci.yml`
 - 删除临时 `.github/workflows/export-phase4-source.yml`
 
+Phase 6 关键文件：
+
+- `apps/web/src/App.tsx`
+- `apps/web/src/v2-types.ts`
+- `apps/web/src/editor-actions-v2.ts`
+- `apps/web/src/editor-actions-v2.test.ts`
+- `apps/web/src/ItineraryPanelV2.tsx`
+- `apps/web/src/styles.css`
+- `docs/IMPLEMENTATION_STATUS.md`
+
 ## Tests / Checks
 
 Phase 5 本地验证：
@@ -99,28 +120,35 @@ Phase 5 本地验证：
 - 新增/修改源码行尾空格检查：通过。
 - 未调用真实 Codex 账户或真实地图 Provider；未读取用户真实 `private_data/`。
 
+Phase 6 本地验证：
+
+- `npm run typecheck`：Web 与 Server 均通过。
+- 编辑动作定向测试：6 个测试通过，覆盖同日索引、跨日移动、上下移动、临时 Stop 和 generation CAS。
+- 全量 Vitest：29 个测试文件、176 个测试全部通过。
+- `npm run build`：Web 与 Server 生产构建通过。
+
 ## Known Issues / Risks
 
-- 行程 Tab 当前可查看 Day/Anchor/Stop 和手动更新路线，但尚未提供拖拽、跨 Day 移动、增删 Stop 和 Anchor 编辑控件。
 - Proposal 后端已经存在，前端 Preview/Apply/Reject/Undo 尚未接入。
 - 01 行程细化仍未接入 v2 Runtime/UI。
+- detailed Day 新增不完整 Stop 的合同边界将在 Phase 8 统一处理，避免通过 UI 绕过细化完整性。
 - 旧 v1 Web/Server 文件仍在仓库中但已无活动 UI/Server 入口；最终 Cleanup 会删除。
 - 未完成真实浏览器 E2E；当前以 TypeScript、纯函数测试、全量单元测试和生产构建作为门禁。
 
 ## Next Phase
 
-Phase 6：
+Phase 7：
 
-- 行程 Tab 增加同日原生拖拽、跨 Day 拖拽、键盘移动替代操作。
-- 增加 Stop 添加、删除、基础字段编辑和 Day Anchor 设置。
-- 所有编辑只提交固定 PlanCommand，不调用 AI。
-- 编辑成功后刷新 Workspace；路线 dirty 只由 fingerprint 派生。
-- 用户显式点击“更新路线”才调用 Route API；连续拖拽不自动请求路线。
-- 增加纯命令构造和 UI 状态测试，覆盖同日/跨日移动和 generation 请求体。
+- 在 AI Composer 中提供 Candidate Pool、Candidate、Place、Day 和 Trip 显式 Scope。
+- 创建 Proposal 后展示标题、解释、命令摘要、受影响 Candidate/Place/Day 和结构化 Diff。
+- Pending Proposal 支持 Apply 与 Reject；Apply 后支持 Undo。
+- Apply/Undo 后刷新 Workspace 和 Revision；generation 已变化的 Proposal 清晰显示 superseded。
+- Proposal UI 不得绕过状态机调用普通 `/commands`。
+- 增加 Proposal 展示、Scope 和动作可用性测试。
 
 ## Recommended Model
 
-Worker 实施拖拽和编辑控件；高推理 Reviewer 检查数组索引、跨 Day 目标位置、generation CAS 和 Route Dirty 边界。
+Worker 实施 Proposal UI；高推理 Reviewer 检查 Scope、generation CAS、原子 Apply、supersede 与 Undo 边界。
 
 ## Do Not Do
 
@@ -129,4 +157,4 @@ Worker 实施拖拽和编辑控件；高推理 Reviewer 检查数组索引、跨
 - 不保存 routeDirty 布尔值。
 - 不让 AI 输出或直接修改坐标。
 - 不新增开放式 Patch、额外业务 stage 或新的坐标 Agent。
-- 不在拖拽或基础编辑后自动调用 Route Provider。
+- 不允许 Proposal UI 直接调用普通 `/commands` 绕过 Preview/Apply 状态机。

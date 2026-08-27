@@ -24,3 +24,34 @@
 .assistant-bar-v2{grid-template-columns:auto max-content auto minmax(0,1fr) auto auto}.assistant-scope-chip{padding:4px 7px;border-radius:7px;color:var(--primary);background:var(--primary-soft);font-size:10px;font-weight:700;white-space:nowrap}.assistant-drawer-v2 .assistant-head>div:last-child{display:flex;align-items:center;gap:7px}
 .version-list button b{font-size:12px}.version-list button span{font-size:11px}.version-list button small{color:var(--muted);font-size:9px}
 @media(max-width:900px){.main-workspace-v3{padding-bottom:78px!important}.travel-workspace-v3,.travel-workspace-v3.focus-map,.travel-workspace-v3.focus-panel{display:block!important;height:auto!important}.workspace-map-v2{height:45dvh;margin-bottom:12px}.workspace-side-v3{height:55dvh}.travel-workspace-v3.focus-map .workspace-map-v2{height:calc(100dvh - 158px)}.travel-workspace-v3.focus-map .workspace-side-v3{display:none}.travel-workspace-v3.focus-panel .workspace-map-v2{display:none}.travel-workspace-v3.focus-panel .workspace-side-v3{height:calc(100dvh - 158px)}.candidate-summary{grid-template-columns:auto 1fr}.candidate-summary>div{grid-column:1/-1}.candidate-card{grid-template-columns:24px minmax(0,1fr) auto}.candidate-preference{grid-template-columns:repeat(4,25px);grid-column:2/-1}.candidate-chevron{display:none}.candidate-footer{align-items:stretch;flex-direction:column}.candidate-footer .generate-plan{width:100%;min-width:0}.itinerary-v2-head{display:grid}.plan-stage-badge{overflow-x:auto}.assistant-bar-v2{grid-template-columns:auto minmax(0,1fr) auto}.assistant-bar-v2 .assistant-scope-chip,.assistant-bar-v2 .assistant-bar-prompt{display:none}.manual-coordinate-form{grid-template-columns:1fr}}
+
+/* Phase 6: deterministic itinerary editing */
+.day-order-actions { display: flex; gap: 4px; margin-left: auto; }
+.icon-button.compact { width: 30px; height: 30px; min-width: 30px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: 9px; }
+.icon-button.compact.danger { color: var(--danger, #b42318); }
+.day-editor-v2 { margin: 10px 16px 4px; border: 1px solid var(--line); border-radius: 12px; background: color-mix(in srgb, var(--panel) 94%, var(--accent) 6%); }
+.day-editor-v2 summary { cursor: pointer; padding: 10px 12px; font-size: 12px; font-weight: 700; color: var(--muted); user-select: none; }
+.day-editor-grid { display: grid; gap: 10px; padding: 0 12px 12px; }
+.day-editor-grid > label, .anchor-editor-v2 label, .stop-editor-form label { display: grid; gap: 5px; font-size: 11px; color: var(--muted); }
+.day-editor-grid input, .day-editor-grid select, .anchor-editor-v2 input, .anchor-editor-v2 select, .stop-editor-form input, .stop-editor-form select, .add-stop-v2 select, .stop-editor-actions select { min-height: 34px; border: 1px solid var(--line); border-radius: 9px; padding: 6px 9px; background: var(--panel); color: var(--text); }
+.inline-save { display: grid; grid-template-columns: 1fr auto; gap: 6px; }
+.anchor-editor-v2 { display: grid; grid-template-columns: minmax(140px, 1fr) minmax(120px, .7fr) auto; gap: 8px; align-items: end; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.editable-stop { grid-template-columns: auto minmax(0, 1fr) auto !important; cursor: grab; }
+.editable-stop:active { cursor: grabbing; }
+.drag-handle { color: var(--muted); cursor: grab; }
+.stop-copy { min-width: 0; }
+.stop-editor-v2 { justify-self: end; min-width: 0; }
+.stop-editor-actions { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.stop-editor-actions select { width: 86px; min-height: 30px; padding: 3px 6px; font-size: 11px; }
+.stop-editor-form { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(160px, 1fr) 110px 130px auto; gap: 8px; align-items: end; margin-top: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: color-mix(in srgb, var(--panel) 93%, var(--accent) 7%); }
+.stop-drop-zone { height: 0; overflow: hidden; opacity: 0; margin: 0 16px; border: 1px dashed transparent; border-radius: 8px; font-size: 11px; text-align: center; color: var(--accent); transition: .15s ease; }
+.stop-drop-zone.visible { height: 30px; opacity: 1; margin-top: 5px; margin-bottom: 5px; padding: 6px; border-color: color-mix(in srgb, var(--accent) 55%, transparent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.stop-drop-zone.visible:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.itinerary-day-v2.drag-active { border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
+.add-stop-v2 { display: grid; grid-template-columns: minmax(180px, 1fr) auto auto; gap: 8px; align-items: center; margin: 10px 16px 16px; padding: 10px; border-top: 1px solid var(--line); }
+@media (max-width: 760px) {
+  .anchor-editor-v2, .stop-editor-form, .add-stop-v2 { grid-template-columns: 1fr; }
+  .stop-editor-actions { justify-content: flex-start; }
+  .editable-stop { grid-template-columns: auto minmax(0, 1fr) !important; }
+  .stop-editor-v2 { grid-column: 1 / -1; justify-self: stretch; }
+}
