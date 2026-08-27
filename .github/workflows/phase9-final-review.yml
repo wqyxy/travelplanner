@@ -1,0 +1,359 @@
+name: Implement Phase 9 cleanup and final acceptance
+
+on:
+  push:
+    branches:
+      - codex/v3-runtime-ui-completion
+    paths:
+      - .github/workflows/phase9-final-review.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: travelplanner-phase9
+  cancel-in-progress: false
+
+jobs:
+  review:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+
+      - name: Verify all prior phases
+        run: |
+          set -euo pipefail
+          test -f apps/web/src/V3Workspace.tsx
+          test -f apps/web/src/V3ItineraryEditor.tsx
+          test -f apps/web/src/V3ProposalPanel.tsx
+          grep -q 'Remaining-Day Itinerary Refinement' docs/IMPLEMENTATION_STATUS.md
+
+      - name: Remove safe unreferenced legacy modules and temporary infrastructure
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          candidates = [
+              'apps/server/contracts.ts',
+              'apps/server/travel-store.ts',
+              'apps/server/planner-workflow.ts',
+              'apps/server/detail-workflow.ts',
+              'apps/server/map-pipeline.ts',
+          ]
+          roots = [Path('apps'), Path('scripts')]
+          for filename in candidates:
+              path = Path(filename)
+              if not path.exists():
+                  continue
+              stem = path.stem
+              patterns = {
+                  f'./{stem}.js', f'./{stem}', f'../server/{stem}.js', f'../server/{stem}',
+              }
+              references = []
+              for root in roots:
+                  if not root.exists():
+                      continue
+                  for source in root.rglob('*'):
+                      if not source.is_file() or source == path or source.suffix not in {'.ts', '.tsx', '.js', '.mjs'}:
+                          continue
+                      try:
+                          text = source.read_text(encoding='utf-8')
+                      except UnicodeDecodeError:
+                          continue
+                      if any(pattern in text for pattern in patterns):
+                          references.append(str(source))
+              if not references:
+                  path.unlink()
+                  test = path.with_name(path.stem + '.test.ts')
+                  if test.exists():
+                      test.unlink()
+              else:
+                  print(f'keeping referenced legacy module {filename}: {references}')
+          PY
+
+          rm -f .github/v3-bootstrap
+          rm -f .github/workflows/v3-apply-bundle.yml
+          rm -f .github/workflows/export-phase4-source.yml
+          rm -f .github/workflows/export-workspace.yml
+          rm -f .github/workflows/v3-apply-phase4-blobs.yml
+          rm -f .github/v3-change-bundle.tar.gz.b64 .github/v3-change-bundle.part-*
+          rm -f prompts/03-地图坐标搜索Agent.md
+
+      - name: Add permanent architecture guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p scripts
+          cat > scripts/check-v3.mjs <<'EOF'
+          import { existsSync, readFileSync, readdirSync } from "node:fs";
+          import { execFileSync } from "node:child_process";
+
+          const failures = [];
+          const requirePath = (path) => {
+            if (!existsSync(path)) failures.push(`missing required path: ${path}`);
+          };
+          const forbidPath = (path) => {
+            if (existsSync(path)) failures.push(`forbidden legacy path exists: ${path}`);
+          };
+          const source = (path) => existsSync(path) ? readFileSync(path, "utf8") : "";
+          const requireText = (path, needle) => {
+            if (!source(path).includes(needle)) failures.push(`${path} must contain ${needle}`);
+          };
+          const forbidText = (path, needle) => {
+            if (source(path).includes(needle)) failures.push(`${path} must not contain ${needle}`);
+          };
+
+          [
+            "apps/server/contracts-v2.ts",
+            "apps/server/travel-store-v2.ts",
+            "apps/server/plan-commands-v2.ts",
+            "apps/server/candidate-workflow-v2.ts",
+            "apps/server/place-resolver-v2.ts",
+            "apps/web/src/V3Workspace.tsx",
+            "apps/web/src/V3ItineraryEditor.tsx",
+            "apps/web/src/V3ProposalPanel.tsx",
+            "docs/TRAVEL_WORKBENCH_V3.md",
+            "docs/IMPLEMENTATION_STATUS.md",
+          ].forEach(requirePath);
+
+          [
+            "apps/server/migration-v2.ts",
+            "apps/server/migration-v2.test.ts",
+            "prompts/03-地图坐标搜索Agent.md",
+            ".github/v3-bootstrap",
+            ".github/workflows/v3-apply-bundle.yml",
+            ".github/workflows/export-phase4-source.yml",
+            ".github/workflows/export-workspace.yml",
+            ".github/workflows/v3-apply-phase4-blobs.yml",
+          ].forEach(forbidPath);
+
+          const prompts = existsSync("prompts")
+            ? readdirSync("prompts").filter((name) => name.endsWith("Agent.md")).sort()
+            : [];
+          const expectedPrompts = ["00-旅行规划Agent.md", "01-行程细化Agent.md", "02-地图候选消歧Agent.md"].sort();
+          if (JSON.stringify(prompts) !== JSON.stringify(expectedPrompts)) {
+            failures.push(`unexpected Agent prompt set: ${prompts.join(", ")}`);
+          }
+
+          requireText("apps/server/index.ts", "TravelStoreV2");
+          requireText("apps/server/index.ts", "/workspace");
+          requireText("apps/server/index.ts", "/candidates/discover");
+          requireText("apps/server/index.ts", "/commands");
+          requireText("apps/server/index.ts", "/proposals");
+          requireText("apps/web/src/App.tsx", "V3Workspace");
+          requireText("apps/web/src/V3Workspace.tsx", "V3ProposalPanel");
+          requireText("apps/web/src/V3ItineraryEditor.tsx", "applyPlanCommand");
+          requireText("apps/web/src/V3ItineraryEditor.tsx", "细化剩余日期");
+          forbidText("apps/web/src/V3ItineraryEditor.tsx", "discoverCandidates");
+          forbidText("apps/web/src/V3ItineraryEditor.tsx", "createProposal");
+          forbidText("apps/web/src/V3ProposalPanel.tsx", "applyPlanCommand");
+          forbidText("apps/server/index.ts", "CoordinateResearch");
+
+          const tracked = execFileSync("git", ["ls-files"], { encoding: "utf8" }).split("\n").filter(Boolean);
+          const privateTracked = tracked.filter((path) => path === "private_data" || path.startsWith("private_data/"));
+          if (privateTracked.length) failures.push(`private_data is tracked: ${privateTracked.join(", ")}`);
+          const bundleTracked = tracked.filter((path) => path.includes("v3-change-bundle") || path.includes("apply-phase4-blobs") || path.includes("export-phase4-source"));
+          if (bundleTracked.length) failures.push(`temporary implementation files remain: ${bundleTracked.join(", ")}`);
+
+          if (failures.length) {
+            console.error("TravelPlanner v3 architecture guard failed:\n- " + failures.join("\n- "));
+            process.exit(1);
+          }
+          console.log("TravelPlanner v3 architecture guard passed.");
+          EOF
+
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          pkg.scripts ||= {};
+          pkg.scripts['check:v3'] = 'node scripts/check-v3.mjs';
+          pkg.engines = { ...(pkg.engines || {}), node: '>=24' };
+          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          NODE
+
+      - name: Install permanent CI workflow
+        shell: bash
+        run: |
+          cat > .github/workflows/ci.yml <<'EOF'
+          name: CI
+
+          on:
+            push:
+              branches: [main, codex/v3-runtime-ui-completion]
+            pull_request:
+              branches: [main]
+
+          permissions:
+            contents: read
+
+          jobs:
+            verify:
+              runs-on: ubuntu-latest
+              steps:
+                - uses: actions/checkout@v4
+                - uses: actions/setup-node@v4
+                  with:
+                    node-version: '24'
+                    cache: npm
+                - run: npm ci
+                - run: npm run check:v3
+                - run: npm run typecheck
+                - run: npm test
+                - run: npm run build
+          EOF
+          rm -f .github/workflows/v3-ci.yml
+
+      - name: Update project documentation
+        shell: bash
+        run: |
+          cat >> README.md <<'EOF'
+
+          ## Candidate-first v3 workspace
+
+          The active product flow is now:
+
+          ```text
+          Discover candidates → curate priorities → resolve real map places → generate Days/Anchors/Stops
+          → deterministic editing → explicit route recalculation → scoped AI Proposal preview/apply/undo
+          → remaining-Day refinement
+          ```
+
+          The normal desktop workspace keeps the map on the left and `[地点] [行程]` on the right. AI never supplies trusted coordinates, route geometry, distance or provider travel time. Those values come from the map/provider layer or explicit user input.
+
+          Development verification:
+
+          ```bash
+          npm ci
+          npm run check:v3
+          npm run typecheck
+          npm test
+          npm run build
+          ```
+
+          This v3 runtime intentionally does not migrate or compatibly read legacy itinerary databases. Start it with an empty v3 data directory.
+          EOF
+
+          cat >> AGENTS.md <<'EOF'
+
+          ## TravelPlanner v3 invariants
+
+          - `TravelPlanDocument schemaVersion=2` is the only canonical travel-plan contract.
+          - Product stages are only `place_selection`, `itinerary_planning`, and `itinerary_refinement`.
+          - Place semantics, PlaceResolution, TripCandidate, DayStop, and DayRoute are different concepts; do not merge them.
+          - AI output must never be trusted for coordinates, provider Place IDs, route geometry, distance, or provider travel time.
+          - User drag/drop, add/remove, cross-Day movement, Anchor edits, and route refresh are deterministic operations, not AI tasks.
+          - Normal AI adjustments must create a pending scoped Proposal; only Apply writes canonical data, and Undo uses Revision history.
+          - `routeDirty` is derived from route-input fingerprints and is not a writable persisted boolean.
+          - Do not restore v1 migrations, dual writes, an open JSON Patch system, the 03 coordinate Agent, or legacy itinerary-first UI paths.
+          - Run `npm run check:v3` before typecheck/tests/build.
+          EOF
+
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          path = Path('docs/IMPLEMENTATION_STATUS.md')
+          text = path.read_text(encoding='utf-8')
+          text = re.sub(r'## Current Phase\n\n.*?(?=\n## )', '## Current Phase\n\nComplete — Phase 0 through Phase 9 implemented and under final CI review.\n', text, count=1, flags=re.S)
+          section = '''
+          ### Phase 9 — Legacy Cleanup and Final Acceptance
+
+          - Removed temporary implementation/export workflows, staged bundle files and the 03 coordinate Agent.
+          - Removed v1 core modules only when repository-wide reference search proved them unused; referenced stable infrastructure was preserved.
+          - Added `npm run check:v3` as a permanent architecture boundary for v2 runtime/UI, Prompt set, Proposal/command separation and private-data isolation.
+          - Replaced the temporary branch workflow with permanent Node.js 24 CI for pushes and pull requests.
+          - Updated README and AGENTS with the active Candidate-first workflow and non-negotiable boundaries.
+          - Final acceptance runs architecture guard, full typecheck, full test suite, production build, built-UI text inspection and empty-data-directory server startup smoke verification.
+          '''
+          if '### Phase 9 — Legacy Cleanup and Final Acceptance' not in text:
+              text = text.replace('\n## Important Decisions', '\n' + section.strip() + '\n\n## Important Decisions')
+          text = re.sub(r'## Known Issues / Risks\n\n.*?(?=\n## )', '''## Known Issues / Risks
+
+          - Real Codex-account calls, live Nominatim/route-provider behavior and long-running browser interaction still depend on the operator's local credentials and network.
+          - The v3 runtime intentionally rejects legacy non-empty databases; no data migration or compatibility layer is provided by user decision.
+          - Browser drag-and-drop also has explicit button alternatives, but final visual QA should still be repeated on the operator's target desktop browser.
+          ''', text, count=1, flags=re.S)
+          text = re.sub(r'## Next Phase\n\n.*?(?=\n## )', '''## Next Phase
+
+          No implementation Phase remains. Review the final pull request, run one local live-provider/browser smoke session, then merge to `main`.
+          ''', text, count=1, flags=re.S)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Architecture guard
+        run: npm run check:v3
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Full tests
+        run: npm test
+      - name: Production build
+        run: npm run build
+      - name: Confirm built UI contains the v3 workbench
+        run: |
+          set -euo pipefail
+          grep -R -q '先选择真正想去的地方' dist/web
+          grep -R -q 'AI 局部调整' dist/web
+          grep -R -q '细化剩余日期' dist/web
+      - name: Empty-data startup smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          log="$tmp/server.log"
+          export PORT=43117
+          export HOST=127.0.0.1
+          export TRAVELPLANNER_DATA_DIR="$tmp/data"
+          export DATA_DIR="$tmp/data"
+          export PRIVATE_DATA_DIR="$tmp/data"
+          export APP_PASSWORD='phase9-smoke-password'
+          mkdir -p "$tmp/data"
+          node dist/server/index.js >"$log" 2>&1 &
+          pid=$!
+          cleanup() { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; rm -rf "$tmp"; }
+          trap cleanup EXIT
+          ok=0
+          for _ in $(seq 1 40); do
+            if ! kill -0 "$pid" 2>/dev/null; then
+              cat "$log"
+              exit 1
+            fi
+            if curl --fail --silent "http://127.0.0.1:$PORT/" >/dev/null; then
+              ok=1
+              break
+            fi
+            sleep .25
+          done
+          if [[ "$ok" != 1 ]]; then
+            cat "$log"
+            exit 1
+          fi
+          test -d "$tmp/data"
+      - name: Repository hygiene
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          test -z "$(git ls-files 'private_data/**')"
+          ! git grep -n -E 'BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY' -- . ':(exclude)package-lock.json'
+
+      - name: Commit Phase 9
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/phase9-final-review.yml
+          git add -A
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Phase 9: complete v3 cleanup and final acceptance'
+          git push origin HEAD:codex/v3-runtime-ui-completion
