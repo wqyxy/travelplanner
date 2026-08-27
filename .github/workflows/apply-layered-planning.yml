@@ -28,8 +28,9 @@ jobs:
         run: |
           python .github/prepare-layered-script.py
           python .github/apply-layered-planning.py
+          python .github/fix-layered-typecheck.py
       - name: Remove one-shot implementation helpers
-        run: rm -f .github/prepare-layered-script.py .github/apply-layered-planning.py .github/workflows/apply-layered-planning.yml
+        run: rm -f .github/prepare-layered-script.py .github/apply-layered-planning.py .github/fix-layered-typecheck.py .github/workflows/apply-layered-planning.yml
       - name: Install dependencies
         run: npm ci
       - name: Typecheck
