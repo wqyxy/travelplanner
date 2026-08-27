@@ -17,7 +17,13 @@ function decode(value: string) { return decodeURIComponent(value); }
 export type TravelApiResponse = { status: number; data?: unknown; error?: { message: string; code?: string } };
 export type TravelApiDeps = { store: TravelStoreV2; runtime: TravelPlannerRuntimeV2 };
 
-export async function dispatchTravelApiV2(method: string, pathname: string, searchParams: URLSearchParams, body: Record<string, unknown>, deps: TravelApiDeps): Promise<TravelApiResponse | null> {
+export async function dispatchTravelApiV2(
+  method: string,
+  pathname: string,
+  searchParams: URLSearchParams,
+  body: Record<string, unknown>,
+  deps: TravelApiDeps,
+): Promise<TravelApiResponse | null> {
   if (method === "GET" && pathname === "/api/trips") return { status: 200, data: { trips: deps.store.listTrips(searchParams.get("view") === "trash" ? "trashed" : "active") } };
   if (method === "POST" && pathname === "/api/trips") return { status: 200, data: { trip: deps.store.createTrip() } };
 
@@ -48,7 +54,10 @@ export async function dispatchTravelApiV2(method: string, pathname: string, sear
   match = /^\/api\/trips\/([^/]+)\/restore$/.exec(pathname);
   if (method === "POST" && match) return { status: 200, data: { trip: deps.store.setState(decode(match[1]), "active") } };
   match = /^\/api\/trips\/([^/]+)\/permanent$/.exec(pathname);
-  if (method === "DELETE" && match) { deps.store.permanentDelete(decode(match[1])); return { status: 200, data: { ok: true } }; }
+  if (method === "DELETE" && match) {
+    deps.store.permanentDelete(decode(match[1]));
+    return { status: 200, data: { ok: true } };
+  }
 
   match = /^\/api\/trips\/([^/]+)\/messages$/.exec(pathname);
   if (method === "GET" && match) return { status: 200, data: { messages: deps.store.listMessages(decode(match[1])) } };
@@ -57,23 +66,41 @@ export async function dispatchTravelApiV2(method: string, pathname: string, sear
 
   match = /^\/api\/trips\/([^/]+)\/candidates\/discover$/.exec(pathname);
   if (method === "POST" && match) return { status: 202, data: deps.runtime.startCandidateDiscovery(decode(match[1]), typeof body.message === "string" ? body.message : null) };
-  match = /^\/api\/trips\/([^/]+)\/candidates\/([^/]+)$/.exec(pathname);
-  if (method === "PATCH" && match) {
-    const tripId = decode(match[1]); const candidateId = decode(match[2]);
-    const preference = CandidatePreferenceSchema.parse(body.preference);
-    return { status: 200, data: deps.runtime.applyCommands(tripId, { expectedGeneration: body.expectedGeneration, commands: [{ type: "set_candidate_preference", candidateId, preference }] }) };
-  }
   match = /^\/api\/trips\/([^/]+)\/candidates\/batch$/.exec(pathname);
   if (method === "POST" && match) {
     const preference = CandidatePreferenceSchema.parse(body.preference);
     const candidateIds = Array.isArray(body.candidateIds) ? body.candidateIds.map(String) : [];
-    return { status: 200, data: deps.runtime.applyCommands(decode(match[1]), { expectedGeneration: body.expectedGeneration, commands: [{ type: "bulk_set_candidate_preference", candidateIds, preference }] }) };
+    return {
+      status: 200,
+      data: await deps.runtime.applyCommands(decode(match[1]), {
+        expectedGeneration: body.expectedGeneration,
+        commands: [{ type: "bulk_set_candidate_preference", candidateIds, preference }],
+      }),
+    };
+  }
+  match = /^\/api\/trips\/([^/]+)\/candidates\/([^/]+)$/.exec(pathname);
+  if (method === "PATCH" && match) {
+    const tripId = decode(match[1]);
+    const candidateId = decode(match[2]);
+    const preference = CandidatePreferenceSchema.parse(body.preference);
+    return {
+      status: 200,
+      data: await deps.runtime.applyCommands(tripId, {
+        expectedGeneration: body.expectedGeneration,
+        commands: [{ type: "set_candidate_preference", candidateId, preference }],
+      }),
+    };
   }
 
   match = /^\/api\/trips\/([^/]+)\/plan\/generate$/.exec(pathname);
   if (method === "POST" && match) return { status: 202, data: deps.runtime.startPlanGeneration(decode(match[1])) };
+  match = /^\/api\/trips\/([^/]+)\/refinement\/next$/.exec(pathname);
+  if (method === "POST" && match) {
+    const dayIds = Array.isArray(body.dayIds) ? body.dayIds.map(String) : null;
+    return { status: 202, data: deps.runtime.startRefinement(decode(match[1]), dayIds) };
+  }
   match = /^\/api\/trips\/([^/]+)\/commands$/.exec(pathname);
-  if (method === "POST" && match) return { status: 200, data: deps.runtime.applyCommands(decode(match[1]), body) };
+  if (method === "POST" && match) return { status: 200, data: await deps.runtime.applyCommands(decode(match[1]), body) };
 
   match = /^\/api\/trips\/([^/]+)\/resolutions\/retry$/.exec(pathname);
   if (method === "POST" && match) {
@@ -91,6 +118,8 @@ export async function dispatchTravelApiV2(method: string, pathname: string, sear
   match = /^\/api\/trips\/([^/]+)\/resolutions\/([^/]+)\/manual$/.exec(pathname);
   if (method === "PUT" && match) return { status: 200, data: { resolution: await deps.runtime.setDirectResolution(decode(match[1]), decode(match[2]), body) } };
 
+  match = /^\/api\/trips\/([^/]+)\/routes\/recalculate$/.exec(pathname);
+  if (method === "POST" && match) return { status: 200, data: await deps.runtime.recalculateDirtyRoutes(decode(match[1]), body) };
   match = /^\/api\/trips\/([^/]+)\/routes\/([^/]+)\/recalculate$/.exec(pathname);
   if (method === "POST" && match) {
     const expectedGeneration = Number(body.expectedGeneration);
@@ -104,7 +133,7 @@ export async function dispatchTravelApiV2(method: string, pathname: string, sear
     return { status: 202, data: deps.runtime.startProposal(decode(match[1]), scope, String(body.message ?? "")) };
   }
   match = /^\/api\/trips\/([^/]+)\/proposals\/([^/]+)\/apply$/.exec(pathname);
-  if (method === "POST" && match) return { status: 200, data: deps.runtime.applyProposal(decode(match[1]), decode(match[2])) };
+  if (method === "POST" && match) return { status: 200, data: await deps.runtime.applyProposal(decode(match[1]), decode(match[2])) };
   match = /^\/api\/trips\/([^/]+)\/proposals\/([^/]+)\/reject$/.exec(pathname);
   if (method === "POST" && match) return { status: 200, data: { proposal: deps.runtime.rejectProposal(decode(match[1]), decode(match[2])) } };
   match = /^\/api\/trips\/([^/]+)\/proposals\/([^/]+)\/undo$/.exec(pathname);
