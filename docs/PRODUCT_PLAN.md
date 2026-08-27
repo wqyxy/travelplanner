@@ -14,6 +14,11 @@
 
 用户真正操作的是结构化旅行计划；AI 负责理解需求、推荐地点、根据优先级和整体路线自动取舍并排程；地图服务负责地点解析、坐标、真实路线和交通时间。
 
+城市与具体景点采用两层规划：
+
+- **Macro**：城市 / 区域负责决定跨城顺序、是否进入该城市以及大致停留天数；
+- **Micro**：具体景点、住宿和交通点负责每天实际访问与真实路线。
+
 ## 2. 核心产品原则
 
 ### 2.1 preference 是规划约束，不是生成门槛
@@ -23,7 +28,7 @@
 ```text
 旅行需求
   ↓
-AI 推荐地点
+AI 推荐城市 + 城市内具体地点
   ↓
 用户可选调整 preference
 ★ 必去 / ✓ 想去 / ○ 可选 / × 不去
@@ -32,7 +37,11 @@ AI 推荐地点
   ↓
 系统自动解析仍未定位的参与规划地点
   ↓
-AI 根据天数、位置、节奏和 preference 全局排程
+Macro：规划城市顺序和城市停留
+  ↓
+Micro：选择 / 分组城市内具体景点
+  ↓
+系统优化同区域景点初始顺序
   ↓
 地图服务自动生成真实路线
   ↓
@@ -56,7 +65,7 @@ Place Resolver
    ↓
 Place ID / 坐标 / 地址
    ↓
-Routing Service
+确定性地理排序 / Routing Service
    ↓
 真实路线 / 距离 / 交通时间
 ```
@@ -65,11 +74,14 @@ Routing Service
 
 | 操作 | 实现方式 |
 |---|---|
-| 推荐景点 | AI |
-| 判断适合哪一天 | AI + 地理信息 |
+| 推荐城市和景点 | AI |
+| 决定城市是否进入行程 | AI + preference + 服务端硬规则 |
+| 决定城市顺序 / 停留天数 | AI + 城市地理信息 |
+| 判断景点适合哪一天 | AI + 城市内地理分组 |
 | 根据 preference 取舍地点 | AI，受服务端硬规则约束 |
 | 景点坐标 | 地图服务 |
-| 两点交通时间 | Routing API |
+| 同区域景点初始顺序 | 服务端确定性地理算法 |
+| 两点真实交通时间 / geometry | Routing API |
 | 拖拽排序 | 前端程序逻辑 |
 | 跨天移动地点 | 前端程序逻辑 |
 | 路线重新计算 | Routing API |
@@ -83,6 +95,8 @@ Routing Service
 AI
 ↓
 受限结构化输出
+↓
+服务端业务校验 / 地理排序
 ↓
 Structured Plan
 ↓
@@ -108,6 +122,23 @@ Map / Route / UI
 
 AI 根据旅行需求生成 Candidate Places，而不是立即生成日程。
 
+地点池同时包含两类对象：
+
+```text
+京都                         ← kind=city，Macro 城市节点
+├─ 清水寺                    ← attraction，真实路线节点
+├─ 伏见稻荷大社              ← attraction，真实路线节点
+├─ 岚山                       ← attraction / waypoint
+└─ 京都站                     ← station
+
+大阪                         ← Macro 城市节点
+├─ 大阪城
+├─ 海游馆
+└─ 道顿堀
+```
+
+城市 Place 代表“这趟旅行是否进入并停留该城市”，**不是默认去城市中心打卡**。
+
 地点卡片至少展示：
 
 - 名称和城市 / 区域；
@@ -131,18 +162,36 @@ AI 推荐度不能伪装为地图平台用户评分。
 
 排程语义：
 
-1. `must_go`：硬约束，必须排入；不能被 AI 舍弃；
-2. `want_to_go`：高优先级软约束，应尽量排入；如果加入会造成明显折返、严重超时、节奏冲突或明显降低整体路线质量，可以不排入，但必须明确说明原因；
+1. `must_go`：硬约束，必须满足；不能被 AI 舍弃；
+2. `want_to_go`：高优先级软约束，应尽量满足；如果加入会造成明显折返、严重超时、节奏冲突或明显降低整体路线质量，可以不采用，但必须明确说明原因；
 3. `optional`：AI 根据地理位置、推荐度、时长、节奏和路线效率自动取舍；
 4. `excluded`：不得进入行程，也不需要参与自动定位和排程。
 
 **`want_to_go` 不等于 `must_go`。** “不能静默省略”表示必须解释，而不是禁止 AI 做合理取舍。
 
+### 4.2 城市 preference 与具体地点 preference
+
+城市 Candidate 是 Macro 约束：
+
+- `★ 京都`：行程必须进入京都并安排京都内具体地点；不要求生成“京都市中心” Stop；
+- `✓ 京都`：优先进入京都，但整体跨城路线明显不合理时可以整座城市舍弃并解释；
+- `○ 京都`：AI 可以根据全程效率决定是否进入；
+- `× 京都`：京都及其普通子地点不参与规划。
+
+具体地点 Candidate 是 Micro 约束：
+
+- `★ 清水寺`：清水寺必须成为实际 Day Stop；
+- `✓ 清水寺`：强优先，但可以有明确原因地舍弃；
+- `○ 清水寺`：AI 自动取舍；
+- `× 清水寺`：不得进入 Day。
+
+冲突规则：如果城市已经标记 `× 不去`，但城市内仍有 `★ 必去` 或 `✓ 想去` 的具体地点，生成前必须明确报 preference 冲突，而不是静默覆盖其中一方。
+
 ## 5. 地点定位与异常处理
 
 ### 5.1 自动解析
 
-地点推荐后系统可以后台自动解析；用户点击“生成行程与路线”时，服务端还会对所有参与规划且尚未可靠定位的地点再自动尝试解析。
+地点推荐后系统可以后台自动解析；用户点击“生成行程与路线”时，服务端还会对所有实际参与规划且尚未可靠定位的地点再自动尝试解析。
 
 ```text
 Candidate
@@ -164,16 +213,19 @@ resolved
 unresolved
 ```
 
+城市也可以有 Resolution，但城市坐标只用于 Macro 地理位置、地图 viewport 和辅助跨城判断，**不会因为城市被采用就自动把城市中心放进真实路线**。
+
 ### 5.2 未定位地点
 
 未定位不再统一阻塞生成：
 
-- `must_go` 未定位：自动重试后仍失败则阻塞生成，因为无法保证硬约束地点进入真实线路；
+- 具体 `must_go` 未定位：自动重试后仍失败则阻塞生成，因为无法保证硬约束地点进入真实线路；
+- 城市级 `must_go`：城市自身坐标不是路线硬条件，但该城市至少需要一个参与规划且已定位的具体地点，否则无法形成真实城市内线路；
 - `want_to_go` 未定位：不阻塞整趟行程，可以继续规划；AI 必须看到该 Candidate，不得静默消失；
 - `optional` 未定位：不阻塞整趟行程，由 AI 自动取舍；
-- `excluded`：不需要参与生成前定位。
+- `excluded` 或因城市 `excluded` 被抑制的子地点：不参与生成前定位。
 
-如果未定位的软约束地点仍被排入 Day，路线服务必须明确显示 `attention` / “路线端点尚未正确定位”，不得伪造路线。
+如果未定位的软约束具体地点仍被排入 Day，路线服务必须明确显示 `attention` / “路线端点尚未正确定位”，不得伪造路线。
 
 用户仍可手动修复：
 
@@ -191,6 +243,9 @@ AI 重试只能补充名称、城市、区域或搜索关键词，不能“重�
 
 支持：
 
+- 按城市 / 区域折叠展示具体地点；
+- 城市级 Macro preference；
+- 具体地点 Micro preference；
 - 单选；
 - 多选；
 - 全选当前筛选结果；
@@ -208,20 +263,30 @@ AI 重试只能补充名称、城市、区域或搜索关键词，不能“重�
 
 按钮不因为普通 `want_to_go` / `optional` 未定位而禁用。
 
+“参与规划”数量按**有效规划约束**统计：城市为 `excluded` 时，其普通子地点即使自身仍显示 `optional`，也不计入参与规划。
+
 ## 7. 一键生成行程与路线
 
 一次点击的服务端流程：
 
 ```text
-读取所有非 excluded Candidate
+从 Place.city / region + kind=city 派生 PlanningArea
+↓
+检查城市 / 子地点 preference 冲突
+↓
+读取所有有效参与规划 Candidate
 ↓
 自动解析尚未可靠定位的地点
 ↓
-检查 must_go 是否仍有未定位
+检查具体 must_go 和必去城市的真实路线可用性
 ↓
-构造全部 Candidate + preference + Resolution + GeoClusters
+构造 PlanningAreas + Candidate + Resolution + Micro GeoClusters
 ↓
-AI 全局排程并自动取舍软约束地点
+Macro：AI 决定城市顺序和大致停留天数
+↓
+Micro：AI 决定每一天采用哪些具体地点
+↓
+服务端对同一天同区域的连续景点块做地理顺序优化
 ↓
 保存完整合法 Day
 ↓
@@ -235,13 +300,15 @@ AI 输入至少包括：
 ```text
 Trip Constraints
 +
-All Non-excluded Candidates
+Planning Areas
 +
-Preference
+All Effectively Participating Candidates
++
+City / Place Preference
 +
 Current Place Resolutions（允许部分为 null）
 +
-Geo Clusters
+Micro Geo Clusters
 +
 Suggested Duration
 +
@@ -253,31 +320,103 @@ Travel Days
 硬规则：
 
 - Day 数量必须与完整日期范围或 `requestedDurationDays` 一致；
-- `must_go` 全部排入；
-- `want_to_go` 尽量排入，未排入必须给出具体原因；
+- 具体 `must_go` 全部成为 Day Stop；
+- 城市级 `must_go` 必须由该城市内具体 Stop 满足，城市中心本身不得作为替代 Stop；
+- `want_to_go` 尽量满足，未满足必须给出具体原因；
 - `optional` 可自动取舍，未排入必须给出原因；
-- `excluded` 不得进入 Day；
-- 每个非 `excluded` Candidate 必须“已排程”或“明确未排程并说明原因”，不得静默消失；
+- `excluded` 及其被抑制子地点不得进入 Day；
+- 每个有效参与规划的具体 Candidate 必须“已排程”或“明确未排程并说明原因”，不得静默消失；
+- 城市级 Candidate 已由该城市具体 Stop 满足后，不需要再单独加入未排程说明；
 - Anchor 未知时允许为空，不伪造酒店；
 - AI 不输出坐标、路线 geometry、Provider 距离或时间；
 - 保存完整合法计划后才切换到 `itinerary_planning`；
 - 首次 Plan 保存成功后自动计算每天路线。
 
-## 8. 地理算法辅助排程
+## 8. Macro / Micro 地理算法辅助排程
 
-排程不完全依赖 LLM。服务端先根据当前有效坐标提供地理分组：
+排程不完全依赖 LLM。
+
+### 8.1 PlanningArea：派生城市层，不新增持久化业务实体
+
+当前 P0 **不在 `Place` 上新增 `areaPlaceId`**，也不增加数据库迁移。
+
+服务端根据已有数据派生 PlanningArea：
 
 ```text
-坐标
+kind=city 的 Place 名称 / 本地名 / 英文名
++
+具体 Place.city / region / country
 ↓
-地理聚类 / 城市分组
-↓
-区域候选
-↓
-AI 结合语义、优先级、节奏和天数排程
+Derived PlanningArea
 ```
 
-没有 Resolution 的软约束 Candidate 仍然传给 AI，只是没有可信坐标，不允许系统伪造位置。
+PlanningArea 是运行时规划视图，不是新的 canonical 业务实体。这样保留现有：
+
+```text
+Place → TripCandidate → DayStop
+```
+
+同时获得城市 → 景点的层级规划能力。
+
+### 8.2 Macro 城市层
+
+PlanningArea 提供：
+
+- 城市级 Candidate；
+- 该城市的具体 Candidate；
+- 有效 preference；
+- 是否因城市 `excluded` 而整体抑制；
+- 城市级硬约束是否已由具体地点满足。
+
+AI 根据这些数据决定：
+
+```text
+奥克兰
+↓
+罗托鲁瓦
+↓
+惠灵顿
+↓
+基督城
+↓
+蒂卡波
+↓
+皇后镇
+↓
+但尼丁？
+```
+
+### 8.3 Micro 城市内地理分组
+
+服务端对已定位的**具体地点**按 PlanningArea + 更细地理网格形成 Micro GeoCluster：
+
+```text
+京都
+├─ 东山附近
+│  ├─ 清水寺
+│  ├─ 八坂神社
+│  └─ 祇园
+├─ 伏见附近
+│  └─ 伏见稻荷
+└─ 岚山附近
+   ├─ 竹林
+   └─ 天龙寺
+```
+
+AI 负责判断“哪些地点应该同一天”；不让 LLM 猜真实路线距离。
+
+### 8.4 初始景点顺序优化
+
+AI 返回 Day 后、正式保存前，服务端只对**同一天、同 PlanningArea、连续且已定位的 attraction / waypoint 块**做确定性地理顺序优化：
+
+- P0 使用坐标近邻顺序，减少明显折返；
+- 不跨越餐饮、住宿、机场、车站等语义节点；
+- 不跨城市重排；
+- 路线 Provider 时间由后续真实 Route API 重新计算，不采用 AI 交通时长。
+
+这一步不是完整 VRP，也不冒充 Route Matrix。
+
+P1 可以在 Provider 支持时升级为真实 Route Matrix / TSP heuristic。
 
 ## 9. Day Anchor
 
@@ -295,6 +434,8 @@ Day N endAnchor = Day N+1 startAnchor
 ```
 
 酒店未知时 Anchor 可以为空或只保存用户自定义标签。Road Trip 等场景才按实际需要衔接。
+
+城市 Place 原则上不作为 Day Anchor 的真实路线端点；能使用实际住宿、机场、车站、港口或明确 waypoint 时优先使用具体 Place。
 
 ## 10. 主工作区 UI
 
@@ -314,9 +455,27 @@ Day N endAnchor = Day N+1 startAnchor
 
 ## 11. 地点模式
 
+地点列表按 PlanningArea 分组，而不是把城市和几十个景点平铺在同一级：
+
+```text
+▼ 皇后镇                         ✓ 想去
+   城市级规划 · 6 个具体地点
+
+   ✓ 皇后镇                     [宏观规划]
+   ★ Skyline Queenstown
+   ○ Queenstown Gardens
+   ○ Arrowtown
+   ○ Onsen Hot Pools
+
+▶ 基督城                         ○ 可选
+   城市级规划 · 5 个具体地点
+```
+
 必须支持：
 
 - 全部 / 必去 / 想去 / 可选 / 不去 / 未定位；
+- 城市 / 区域折叠；
+- 城市级 Macro 标识；
 - 搜索；
 - 单选、多选、全选当前筛选；
 - 批量 preference；
@@ -326,7 +485,9 @@ Day N endAnchor = Day N+1 startAnchor
 
 摘要文案使用“参与规划”，不再把非 `excluded` Candidate 描述成需要用户额外确认的“已选择地点”。
 
-点击地点卡片，地图定位并高亮 Marker；点击 Marker，右侧滚动并选中对应地点。
+城市标记 `excluded` 后，子地点卡片保留用户原 preference 供以后恢复，但 UI 明确显示“所属城市不去，本次生成不参与规划”。
+
+点击地点卡片，地图定位并高亮 Marker；点击 Marker，右侧自动展开对应城市分组、滚动并选中对应地点。
 
 ## 12. 行程模式
 
@@ -340,6 +501,8 @@ Day N endAnchor = Day N+1 startAnchor
 - 更新单日路线；
 - 更新全部 dirty 路线；
 - 开始或继续细化。
+
+城市 Macro Candidate 不应作为普通 Day Stop 展示。行程内显示的是实际访问的具体地点和真实路线节点。
 
 ## 13. 地图与右侧双向联动
 
@@ -356,9 +519,11 @@ Day N endAnchor = Day N+1 startAnchor
 
 点击地点或 Stop 后，Marker 高亮并定位。
 
+城市 Candidate Marker / 定位只表示宏观城市区域，不自动加入 Day Route。
+
 ### 地图 → 列表
 
-- Candidate Marker 点击后定位到 Candidate 卡片；
+- Candidate Marker 点击后定位到 Candidate 卡片，并展开对应城市分组；
 - Day Marker 点击后定位到对应 DayStop；
 - 同一地点允许多次到访，每次对应独立 DayStop。
 
@@ -378,9 +543,23 @@ Day N endAnchor = Day N+1 startAnchor
 
 所有写入通过固定 `PlanCommand` 和 `expectedGeneration` CAS 执行。
 
+城市 preference 与已有 Day 发生冲突时，不能静默让 canonical plan 进入非法状态；必须通过相应 Day 调整 / Trip Scope 修改解决。
+
 ## 15. 路线更新机制
 
 首次完整 Plan 生成后自动计算一次路线。
+
+首次生成：
+
+```text
+AI 决定 Day 与景点组合
+↓
+服务端同区域景点近邻排序
+↓
+保存 Structured Plan
+↓
+Route Provider 计算真实 geometry / 距离 / 时间
+```
 
 后续修改：
 
@@ -449,19 +628,34 @@ Apply 前 canonical plan、地图和路线均不改变。
 
 ## 18. 数据模型边界
 
-> **Place 不等于 Candidate，也不等于 DayStop。**
+> **Place 不等于 Candidate，也不等于 DayStop；PlanningArea 是派生规划视图。**
 
 ### Place
 
 真实世界地点的语义身份，不保存 AI 坐标。
 
+`kind=city` 的 Place 表达城市身份；具体 attraction / lodging / station 等 Place 仍是独立真实地点。
+
 ### TripCandidate
 
 这趟旅行与地点之间的候选关系，保存 preference、AI 理由、推荐度和建议时长。
 
+城市 Candidate 的 preference 作用于 Macro 区域；具体 Candidate 的 preference 作用于实际访问地点。
+
+### PlanningArea（派生）
+
+由 `kind=city`、`Place.city / region / country` 在运行时推导：
+
+- 不持久化；
+- 不新增 canonical ID；
+- 不要求数据库迁移；
+- 用于城市 / 子地点分组、effective preference、冲突检测、Macro AI 输入和 Micro cluster 边界。
+
 ### DayStop
 
 一次具体到访。移动 Stop 只修改目标 Day 和数组顺序，Place 本身不变。
+
+**城市 Macro Candidate 不作为普通 DayStop。** 城市级 `must_go` 由城市内具体 DayStop 满足。
 
 ### PlaceResolution
 
@@ -495,10 +689,12 @@ Apply 前 canonical plan、地图和路线均不改变。
 
 ### Candidate
 
-- AI 推荐地点；
+- AI 同时推荐城市与城市内具体地点；
 - 用户手动新增；
 - 理由、推荐度、时长、标签；
-- 四级 preference。
+- 四级 preference；
+- 城市 / 区域分组显示；
+- 城市级 Macro preference。
 
 ### Resolution
 
@@ -513,19 +709,23 @@ Apply 前 canonical plan、地图和路线均不改变。
 ### Planning
 
 - 一键“生成行程与路线”；
-- 使用全部非 `excluded` Candidate；
-- `must_go` 硬约束；
+- Derived PlanningArea；
+- Macro 城市顺序 / 停留规划；
+- Micro 景点按天规划；
+- 具体 `must_go` 硬约束；
+- 城市 `must_go` 由具体地点满足；
 - `want_to_go` 高优先级软约束；
 - `optional` 自动取舍；
-- 地理分组辅助；
+- 城市内 Micro GeoCluster；
 - Day Anchor；
-- 基础顺序；
-- 软约束地点未排入时明确说明原因。
+- 同区域景点确定性初始排序；
+- 软约束地点 / 城市未排入时明确说明原因。
 
 ### Map
 
 - Candidate Marker；
-- Day 节点与路线；
+- 城市 Marker 仅作宏观区域表达；
+- Day 节点与路线只使用实际路线节点；
 - Candidate / Stop 双向联动；
 - dirty 旧路线弱化；
 - 未定位路线端点明确 attention。
@@ -539,7 +739,8 @@ Apply 前 canonical plan、地图和路线均不改变。
 
 ### Route
 
-- 首次 Plan 后自动计算；
+- 首次 Plan 前进行城市内地理顺序优化；
+- 首次 Plan 后自动计算真实路线；
 - route dirty；
 - 单日更新；
 - 全部 dirty 更新。
@@ -559,6 +760,8 @@ Apply 前 canonical plan、地图和路线均不改变。
 ## 21. P1
 
 - Google Maps 链接解析；
+- Provider Route Matrix；
+- 基于真实路网的 TSP / insertion heuristic；
 - 更正式的地理聚类；
 - 路线优化建议；
 - 时间轴和营业时间聚合；
@@ -587,6 +790,9 @@ Apply 前 canonical plan、地图和路线均不改变。
 
 - 不让 AI 生成坐标；
 - 不让纯 AI 负责距离和交通时间；
+- 不把城市中心自动当成真实游玩 Stop；
+- 不把城市和几十个具体景点平铺成完全同级的规划节点；
+- 不为本功能新增 `areaPlaceId` 或数据库迁移；
 - 不让用户一开始填写大量问卷；
 - 不要求用户把候选池人工处理干净才允许生成；
 - 不把 `want_to_go` 当成 `must_go`；
@@ -601,13 +807,22 @@ Apply 前 canonical plan、地图和路线均不改变。
 
 ```text
 Discover
-  AI 推荐具体地点
+  AI 推荐城市 + 城市内具体地点
 ↓
 Prioritize（可选）
-  用户按需调整 必去 / 想去 / 可选 / 不去
+  用户按需调整城市 / 景点的 必去 / 想去 / 可选 / 不去
 ↓
 Generate
-  一键触发自动定位 + AI 全局排程
+  一键触发自动定位
+↓
+Macro Plan
+  AI 规划城市是否采用、跨城顺序和停留天数
+↓
+Micro Plan
+  AI 按城市和 GeoCluster 分配具体景点到 Day
+↓
+Local Order
+  服务端对同区域具体景点做确定性地理排序
 ↓
 Route
   地图服务自动生成真实路线、距离和时间
@@ -624,20 +839,26 @@ Refine
 
 核心体验是：
 
-> **告诉系统哪些地方必须去、想去、可选或不去，然后一键得到一趟整体路线更合理的旅行。**
+> **告诉系统哪些城市和地点必须去、想去、可选或不去，然后一键得到跨城顺序和城市内路线都更合理的旅行。**
 
 ## 26. Hero Interaction
 
 ```text
 用户查看 AI 推荐的地点池
 ↓
-把“清水寺”标成必去，把几个地点标成想去
+展开“京都”
+↓
+把京都标成想去、清水寺标成必去、几个景点保留可选
 ↓
 直接点击“生成行程与路线”
 ↓
 系统自动补充地点解析
 ↓
-AI 根据 preference、天数和地理位置自动取舍并排程
+AI 先确定大阪 → 京都 → 奈良的 Macro 顺序和天数
+↓
+AI 再把京都东山、伏见、岚山的具体景点分配到不同 Day
+↓
+服务端减少同区域景点的明显折返
 ↓
 地图服务生成每天真实路线
 ↓
@@ -652,4 +873,4 @@ AI 返回修改 Proposal
 
 ## 27. 一句话产品定义
 
-> **一个以地图和结构化行程为核心，让用户用四级 preference 表达意愿，再由 AI 一键完成全局排程和路线生成、并支持后续精细调整的旅行规划工作台。**
+> **一个以地图和结构化行程为核心，让用户用四级 preference 表达城市与具体地点意愿，再由 AI 完成 Macro 城市规划和 Micro 景点排程，并由地图服务生成真实路线的旅行规划工作台。**
