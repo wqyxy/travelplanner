@@ -42,7 +42,11 @@ append = r'''
     });
   });
 '''
-s = replace_once(s, "\n});\n", append + "\n});\n", "planning explicit relation regression")
+closing = "\n});\n"
+index = s.rfind(closing)
+if index < 0:
+    raise SystemExit("planning explicit relation regression: final describe boundary not found")
+s = s[:index] + append + s[index:]
 write(path, s)
 
 for test_path in Path("apps").rglob("*.test.ts"):
