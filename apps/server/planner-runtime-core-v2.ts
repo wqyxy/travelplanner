@@ -31,6 +31,8 @@ import { applyCandidateDiscoveryToStore, applyPlanGenerationToStore } from "./ca
 import { DayRouteServiceV2 } from "./day-route-v2.js";
 import { AiTaskMonitor, aiErrorMessage, normalizePublicAiSummary } from "./ai-task-monitor.js";
 import { applyPlanCommandBatchToStore, applyPlanCommands } from "./plan-commands-v2.js";
+import { optimizeGeneratedSightseeingOrder } from "./plan-route-order-v2.js";
+import { buildPlanningAreaContext } from "./planning-areas-v2.js";
 import type { AgentPromptsV2 } from "./prompt-contract-v2.js";
 import { resolutionIsCurrent, type PlaceResolverV2 } from "./place-resolver-v2.js";
 import { assertProposalCommandsWithinScope } from "./proposal-scope-policy-v2.js";
@@ -158,21 +160,38 @@ export class CodexTravelAiV2 implements TravelAiV2 {
   }
 
   generatePlan(input: { trip: TripDetailV2; resolutions: PlaceResolution[]; geoClusters: GeoClusterV2[] }, progress?: (value: StructuredAiProgress) => void) {
+    const areaContext = buildPlanningAreaContext(input.trip.plan);
     const resolvedByPlace = new Map(input.resolutions.map((resolution) => [resolution.placeId, resolution]));
+    const cityCandidateIds = areaContext.cityCandidateIds;
     const planningCandidates = input.trip.plan.candidates
-      .filter((candidate) => candidate.preference !== "excluded")
+      .filter((candidate) => areaContext.participatingCandidateIds.has(candidate.id))
       .map((candidate) => ({
         ...candidate,
         place: input.trip.plan.places.find((place) => place.id === candidate.placeId) ?? null,
         resolution: resolvedByPlace.get(candidate.placeId) ?? null,
+        planningAreaKey: areaContext.areaKeyByCandidateId.get(candidate.id) ?? null,
+        planningRole: cityCandidateIds.has(candidate.id) ? "macro_area" : "route_place",
+      }));
+    const planningAreas = areaContext.areas
+      .filter((area) => area.effectivePreference !== "excluded")
+      .map((area) => ({
+        key: area.key,
+        label: area.label,
+        cityCandidateId: area.cityCandidateId,
+        effectivePreference: area.effectivePreference,
+        candidateIds: area.participatingCandidateIds,
+        childCandidateIds: area.childCandidateIds.filter((candidateId) => area.participatingCandidateIds.includes(candidateId)),
       }));
     return this.plannerRun<PlanGenerationOutput>({
       trip: input.trip,
       taskMode: "generate_plan",
       task: {
         selectedCandidates: planningCandidates,
-        requiredCandidateIds: planningCandidates.filter((candidate) => candidate.preference === "must_go").map((candidate) => candidate.id),
-        preferredCandidateIds: planningCandidates.filter((candidate) => candidate.preference === "want_to_go").map((candidate) => candidate.id),
+        planningAreas,
+        requiredCandidateIds: planningCandidates.filter((candidate) => candidate.preference === "must_go" && candidate.planningRole === "route_place").map((candidate) => candidate.id),
+        requiredAreaCandidateIds: planningCandidates.filter((candidate) => candidate.preference === "must_go" && candidate.planningRole === "macro_area").map((candidate) => candidate.id),
+        preferredCandidateIds: planningCandidates.filter((candidate) => candidate.preference === "want_to_go" && candidate.planningRole === "route_place").map((candidate) => candidate.id),
+        preferredAreaCandidateIds: planningCandidates.filter((candidate) => candidate.preference === "want_to_go" && candidate.planningRole === "macro_area").map((candidate) => candidate.id),
         unresolvedCandidateIds: planningCandidates.filter((candidate) => !candidate.resolution).map((candidate) => candidate.id),
         geoClusters: input.geoClusters,
         routeProviderCapabilities: ["walk", "drive", "bike"],
@@ -287,21 +306,25 @@ function currentResolutions(trip: TripDetailV2, resolutions: PlaceResolution[]) 
 export function buildGeoClusters(trip: TripDetailV2, resolutions: PlaceResolution[]): GeoClusterV2[] {
   const resolved = new Map(currentResolutions(trip, resolutions).map((resolution) => [resolution.placeId, resolution]));
   const places = new Map(trip.plan.places.map((place) => [place.id, place]));
+  const areaContext = buildPlanningAreaContext(trip.plan);
+  const areas = new Map(areaContext.areas.map((area) => [area.key, area]));
   const groups = new Map<string, Array<{ candidateId: string; placeId: string; latitude: number; longitude: number; label: string }>>();
   for (const candidate of trip.plan.candidates) {
-    if (candidate.preference === "excluded") continue;
+    if (!areaContext.participatingCandidateIds.has(candidate.id)) continue;
     const place = places.get(candidate.placeId);
     const resolution = resolved.get(candidate.placeId);
-    if (!place || resolution?.latitude === null || resolution?.longitude === null || resolution?.latitude === undefined || resolution?.longitude === undefined) continue;
-    const bucket = `${Math.round(resolution.latitude * 8)}:${Math.round(resolution.longitude * 8)}`;
-    const key = place.city ? `city:${place.city}` : `geo:${bucket}`;
+    if (!place || place.kind === "city" || resolution?.latitude === null || resolution?.longitude === null || resolution?.latitude === undefined || resolution?.longitude === undefined) continue;
+    const areaKey = areaContext.areaKeyByCandidateId.get(candidate.id) ?? "area:other";
+    const bucket = `${Math.round(resolution.latitude * 32)}:${Math.round(resolution.longitude * 32)}`;
+    const key = `${areaKey}:micro:${bucket}`;
+    const areaLabel = areas.get(areaKey)?.label ?? place.city ?? place.region ?? place.country ?? "地理分组";
     const values = groups.get(key) ?? [];
-    values.push({ candidateId: candidate.id, placeId: place.id, latitude: resolution.latitude, longitude: resolution.longitude, label: place.city || place.region || place.country || "地理分组" });
+    values.push({ candidateId: candidate.id, placeId: place.id, latitude: resolution.latitude, longitude: resolution.longitude, label: areaLabel });
     groups.set(key, values);
   }
   return [...groups.entries()].map(([key, values]) => ({
     key,
-    label: values[0]?.label || key,
+    label: `${values[0]?.label || "区域"} · 附近`,
     candidateIds: values.map((value) => value.candidateId),
     placeIds: values.map((value) => value.placeId),
     center: {
@@ -462,7 +485,7 @@ export class TravelPlannerRuntimeV2 {
       complete: async (output: CandidateDiscoveryOutput) => {
         const before = this.options.store.requireTrip(tripId);
         if (output.candidates.length > 80) throw new Error("单次候选地点最多 80 个。");
-        if (!before.plan.candidates.length && output.candidates.length < 10) throw new Error("首次地点发现至少应返回 10 个具体候选地点。");
+        if (!before.plan.candidates.length && output.candidates.length < 10) throw new Error("首次地点发现至少应返回 10 个候选地点（含城市和具体地点）。");
         const applied = applyCandidateDiscoveryToStore(this.options.store, tripId, output);
         this.options.store.createAssistantMessage(tripId, output.assistantMessage, { mode: "discover_candidates", addedCandidateIds: applied.addedCandidateIds });
         this.emit("travel.document.changed", { tripId, generation: applied.generation, changedDayIds: [] });
@@ -479,7 +502,9 @@ export class TravelPlannerRuntimeV2 {
 
   startPlanGeneration(tripId: string) {
     const initialTrip = this.options.store.requireTrip(tripId);
-    const planningCandidates = initialTrip.plan.candidates.filter((candidate) => candidate.preference !== "excluded");
+    const initialAreas = buildPlanningAreaContext(initialTrip.plan);
+    if (initialAreas.conflicts.length) throw new Error(`城市与具体地点偏好冲突：${initialAreas.conflicts.join("；")}`);
+    const planningCandidates = initialTrip.plan.candidates.filter((candidate) => initialAreas.participatingCandidateIds.has(candidate.id));
     if (!planningCandidates.length) throw new Error("没有可参与规划的候选地点。请至少保留一个必去、想去或可选地点。");
 
     const taskHolder = { id: "" };
@@ -502,23 +527,47 @@ export class TravelPlannerRuntimeV2 {
 
         const latestTrip = this.options.store.requireTrip(tripId);
         if (latestTrip.contentGeneration !== trip.contentGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
+        const latestAreas = buildPlanningAreaContext(latestTrip.plan);
+        if (latestAreas.conflicts.length) throw new Error(`城市与具体地点偏好冲突：${latestAreas.conflicts.join("；")}`);
         const resolutions = currentResolutions(latestTrip, this.options.store.listPlaceResolutions(tripId));
         const latestResolvedIds = new Set(resolutions.map((resolution) => resolution.placeId));
-        const unresolvedMustGo = latestTrip.plan.candidates.filter((candidate) => candidate.preference === "must_go" && !latestResolvedIds.has(candidate.placeId));
-        if (unresolvedMustGo.length) {
-          const places = new Map(latestTrip.plan.places.map((place) => [place.id, place]));
-          const names = unresolvedMustGo.map((candidate) => places.get(candidate.placeId)?.nameZh ?? candidate.id).join("、");
-          throw new Error(`以下“必去”地点自动定位失败，请先确认地图地点后再生成：${names}`);
+        const places = new Map(latestTrip.plan.places.map((place) => [place.id, place]));
+        const candidates = new Map(latestTrip.plan.candidates.map((candidate) => [candidate.id, candidate]));
+
+        const unresolvedConcreteMustGo = latestTrip.plan.candidates.filter((candidate) => {
+          if (!latestAreas.participatingCandidateIds.has(candidate.id) || candidate.preference !== "must_go") return false;
+          const place = places.get(candidate.placeId);
+          return place?.kind !== "city" && !latestResolvedIds.has(candidate.placeId);
+        });
+        if (unresolvedConcreteMustGo.length) {
+          const names = unresolvedConcreteMustGo.map((candidate) => places.get(candidate.placeId)?.nameZh ?? candidate.id).join("、");
+          throw new Error(`以下“必去”具体地点自动定位失败，请先确认地图地点后再生成：${names}`);
         }
 
-        this.options.tasks.update(taskHolder.id, "running", "正在根据地点优先级规划按天行程", "plan:generating");
+        const unavailableMustGoAreas = latestAreas.areas.filter((area) => {
+          if (!area.cityCandidateId) return false;
+          const cityCandidate = candidates.get(area.cityCandidateId);
+          if (cityCandidate?.preference !== "must_go") return false;
+          return !area.childCandidateIds.some((candidateId) => {
+            if (!area.participatingCandidateIds.includes(candidateId)) return false;
+            const candidate = candidates.get(candidateId);
+            return Boolean(candidate && latestResolvedIds.has(candidate.placeId));
+          });
+        });
+        if (unavailableMustGoAreas.length) {
+          throw new Error(`以下“必去”城市缺少可用于真实线路的已定位具体地点，请先补充推荐或修复定位：${unavailableMustGoAreas.map((area) => area.label).join("、")}`);
+        }
+
+        this.options.tasks.update(taskHolder.id, "running", "正在规划城市顺序、停留天数和城市内景点", "plan:generating");
         return this.options.ai.generatePlan({ trip: latestTrip, resolutions, geoClusters: buildGeoClusters(latestTrip, resolutions) }, this.progress(taskHolder.id));
       },
       complete: async (output: PlanGenerationOutput) => {
         const trip = this.options.store.requireTrip(tripId);
-        validatePlanGenerationOutput(trip, output);
-        const applied = applyPlanGenerationToStore(this.options.store, tripId, output);
-        this.options.store.createAssistantMessage(tripId, output.assistantMessage, { mode: "generate_plan", changedDayIds: applied.changedDayIds, unscheduledCandidates: output.unscheduledCandidates });
+        const resolutions = currentResolutions(trip, this.options.store.listPlaceResolutions(tripId));
+        const optimized = optimizeGeneratedSightseeingOrder(trip.plan, output, resolutions);
+        validatePlanGenerationOutput(trip, optimized);
+        const applied = applyPlanGenerationToStore(this.options.store, tripId, optimized);
+        this.options.store.createAssistantMessage(tripId, optimized.assistantMessage, { mode: "generate_plan", changedDayIds: applied.changedDayIds, unscheduledCandidates: optimized.unscheduledCandidates });
         this.emit("travel.document.changed", { tripId, generation: applied.generation, changedDayIds: applied.changedDayIds });
         this.options.tasks.update(taskHolder.id, "running", "正在生成每日真实路线", "route:calculating");
         for (const day of applied.trip.plan.days) {
@@ -589,7 +638,7 @@ export class TravelPlannerRuntimeV2 {
           appliedRevisionVersion: null,
         });
         this.options.store.createAssistantMessage(tripId, output.assistantMessage, { mode: "propose_adjustment", proposalId: proposal.id });
-        this.emit("travel.proposal.changed", { tripId, proposalId: proposal.id });
+        this.emit("travel.proposal.changed", { tripId, proposalId });
       },
     });
     taskHolder.id = result.taskId;
