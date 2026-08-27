@@ -3,6 +3,7 @@ import {
   ProposalScopeSchema,
   type AdjustmentProposalOutput,
   type AiTaskStatus,
+  type DetailBatchOutputV2,
   type PlanCommand,
   type ProposalDiff,
   type TravelPlanDocument,
@@ -12,6 +13,7 @@ import { applyPlanCommands } from "./plan-commands-v2.js";
 import { applyPreparedPlanCommandBatchToStore, preparePlanForCommands } from "./plan-command-preparation-v2.js";
 import { resolutionIsCurrent } from "./place-resolver-v2.js";
 import { assertProposalCommandsWithinScope } from "./proposal-scope-policy-v2.js";
+import { applyRefinementBatchToStore } from "./refinement-workflow-v2.js";
 import {
   CodexTravelAiV2,
   TravelPlannerRuntimeV2 as CoreTravelPlannerRuntimeV2,
@@ -34,7 +36,7 @@ export {
 };
 
 type RuntimeOptions = ConstructorParameters<typeof CoreTravelPlannerRuntimeV2>[0];
-type ActiveProposalTask = { tripId: string; interrupt: () => Promise<void> };
+type ActiveLocalTask = { tripId: string; interrupt: () => Promise<void> };
 
 function commandSummary(command: PlanCommand) {
   switch (command.type) {
@@ -65,8 +67,14 @@ function proposalDiff(commands: PlanCommand[], effects: ReturnType<typeof applyP
   };
 }
 
+function failureStatus(message: string): AiTaskStatus {
+  if (message === "CONTENT_GENERATION_SUPERSEDED") return "cancelled_by_generation";
+  if (message === "AI 任务已停止。") return "stopped";
+  return "failed";
+}
+
 export class TravelPlannerRuntimeV2 extends CoreTravelPlannerRuntimeV2 {
-  private readonly proposalTasks = new Map<string, ActiveProposalTask>();
+  private readonly localTasks = new Map<string, ActiveLocalTask>();
 
   constructor(private readonly runtimeOptions: RuntimeOptions) {
     super(runtimeOptions);
@@ -107,7 +115,7 @@ export class TravelPlannerRuntimeV2 extends CoreTravelPlannerRuntimeV2 {
             if (summary) tasks.update(taskId, "running", summary, progress.kind);
           },
         );
-        this.proposalTasks.set(taskId, { tripId, interrupt: handle.interrupt });
+        this.localTasks.set(taskId, { tripId, interrupt: handle.interrupt });
         tasks.update(taskId, "running", "正在生成修改建议", "turn:running");
         const output = await handle.result;
         const trip = this.runtimeOptions.store.requireTrip(tripId);
@@ -136,14 +144,59 @@ export class TravelPlannerRuntimeV2 extends CoreTravelPlannerRuntimeV2 {
         tasks.update(taskId, "completed", "生成修改建议已完成", "task:completed");
       } catch (error) {
         const messageText = normalizePublicAiSummary(aiErrorMessage(error)) || "生成修改建议失败";
-        const status: AiTaskStatus = messageText === "CONTENT_GENERATION_SUPERSEDED"
-          ? "cancelled_by_generation"
-          : messageText === "AI 任务已停止。"
-            ? "stopped"
-            : "failed";
+        const status = failureStatus(messageText);
         tasks.update(taskId, status, messageText, `task:${status}`);
       } finally {
-        this.proposalTasks.delete(taskId);
+        this.localTasks.delete(taskId);
+      }
+    })();
+    return { taskId, messageId: null };
+  }
+
+  override startRefinement(tripId: string, requestedDayIds: string[] | null = null) {
+    const trip = this.runtimeOptions.store.requireTrip(tripId);
+    if (!trip.plan.days.length) throw new Error("请先生成按天行程。");
+    const uniqueRequested = requestedDayIds ? [...new Set(requestedDayIds)] : [];
+    if (uniqueRequested.length > 2) throw new Error("每批最多细化两个 Day。");
+    const dayIds = uniqueRequested.length
+      ? uniqueRequested
+      : trip.plan.days
+        .filter((day) => day.detailLevel !== "detailed" || day.detailStatus === "needs_review")
+        .slice(0, 2)
+        .map((day) => day.id);
+    if (dayIds.some((dayId) => !trip.plan.days.some((day) => day.id === dayId))) throw new Error("细化请求包含未知 Day。");
+    if (!dayIds.length) throw new Error("所有 Day 已完成细化且无需复核。");
+
+    const taskId = `detailer:${randomUUID()}`;
+    const tasks: AiTaskMonitor = this.runtimeOptions.tasks;
+    tasks.start({ id: taskId, tripId, agent: "detailer", label: `细化 ${dayIds.length} 天行程`, summary: "准备细化行程" });
+    void (async () => {
+      let handle: RuntimeAiHandle<DetailBatchOutputV2> | null = null;
+      try {
+        handle = await this.runtimeOptions.ai.detailDays(
+          { trip: this.runtimeOptions.store.requireTrip(tripId), dayIds },
+          (progress) => {
+            const summary = normalizePublicAiSummary(progress.text);
+            if (summary) tasks.update(taskId, "running", summary, progress.kind);
+          },
+        );
+        this.localTasks.set(taskId, { tripId, interrupt: handle.interrupt });
+        tasks.update(taskId, "running", `正在细化 ${dayIds.length} 天行程`, "turn:running");
+        const output = await handle.result;
+        const returned = new Set(output.dayIds);
+        if (returned.size !== dayIds.length || dayIds.some((dayId) => !returned.has(dayId))) {
+          throw new Error("行程细化返回的 Day 超出本批服务端指定范围。");
+        }
+        const applied = applyRefinementBatchToStore(this.runtimeOptions.store, tripId, output);
+        this.runtimeOptions.store.createAssistantMessage(tripId, output.assistantMessage, { mode: "refinement", changedDayIds: applied.changedDayIds });
+        this.emitEvent({ kind: "travel.document.changed", payload: { tripId, generation: applied.generation, changedDayIds: applied.changedDayIds } });
+        tasks.update(taskId, "completed", `细化 ${dayIds.length} 天行程已完成`, "task:completed");
+      } catch (error) {
+        const messageText = normalizePublicAiSummary(aiErrorMessage(error)) || "细化行程失败";
+        const status = failureStatus(messageText);
+        tasks.update(taskId, status, messageText, `task:${status}`);
+      } finally {
+        this.localTasks.delete(taskId);
       }
     })();
     return { taskId, messageId: null };
@@ -176,10 +229,10 @@ export class TravelPlannerRuntimeV2 extends CoreTravelPlannerRuntimeV2 {
   }
 
   override stopTask(tripId: string, taskId: string) {
-    const proposalTask = this.proposalTasks.get(taskId);
-    if (!proposalTask) return super.stopTask(tripId, taskId);
-    if (proposalTask.tripId !== tripId) throw new Error("当前任务已经结束。");
-    void proposalTask.interrupt().catch(() => undefined);
+    const localTask = this.localTasks.get(taskId);
+    if (!localTask) return super.stopTask(tripId, taskId);
+    if (localTask.tripId !== tripId) throw new Error("当前任务已经结束。");
+    void localTask.interrupt().catch(() => undefined);
     return { ok: true };
   }
 }
