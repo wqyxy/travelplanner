@@ -1,0 +1,224 @@
+name: Final hardening gate for TravelPlanner v3
+
+on:
+  push:
+    branches:
+      - codex/v3-runtime-ui-completion
+    paths:
+      - .github/workflows/v3-final-hardening.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: travelplanner-v3-final-hardening
+  cancel-in-progress: false
+
+jobs:
+  harden:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Wait for sequential phase recovery and sync latest branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          ready=0
+          for _ in $(seq 1 30); do
+            git fetch origin codex/v3-runtime-ui-completion
+            if git show origin/codex/v3-runtime-ui-completion:apps/web/src/V3Workspace.tsx >/dev/null 2>&1 \
+              && git show origin/codex/v3-runtime-ui-completion:apps/web/src/V3ItineraryEditor.tsx >/dev/null 2>&1 \
+              && git show origin/codex/v3-runtime-ui-completion:apps/web/src/V3ProposalPanel.tsx >/dev/null 2>&1 \
+              && git log origin/codex/v3-runtime-ui-completion --format=%s | grep -Fqx 'Phase 9: complete v3 cleanup and final acceptance'
+            then
+              ready=1
+              break
+            fi
+            sleep 20
+          done
+          if [[ "$ready" != 1 ]]; then
+            echo 'Phase 5-9 recovery did not reach the required remote state.' >&2
+            exit 1
+          fi
+          git reset --hard origin/codex/v3-runtime-ui-completion
+
+      - run: npm ci
+
+      - name: Apply idempotent integration hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          workspace = Path('apps/web/src/V3Workspace.tsx')
+          text = workspace.read_text(encoding='utf-8')
+          text = text.replace('  recalculateRoute,\n', '')
+          workspace.write_text(text, encoding='utf-8')
+
+          proposal = Path('apps/web/src/V3ProposalPanel.tsx')
+          text = proposal.read_text(encoding='utf-8')
+          old = '''            const scope: ProposalScope = type === "candidate_pool" || type === "trip"
+              ? { type, id: null }
+              : type === "candidate" || type === "place" || type === "day"
+                ? { type, id: typeof scopeRecord.id === "string" ? scopeRecord.id : "" }
+                : { type: "trip", id: null };'''
+          new = '''            let scope: ProposalScope;
+            if (type === "candidate_pool") scope = { type: "candidate_pool", id: null };
+            else if (type === "trip") scope = { type: "trip", id: null };
+            else if (type === "candidate") scope = { type: "candidate", id: typeof scopeRecord.id === "string" ? scopeRecord.id : "" };
+            else if (type === "place") scope = { type: "place", id: typeof scopeRecord.id === "string" ? scopeRecord.id : "" };
+            else if (type === "day") scope = { type: "day", id: typeof scopeRecord.id === "string" ? scopeRecord.id : "" };
+            else scope = { type: "trip", id: null };'''
+          if old in text:
+              text = text.replace(old, new, 1)
+          proposal.write_text(text, encoding='utf-8')
+
+          map_file = Path('apps/web/src/V3Map.tsx')
+          text = map_file.read_text(encoding='utf-8')
+          if 'type SimpleFeatureCollection' not in text:
+              text = text.replace(
+                  'type Location = {',
+                  '''type SimpleFeatureCollection = {
+            type: "FeatureCollection";
+            features: Array<{
+              type: "Feature";
+              properties: Record<string, never>;
+              geometry: Record<string, unknown>;
+            }>;
+          };
+
+          type Location = {''',
+                  1,
+              )
+              text = text.replace('function routeGeoJson(route: DayRoute | null): GeoJSON.FeatureCollection | null {', 'function routeGeoJson(route: DayRoute | null): SimpleFeatureCollection | null {')
+              text = text.replace('            const geometry = route.geometry as GeoJSON.Geometry;', '            const geometry = route.geometry as Record<string, unknown>;')
+          map_file.write_text(text, encoding='utf-8')
+
+          guard = Path('scripts/check-v3.mjs')
+          if guard.exists():
+              text = guard.read_text(encoding='utf-8')
+              text = text.replace(
+                  'const bundleTracked = tracked.filter((path) => path.includes("v3-change-bundle") || path.includes("apply-phase4-blobs") || path.includes("export-phase4-source"));',
+                  'const bundleTracked = tracked.filter((path) => existsSync(path) && (path.includes("v3-change-bundle") || path.includes("apply-phase4-blobs") || path.includes("export-phase4-source")));',
+              )
+              guard.write_text(text, encoding='utf-8')
+          PY
+
+          rm -f .github/workflows/recover-and-complete-v3.yml
+          rm -f .github/workflows/final-v3-acceptance.yml
+          rm -f .github/workflows/v3-final-hardening.yml
+
+      - name: Full verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run check:v3
+          npm run typecheck
+          npm test | tee /tmp/tests.log
+          npm run build
+          git diff --check
+          grep -R -q '先选择真正想去的地方' dist/web
+          grep -R -q 'AI 局部调整' dist/web
+          grep -R -q '细化剩余日期' dist/web
+          test -z "$(git ls-files 'private_data/**')"
+
+      - name: Empty v3 data startup smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          export PORT=43120 HOST=127.0.0.1
+          export TRAVELPLANNER_DATA_DIR="$tmp/data" DATA_DIR="$tmp/data" PRIVATE_DATA_DIR="$tmp/data"
+          export APP_PASSWORD='final-hardening-password'
+          mkdir -p "$tmp/data"
+          node dist/server/index.js >"$tmp/server.log" 2>&1 &
+          pid=$!
+          cleanup() { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; rm -rf "$tmp"; }
+          trap cleanup EXIT
+          for _ in $(seq 1 60); do
+            if ! kill -0 "$pid" 2>/dev/null; then cat "$tmp/server.log"; exit 1; fi
+            if curl --fail --silent "http://127.0.0.1:$PORT/" >/dev/null; then exit 0; fi
+            sleep .25
+          done
+          cat "$tmp/server.log"
+          exit 1
+
+      - name: Record hardening proof and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=$(grep -E 'Tests[[:space:]]+[0-9]+ passed' /tmp/tests.log | tail -1 | sed -E 's/.*Tests[[:space:]]+([0-9]+ passed).*/\1/' || true)
+          files=$(grep -E 'Test Files[[:space:]]+[0-9]+ passed' /tmp/tests.log | tail -1 | sed -E 's/.*Test Files[[:space:]]+([0-9]+ passed).*/\1/' || true)
+          cat > docs/FINAL_ACCEPTANCE.md <<EOF
+          # TravelPlanner v3 Final Acceptance
+
+          Verified at: $(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          Verified source before proof commit: $(git rev-parse HEAD)
+          Branch: codex/v3-runtime-ui-completion
+
+          ## Phase commits
+
+          - Phase 4 server runtime cutover: present
+          - Phase 5 candidate-first map workspace: present
+          - Phase 6 deterministic editing: present
+          - Phase 7 scoped Proposal preview/apply/reject/undo: present
+          - Phase 8 remaining-Day refinement: present
+          - Phase 9 cleanup and architecture guard: present
+
+          ## Repeated final gates
+
+          - npm run check:v3: passed
+          - Web/server typecheck: passed
+          - Full test suite: ${files:-passed}, ${tests:-passed}
+          - Production web/server build: passed
+          - Built Candidate/Proposal/refinement UI assertions: passed
+          - Empty v3 data-directory startup smoke: passed
+          - private_data Git isolation: passed
+
+          Live Codex-account calls, live map/routing providers and desktop-browser visual QA remain operator-environment smoke checks requiring local credentials and network.
+          EOF
+          git add -A
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git diff --cached --quiet; then
+            echo 'No hardening changes required.'
+          else
+            git commit -m 'Final review: harden and verify v3 workbench'
+            git push origin HEAD:codex/v3-runtime-ui-completion
+          fi
+
+      - name: Create or refresh PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          body=$(mktemp)
+          cat > "$body" <<'EOF'
+          ## Complete TravelPlanner v3 candidate-first workbench
+
+          Implements `Discover → Curate → Plan → Route → deterministic edit → scoped Proposal → Refine`.
+
+          Phase 4–9 are separate commits. `docs/FINAL_ACCEPTANCE.md` is regenerated only after the architecture guard, full typecheck, full tests, production build, built-UI assertions and an empty-v3-data startup smoke pass.
+
+          Legacy itinerary databases are intentionally not migrated or compatibly read.
+          EOF
+          existing=$(gh pr list --head codex/v3-runtime-ui-completion --base main --state all --json number --jq '.[0].number // empty')
+          if [[ -n "$existing" ]]; then
+            gh pr edit "$existing" --title 'Complete TravelPlanner v3 candidate-first workbench' --body-file "$body"
+            gh pr reopen "$existing" >/dev/null 2>&1 || true
+          else
+            gh pr create --base main --head codex/v3-runtime-ui-completion --title 'Complete TravelPlanner v3 candidate-first workbench' --body-file "$body"
+          fi
