@@ -1,0 +1,1605 @@
+name: Implement Phase 5 candidate-first web workbench
+
+on:
+  push:
+    branches:
+      - codex/v3-runtime-ui-completion
+    paths:
+      - .github/workflows/phase5-candidate-workbench.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: travelplanner-phase5
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Write Phase 5 web application
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -f apps/web/src/App.tsx && ! -f apps/web/src/LegacyApp.tsx ]]; then
+            mv apps/web/src/App.tsx apps/web/src/LegacyApp.tsx
+          fi
+
+          cat > apps/web/src/v3-types.ts <<'EOF'
+          export type CandidatePreference = "must_go" | "want_to_go" | "optional" | "excluded";
+          export type TripStage = "place_selection" | "itinerary_planning" | "itinerary_refinement";
+          export type ResolutionStatus = "resolving" | "resolved" | "unresolved";
+
+          export type TripSummary = {
+            id: string;
+            title: string;
+            stage: TripStage | null;
+            generation: number | null;
+            updatedAt: string | null;
+          };
+
+          export type Place = {
+            id: string;
+            nameZh: string;
+            nameLocal: string | null;
+            nameEn: string | null;
+            kind: string;
+            city: string | null;
+            region: string | null;
+            country: string | null;
+            countryCode: string | null;
+            approximate: boolean;
+          };
+
+          export type TripCandidate = {
+            id: string;
+            placeId: string;
+            preference: CandidatePreference;
+            source: "ai" | "user";
+            aiReason: string | null;
+            aiScore: number | null;
+            suggestedDurationMinutes: number | null;
+            tags: string[];
+          };
+
+          export type DayAnchor = {
+            id: string;
+            placeId: string | null;
+            label: string | null;
+            notes: string | null;
+          };
+
+          export type DayStop = {
+            id: string;
+            candidateId: string | null;
+            placeId: string;
+            activity: string;
+            period: string | null;
+            startTime: string | null;
+            endTime: string | null;
+            durationMinutes: number | null;
+            transportFromPrevious: {
+              mode: string;
+              durationMinutes: number | null;
+              note: string | null;
+            } | null;
+            notes: string | null;
+          };
+
+          export type Day = {
+            id: string;
+            dayNumber: number;
+            date: string | null;
+            title: string;
+            detailLevel: "planned" | "detailed";
+            detailStatus: "ready" | "needs_review" | null;
+            startAnchor: DayAnchor;
+            stops: DayStop[];
+            endAnchor: DayAnchor;
+          };
+
+          export type TravelPlanDocument = {
+            schemaVersion: 2;
+            stage: TripStage;
+            trip: {
+              title: string;
+              dates?: {
+                start: string | null;
+                end: string | null;
+                requestedDurationDays: number | null;
+              };
+              travelers?: {
+                summary: string;
+                adults: number | null;
+                children: number | null;
+              };
+              [key: string]: unknown;
+            };
+            places: Place[];
+            candidates: TripCandidate[];
+            days: Day[];
+            warnings: string[];
+          };
+
+          export type PlaceResolution = {
+            tripId: string;
+            placeId: string;
+            status: ResolutionStatus;
+            method: string;
+            provider: string | null;
+            providerPlaceId: string | null;
+            latitude: number | null;
+            longitude: number | null;
+            address: string | null;
+            confidence: number | null;
+            errorMessage: string | null;
+          };
+
+          export type DayRoute = {
+            tripId: string;
+            dayId: string;
+            version: number;
+            inputFingerprint: string;
+            status: "idle" | "calculating" | "ready" | "attention";
+            distanceKm: number | null;
+            durationMinutes: number | null;
+            geometry: unknown | null;
+            warnings: string[];
+            calculatedAt: string | null;
+          };
+
+          export type Workspace = {
+            tripId: string;
+            generation: number;
+            document: TravelPlanDocument;
+            resolutions: PlaceResolution[];
+            routes: DayRoute[];
+            routeDirtyDayIds: string[];
+            proposals: unknown[];
+            messages: unknown[];
+            tasks: unknown[];
+          };
+
+          const emptyDocument = (title = "未命名旅行"): TravelPlanDocument => ({
+            schemaVersion: 2,
+            stage: "place_selection",
+            trip: {
+              title,
+              dates: { start: null, end: null, requestedDurationDays: null },
+              travelers: { summary: "", adults: null, children: null },
+            },
+            places: [],
+            candidates: [],
+            days: [],
+            warnings: [],
+          });
+
+          const asRecord = (value: unknown): Record<string, unknown> =>
+            value && typeof value === "object" && !Array.isArray(value)
+              ? value as Record<string, unknown>
+              : {};
+
+          const asArray = <T>(value: unknown): T[] => Array.isArray(value) ? value as T[] : [];
+          const asNumber = (value: unknown, fallback = 0): number =>
+            typeof value === "number" && Number.isFinite(value) ? value : fallback;
+          const asString = (value: unknown, fallback = ""): string =>
+            typeof value === "string" ? value : fallback;
+
+          export function normalizeTripList(raw: unknown): TripSummary[] {
+            const root = asRecord(raw);
+            const rows = Array.isArray(raw)
+              ? raw
+              : asArray<unknown>(root.trips ?? root.items ?? root.data);
+            return rows.map((entry) => {
+              const row = asRecord(entry);
+              return {
+                id: asString(row.id ?? row.tripId),
+                title: asString(row.title ?? row.name, "未命名旅行"),
+                stage: typeof row.stage === "string" ? row.stage as TripStage : null,
+                generation: typeof row.generation === "number"
+                  ? row.generation
+                  : typeof row.contentGeneration === "number"
+                    ? row.contentGeneration
+                    : null,
+                updatedAt: typeof row.updatedAt === "string" ? row.updatedAt : null,
+              };
+            }).filter((trip) => trip.id.length > 0);
+          }
+
+          export function normalizeWorkspace(raw: unknown, fallbackTripId = ""): Workspace {
+            const outer = asRecord(raw);
+            const root = asRecord(outer.workspace ?? outer.data ?? raw);
+            const tripRecord = asRecord(root.tripRecord ?? root.trip);
+            const possibleDocument = root.document
+              ?? root.plan
+              ?? root.currentPlan
+              ?? tripRecord.document
+              ?? tripRecord.plan;
+            const parsedDocument = asRecord(possibleDocument);
+            const title = asString(tripRecord.title ?? root.title, "未命名旅行");
+            const document = parsedDocument.schemaVersion === 2
+              ? parsedDocument as unknown as TravelPlanDocument
+              : emptyDocument(title);
+            const tripId = asString(root.tripId ?? tripRecord.id ?? outer.tripId, fallbackTripId);
+            const dirty = root.routeDirtyDayIds
+              ?? root.dirtyRouteDayIds
+              ?? asRecord(root.routeState).dirtyDayIds;
+            return {
+              tripId,
+              generation: asNumber(
+                root.generation
+                ?? root.contentGeneration
+                ?? tripRecord.generation
+                ?? tripRecord.contentGeneration,
+                0,
+              ),
+              document,
+              resolutions: asArray<PlaceResolution>(root.resolutions ?? root.placeResolutions),
+              routes: asArray<DayRoute>(root.routes ?? root.dayRoutes),
+              routeDirtyDayIds: asArray<string>(dirty),
+              proposals: asArray(root.proposals),
+              messages: asArray(root.messages),
+              tasks: asArray(root.tasks ?? root.aiTasks),
+            };
+          }
+
+          export function placeDisplayName(place: Place | undefined): string {
+            if (!place) return "未知地点";
+            return place.nameZh || place.nameLocal || place.nameEn || "未命名地点";
+          }
+
+          export function formatDuration(minutes: number | null | undefined): string {
+            if (minutes === null || minutes === undefined || !Number.isFinite(minutes)) return "";
+            if (minutes < 60) return `${Math.round(minutes)} 分钟`;
+            const hours = minutes / 60;
+            return Number.isInteger(hours) ? `${hours} 小时` : `${hours.toFixed(1)} 小时`;
+          }
+
+          export type CandidateFilter = "all" | CandidatePreference | "unresolved";
+
+          export function candidateMatchesFilter(
+            candidate: TripCandidate,
+            filter: CandidateFilter,
+            resolution: PlaceResolution | undefined,
+          ): boolean {
+            if (filter === "all") return true;
+            if (filter === "unresolved") return !resolution || resolution.status !== "resolved";
+            return candidate.preference === filter;
+          }
+          EOF
+
+          cat > apps/web/src/v3-api.ts <<'EOF'
+          import type { CandidatePreference, TripSummary, Workspace } from "./v3-types";
+          import { normalizeTripList, normalizeWorkspace } from "./v3-types";
+
+          export class ApiError extends Error {
+            constructor(
+              message: string,
+              public readonly status: number,
+              public readonly payload: unknown,
+            ) {
+              super(message);
+              this.name = "ApiError";
+            }
+          }
+
+          async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
+            const response = await fetch(path, {
+              credentials: "same-origin",
+              ...init,
+              headers: {
+                Accept: "application/json",
+                ...(init?.body ? { "Content-Type": "application/json" } : {}),
+                ...init?.headers,
+              },
+            });
+            const text = await response.text();
+            let payload: unknown = null;
+            if (text) {
+              try { payload = JSON.parse(text); }
+              catch { payload = text; }
+            }
+            if (!response.ok) {
+              const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+              const message = typeof record.error === "string"
+                ? record.error
+                : typeof record.message === "string"
+                  ? record.message
+                  : `请求失败（${response.status}）`;
+              throw new ApiError(message, response.status, payload);
+            }
+            return payload as T;
+          }
+
+          const body = (value: unknown): string => JSON.stringify(value);
+
+          export async function loadTrips(): Promise<TripSummary[]> {
+            return normalizeTripList(await apiJson<unknown>("/api/trips"));
+          }
+
+          export async function createTrip(input: {
+            title: string;
+            initialMessage: string;
+          }): Promise<TripSummary> {
+            const raw = await apiJson<unknown>("/api/trips", {
+              method: "POST",
+              body: body({
+                title: input.title,
+                initialMessage: input.initialMessage,
+                message: input.initialMessage,
+              }),
+            });
+            const trips = normalizeTripList([raw]);
+            if (trips[0]) return trips[0];
+            const record = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+            const nested = record.trip && typeof record.trip === "object"
+              ? record.trip as Record<string, unknown>
+              : record;
+            const id = String(nested.id ?? nested.tripId ?? "");
+            if (!id) throw new Error("服务端没有返回新旅行 ID。");
+            return {
+              id,
+              title: String(nested.title ?? input.title),
+              stage: null,
+              generation: null,
+              updatedAt: null,
+            };
+          }
+
+          export async function loadWorkspace(tripId: string): Promise<Workspace> {
+            return normalizeWorkspace(
+              await apiJson<unknown>(`/api/trips/${encodeURIComponent(tripId)}/workspace`),
+              tripId,
+            );
+          }
+
+          export async function discoverCandidates(
+            tripId: string,
+            generation: number,
+            prompt: string,
+          ): Promise<void> {
+            await apiJson(`/api/trips/${encodeURIComponent(tripId)}/candidates/discover`, {
+              method: "POST",
+              body: body({ expectedGeneration: generation, prompt, message: prompt }),
+            });
+          }
+
+          export async function setCandidatePreference(
+            tripId: string,
+            candidateId: string,
+            preference: CandidatePreference,
+            generation: number,
+          ): Promise<void> {
+            await apiJson(`/api/trips/${encodeURIComponent(tripId)}/candidates/${encodeURIComponent(candidateId)}`, {
+              method: "PATCH",
+              body: body({ expectedGeneration: generation, preference }),
+            });
+          }
+
+          export async function setCandidatePreferences(
+            tripId: string,
+            candidateIds: string[],
+            preference: CandidatePreference,
+            generation: number,
+          ): Promise<void> {
+            await apiJson(`/api/trips/${encodeURIComponent(tripId)}/candidates/batch`, {
+              method: "POST",
+              body: body({ expectedGeneration: generation, candidateIds, preference }),
+            });
+          }
+
+          export async function retryResolutions(
+            tripId: string,
+            placeIds: string[],
+            generation: number,
+          ): Promise<void> {
+            await apiJson(`/api/trips/${encodeURIComponent(tripId)}/resolutions/retry`, {
+              method: "POST",
+              body: body({ expectedGeneration: generation, placeIds }),
+            });
+          }
+
+          export async function setManualCoordinates(
+            tripId: string,
+            placeId: string,
+            latitude: number,
+            longitude: number,
+            generation: number,
+          ): Promise<void> {
+            await apiJson(`/api/trips/${encodeURIComponent(tripId)}/resolutions/${encodeURIComponent(placeId)}/manual`, {
+              method: "PUT",
+              body: body({ expectedGeneration: generation, latitude, longitude }),
+            });
+          }
+
+          export async function generatePlan(tripId: string, generation: number): Promise<void> {
+            await apiJson(`/api/trips/${encodeURIComponent(tripId)}/plan/generate`, {
+              method: "POST",
+              body: body({ expectedGeneration: generation }),
+            });
+          }
+
+          export async function recalculateRoute(
+            tripId: string,
+            dayId: string,
+            generation: number,
+          ): Promise<void> {
+            await apiJson(`/api/trips/${encodeURIComponent(tripId)}/routes/${encodeURIComponent(dayId)}/recalculate`, {
+              method: "POST",
+              body: body({ expectedGeneration: generation }),
+            });
+          }
+          EOF
+
+          cat > apps/web/src/V3Map.tsx <<'EOF'
+          import { useEffect, useMemo, useRef } from "react";
+          import maplibregl from "maplibre-gl";
+          import "maplibre-gl/dist/maplibre-gl.css";
+          import type { DayRoute, Place, PlaceResolution } from "./v3-types";
+          import { placeDisplayName } from "./v3-types";
+
+          type Location = {
+            place: Place;
+            resolution: PlaceResolution;
+            ordinal: number | null;
+          };
+
+          type Props = {
+            locations: Location[];
+            selectedPlaceId: string | null;
+            selectedRoute: DayRoute | null;
+            onSelectPlace: (placeId: string) => void;
+          };
+
+          const routeSourceId = "v3-selected-route";
+          const routeLayerId = "v3-selected-route-line";
+
+          function routeGeoJson(route: DayRoute | null): GeoJSON.FeatureCollection | null {
+            if (!route?.geometry || typeof route.geometry !== "object") return null;
+            const geometry = route.geometry as GeoJSON.Geometry;
+            if (!geometry.type) return null;
+            return {
+              type: "FeatureCollection",
+              features: [{ type: "Feature", properties: {}, geometry }],
+            };
+          }
+
+          export default function V3Map({ locations, selectedPlaceId, selectedRoute, onSelectPlace }: Props) {
+            const containerRef = useRef<HTMLDivElement | null>(null);
+            const mapRef = useRef<maplibregl.Map | null>(null);
+            const markersRef = useRef<maplibregl.Marker[]>([]);
+            const onSelectRef = useRef(onSelectPlace);
+            onSelectRef.current = onSelectPlace;
+
+            const pointsKey = useMemo(
+              () => locations
+                .map(({ place, resolution }) => `${place.id}:${resolution.longitude}:${resolution.latitude}`)
+                .join("|"),
+              [locations],
+            );
+
+            useEffect(() => {
+              if (!containerRef.current || mapRef.current) return;
+              const map = new maplibregl.Map({
+                container: containerRef.current,
+                center: [105, 35],
+                zoom: 2.4,
+                attributionControl: true,
+                style: {
+                  version: 8,
+                  sources: {
+                    osm: {
+                      type: "raster",
+                      tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+                      tileSize: 256,
+                      attribution: "© OpenStreetMap contributors",
+                    },
+                  },
+                  layers: [{ id: "osm", type: "raster", source: "osm" }],
+                },
+              });
+              map.addControl(new maplibregl.NavigationControl({ showCompass: true }), "bottom-left");
+              mapRef.current = map;
+              return () => {
+                markersRef.current.forEach((marker) => marker.remove());
+                markersRef.current = [];
+                map.remove();
+                mapRef.current = null;
+              };
+            }, []);
+
+            useEffect(() => {
+              const map = mapRef.current;
+              if (!map) return;
+              markersRef.current.forEach((marker) => marker.remove());
+              markersRef.current = [];
+              const bounds = new maplibregl.LngLatBounds();
+              for (const { place, resolution, ordinal } of locations) {
+                if (resolution.latitude === null || resolution.longitude === null) continue;
+                const button = document.createElement("button");
+                button.type = "button";
+                button.className = `v3-map-marker${selectedPlaceId === place.id ? " is-selected" : ""}`;
+                button.title = placeDisplayName(place);
+                button.setAttribute("aria-label", `在列表中查看 ${placeDisplayName(place)}`);
+                button.textContent = ordinal === null ? "•" : String(ordinal);
+                button.addEventListener("click", () => onSelectRef.current(place.id));
+                const marker = new maplibregl.Marker({ element: button, anchor: "bottom" })
+                  .setLngLat([resolution.longitude, resolution.latitude])
+                  .addTo(map);
+                markersRef.current.push(marker);
+                bounds.extend([resolution.longitude, resolution.latitude]);
+              }
+              if (!bounds.isEmpty()) {
+                map.fitBounds(bounds, { padding: 80, maxZoom: 13, duration: 500 });
+              }
+            }, [pointsKey, selectedPlaceId, locations]);
+
+            useEffect(() => {
+              const map = mapRef.current;
+              if (!map) return;
+              const syncRoute = () => {
+                if (map.getLayer(routeLayerId)) map.removeLayer(routeLayerId);
+                if (map.getSource(routeSourceId)) map.removeSource(routeSourceId);
+                const data = routeGeoJson(selectedRoute);
+                if (!data) return;
+                map.addSource(routeSourceId, { type: "geojson", data });
+                map.addLayer({
+                  id: routeLayerId,
+                  type: "line",
+                  source: routeSourceId,
+                  paint: {
+                    "line-color": "#0f766e",
+                    "line-width": 5,
+                    "line-opacity": 0.85,
+                  },
+                });
+              };
+              if (map.loaded()) syncRoute();
+              else map.once("load", syncRoute);
+            }, [selectedRoute]);
+
+            return (
+              <div className="v3-map-shell">
+                <div ref={containerRef} className="v3-map" aria-label="旅行地图" />
+                <div className="v3-map-caption">
+                  <strong>{locations.length}</strong> 个已定位地点
+                  <span>点击标记可定位到右侧卡片</span>
+                </div>
+              </div>
+            );
+          }
+          EOF
+
+          cat > apps/web/src/V3Workspace.tsx <<'EOF'
+          import { useEffect, useMemo, useRef, useState } from "react";
+          import V3Map from "./V3Map";
+          import {
+            discoverCandidates,
+            generatePlan,
+            recalculateRoute,
+            retryResolutions,
+            setCandidatePreference,
+            setCandidatePreferences,
+            setManualCoordinates,
+          } from "./v3-api";
+          import type {
+            CandidateFilter,
+            CandidatePreference,
+            Day,
+            Place,
+            PlaceResolution,
+            TripCandidate,
+            Workspace,
+          } from "./v3-types";
+          import {
+            candidateMatchesFilter,
+            formatDuration,
+            placeDisplayName,
+          } from "./v3-types";
+
+          type Props = {
+            workspace: Workspace;
+            onRefresh: () => Promise<void>;
+          };
+
+          const preferenceLabels: Record<CandidatePreference, string> = {
+            must_go: "必去",
+            want_to_go: "想去",
+            optional: "可选",
+            excluded: "不去",
+          };
+
+          const filters: Array<{ value: CandidateFilter; label: string }> = [
+            { value: "all", label: "全部" },
+            { value: "must_go", label: "必去" },
+            { value: "want_to_go", label: "想去" },
+            { value: "optional", label: "可选" },
+            { value: "excluded", label: "不去" },
+            { value: "unresolved", label: "未定位" },
+          ];
+
+          function CandidateCard({
+            candidate,
+            place,
+            resolution,
+            selected,
+            active,
+            onToggle,
+            onFocus,
+            onPreference,
+            onRetry,
+            onManual,
+          }: {
+            candidate: TripCandidate;
+            place: Place | undefined;
+            resolution: PlaceResolution | undefined;
+            selected: boolean;
+            active: boolean;
+            onToggle: () => void;
+            onFocus: () => void;
+            onPreference: (preference: CandidatePreference) => void;
+            onRetry: () => void;
+            onManual: () => void;
+          }) {
+            const title = placeDisplayName(place);
+            return (
+              <article
+                id={`candidate-${candidate.id}`}
+                className={`v3-candidate-card${active ? " is-active" : ""}`}
+                onClick={onFocus}
+              >
+                <div className="v3-candidate-head">
+                  <label className="v3-check" onClick={(event) => event.stopPropagation()}>
+                    <input type="checkbox" checked={selected} onChange={onToggle} />
+                    <span className="sr-only">选择 {title}</span>
+                  </label>
+                  <div className="v3-candidate-title-wrap">
+                    <h3>{title}</h3>
+                    <p>{[place?.city, place?.region, place?.country].filter(Boolean).join(" · ") || place?.kind || "地点"}</p>
+                  </div>
+                  {candidate.aiScore !== null && (
+                    <div className="v3-score" title="AI 推荐度，不是地图评分">
+                      <strong>{Math.round(candidate.aiScore)}</strong>
+                      <span>AI 推荐</span>
+                    </div>
+                  )}
+                </div>
+
+                {candidate.aiReason && <p className="v3-reason">{candidate.aiReason}</p>}
+
+                <div className="v3-candidate-meta">
+                  {candidate.suggestedDurationMinutes !== null && (
+                    <span>{formatDuration(candidate.suggestedDurationMinutes)}</span>
+                  )}
+                  {candidate.tags.slice(0, 4).map((tag) => <span key={tag}>{tag}</span>)}
+                  <span className={`v3-resolution is-${resolution?.status ?? "unresolved"}`}>
+                    {resolution?.status === "resolved" ? "已定位" : resolution?.status === "resolving" ? "定位中" : "未定位"}
+                  </span>
+                </div>
+
+                <div className="v3-preference-row" onClick={(event) => event.stopPropagation()}>
+                  {(Object.keys(preferenceLabels) as CandidatePreference[]).map((preference) => (
+                    <button
+                      type="button"
+                      key={preference}
+                      className={candidate.preference === preference ? "is-current" : ""}
+                      onClick={() => onPreference(preference)}
+                    >
+                      {preferenceLabels[preference]}
+                    </button>
+                  ))}
+                </div>
+
+                {resolution?.status !== "resolved" && (
+                  <div className="v3-resolution-actions" onClick={(event) => event.stopPropagation()}>
+                    <button type="button" onClick={onRetry}>重新定位</button>
+                    <button type="button" onClick={onManual}>手工坐标</button>
+                    {resolution?.errorMessage && <small>{resolution.errorMessage}</small>}
+                  </div>
+                )}
+              </article>
+            );
+          }
+
+          function Anchor({ label, place }: { label: string; place: Place | undefined }) {
+            return (
+              <div className="v3-anchor">
+                <span>{label}</span>
+                <strong>{place ? placeDisplayName(place) : "尚未设置"}</strong>
+              </div>
+            );
+          }
+
+          function DayCard({
+            day,
+            places,
+            dirty,
+            routeDistance,
+            routeDuration,
+            selected,
+            onSelect,
+            onRoute,
+            onPlace,
+          }: {
+            day: Day;
+            places: Map<string, Place>;
+            dirty: boolean;
+            routeDistance: number | null;
+            routeDuration: number | null;
+            selected: boolean;
+            onSelect: () => void;
+            onRoute: () => void;
+            onPlace: (placeId: string) => void;
+          }) {
+            return (
+              <article className={`v3-day-card${selected ? " is-active" : ""}`}>
+                <button type="button" className="v3-day-heading" onClick={onSelect}>
+                  <span>DAY {day.dayNumber}</span>
+                  <strong>{day.title}</strong>
+                  <small>{day.date ?? "日期待定"}</small>
+                </button>
+                <div className="v3-day-body">
+                  <Anchor label="起点" place={day.startAnchor.placeId ? places.get(day.startAnchor.placeId) : undefined} />
+                  <div className="v3-stop-list">
+                    {day.stops.length === 0 && <p className="v3-empty-inline">这一天还没有地点。</p>}
+                    {day.stops.map((stop, index) => (
+                      <button
+                        type="button"
+                        className="v3-stop"
+                        key={stop.id}
+                        onClick={() => onPlace(stop.placeId)}
+                      >
+                        <span>{index + 1}</span>
+                        <div>
+                          <strong>{placeDisplayName(places.get(stop.placeId))}</strong>
+                          <small>
+                            {[stop.period, formatDuration(stop.durationMinutes)].filter(Boolean).join(" · ") || stop.activity}
+                          </small>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                  <Anchor label="终点" place={day.endAnchor.placeId ? places.get(day.endAnchor.placeId) : undefined} />
+                  <div className="v3-route-status">
+                    <div>
+                      <span className={dirty ? "is-dirty" : "is-ready"}>{dirty ? "路线有变更" : "路线已更新"}</span>
+                      {(routeDistance !== null || routeDuration !== null) && (
+                        <small>
+                          {routeDistance !== null ? `${routeDistance.toFixed(1)} km` : ""}
+                          {routeDistance !== null && routeDuration !== null ? " · " : ""}
+                          {routeDuration !== null ? formatDuration(routeDuration) : ""}
+                        </small>
+                      )}
+                    </div>
+                    <button type="button" onClick={onRoute}>{dirty ? "更新路线" : "重新计算"}</button>
+                  </div>
+                </div>
+              </article>
+            );
+          }
+
+          export default function V3Workspace({ workspace, onRefresh }: Props) {
+            const [tab, setTab] = useState<"places" | "itinerary">(
+              workspace.document.stage === "place_selection" ? "places" : "itinerary",
+            );
+            const [filter, setFilter] = useState<CandidateFilter>("all");
+            const [selectedCandidates, setSelectedCandidates] = useState<Set<string>>(new Set());
+            const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
+            const [selectedDayId, setSelectedDayId] = useState<string | null>(workspace.document.days[0]?.id ?? null);
+            const [prompt, setPrompt] = useState("");
+            const [busy, setBusy] = useState<string | null>(null);
+            const [error, setError] = useState<string | null>(null);
+            const [manualPlaceId, setManualPlaceId] = useState<string | null>(null);
+            const [latitude, setLatitude] = useState("");
+            const [longitude, setLongitude] = useState("");
+            const listRef = useRef<HTMLDivElement | null>(null);
+
+            const places = useMemo(
+              () => new Map(workspace.document.places.map((place) => [place.id, place])),
+              [workspace.document.places],
+            );
+            const resolutions = useMemo(
+              () => new Map(workspace.resolutions.map((resolution) => [resolution.placeId, resolution])),
+              [workspace.resolutions],
+            );
+            const routes = useMemo(
+              () => new Map(workspace.routes.map((route) => [route.dayId, route])),
+              [workspace.routes],
+            );
+            const dirtyDays = useMemo(
+              () => new Set(workspace.routeDirtyDayIds),
+              [workspace.routeDirtyDayIds],
+            );
+
+            const visibleCandidates = workspace.document.candidates.filter((candidate) =>
+              candidateMatchesFilter(candidate, filter, resolutions.get(candidate.placeId)),
+            );
+            const selectedCount = workspace.document.candidates.filter((candidate) => candidate.preference !== "excluded").length;
+            const unresolvedCount = workspace.document.candidates.filter((candidate) =>
+              resolutions.get(candidate.placeId)?.status !== "resolved",
+            ).length;
+
+            const selectedDay = workspace.document.days.find((day) => day.id === selectedDayId) ?? null;
+            const dayPlaceIds = new Set<string>();
+            if (selectedDay) {
+              if (selectedDay.startAnchor.placeId) dayPlaceIds.add(selectedDay.startAnchor.placeId);
+              selectedDay.stops.forEach((stop) => dayPlaceIds.add(stop.placeId));
+              if (selectedDay.endAnchor.placeId) dayPlaceIds.add(selectedDay.endAnchor.placeId);
+            }
+
+            const mapLocations = workspace.document.places.flatMap((place) => {
+              const resolution = resolutions.get(place.id);
+              if (!resolution || resolution.status !== "resolved" || resolution.latitude === null || resolution.longitude === null) return [];
+              if (tab === "itinerary" && selectedDay && !dayPlaceIds.has(place.id)) return [];
+              const ordinal = selectedDay
+                ? selectedDay.stops.findIndex((stop) => stop.placeId === place.id) + 1
+                : null;
+              return [{ place, resolution, ordinal: ordinal && ordinal > 0 ? ordinal : null }];
+            });
+
+            const run = async (label: string, operation: () => Promise<void>) => {
+              setBusy(label);
+              setError(null);
+              try {
+                await operation();
+                await onRefresh();
+              } catch (cause) {
+                setError(cause instanceof Error ? cause.message : "操作失败，请稍后重试。");
+              } finally {
+                setBusy(null);
+              }
+            };
+
+            const focusPlace = (placeId: string) => {
+              setSelectedPlaceId(placeId);
+              if (tab === "places") {
+                const candidate = workspace.document.candidates.find((item) => item.placeId === placeId);
+                if (candidate) {
+                  requestAnimationFrame(() => {
+                    document.getElementById(`candidate-${candidate.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+                  });
+                }
+              }
+            };
+
+            useEffect(() => {
+              if (selectedPlaceId && !places.has(selectedPlaceId)) setSelectedPlaceId(null);
+            }, [places, selectedPlaceId]);
+
+            return (
+              <main className="v3-workspace">
+                <section className="v3-map-column">
+                  <V3Map
+                    locations={mapLocations}
+                    selectedPlaceId={selectedPlaceId}
+                    selectedRoute={selectedDay ? routes.get(selectedDay.id) ?? null : null}
+                    onSelectPlace={focusPlace}
+                  />
+                </section>
+
+                <section className="v3-panel-column">
+                  <div className="v3-tabs" role="tablist" aria-label="旅行工作区">
+                    <button type="button" className={tab === "places" ? "is-active" : ""} onClick={() => setTab("places")}>
+                      地点 <span>{selectedCount}/{workspace.document.candidates.length}</span>
+                    </button>
+                    <button type="button" className={tab === "itinerary" ? "is-active" : ""} onClick={() => setTab("itinerary")}>
+                      行程 <span>{workspace.document.days.length} 天</span>
+                    </button>
+                  </div>
+
+                  {error && <div className="v3-error" role="alert">{error}</div>}
+
+                  {tab === "places" ? (
+                    <div className="v3-tab-content" ref={listRef}>
+                      <div className="v3-section-head">
+                        <div>
+                          <p className="v3-eyebrow">DISCOVER & CURATE</p>
+                          <h2>先选择真正想去的地方</h2>
+                          <p>AI 推荐语义地点，地图服务负责真实坐标。排除的地点不会进入行程。</p>
+                        </div>
+                        <button
+                          type="button"
+                          className="v3-primary-button"
+                          disabled={busy !== null}
+                          onClick={() => run("discover", () => discoverCandidates(workspace.tripId, workspace.generation, prompt.trim()))}
+                        >
+                          {busy === "discover" ? "生成中…" : workspace.document.candidates.length ? "继续推荐" : "AI 推荐地点"}
+                        </button>
+                      </div>
+
+                      <div className="v3-discovery-prompt">
+                        <input
+                          value={prompt}
+                          onChange={(event) => setPrompt(event.target.value)}
+                          placeholder="例如：多推荐一些适合 3 岁孩子的室内地点"
+                        />
+                      </div>
+
+                      <div className="v3-filter-row">
+                        {filters.map((item) => (
+                          <button
+                            type="button"
+                            key={item.value}
+                            className={filter === item.value ? "is-active" : ""}
+                            onClick={() => setFilter(item.value)}
+                          >
+                            {item.label}
+                            {item.value === "unresolved" && unresolvedCount > 0 ? ` ${unresolvedCount}` : ""}
+                          </button>
+                        ))}
+                      </div>
+
+                      {selectedCandidates.size > 0 && (
+                        <div className="v3-bulk-bar">
+                          <strong>已选择 {selectedCandidates.size} 个</strong>
+                          {(Object.keys(preferenceLabels) as CandidatePreference[]).map((preference) => (
+                            <button
+                              type="button"
+                              key={preference}
+                              disabled={busy !== null}
+                              onClick={() => run(`bulk-${preference}`, () => setCandidatePreferences(
+                                workspace.tripId,
+                                [...selectedCandidates],
+                                preference,
+                                workspace.generation,
+                              )).then(() => setSelectedCandidates(new Set()))}
+                            >
+                              标记{preferenceLabels[preference]}
+                            </button>
+                          ))}
+                          <button
+                            type="button"
+                            disabled={busy !== null}
+                            onClick={() => {
+                              const placeIds = workspace.document.candidates
+                                .filter((candidate) => selectedCandidates.has(candidate.id))
+                                .map((candidate) => candidate.placeId);
+                              void run("bulk-resolve", () => retryResolutions(workspace.tripId, placeIds, workspace.generation));
+                            }}
+                          >
+                            批量重新定位
+                          </button>
+                        </div>
+                      )}
+
+                      <div className="v3-card-list">
+                        {visibleCandidates.length === 0 && (
+                          <div className="v3-empty-state">
+                            <div>✦</div>
+                            <h3>{workspace.document.candidates.length ? "当前筛选没有地点" : "还没有 Candidate Pool"}</h3>
+                            <p>{workspace.document.candidates.length ? "切换筛选条件，或让 AI 继续推荐。" : "描述你的偏好后，让 AI 先推荐地点，再决定哪些值得加入旅行。"}</p>
+                          </div>
+                        )}
+                        {visibleCandidates.map((candidate) => (
+                          <CandidateCard
+                            key={candidate.id}
+                            candidate={candidate}
+                            place={places.get(candidate.placeId)}
+                            resolution={resolutions.get(candidate.placeId)}
+                            selected={selectedCandidates.has(candidate.id)}
+                            active={selectedPlaceId === candidate.placeId}
+                            onToggle={() => {
+                              const next = new Set(selectedCandidates);
+                              if (next.has(candidate.id)) next.delete(candidate.id);
+                              else next.add(candidate.id);
+                              setSelectedCandidates(next);
+                            }}
+                            onFocus={() => focusPlace(candidate.placeId)}
+                            onPreference={(preference) => void run(`preference-${candidate.id}`, () => setCandidatePreference(
+                              workspace.tripId,
+                              candidate.id,
+                              preference,
+                              workspace.generation,
+                            ))}
+                            onRetry={() => void run(`resolve-${candidate.placeId}`, () => retryResolutions(
+                              workspace.tripId,
+                              [candidate.placeId],
+                              workspace.generation,
+                            ))}
+                            onManual={() => {
+                              setManualPlaceId(candidate.placeId);
+                              setLatitude("");
+                              setLongitude("");
+                            }}
+                          />
+                        ))}
+                      </div>
+
+                      <div className="v3-plan-cta">
+                        <div>
+                          <strong>已选择 {selectedCount} / {workspace.document.candidates.length} 个地点</strong>
+                          <span>{unresolvedCount ? `其中 ${unresolvedCount} 个尚未定位` : "所有 Candidate 均已获得定位状态"}</span>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={busy !== null || selectedCount === 0 || workspace.document.days.length > 0}
+                          onClick={() => void run("plan", () => generatePlan(workspace.tripId, workspace.generation)).then(() => setTab("itinerary"))}
+                        >
+                          {workspace.document.days.length > 0 ? "行程已经生成" : busy === "plan" ? "正在排程…" : "根据选中地点生成行程"}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="v3-tab-content">
+                      <div className="v3-section-head">
+                        <div>
+                          <p className="v3-eyebrow">PLAN & ROUTE</p>
+                          <h2>按天查看结构化行程</h2>
+                          <p>每天拥有独立起点和终点。路线只在你明确点击时重新计算。</p>
+                        </div>
+                        <button type="button" className="v3-secondary-button" onClick={() => setTab("places")}>返回地点池</button>
+                      </div>
+
+                      <div className="v3-day-selector">
+                        {workspace.document.days.map((day) => (
+                          <button
+                            type="button"
+                            key={day.id}
+                            className={selectedDayId === day.id ? "is-active" : ""}
+                            onClick={() => setSelectedDayId(day.id)}
+                          >
+                            D{day.dayNumber}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="v3-card-list">
+                        {workspace.document.days.length === 0 && (
+                          <div className="v3-empty-state">
+                            <div>↗</div>
+                            <h3>还没有按天行程</h3>
+                            <p>先到“地点”Tab 选择 Candidate，再让 AI 根据真实地点安排每天。</p>
+                            <button type="button" onClick={() => setTab("places")}>去选择地点</button>
+                          </div>
+                        )}
+                        {workspace.document.days.map((day) => {
+                          const route = routes.get(day.id);
+                          return (
+                            <DayCard
+                              key={day.id}
+                              day={day}
+                              places={places}
+                              dirty={dirtyDays.has(day.id) || !route}
+                              routeDistance={route?.distanceKm ?? null}
+                              routeDuration={route?.durationMinutes ?? null}
+                              selected={selectedDayId === day.id}
+                              onSelect={() => setSelectedDayId(day.id)}
+                              onRoute={() => void run(`route-${day.id}`, () => recalculateRoute(workspace.tripId, day.id, workspace.generation))}
+                              onPlace={focusPlace}
+                            />
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </section>
+
+                {manualPlaceId && (
+                  <div className="v3-modal-backdrop" role="presentation" onMouseDown={() => setManualPlaceId(null)}>
+                    <form
+                      className="v3-modal"
+                      onMouseDown={(event) => event.stopPropagation()}
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        const lat = Number(latitude);
+                        const lon = Number(longitude);
+                        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+                          setError("请输入有效的纬度和经度。");
+                          return;
+                        }
+                        void run("manual", () => setManualCoordinates(
+                          workspace.tripId,
+                          manualPlaceId,
+                          lat,
+                          lon,
+                          workspace.generation,
+                        )).then(() => setManualPlaceId(null));
+                      }}
+                    >
+                      <p className="v3-eyebrow">MANUAL LOCATION</p>
+                      <h2>手工设置坐标</h2>
+                      <p>{placeDisplayName(places.get(manualPlaceId))}</p>
+                      <label>纬度<input value={latitude} onChange={(event) => setLatitude(event.target.value)} placeholder="35.0116" /></label>
+                      <label>经度<input value={longitude} onChange={(event) => setLongitude(event.target.value)} placeholder="135.7681" /></label>
+                      <div className="v3-modal-actions">
+                        <button type="button" onClick={() => setManualPlaceId(null)}>取消</button>
+                        <button type="submit" disabled={busy !== null}>保存坐标</button>
+                      </div>
+                    </form>
+                  </div>
+                )}
+              </main>
+            );
+          }
+          EOF
+
+          cat > apps/web/src/App.tsx <<'EOF'
+          import { useCallback, useEffect, useState } from "react";
+          import LegacyApp from "./LegacyApp";
+          import V3Workspace from "./V3Workspace";
+          import { ApiError, createTrip, loadTrips, loadWorkspace } from "./v3-api";
+          import type { TripSummary, Workspace } from "./v3-types";
+          import "./v3-workspace.css";
+
+          type LoadState = "loading" | "ready" | "legacy" | "error";
+
+          export default function App() {
+            const [state, setState] = useState<LoadState>("loading");
+            const [trips, setTrips] = useState<TripSummary[]>([]);
+            const [tripId, setTripId] = useState<string | null>(() => localStorage.getItem("travelplanner.v3.tripId"));
+            const [workspace, setWorkspace] = useState<Workspace | null>(null);
+            const [error, setError] = useState<string | null>(null);
+            const [showCreate, setShowCreate] = useState(false);
+            const [title, setTitle] = useState("");
+            const [initialMessage, setInitialMessage] = useState("");
+            const [creating, setCreating] = useState(false);
+
+            const refreshTrips = useCallback(async () => {
+              const rows = await loadTrips();
+              setTrips(rows);
+              setTripId((current) => {
+                const next = current && rows.some((trip) => trip.id === current)
+                  ? current
+                  : rows[0]?.id ?? null;
+                if (next) localStorage.setItem("travelplanner.v3.tripId", next);
+                else localStorage.removeItem("travelplanner.v3.tripId");
+                return next;
+              });
+              return rows;
+            }, []);
+
+            const refreshWorkspace = useCallback(async () => {
+              if (!tripId) {
+                setWorkspace(null);
+                return;
+              }
+              const next = await loadWorkspace(tripId);
+              setWorkspace(next);
+            }, [tripId]);
+
+            useEffect(() => {
+              let cancelled = false;
+              void refreshTrips()
+                .then(() => { if (!cancelled) setState("ready"); })
+                .catch((cause) => {
+                  if (cancelled) return;
+                  if (cause instanceof ApiError && (cause.status === 401 || cause.status === 403 || cause.status === 404)) {
+                    setState("legacy");
+                  } else {
+                    setError(cause instanceof Error ? cause.message : "无法加载旅行列表。");
+                    setState("error");
+                  }
+                });
+              return () => { cancelled = true; };
+            }, [refreshTrips]);
+
+            useEffect(() => {
+              if (state !== "ready" || !tripId) return;
+              let cancelled = false;
+              setWorkspace(null);
+              void loadWorkspace(tripId)
+                .then((next) => { if (!cancelled) setWorkspace(next); })
+                .catch((cause) => {
+                  if (cancelled) return;
+                  setError(cause instanceof Error ? cause.message : "无法加载旅行工作区。");
+                });
+              return () => { cancelled = true; };
+            }, [state, tripId]);
+
+            if (state === "legacy") {
+              return (
+                <div className="v3-legacy-shell">
+                  <div className="v3-legacy-notice">
+                    <strong>需要先完成登录或本地初始化</strong>
+                    <span>完成后刷新页面，即会进入新的 Candidate-first 工作台。</span>
+                  </div>
+                  <LegacyApp />
+                </div>
+              );
+            }
+
+            if (state === "loading") {
+              return <div className="v3-loading-screen"><div className="v3-loader" /><strong>正在打开旅行工作台…</strong></div>;
+            }
+
+            return (
+              <div className="v3-app-shell">
+                <header className="v3-topbar">
+                  <div className="v3-brand">
+                    <div>TP</div>
+                    <span><strong>TravelPlanner</strong><small>AI 旅行工作台</small></span>
+                  </div>
+                  <div className="v3-trip-switcher">
+                    <select
+                      aria-label="当前旅行"
+                      value={tripId ?? ""}
+                      onChange={(event) => {
+                        const next = event.target.value || null;
+                        setTripId(next);
+                        if (next) localStorage.setItem("travelplanner.v3.tripId", next);
+                      }}
+                    >
+                      {!trips.length && <option value="">尚无旅行</option>}
+                      {trips.map((trip) => <option value={trip.id} key={trip.id}>{trip.title}</option>)}
+                    </select>
+                    <button type="button" onClick={() => setShowCreate(true)}>新建旅行</button>
+                  </div>
+                  <div className="v3-stage-badge">
+                    {workspace?.document.stage === "place_selection" ? "地点选择" : workspace?.document.stage === "itinerary_planning" ? "行程规划" : workspace?.document.stage === "itinerary_refinement" ? "行程细化" : "准备中"}
+                  </div>
+                </header>
+
+                {error && (
+                  <div className="v3-global-error" role="alert">
+                    <span>{error}</span>
+                    <button type="button" onClick={() => setError(null)}>关闭</button>
+                  </div>
+                )}
+
+                {state === "error" ? (
+                  <div className="v3-fatal-state">
+                    <h1>新工作台暂时无法启动</h1>
+                    <p>{error}</p>
+                    <button type="button" onClick={() => location.reload()}>重新加载</button>
+                    <button type="button" onClick={() => setState("legacy")}>打开旧设置页</button>
+                  </div>
+                ) : !tripId ? (
+                  <div className="v3-welcome">
+                    <p className="v3-eyebrow">DISCOVER → CURATE → PLAN → ROUTE</p>
+                    <h1>先选择真正想去的地方，<br />再让 AI 安排成一趟合理旅行。</h1>
+                    <p>地图和结构化计划始终在场。AI 负责建议，地图服务负责真实地点与路线，你负责最终选择。</p>
+                    <button type="button" onClick={() => setShowCreate(true)}>创建第一趟旅行</button>
+                  </div>
+                ) : workspace ? (
+                  <V3Workspace workspace={workspace} onRefresh={refreshWorkspace} />
+                ) : (
+                  <div className="v3-loading-screen"><div className="v3-loader" /><strong>正在加载旅行内容…</strong></div>
+                )}
+
+                {showCreate && (
+                  <div className="v3-modal-backdrop" role="presentation" onMouseDown={() => setShowCreate(false)}>
+                    <form
+                      className="v3-modal v3-create-modal"
+                      onMouseDown={(event) => event.stopPropagation()}
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        if (!title.trim()) return;
+                        setCreating(true);
+                        setError(null);
+                        void createTrip({ title: title.trim(), initialMessage: initialMessage.trim() })
+                          .then(async (trip) => {
+                            await refreshTrips();
+                            setTripId(trip.id);
+                            localStorage.setItem("travelplanner.v3.tripId", trip.id);
+                            setShowCreate(false);
+                            setTitle("");
+                            setInitialMessage("");
+                          })
+                          .catch((cause) => setError(cause instanceof Error ? cause.message : "创建旅行失败。"))
+                          .finally(() => setCreating(false));
+                      }}
+                    >
+                      <p className="v3-eyebrow">NEW TRIP</p>
+                      <h2>创建一趟新旅行</h2>
+                      <label>旅行名称<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="日本关西 7 日亲子游" autoFocus /></label>
+                      <label>先告诉 AI 你的基本需求<textarea value={initialMessage} onChange={(event) => setInitialMessage(event.target.value)} placeholder="国庆从上海去关西 7 天，夫妻带一个 3 岁孩子，不想太累…" rows={5} /></label>
+                      <p className="v3-form-tip">第一步只需最低限度信息，之后先生成地点池，不会直接写满整份行程。</p>
+                      <div className="v3-modal-actions">
+                        <button type="button" onClick={() => setShowCreate(false)}>取消</button>
+                        <button type="submit" disabled={creating || !title.trim()}>{creating ? "创建中…" : "创建旅行"}</button>
+                      </div>
+                    </form>
+                  </div>
+                )}
+              </div>
+            );
+          }
+          EOF
+
+          cat > apps/web/src/v3-workspace.css <<'EOF'
+          :root {
+            --v3-ink: #172321;
+            --v3-muted: #66736f;
+            --v3-line: #dfe7e3;
+            --v3-soft: #f4f7f5;
+            --v3-paper: #ffffff;
+            --v3-accent: #0f766e;
+            --v3-accent-dark: #0b5953;
+            --v3-warm: #f59e0b;
+            --v3-danger: #b42318;
+            --v3-shadow: 0 18px 55px rgba(24, 49, 43, 0.12);
+          }
+
+          * { box-sizing: border-box; }
+          body { margin: 0; background: #eef3f0; color: var(--v3-ink); }
+          button, input, textarea, select { font: inherit; }
+          button { cursor: pointer; }
+          button:disabled { cursor: not-allowed; opacity: 0.55; }
+          .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
+
+          .v3-app-shell { min-height: 100vh; background: #eef3f0; }
+          .v3-topbar { height: 70px; padding: 0 22px; display: grid; grid-template-columns: minmax(220px, 1fr) minmax(280px, 520px) minmax(180px, 1fr); align-items: center; gap: 18px; background: rgba(255,255,255,0.96); border-bottom: 1px solid var(--v3-line); position: relative; z-index: 20; }
+          .v3-brand { display: flex; align-items: center; gap: 11px; }
+          .v3-brand > div { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 13px; color: white; font-weight: 850; background: linear-gradient(145deg, #0f766e, #134e4a); box-shadow: 0 8px 22px rgba(15,118,110,.28); }
+          .v3-brand span { display: grid; line-height: 1.05; }
+          .v3-brand strong { font-size: 15px; letter-spacing: .01em; }
+          .v3-brand small { color: var(--v3-muted); margin-top: 4px; }
+          .v3-trip-switcher { display: flex; border: 1px solid var(--v3-line); border-radius: 14px; padding: 4px; background: var(--v3-soft); }
+          .v3-trip-switcher select { min-width: 0; flex: 1; border: 0; background: transparent; padding: 8px 12px; color: var(--v3-ink); font-weight: 700; outline: none; }
+          .v3-trip-switcher button { border: 0; border-radius: 10px; background: white; padding: 8px 13px; color: var(--v3-accent-dark); font-weight: 750; box-shadow: 0 2px 8px rgba(20,50,45,.08); }
+          .v3-stage-badge { justify-self: end; background: #e7f5f2; color: var(--v3-accent-dark); border: 1px solid #c3e5df; border-radius: 999px; padding: 8px 14px; font-size: 13px; font-weight: 800; }
+
+          .v3-workspace { height: calc(100vh - 70px); display: grid; grid-template-columns: minmax(0, 58%) minmax(410px, 42%); overflow: hidden; }
+          .v3-map-column { min-width: 0; position: relative; border-right: 1px solid var(--v3-line); }
+          .v3-map-shell, .v3-map { width: 100%; height: 100%; }
+          .v3-map-shell { position: relative; background: #dce8e3; }
+          .v3-map-caption { position: absolute; z-index: 3; left: 20px; bottom: 22px; display: flex; align-items: center; gap: 9px; border: 1px solid rgba(255,255,255,.8); background: rgba(255,255,255,.92); backdrop-filter: blur(12px); border-radius: 14px; padding: 10px 13px; box-shadow: var(--v3-shadow); font-size: 13px; }
+          .v3-map-caption strong { color: var(--v3-accent); font-size: 17px; }
+          .v3-map-caption span { color: var(--v3-muted); }
+          .v3-map-marker { min-width: 31px; height: 31px; border: 3px solid white; border-radius: 999px 999px 999px 4px; transform: rotate(-45deg); display: grid; place-items: center; background: var(--v3-accent); color: white; box-shadow: 0 6px 16px rgba(12,80,72,.34); font-weight: 850; }
+          .v3-map-marker::first-letter { transform: rotate(45deg); }
+          .v3-map-marker.is-selected { background: var(--v3-warm); scale: 1.22; z-index: 2; }
+
+          .v3-panel-column { min-width: 0; display: flex; flex-direction: column; background: #f8faf9; }
+          .v3-tabs { height: 62px; display: grid; grid-template-columns: 1fr 1fr; padding: 8px 18px 0; background: var(--v3-paper); border-bottom: 1px solid var(--v3-line); }
+          .v3-tabs button { border: 0; border-bottom: 3px solid transparent; background: transparent; color: var(--v3-muted); font-weight: 800; font-size: 15px; }
+          .v3-tabs button span { margin-left: 5px; color: #97a39f; font-size: 12px; }
+          .v3-tabs button.is-active { color: var(--v3-accent-dark); border-bottom-color: var(--v3-accent); }
+          .v3-tab-content { flex: 1; overflow-y: auto; padding: 22px 22px 128px; scroll-behavior: smooth; }
+          .v3-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 16px; }
+          .v3-section-head h2 { margin: 4px 0 7px; font-size: 22px; line-height: 1.25; }
+          .v3-section-head p:not(.v3-eyebrow) { max-width: 520px; margin: 0; color: var(--v3-muted); font-size: 13px; line-height: 1.55; }
+          .v3-eyebrow { margin: 0; color: var(--v3-accent); font-size: 10px; font-weight: 900; letter-spacing: .16em; }
+          .v3-primary-button, .v3-secondary-button { flex: 0 0 auto; border-radius: 12px; padding: 10px 14px; font-weight: 800; }
+          .v3-primary-button { border: 1px solid var(--v3-accent); background: var(--v3-accent); color: white; }
+          .v3-secondary-button { border: 1px solid var(--v3-line); background: white; color: var(--v3-accent-dark); }
+          .v3-discovery-prompt { margin-bottom: 13px; }
+          .v3-discovery-prompt input { width: 100%; border: 1px solid var(--v3-line); border-radius: 13px; padding: 12px 14px; outline: none; background: white; }
+          .v3-discovery-prompt input:focus { border-color: #7ccbc0; box-shadow: 0 0 0 3px rgba(15,118,110,.09); }
+
+          .v3-filter-row { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 14px; }
+          .v3-filter-row button { border: 1px solid var(--v3-line); border-radius: 999px; background: white; color: var(--v3-muted); padding: 7px 11px; font-size: 12px; font-weight: 750; }
+          .v3-filter-row button.is-active { color: white; background: var(--v3-accent); border-color: var(--v3-accent); }
+          .v3-bulk-bar { position: sticky; top: -8px; z-index: 4; display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin: 0 0 12px; padding: 10px; border-radius: 13px; background: #163f3a; color: white; box-shadow: 0 10px 24px rgba(18,62,56,.2); }
+          .v3-bulk-bar strong { margin-right: auto; font-size: 12px; }
+          .v3-bulk-bar button { border: 1px solid rgba(255,255,255,.2); border-radius: 9px; background: rgba(255,255,255,.1); color: white; padding: 6px 8px; font-size: 11px; }
+
+          .v3-card-list { display: grid; gap: 11px; }
+          .v3-candidate-card, .v3-day-card { border: 1px solid var(--v3-line); border-radius: 16px; background: var(--v3-paper); box-shadow: 0 4px 18px rgba(29,52,47,.045); transition: border-color .2s, box-shadow .2s, transform .2s; }
+          .v3-candidate-card { padding: 15px; }
+          .v3-candidate-card:hover { transform: translateY(-1px); border-color: #b9d6d0; box-shadow: 0 9px 26px rgba(29,52,47,.09); }
+          .v3-candidate-card.is-active { border-color: var(--v3-accent); box-shadow: 0 0 0 3px rgba(15,118,110,.1); }
+          .v3-candidate-head { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: start; }
+          .v3-check { padding-top: 2px; }
+          .v3-check input { width: 17px; height: 17px; accent-color: var(--v3-accent); }
+          .v3-candidate-title-wrap h3 { margin: 0; font-size: 16px; }
+          .v3-candidate-title-wrap p { margin: 4px 0 0; color: var(--v3-muted); font-size: 11px; }
+          .v3-score { display: grid; justify-items: end; }
+          .v3-score strong { color: var(--v3-accent); font-size: 19px; line-height: 1; }
+          .v3-score span { margin-top: 3px; color: var(--v3-muted); font-size: 9px; }
+          .v3-reason { margin: 11px 0; color: #42504c; font-size: 12px; line-height: 1.55; }
+          .v3-candidate-meta { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 12px; }
+          .v3-candidate-meta > span { border-radius: 999px; padding: 4px 8px; background: var(--v3-soft); color: #53615d; font-size: 10px; }
+          .v3-resolution.is-resolved { background: #e7f5ed; color: #167044; }
+          .v3-resolution.is-resolving { background: #fff3d6; color: #936212; }
+          .v3-resolution.is-unresolved { background: #fff0ee; color: var(--v3-danger); }
+          .v3-preference-row { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--v3-line); border-radius: 10px; overflow: hidden; }
+          .v3-preference-row button { border: 0; border-right: 1px solid var(--v3-line); padding: 7px 4px; background: #fafcfb; color: var(--v3-muted); font-size: 11px; }
+          .v3-preference-row button:last-child { border-right: 0; }
+          .v3-preference-row button.is-current { background: #dff2ee; color: var(--v3-accent-dark); font-weight: 850; }
+          .v3-resolution-actions { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--v3-line); }
+          .v3-resolution-actions button { border: 1px solid #efc4be; background: #fff8f7; color: #9d2d21; border-radius: 9px; padding: 6px 9px; font-size: 11px; font-weight: 750; }
+          .v3-resolution-actions small { width: 100%; color: var(--v3-danger); }
+
+          .v3-plan-cta { position: sticky; bottom: -110px; z-index: 5; display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 18px; padding: 14px; border: 1px solid #bcded7; border-radius: 16px; background: rgba(239,250,247,.96); backdrop-filter: blur(12px); box-shadow: 0 -10px 30px rgba(25,65,57,.08); }
+          .v3-plan-cta div { display: grid; gap: 3px; }
+          .v3-plan-cta strong { font-size: 13px; }
+          .v3-plan-cta span { color: var(--v3-muted); font-size: 10px; }
+          .v3-plan-cta button { border: 0; border-radius: 12px; padding: 11px 13px; color: white; background: var(--v3-accent); font-weight: 850; }
+
+          .v3-day-selector { display: flex; gap: 7px; overflow-x: auto; padding-bottom: 12px; }
+          .v3-day-selector button { min-width: 43px; height: 36px; border: 1px solid var(--v3-line); border-radius: 10px; background: white; color: var(--v3-muted); font-size: 11px; font-weight: 850; }
+          .v3-day-selector button.is-active { background: var(--v3-accent); color: white; border-color: var(--v3-accent); }
+          .v3-day-card { overflow: hidden; }
+          .v3-day-card.is-active { border-color: #7fc9bf; box-shadow: 0 0 0 3px rgba(15,118,110,.08); }
+          .v3-day-heading { width: 100%; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 9px; border: 0; padding: 13px 15px; background: #f6faf8; text-align: left; }
+          .v3-day-heading span { color: var(--v3-accent); font-size: 11px; font-weight: 900; }
+          .v3-day-heading strong { font-size: 14px; }
+          .v3-day-heading small { color: var(--v3-muted); }
+          .v3-day-body { padding: 13px 15px 15px; }
+          .v3-anchor { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 10px; background: #edf3f0; }
+          .v3-anchor span { border-radius: 999px; padding: 3px 7px; background: white; color: var(--v3-muted); font-size: 9px; font-weight: 850; }
+          .v3-anchor strong { font-size: 12px; }
+          .v3-stop-list { padding: 8px 0 8px 14px; margin-left: 18px; border-left: 2px solid #c6ddd8; display: grid; gap: 6px; }
+          .v3-stop { width: 100%; display: flex; align-items: center; gap: 9px; border: 1px solid transparent; border-radius: 10px; background: white; padding: 7px; text-align: left; }
+          .v3-stop:hover { border-color: var(--v3-line); background: #f9fbfa; }
+          .v3-stop > span { width: 24px; height: 24px; flex: 0 0 24px; display: grid; place-items: center; border-radius: 8px; background: #e2f2ef; color: var(--v3-accent-dark); font-size: 10px; font-weight: 900; }
+          .v3-stop > div { display: grid; gap: 2px; }
+          .v3-stop strong { font-size: 12px; }
+          .v3-stop small { color: var(--v3-muted); font-size: 10px; }
+          .v3-route-status { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 11px; padding-top: 11px; border-top: 1px solid var(--v3-line); }
+          .v3-route-status > div { display: grid; gap: 3px; }
+          .v3-route-status span { font-size: 11px; font-weight: 850; }
+          .v3-route-status .is-dirty { color: #9a6700; }
+          .v3-route-status .is-ready { color: #167044; }
+          .v3-route-status small { color: var(--v3-muted); }
+          .v3-route-status button { border: 1px solid var(--v3-line); border-radius: 9px; background: white; color: var(--v3-accent-dark); padding: 7px 10px; font-size: 11px; font-weight: 800; }
+
+          .v3-empty-state { min-height: 240px; border: 1px dashed #c8d7d2; border-radius: 17px; display: grid; place-items: center; align-content: center; gap: 8px; padding: 28px; text-align: center; color: var(--v3-muted); background: rgba(255,255,255,.6); }
+          .v3-empty-state > div { width: 50px; height: 50px; display: grid; place-items: center; border-radius: 16px; background: #e2f3ef; color: var(--v3-accent); font-size: 25px; }
+          .v3-empty-state h3 { margin: 5px 0 0; color: var(--v3-ink); }
+          .v3-empty-state p { margin: 0; max-width: 360px; line-height: 1.6; font-size: 12px; }
+          .v3-empty-state button { margin-top: 8px; border: 0; border-radius: 10px; background: var(--v3-accent); color: white; padding: 9px 12px; font-weight: 800; }
+          .v3-empty-inline { color: var(--v3-muted); font-size: 11px; }
+
+          .v3-error, .v3-global-error { background: #fff1ef; color: #912018; border: 1px solid #f0c3bd; }
+          .v3-error { margin: 12px 20px 0; padding: 10px 12px; border-radius: 10px; font-size: 12px; }
+          .v3-global-error { position: fixed; z-index: 40; left: 50%; top: 80px; transform: translateX(-50%); display: flex; align-items: center; gap: 16px; border-radius: 12px; padding: 10px 13px; box-shadow: var(--v3-shadow); }
+          .v3-global-error button { border: 0; background: transparent; color: inherit; font-weight: 850; }
+
+          .v3-loading-screen { min-height: 100vh; display: grid; place-items: center; align-content: center; gap: 14px; background: #eef3f0; color: var(--v3-muted); }
+          .v3-loader { width: 36px; height: 36px; border-radius: 50%; border: 3px solid #c9dad5; border-top-color: var(--v3-accent); animation: v3-spin .8s linear infinite; }
+          @keyframes v3-spin { to { transform: rotate(360deg); } }
+          .v3-welcome { min-height: calc(100vh - 70px); display: grid; align-content: center; justify-items: start; padding: 9vw; background: radial-gradient(circle at 80% 25%, #d5eee8, transparent 35%), linear-gradient(135deg, #f8fbfa, #e8f1ed); }
+          .v3-welcome h1 { margin: 12px 0 18px; max-width: 850px; font-size: clamp(38px, 5vw, 72px); line-height: 1.04; letter-spacing: -.045em; }
+          .v3-welcome > p:not(.v3-eyebrow) { max-width: 680px; color: var(--v3-muted); font-size: 17px; line-height: 1.7; }
+          .v3-welcome button { margin-top: 20px; border: 0; border-radius: 14px; background: var(--v3-accent); color: white; padding: 14px 20px; font-weight: 850; box-shadow: 0 14px 32px rgba(15,118,110,.23); }
+          .v3-fatal-state { min-height: calc(100vh - 70px); display: grid; place-items: center; align-content: center; gap: 12px; text-align: center; }
+          .v3-fatal-state h1, .v3-fatal-state p { margin: 0; }
+          .v3-fatal-state button { border: 1px solid var(--v3-line); border-radius: 10px; padding: 9px 12px; background: white; }
+
+          .v3-modal-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(12,27,24,.48); backdrop-filter: blur(4px); }
+          .v3-modal { width: min(440px, 100%); border-radius: 20px; background: white; padding: 24px; box-shadow: 0 30px 90px rgba(7,29,25,.3); }
+          .v3-modal h2 { margin: 5px 0 4px; }
+          .v3-modal > p:not(.v3-eyebrow) { color: var(--v3-muted); }
+          .v3-modal label { display: grid; gap: 6px; margin-top: 14px; color: #40504b; font-size: 12px; font-weight: 800; }
+          .v3-modal input, .v3-modal textarea { width: 100%; border: 1px solid var(--v3-line); border-radius: 11px; padding: 11px 12px; outline: none; resize: vertical; }
+          .v3-modal input:focus, .v3-modal textarea:focus { border-color: #7ccbc0; box-shadow: 0 0 0 3px rgba(15,118,110,.09); }
+          .v3-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+          .v3-modal-actions button { border: 1px solid var(--v3-line); border-radius: 10px; padding: 9px 13px; background: white; font-weight: 800; }
+          .v3-modal-actions button[type="submit"] { border-color: var(--v3-accent); background: var(--v3-accent); color: white; }
+          .v3-form-tip { font-size: 11px; line-height: 1.5; }
+          .v3-legacy-shell { min-height: 100vh; }
+          .v3-legacy-notice { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 9px; background: #fff4d6; color: #734b00; font-size: 12px; }
+
+          @media (max-width: 900px) {
+            .v3-topbar { grid-template-columns: auto 1fr; height: auto; min-height: 66px; padding: 10px 14px; }
+            .v3-stage-badge { display: none; }
+            .v3-workspace { height: auto; min-height: calc(100vh - 66px); grid-template-columns: 1fr; overflow: visible; }
+            .v3-map-column { height: 42vh; min-height: 320px; border-right: 0; border-bottom: 1px solid var(--v3-line); }
+            .v3-panel-column { min-height: 58vh; }
+            .v3-tab-content { overflow: visible; }
+          }
+
+          @media (max-width: 580px) {
+            .v3-brand span { display: none; }
+            .v3-trip-switcher { min-width: 0; }
+            .v3-trip-switcher button { padding-inline: 9px; font-size: 12px; }
+            .v3-map-column { height: 36vh; min-height: 260px; }
+            .v3-section-head { display: grid; }
+            .v3-primary-button, .v3-secondary-button { justify-self: start; }
+            .v3-tab-content { padding: 18px 14px 120px; }
+            .v3-plan-cta { align-items: stretch; flex-direction: column; }
+          }
+          EOF
+
+          cat > apps/web/src/v3-types.test.ts <<'EOF'
+          import { describe, expect, it } from "vitest";
+          import { candidateMatchesFilter, normalizeTripList, normalizeWorkspace } from "./v3-types";
+
+          describe("v3 workspace normalization", () => {
+            it("normalizes common trip list envelopes", () => {
+              expect(normalizeTripList({ trips: [{ id: "t1", title: "关西", contentGeneration: 3 }] })).toEqual([
+                { id: "t1", title: "关西", stage: null, generation: 3, updatedAt: null },
+              ]);
+            });
+
+            it("normalizes the canonical v2 workspace", () => {
+              const result = normalizeWorkspace({
+                tripId: "t1",
+                generation: 4,
+                document: {
+                  schemaVersion: 2,
+                  stage: "place_selection",
+                  trip: { title: "关西" },
+                  places: [],
+                  candidates: [],
+                  days: [],
+                  warnings: [],
+                },
+                placeResolutions: [],
+                dayRoutes: [],
+                routeDirtyDayIds: ["d1"],
+              });
+              expect(result.tripId).toBe("t1");
+              expect(result.generation).toBe(4);
+              expect(result.document.trip.title).toBe("关西");
+              expect(result.routeDirtyDayIds).toEqual(["d1"]);
+            });
+
+            it("does not treat an unresolved Candidate as resolved", () => {
+              const candidate = {
+                id: "c1",
+                placeId: "p1",
+                preference: "optional" as const,
+                source: "ai" as const,
+                aiReason: null,
+                aiScore: null,
+                suggestedDurationMinutes: null,
+                tags: [],
+              };
+              expect(candidateMatchesFilter(candidate, "unresolved", undefined)).toBe(true);
+              expect(candidateMatchesFilter(candidate, "must_go", undefined)).toBe(false);
+            });
+          });
+          EOF
+
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('docs/IMPLEMENTATION_STATUS.md')
+          text = path.read_text(encoding='utf-8') if path.exists() else '# TravelPlanner v3 Implementation Status\n'
+          import re
+          text = re.sub(r'## Current Phase\n\n.*?(?=\n## )', '## Current Phase\n\nPhase 6 — Deterministic itinerary editing and route-dirty UI.\n', text, count=1, flags=re.S)
+          phase5 = '''
+          ### Phase 5 — Candidate-first Web Workspace
+
+          - The actual React entry now renders a v2 Workspace instead of the legacy itinerary-only application.
+          - Added the permanent desktop layout: map on the left and `[地点] [行程]` tabs on the right.
+          - Added Candidate filters, individual and batch preference controls, unresolved-place repair, manual coordinates, map/list bidirectional focus and selected-place plan generation.
+          - Added Day/Anchor/Stop read views, per-Day route state and explicit route recalculation.
+          - Legacy App is retained only as the authentication/local-initialization fallback and is no longer the normal workspace.
+          - Phase acceptance includes web/server typecheck, the full test suite and production build.
+          '''
+          if '### Phase 5 — Candidate-first Web Workspace' not in text:
+              marker = '\n## Important Decisions'
+              text = text.replace(marker, '\n' + phase5.strip() + '\n' + marker)
+          text = re.sub(r'## Next Phase\n\n.*?(?=\n## )', '''## Next Phase
+
+          Phase 6:
+
+          - Add deterministic Stop reorder, cross-Day movement, add/remove Stop, Day reorder and Anchor editing UI.
+          - Use only the fixed PlanCommand endpoint with expectedGeneration CAS; no user drag/edit action may call AI.
+          - Make route-dirty state visible immediately after every route-input change and keep route recalculation explicit.
+          - Add keyboard-accessible alternatives to drag-and-drop.
+          ''', text, count=1, flags=re.S)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          rm -f .github/workflows/export-phase4-source.yml
+          rm -f .github/workflows/export-workspace.yml
+          rm -f .github/workflows/v3-apply-phase4-blobs.yml
+
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Tests
+        run: npm test
+      - name: Production build
+        run: npm run build
+      - name: Diff check
+        run: git diff --check
+
+      - name: Commit Phase 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/phase5-candidate-workbench.yml
+          git add -A
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Phase 5: add candidate-first map workspace'
+          git push origin HEAD:codex/v3-runtime-ui-completion

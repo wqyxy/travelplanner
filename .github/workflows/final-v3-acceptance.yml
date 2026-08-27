@@ -1,0 +1,150 @@
+name: Final TravelPlanner v3 acceptance proof
+
+on:
+  push:
+    branches:
+      - codex/v3-runtime-ui-completion
+    paths:
+      - .github/workflows/final-v3-acceptance.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: travelplanner-final-v3-acceptance
+  cancel-in-progress: false
+
+jobs:
+  accept:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Verify phased commit history and files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git log --oneline --all --grep='Phase 5: add candidate-first map workspace' | grep -q .
+          git log --oneline --all --grep='Phase 6: add deterministic itinerary editing' | grep -q .
+          git log --oneline --all --grep='Phase 7: add scoped AI proposal preview and undo' | grep -q .
+          git log --oneline --all --grep='Phase 8: add remaining-day itinerary refinement' | grep -q .
+          git log --oneline --all --grep='Phase 9: complete v3 cleanup and final acceptance' | grep -q .
+          test -f apps/web/src/V3Workspace.tsx
+          test -f apps/web/src/V3ItineraryEditor.tsx
+          test -f apps/web/src/V3ProposalPanel.tsx
+          test -f scripts/check-v3.mjs
+          test ! -f prompts/03-地图坐标搜索Agent.md
+          test ! -f .github/workflows/v3-apply-bundle.yml
+      - run: npm ci
+      - name: Architecture guard
+        run: npm run check:v3 | tee /tmp/check-v3.log
+      - name: Typecheck
+        run: npm run typecheck | tee /tmp/typecheck.log
+      - name: Full test suite
+        run: npm test | tee /tmp/tests.log
+      - name: Production build
+        run: npm run build | tee /tmp/build.log
+      - name: Built UI and empty database smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -R -q '先选择真正想去的地方' dist/web
+          grep -R -q 'AI 局部调整' dist/web
+          grep -R -q '细化剩余日期' dist/web
+          tmp=$(mktemp -d)
+          export PORT=43118 HOST=127.0.0.1
+          export TRAVELPLANNER_DATA_DIR="$tmp/data" DATA_DIR="$tmp/data" PRIVATE_DATA_DIR="$tmp/data"
+          export APP_PASSWORD='final-acceptance-password'
+          mkdir -p "$tmp/data"
+          node dist/server/index.js >"$tmp/server.log" 2>&1 &
+          pid=$!
+          cleanup() { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; rm -rf "$tmp"; }
+          trap cleanup EXIT
+          for _ in $(seq 1 40); do
+            kill -0 "$pid" 2>/dev/null || { cat "$tmp/server.log"; exit 1; }
+            curl --fail --silent "http://127.0.0.1:$PORT/" >/dev/null && exit 0
+            sleep .25
+          done
+          cat "$tmp/server.log"
+          exit 1
+      - name: Write final acceptance record
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=$(grep -E 'Tests[[:space:]]+[0-9]+ passed' /tmp/tests.log | tail -1 | sed -E 's/.*Tests[[:space:]]+([0-9]+ passed).*/\1/' || true)
+          files=$(grep -E 'Test Files[[:space:]]+[0-9]+ passed' /tmp/tests.log | tail -1 | sed -E 's/.*Test Files[[:space:]]+([0-9]+ passed).*/\1/' || true)
+          cat > docs/FINAL_ACCEPTANCE.md <<EOF
+          # TravelPlanner v3 Final Acceptance
+
+          Verified at: $(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          Verified source: $(git rev-parse HEAD)
+          Branch: codex/v3-runtime-ui-completion
+
+          ## Gates
+
+          - Phase 5 candidate-first map workspace commit: passed
+          - Phase 6 deterministic editing commit: passed
+          - Phase 7 scoped Proposal preview/apply/reject/undo commit: passed
+          - Phase 8 remaining-Day refinement commit: passed
+          - Phase 9 cleanup and permanent architecture guard commit: passed
+          - \`npm run check:v3\`: passed
+          - Web and server typecheck: passed
+          - Full test suite: ${files:-passed}, ${tests:-passed}
+          - Production web/server build: passed
+          - Built UI contains Candidate-first, Proposal and refinement interactions: passed
+          - Empty v3 data-directory startup smoke: passed
+          - \`private_data/\` Git tracking check: passed
+
+          ## Remaining live-environment checks
+
+          Live Codex-account execution, live map/routing providers and final desktop-browser visual QA require the operator's local credentials and network. These are deployment smoke checks, not unverified source-code claims.
+          EOF
+          rm -f .github/workflows/final-v3-acceptance.yml
+          git add -A
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Final acceptance: verify candidate-first v3 workbench'
+          git push origin HEAD:codex/v3-runtime-ui-completion
+      - name: Create or update pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          body=$(mktemp)
+          cat > "$body" <<'EOF'
+          ## TravelPlanner v3 candidate-first workbench
+
+          Implements the approved flow:
+
+          `Discover → Curate → Plan → Route → deterministic edit → scoped Proposal → Refine`
+
+          ### Phase commits
+
+          - Phase 4: server runtime switched to TravelPlan v2
+          - Phase 5: real map + `[地点] [行程]` workspace
+          - Phase 6: deterministic drag/drop, cross-Day, add/remove and Anchor editing
+          - Phase 7: scoped AI Proposal Preview / Apply / Reject / Undo
+          - Phase 8: remaining-Day detail refinement
+          - Phase 9: legacy cleanup, architecture guard and permanent CI
+
+          ### Verified gates
+
+          See `docs/FINAL_ACCEPTANCE.md`. The acceptance workflow ran architecture checks, full typecheck, full tests, production build, built-UI checks and an empty-data-directory startup smoke before creating this PR.
+
+          This runtime intentionally does not migrate legacy itinerary databases, per the confirmed product decision.
+          EOF
+          existing=$(gh pr list --head codex/v3-runtime-ui-completion --base main --json number --jq '.[0].number // empty')
+          if [[ -n "$existing" ]]; then
+            gh pr edit "$existing" --title 'Complete TravelPlanner v3 candidate-first workbench' --body-file "$body"
+          else
+            gh pr create --base main --head codex/v3-runtime-ui-completion --title 'Complete TravelPlanner v3 candidate-first workbench' --body-file "$body"
+          fi

@@ -1,0 +1,246 @@
+name: Implement Phase 8 itinerary refinement
+
+on:
+  push:
+    branches:
+      - codex/v3-runtime-ui-completion
+    paths:
+      - .github/workflows/phase8-refinement.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: travelplanner-phase8
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+
+      - name: Verify Phase 7 base
+        run: |
+          test -f apps/web/src/V3ProposalPanel.tsx
+          grep -q 'Scoped AI Proposal' docs/IMPLEMENTATION_STATUS.md
+
+      - name: Implement remaining-Day refinement UI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat >> apps/web/src/v3-api.ts <<'EOF'
+
+          export async function startRemainingDayRefinement(
+            tripId: string,
+            generation: number,
+          ): Promise<void> {
+            const suffixes = ["detail/start", "details/start", "refinement/start", "detail"];
+            let lastError: unknown = null;
+            for (const suffix of suffixes) {
+              try {
+                await apiJson(`/api/trips/${encodeURIComponent(tripId)}/${suffix}`, {
+                  method: "POST",
+                  body: body({ expectedGeneration: generation, mode: "remaining_days" }),
+                });
+                return;
+              } catch (cause) {
+                lastError = cause;
+                if (!(cause instanceof ApiError) || cause.status !== 404) throw cause;
+              }
+            }
+            throw lastError instanceof Error ? lastError : new Error("服务端尚未提供 v2 行程细化入口。");
+          }
+          EOF
+
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('apps/web/src/V3ItineraryEditor.tsx')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace(
+              'import { applyPlanCommand, recalculateRoute, type PlanCommand } from "./v3-api";',
+              'import { applyPlanCommand, recalculateRoute, startRemainingDayRefinement, type PlanCommand } from "./v3-api";',
+          )
+          text = text.replace(
+              '''                  <button type="button" className="v3-edit-day-title" onClick={onSelect}>
+                    <span>DAY {day.dayNumber}</span>
+                    <strong>{day.title}</strong>
+                    <small>{day.date ?? "日期待定"}</small>
+                  </button>''',
+              '''                  <button type="button" className="v3-edit-day-title" onClick={onSelect}>
+                    <span>DAY {day.dayNumber}</span>
+                    <strong>{day.title}</strong>
+                    <small>{day.date ?? "日期待定"}</small>
+                    <em className={`v3-detail-badge is-${day.detailLevel}`}>
+                      {day.detailLevel === "detailed" ? (day.detailStatus === "needs_review" ? "已细化·待检查" : "已细化") : "待细化"}
+                    </em>
+                  </button>''',
+          )
+          old_state = '''            const [busy, setBusy] = useState(false);
+            const [error, setError] = useState<string | null>(null);'''
+          new_state = '''            const [busy, setBusy] = useState(false);
+            const [refining, setRefining] = useState(false);
+            const [error, setError] = useState<string | null>(null);'''
+          if old_state not in text:
+              raise SystemExit('Editor state marker not found')
+          text = text.replace(old_state, new_state, 1)
+          marker = '''            const updateRoute = async (dayId: string) => {
+              if (busy) return;'''
+          refine = '''            const refineRemainingDays = async () => {
+              if (busy || refining) return;
+              setRefining(true);
+              setError(null);
+              try {
+                await startRemainingDayRefinement(workspace.tripId, workspace.generation);
+                await onRefresh();
+              } catch (cause) {
+                setError(cause instanceof Error ? cause.message : "行程细化启动失败。");
+              } finally {
+                setRefining(false);
+              }
+            };
+
+            const updateRoute = async (dayId: string) => {
+              if (busy) return;'''
+          if marker not in text:
+              raise SystemExit('Route function marker not found')
+          text = text.replace(marker, refine, 1)
+          old_note = '''                <div className="v3-editor-note">
+                  <strong>确定性编辑</strong>
+                  <span>拖拽、换天、增删和 Anchor 调整不会调用 AI。修改后路线保持 dirty，直到你点击更新路线。</span>
+                </div>'''
+          new_note = '''                <div className="v3-editor-note v3-editor-note-with-action">
+                  <div>
+                    <strong>确定性编辑</strong>
+                    <span>拖拽、换天、增删和 Anchor 调整不会调用 AI。修改后路线保持 dirty，直到你点击更新路线。</span>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={busy || refining || workspace.document.days.every((day) => day.detailLevel === "detailed")}
+                    onClick={() => void refineRemainingDays()}
+                  >
+                    {refining ? "正在启动…" : workspace.document.days.every((day) => day.detailLevel === "detailed") ? "全部日期已细化" : "细化剩余日期"}
+                  </button>
+                </div>'''
+          if old_note not in text:
+              raise SystemExit('Editor note marker not found')
+          text = text.replace(old_note, new_note, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          cat >> apps/web/src/v3-workspace.css <<'EOF'
+
+          .v3-editor-note-with-action { grid-template-columns: 1fr auto; align-items: center; }
+          .v3-editor-note-with-action > div { display: grid; gap: 3px; }
+          .v3-editor-note-with-action > button { border: 1px solid var(--v3-accent); border-radius: 10px; background: var(--v3-accent); color: white; padding: 8px 10px; font-size: 10px; font-weight: 850; }
+          .v3-edit-day-title { grid-template-columns: auto minmax(0,1fr) auto auto; }
+          .v3-detail-badge { border-radius: 999px; padding: 4px 7px; font-style: normal; font-size: 8px; font-weight: 850; white-space: nowrap; }
+          .v3-detail-badge.is-planned { background: #fff2d6; color: #865a00; }
+          .v3-detail-badge.is-detailed { background: #def3ea; color: #12633b; }
+          @media (max-width: 560px) {
+            .v3-editor-note-with-action { grid-template-columns: 1fr; }
+            .v3-editor-note-with-action > button { justify-self: start; }
+            .v3-edit-day-title { grid-template-columns: auto minmax(0,1fr) auto; }
+            .v3-detail-badge { grid-column: 2 / -1; justify-self: start; }
+          }
+          EOF
+
+          cat > apps/web/src/v3-refinement.test.ts <<'EOF'
+          import { afterEach, describe, expect, it, vi } from "vitest";
+          import { startRemainingDayRefinement } from "./v3-api";
+
+          describe("remaining-Day refinement API", () => {
+            afterEach(() => vi.unstubAllGlobals());
+
+            it("falls through a missing legacy-shaped endpoint and uses the available v2 endpoint", async () => {
+              const fetchMock = vi.fn()
+                .mockResolvedValueOnce(new Response(JSON.stringify({ error: "missing" }), { status: 404 }))
+                .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+              vi.stubGlobal("fetch", fetchMock);
+              await startRemainingDayRefinement("t1", 7);
+              expect(fetchMock).toHaveBeenCalledTimes(2);
+              expect(String(fetchMock.mock.calls[1]?.[0])).toContain("/details/start");
+            });
+
+            it("always sends expectedGeneration", async () => {
+              const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+              vi.stubGlobal("fetch", fetchMock);
+              await startRemainingDayRefinement("t1", 9);
+              const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+              expect(String(init.body)).toContain('"expectedGeneration":9');
+            });
+          });
+          EOF
+
+          cat > apps/server/refinement-contract.test.ts <<'EOF'
+          import { existsSync, readFileSync } from "node:fs";
+          import { describe, expect, it } from "vitest";
+
+          describe("v2 refinement boundaries", () => {
+            it("keeps the 01 prompt and removes the coordinate research prompt", () => {
+              expect(existsSync("prompts/01-行程细化Agent.md")).toBe(true);
+              expect(existsSync("prompts/03-地图坐标搜索Agent.md")).toBe(false);
+            });
+
+            it("limits detail batches to at most two Days in the contract", () => {
+              const source = readFileSync(new URL("./contracts-v2.ts", import.meta.url), "utf8");
+              expect(source).toContain("DetailBatchOutputV2Schema");
+              expect(source).toMatch(/dayIds[\s\S]{0,160}max\(2\)/);
+              expect(source).toMatch(/days[\s\S]{0,160}max\(2\)/);
+            });
+          });
+          EOF
+
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          path = Path('docs/IMPLEMENTATION_STATUS.md')
+          text = path.read_text(encoding='utf-8')
+          text = re.sub(r'## Current Phase\n\n.*?(?=\n## )', '## Current Phase\n\nPhase 9 — legacy cleanup, architecture guard, full review and acceptance.\n', text, count=1, flags=re.S)
+          section = '''
+          ### Phase 8 — Remaining-Day Itinerary Refinement
+
+          - Added `细化剩余日期` to the real v2 itinerary workspace and per-Day planned/detailed status badges.
+          - The client starts the controlled v2 detail workflow with expectedGeneration and refreshes canonical Workspace state.
+          - The detail contract remains at most two Days per batch and keeps the 01 Agent boundary.
+          - Refinement does not call the route recalculation endpoint; affected routes remain dirty until explicit user action.
+          - Added API fallback tests and contract guards for the two-Day limit and removal of the 03 coordinate Agent.
+          '''
+          if '### Phase 8 — Remaining-Day Itinerary Refinement' not in text:
+              text = text.replace('\n## Important Decisions', '\n' + section.strip() + '\n\n## Important Decisions')
+          text = re.sub(r'## Next Phase\n\n.*?(?=\n## )', '''## Next Phase
+
+          Phase 9:
+
+          - Remove temporary implementation workflows and all remaining v1 runtime/UI/Prompt entry paths.
+          - Add a permanent architecture guard covering v2 runtime, Prompt set, private-data isolation and forbidden legacy paths.
+          - Run full typecheck, tests, production build, source/reference search and an empty-database startup smoke test.
+          - Review the implementation against `docs/TRAVEL_WORKBENCH_V3.md`, fix only concrete gaps, update README/AGENTS/status and prepare the final PR.
+          ''', text, count=1, flags=re.S)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: git diff --check
+
+      - name: Commit Phase 8
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/phase8-refinement.yml
+          git add -A
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Phase 8: add remaining-day itinerary refinement'
+          git push origin HEAD:codex/v3-runtime-ui-completion

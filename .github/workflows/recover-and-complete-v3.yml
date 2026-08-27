@@ -1,0 +1,299 @@
+name: Recover and complete TravelPlanner v3 phases
+
+on:
+  push:
+    branches:
+      - codex/v3-runtime-ui-completion
+    paths:
+      - .github/workflows/recover-and-complete-v3.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: travelplanner-v3-sequential-recovery
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+
+      - name: Install step extractor
+        shell: bash
+        run: |
+          cat > /tmp/extract-workflow-step.py <<'PY'
+          from pathlib import Path
+          import sys
+
+          if len(sys.argv) != 4:
+              raise SystemExit('usage: extract-workflow-step.py workflow step-name output')
+          workflow, wanted, output = sys.argv[1:]
+          lines = Path(workflow).read_text(encoding='utf-8').splitlines()
+          start = None
+          for index, line in enumerate(lines):
+              if line.strip() == f'- name: {wanted}':
+                  for cursor in range(index + 1, min(len(lines), index + 12)):
+                      if lines[cursor].strip() == 'run: |':
+                          start = cursor + 1
+                          break
+                  break
+          if start is None:
+              raise SystemExit(f'step not found: {wanted} in {workflow}')
+          body = []
+          for line in lines[start:]:
+              if line.startswith('      - ') or (line.startswith('    ') and not line.startswith('          ') and line.strip()):
+                  break
+              if line.startswith('          '):
+                  body.append(line[10:])
+              elif not line.strip():
+                  body.append('')
+              else:
+                  break
+          if not body:
+              raise SystemExit(f'empty run block: {wanted}')
+          Path(output).write_text('\n'.join(body) + '\n', encoding='utf-8')
+          PY
+
+      - name: Recover missing phased commits in order
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          has_commit() {
+            git log --format=%s --all | grep -Fqx "$1"
+          }
+
+          run_step() {
+            local workflow=$1
+            local name=$2
+            local script=/tmp/recovered-step.sh
+            python /tmp/extract-workflow-step.py "$workflow" "$name" "$script"
+            bash -euo pipefail "$script"
+          }
+
+          validate_phase() {
+            npm run typecheck
+            npm test
+            npm run build
+            git diff --check
+          }
+
+          commit_phase() {
+            local message=$1
+            local workflow=$2
+            rm -f "$workflow"
+            git add -A
+            git diff --cached --check
+            if git diff --cached --quiet; then
+              echo "No staged changes for $message" >&2
+              exit 1
+            fi
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m "$message"
+          }
+
+          phase5='Phase 5: add candidate-first map workspace'
+          if ! has_commit "$phase5"; then
+            wf=.github/workflows/phase5-candidate-workbench.yml
+            test -f "$wf" || { echo "Missing Phase 5 commit and recovery workflow" >&2; exit 1; }
+            run_step "$wf" 'Write Phase 5 web application'
+            validate_phase
+            commit_phase "$phase5" "$wf"
+          fi
+
+          phase6='Phase 6: add deterministic itinerary editing'
+          if ! has_commit "$phase6"; then
+            wf=.github/workflows/phase6-deterministic-editing.yml
+            test -f "$wf" || { echo "Missing Phase 6 commit and recovery workflow" >&2; exit 1; }
+            run_step "$wf" 'Write deterministic editor'
+            validate_phase
+            commit_phase "$phase6" "$wf"
+          fi
+
+          phase7='Phase 7: add scoped AI proposal preview and undo'
+          if ! has_commit "$phase7"; then
+            wf=.github/workflows/phase7-proposals.yml
+            test -f "$wf" || { echo "Missing Phase 7 commit and recovery workflow" >&2; exit 1; }
+            run_step "$wf" 'Implement scoped Proposal UI'
+            validate_phase
+            commit_phase "$phase7" "$wf"
+          fi
+
+          phase8='Phase 8: add remaining-day itinerary refinement'
+          if ! has_commit "$phase8"; then
+            wf=.github/workflows/phase8-refinement.yml
+            test -f "$wf" || { echo "Missing Phase 8 commit and recovery workflow" >&2; exit 1; }
+            run_step "$wf" 'Implement remaining-Day refinement UI'
+            validate_phase
+            commit_phase "$phase8" "$wf"
+          fi
+
+          phase9='Phase 9: complete v3 cleanup and final acceptance'
+          if ! has_commit "$phase9"; then
+            wf=.github/workflows/phase9-final-review.yml
+            test -f "$wf" || { echo "Missing Phase 9 commit and recovery workflow" >&2; exit 1; }
+            run_step "$wf" 'Remove safe unreferenced legacy modules and temporary infrastructure'
+            run_step "$wf" 'Add permanent architecture guard'
+            run_step "$wf" 'Install permanent CI workflow'
+            run_step "$wf" 'Update project documentation'
+            npm run check:v3
+            validate_phase
+            grep -R -q '先选择真正想去的地方' dist/web
+            grep -R -q 'AI 局部调整' dist/web
+            grep -R -q '细化剩余日期' dist/web
+            test -z "$(git ls-files 'private_data/**')"
+            commit_phase "$phase9" "$wf"
+          fi
+
+          git push origin HEAD:codex/v3-runtime-ui-completion
+
+      - name: Refresh after phased commits
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin codex/v3-runtime-ui-completion
+          git reset --hard origin/codex/v3-runtime-ui-completion
+          npm ci
+
+      - name: Final source and runtime verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          for message in \
+            'Phase 4: switch server runtime to TravelPlan v2' \
+            'Phase 5: add candidate-first map workspace' \
+            'Phase 6: add deterministic itinerary editing' \
+            'Phase 7: add scoped AI proposal preview and undo' \
+            'Phase 8: add remaining-day itinerary refinement' \
+            'Phase 9: complete v3 cleanup and final acceptance'
+          do
+            git log --format=%s --all | grep -Fqx "$message"
+          done
+          npm run check:v3
+          npm run typecheck
+          npm test | tee /tmp/final-tests.log
+          npm run build
+          grep -R -q '先选择真正想去的地方' dist/web
+          grep -R -q 'AI 局部调整' dist/web
+          grep -R -q '细化剩余日期' dist/web
+
+          tmp=$(mktemp -d)
+          export PORT=43119 HOST=127.0.0.1
+          export TRAVELPLANNER_DATA_DIR="$tmp/data" DATA_DIR="$tmp/data" PRIVATE_DATA_DIR="$tmp/data"
+          export APP_PASSWORD='sequential-recovery-smoke-password'
+          mkdir -p "$tmp/data"
+          node dist/server/index.js >"$tmp/server.log" 2>&1 &
+          pid=$!
+          cleanup() { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; rm -rf "$tmp"; }
+          trap cleanup EXIT
+          ready=0
+          for _ in $(seq 1 60); do
+            if ! kill -0 "$pid" 2>/dev/null; then
+              cat "$tmp/server.log"
+              exit 1
+            fi
+            if curl --fail --silent "http://127.0.0.1:$PORT/" >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep .25
+          done
+          if [[ "$ready" != 1 ]]; then
+            cat "$tmp/server.log"
+            exit 1
+          fi
+
+      - name: Commit final verified acceptance and remove staging workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=$(grep -E 'Tests[[:space:]]+[0-9]+ passed' /tmp/final-tests.log | tail -1 | sed -E 's/.*Tests[[:space:]]+([0-9]+ passed).*/\1/' || true)
+          files=$(grep -E 'Test Files[[:space:]]+[0-9]+ passed' /tmp/final-tests.log | tail -1 | sed -E 's/.*Test Files[[:space:]]+([0-9]+ passed).*/\1/' || true)
+          cat > docs/FINAL_ACCEPTANCE.md <<EOF
+          # TravelPlanner v3 Final Acceptance
+
+          Verified at: $(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          Verified source: $(git rev-parse HEAD)
+          Branch: codex/v3-runtime-ui-completion
+
+          ## Verified phase boundaries
+
+          - Phase 4 server runtime cutover: passed
+          - Phase 5 candidate-first map workspace: passed
+          - Phase 6 deterministic editing and explicit route refresh: passed
+          - Phase 7 scoped Proposal Preview / Apply / Reject / Undo: passed
+          - Phase 8 remaining-Day refinement: passed
+          - Phase 9 legacy cleanup and architecture guard: passed
+
+          ## Verification gates
+
+          - npm run check:v3: passed
+          - Web and server typecheck: passed
+          - Full test suite: ${files:-passed}, ${tests:-passed}
+          - Production web/server build: passed
+          - Built UI Candidate/Proposal/refinement interaction check: passed
+          - Empty v3 data-directory startup smoke: passed
+          - private_data Git isolation check: passed
+
+          ## Live-environment boundary
+
+          Live Codex-account calls, live map/routing providers and final desktop-browser visual QA require the operator's local credentials and network. They remain deployment smoke checks and are not represented as executed by this source verification.
+          EOF
+
+          rm -f .github/workflows/phase5-candidate-workbench.yml
+          rm -f .github/workflows/phase6-deterministic-editing.yml
+          rm -f .github/workflows/phase7-proposals.yml
+          rm -f .github/workflows/phase8-refinement.yml
+          rm -f .github/workflows/phase9-final-review.yml
+          rm -f .github/workflows/final-v3-acceptance.yml
+          rm -f .github/workflows/recover-and-complete-v3.yml
+          git add -A
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git diff --cached --quiet; then
+            echo 'Final acceptance already recorded.'
+          else
+            git commit -m 'Final acceptance: verify candidate-first v3 workbench'
+            git push origin HEAD:codex/v3-runtime-ui-completion
+          fi
+
+      - name: Create or refresh pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          body=$(mktemp)
+          cat > "$body" <<'EOF'
+          ## TravelPlanner v3 candidate-first workbench
+
+          Implements the approved product loop:
+
+          `Discover → Curate → Plan → Route → deterministic edit → scoped Proposal → Refine`
+
+          Phase 4 through Phase 9 each have an independent commit. The final acceptance record is stored in `docs/FINAL_ACCEPTANCE.md` and was produced only after the architecture guard, full typecheck, full tests, production build, built-UI assertions and an empty-v3-data startup smoke all passed.
+
+          This runtime intentionally does not migrate or compatibly read legacy itinerary databases, per the confirmed decision.
+          EOF
+          existing=$(gh pr list --head codex/v3-runtime-ui-completion --base main --state all --json number,state --jq '.[0].number // empty')
+          if [[ -n "$existing" ]]; then
+            gh pr edit "$existing" --title 'Complete TravelPlanner v3 candidate-first workbench' --body-file "$body"
+            gh pr reopen "$existing" >/dev/null 2>&1 || true
+          else
+            gh pr create --base main --head codex/v3-runtime-ui-completion --title 'Complete TravelPlanner v3 candidate-first workbench' --body-file "$body"
+          fi

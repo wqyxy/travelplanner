@@ -1,6 +1,6 @@
 import { ZodError } from "zod";
-import type { AiAgentKind, AiTaskSnapshot, AiTaskStatus } from "./contracts.js";
-import type { TravelStore } from "./travel-store.js";
+import type { AiAgentKind, AiTaskSnapshot, AiTaskStatus } from "./contracts-v2.js";
+import type { TravelStoreV2 } from "./travel-store-v2.js";
 
 const TERMINAL = new Set<AiTaskStatus>(["completed", "failed", "stopped", "cancelled_by_generation"]);
 const LIMIT = 360;
@@ -29,7 +29,7 @@ export function isRepairableAiOutputError(error: unknown) {
 
 export class AiTaskMonitor {
   private readonly buffers = new Map<string, Map<string, string>>();
-  constructor(private readonly store: TravelStore, private readonly emit: (snapshot: AiTaskSnapshot) => void) {}
+  constructor(private readonly store: TravelStoreV2, private readonly emit: (snapshot: AiTaskSnapshot) => void) {}
   start(input: { id: string; tripId: string; agent: AiAgentKind; label: string; summary: string; metadata?: Record<string, unknown> }) {
     const summary = normalizePublicAiSummary(input.summary);
     const snapshot = this.store.upsertAiTask({ ...input, status: "starting", summary, canStop: false, resetStartedAt: true });

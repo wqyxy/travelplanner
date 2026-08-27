@@ -1,0 +1,722 @@
+name: Implement Phase 6 deterministic itinerary editing
+
+on:
+  push:
+    branches:
+      - codex/v3-runtime-ui-completion
+    paths:
+      - .github/workflows/phase6-deterministic-editing.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: travelplanner-phase6
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+
+      - name: Verify Phase 5 base
+        run: |
+          test -f apps/web/src/V3Workspace.tsx
+          test -f apps/web/src/v3-api.ts
+          grep -q 'Candidate-first' docs/IMPLEMENTATION_STATUS.md
+
+      - name: Write deterministic editor
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat >> apps/web/src/v3-api.ts <<'EOF'
+
+          export type PlanCommand = Record<string, unknown> & { type: string };
+
+          export async function applyPlanCommand(
+            tripId: string,
+            generation: number,
+            command: PlanCommand,
+          ): Promise<void> {
+            await apiJson(`/api/trips/${encodeURIComponent(tripId)}/commands`, {
+              method: "POST",
+              body: body({ expectedGeneration: generation, command }),
+            });
+          }
+          EOF
+
+          cat > apps/web/src/V3ItineraryEditor.tsx <<'EOF'
+          import { useMemo, useState } from "react";
+          import { applyPlanCommand, recalculateRoute, type PlanCommand } from "./v3-api";
+          import type { Day, DayStop, Place, TripCandidate, Workspace } from "./v3-types";
+          import { formatDuration, placeDisplayName } from "./v3-types";
+
+          type Props = {
+            workspace: Workspace;
+            selectedDayId: string | null;
+            onSelectDay: (dayId: string) => void;
+            onFocusPlace: (placeId: string) => void;
+            onRefresh: () => Promise<void>;
+          };
+
+          type DragPayload = { stopId: string; sourceDayId: string };
+
+          export function targetIndexForMove(
+            currentIndex: number,
+            direction: "up" | "down",
+            length: number,
+          ): number {
+            if (direction === "up") return Math.max(0, currentIndex - 1);
+            return Math.min(Math.max(0, length - 1), currentIndex + 1);
+          }
+
+          export function buildAddStopCommand(
+            dayId: string,
+            index: number,
+            candidate: TripCandidate,
+            place: Place,
+            temporaryId: string,
+          ): PlanCommand {
+            return {
+              type: "add_day_stop",
+              dayId,
+              index,
+              stop: {
+                id: temporaryId,
+                candidateId: candidate.id,
+                placeId: place.id,
+                activity: `游览${placeDisplayName(place)}`,
+                period: null,
+                startTime: null,
+                endTime: null,
+                durationMinutes: candidate.suggestedDurationMinutes,
+                transportFromPrevious: null,
+                scheduleVerification: null,
+                costNote: null,
+                costVerification: null,
+                notes: null,
+              },
+            };
+          }
+
+          function parseDrag(event: React.DragEvent): DragPayload | null {
+            try {
+              const payload = JSON.parse(event.dataTransfer.getData("application/x-travel-stop")) as DragPayload;
+              return payload?.stopId && payload?.sourceDayId ? payload : null;
+            } catch {
+              return null;
+            }
+          }
+
+          function StopEditor({
+            stop,
+            day,
+            index,
+            days,
+            places,
+            busy,
+            onCommand,
+            onFocusPlace,
+          }: {
+            stop: DayStop;
+            day: Day;
+            index: number;
+            days: Day[];
+            places: Map<string, Place>;
+            busy: boolean;
+            onCommand: (command: PlanCommand) => void;
+            onFocusPlace: (placeId: string) => void;
+          }) {
+            const place = places.get(stop.placeId);
+            const previousDay = days[day.dayNumber - 2];
+            const nextDay = days[day.dayNumber];
+            return (
+              <div
+                className="v3-edit-stop"
+                draggable={!busy}
+                onDragStart={(event) => {
+                  event.dataTransfer.effectAllowed = "move";
+                  event.dataTransfer.setData("application/x-travel-stop", JSON.stringify({ stopId: stop.id, sourceDayId: day.id }));
+                }}
+              >
+                <button
+                  type="button"
+                  className="v3-drag-handle"
+                  title="拖动调整顺序或换天"
+                  aria-label={`拖动 ${placeDisplayName(place)}`}
+                >
+                  ☰
+                </button>
+                <button type="button" className="v3-edit-stop-main" onClick={() => onFocusPlace(stop.placeId)}>
+                  <strong>{placeDisplayName(place)}</strong>
+                  <small>
+                    {[stop.period, formatDuration(stop.durationMinutes), stop.activity].filter(Boolean).join(" · ")}
+                  </small>
+                </button>
+                <div className="v3-stop-tools">
+                  <button
+                    type="button"
+                    disabled={busy || index === 0}
+                    title="上移"
+                    onClick={() => onCommand({
+                      type: "move_day_stop",
+                      stopId: stop.id,
+                      targetDayId: day.id,
+                      targetIndex: targetIndexForMove(index, "up", day.stops.length),
+                    })}
+                  >↑</button>
+                  <button
+                    type="button"
+                    disabled={busy || index === day.stops.length - 1}
+                    title="下移"
+                    onClick={() => onCommand({
+                      type: "move_day_stop",
+                      stopId: stop.id,
+                      targetDayId: day.id,
+                      targetIndex: targetIndexForMove(index, "down", day.stops.length),
+                    })}
+                  >↓</button>
+                  <button
+                    type="button"
+                    disabled={busy || !previousDay}
+                    title="移到前一天"
+                    onClick={() => previousDay && onCommand({
+                      type: "move_day_stop",
+                      stopId: stop.id,
+                      targetDayId: previousDay.id,
+                      targetIndex: previousDay.stops.length,
+                    })}
+                  >←D</button>
+                  <button
+                    type="button"
+                    disabled={busy || !nextDay}
+                    title="移到后一天"
+                    onClick={() => nextDay && onCommand({
+                      type: "move_day_stop",
+                      stopId: stop.id,
+                      targetDayId: nextDay.id,
+                      targetIndex: nextDay.stops.length,
+                    })}
+                  >D→</button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    className="is-danger"
+                    title="删除地点"
+                    onClick={() => onCommand({ type: "remove_day_stop", stopId: stop.id })}
+                  >×</button>
+                </div>
+              </div>
+            );
+          }
+
+          function AnchorEditor({
+            label,
+            day,
+            anchor,
+            places,
+            busy,
+            onCommand,
+          }: {
+            label: string;
+            day: Day;
+            anchor: "start" | "end";
+            places: Place[];
+            busy: boolean;
+            onCommand: (command: PlanCommand) => void;
+          }) {
+            const value = anchor === "start" ? day.startAnchor.placeId ?? "" : day.endAnchor.placeId ?? "";
+            return (
+              <label className="v3-anchor-editor">
+                <span>{label}</span>
+                <select
+                  value={value}
+                  disabled={busy}
+                  onChange={(event) => onCommand({
+                    type: "set_day_anchor",
+                    dayId: day.id,
+                    anchor,
+                    placeId: event.target.value || null,
+                    label: null,
+                    notes: null,
+                  })}
+                >
+                  <option value="">尚未设置</option>
+                  {places.map((place) => <option value={place.id} key={place.id}>{placeDisplayName(place)}</option>)}
+                </select>
+              </label>
+            );
+          }
+
+          function DayEditor({
+            day,
+            days,
+            places,
+            candidates,
+            dirty,
+            route,
+            selected,
+            busy,
+            onSelect,
+            onCommand,
+            onRoute,
+            onFocusPlace,
+          }: {
+            day: Day;
+            days: Day[];
+            places: Map<string, Place>;
+            candidates: TripCandidate[];
+            dirty: boolean;
+            route: Workspace["routes"][number] | undefined;
+            selected: boolean;
+            busy: boolean;
+            onSelect: () => void;
+            onCommand: (command: PlanCommand) => void;
+            onRoute: () => void;
+            onFocusPlace: (placeId: string) => void;
+          }) {
+            const [addCandidateId, setAddCandidateId] = useState("");
+            const available = candidates.filter((candidate) =>
+              candidate.preference !== "excluded" &&
+              !day.stops.some((stop) => stop.candidateId === candidate.id),
+            );
+            return (
+              <article
+                className={`v3-edit-day${selected ? " is-active" : ""}`}
+                onDragOver={(event) => {
+                  if (event.dataTransfer.types.includes("application/x-travel-stop")) {
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                  }
+                }}
+                onDrop={(event) => {
+                  const payload = parseDrag(event);
+                  if (!payload) return;
+                  event.preventDefault();
+                  onCommand({
+                    type: "move_day_stop",
+                    stopId: payload.stopId,
+                    targetDayId: day.id,
+                    targetIndex: day.stops.length,
+                  });
+                }}
+              >
+                <header className="v3-edit-day-head">
+                  <button type="button" className="v3-edit-day-title" onClick={onSelect}>
+                    <span>DAY {day.dayNumber}</span>
+                    <strong>{day.title}</strong>
+                    <small>{day.date ?? "日期待定"}</small>
+                  </button>
+                  <div className="v3-day-order-tools">
+                    <button
+                      type="button"
+                      disabled={busy || day.dayNumber === 1}
+                      title="整天前移"
+                      onClick={() => onCommand({ type: "move_day", dayId: day.id, targetIndex: day.dayNumber - 2 })}
+                    >←</button>
+                    <button
+                      type="button"
+                      disabled={busy || day.dayNumber === days.length}
+                      title="整天后移"
+                      onClick={() => onCommand({ type: "move_day", dayId: day.id, targetIndex: day.dayNumber })}
+                    >→</button>
+                  </div>
+                </header>
+
+                <div className="v3-edit-day-body">
+                  <AnchorEditor
+                    label="起点"
+                    day={day}
+                    anchor="start"
+                    places={[...places.values()]}
+                    busy={busy}
+                    onCommand={onCommand}
+                  />
+
+                  <div className="v3-edit-stop-list">
+                    {day.stops.length === 0 && <p>拖入地点，或从下方添加 Candidate。</p>}
+                    {day.stops.map((stop, index) => (
+                      <StopEditor
+                        key={stop.id}
+                        stop={stop}
+                        day={day}
+                        index={index}
+                        days={days}
+                        places={places}
+                        busy={busy}
+                        onCommand={onCommand}
+                        onFocusPlace={onFocusPlace}
+                      />
+                    ))}
+                    <div
+                      className="v3-drop-zone"
+                      onDragOver={(event) => event.preventDefault()}
+                      onDrop={(event) => {
+                        const payload = parseDrag(event);
+                        if (!payload) return;
+                        event.preventDefault();
+                        onCommand({
+                          type: "move_day_stop",
+                          stopId: payload.stopId,
+                          targetDayId: day.id,
+                          targetIndex: day.stops.length,
+                        });
+                      }}
+                    >拖到这里放在当天末尾</div>
+                  </div>
+
+                  <div className="v3-add-stop-row">
+                    <select value={addCandidateId} onChange={(event) => setAddCandidateId(event.target.value)}>
+                      <option value="">＋ 添加 Candidate 到这一天</option>
+                      {available.map((candidate) => (
+                        <option value={candidate.id} key={candidate.id}>
+                          {placeDisplayName(places.get(candidate.placeId))} · {candidate.preference === "must_go" ? "必去" : candidate.preference === "want_to_go" ? "想去" : "可选"}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      disabled={busy || !addCandidateId}
+                      onClick={() => {
+                        const candidate = candidates.find((item) => item.id === addCandidateId);
+                        const place = candidate ? places.get(candidate.placeId) : undefined;
+                        if (!candidate || !place) return;
+                        onCommand(buildAddStopCommand(
+                          day.id,
+                          day.stops.length,
+                          candidate,
+                          place,
+                          `tmp-stop-${crypto.randomUUID()}`,
+                        ));
+                        setAddCandidateId("");
+                      }}
+                    >添加</button>
+                  </div>
+
+                  <AnchorEditor
+                    label="终点"
+                    day={day}
+                    anchor="end"
+                    places={[...places.values()]}
+                    busy={busy}
+                    onCommand={onCommand}
+                  />
+
+                  <footer className="v3-edit-route-row">
+                    <div>
+                      <strong className={dirty ? "is-dirty" : "is-ready"}>{dirty ? "● 路线有变更" : "✓ 路线已更新"}</strong>
+                      <span>
+                        {route?.distanceKm !== null && route?.distanceKm !== undefined ? `${route.distanceKm.toFixed(1)} km` : ""}
+                        {route?.durationMinutes !== null && route?.durationMinutes !== undefined ? ` · ${formatDuration(route.durationMinutes)}` : ""}
+                      </span>
+                    </div>
+                    <button type="button" disabled={busy} onClick={onRoute}>{dirty ? "更新路线" : "重新计算"}</button>
+                  </footer>
+                </div>
+              </article>
+            );
+          }
+
+          export default function V3ItineraryEditor({
+            workspace,
+            selectedDayId,
+            onSelectDay,
+            onFocusPlace,
+            onRefresh,
+          }: Props) {
+            const [busy, setBusy] = useState(false);
+            const [error, setError] = useState<string | null>(null);
+            const places = useMemo(() => new Map(workspace.document.places.map((place) => [place.id, place])), [workspace.document.places]);
+            const routes = useMemo(() => new Map(workspace.routes.map((route) => [route.dayId, route])), [workspace.routes]);
+            const dirtyDays = useMemo(() => new Set(workspace.routeDirtyDayIds), [workspace.routeDirtyDayIds]);
+
+            const commit = async (command: PlanCommand) => {
+              if (busy) return;
+              setBusy(true);
+              setError(null);
+              try {
+                await applyPlanCommand(workspace.tripId, workspace.generation, command);
+                await onRefresh();
+              } catch (cause) {
+                setError(cause instanceof Error ? cause.message : "编辑失败，请刷新后重试。");
+              } finally {
+                setBusy(false);
+              }
+            };
+
+            const updateRoute = async (dayId: string) => {
+              if (busy) return;
+              setBusy(true);
+              setError(null);
+              try {
+                await recalculateRoute(workspace.tripId, dayId, workspace.generation);
+                await onRefresh();
+              } catch (cause) {
+                setError(cause instanceof Error ? cause.message : "路线更新失败。");
+              } finally {
+                setBusy(false);
+              }
+            };
+
+            return (
+              <div className="v3-itinerary-editor">
+                <div className="v3-editor-note">
+                  <strong>确定性编辑</strong>
+                  <span>拖拽、换天、增删和 Anchor 调整不会调用 AI。修改后路线保持 dirty，直到你点击更新路线。</span>
+                </div>
+                {error && <div className="v3-error" role="alert">{error}</div>}
+                <div className="v3-day-selector">
+                  {workspace.document.days.map((day) => (
+                    <button
+                      type="button"
+                      key={day.id}
+                      className={selectedDayId === day.id ? "is-active" : ""}
+                      onClick={() => onSelectDay(day.id)}
+                    >D{day.dayNumber}</button>
+                  ))}
+                </div>
+                <div className="v3-card-list">
+                  {workspace.document.days.length === 0 && (
+                    <div className="v3-empty-state">
+                      <div>↗</div>
+                      <h3>还没有按天行程</h3>
+                      <p>请先回到“地点”Tab，根据已选择 Candidate 生成行程。</p>
+                    </div>
+                  )}
+                  {workspace.document.days.map((day) => (
+                    <DayEditor
+                      key={day.id}
+                      day={day}
+                      days={workspace.document.days}
+                      places={places}
+                      candidates={workspace.document.candidates}
+                      dirty={dirtyDays.has(day.id) || !routes.get(day.id)}
+                      route={routes.get(day.id)}
+                      selected={selectedDayId === day.id}
+                      busy={busy}
+                      onSelect={() => onSelectDay(day.id)}
+                      onCommand={(command) => void commit(command)}
+                      onRoute={() => void updateRoute(day.id)}
+                      onFocusPlace={onFocusPlace}
+                    />
+                  ))}
+                </div>
+              </div>
+            );
+          }
+          EOF
+
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('apps/web/src/V3Workspace.tsx')
+          text = path.read_text(encoding='utf-8')
+          if 'import V3ItineraryEditor' not in text:
+              text = text.replace('import V3Map from "./V3Map";', 'import V3Map from "./V3Map";\nimport V3ItineraryEditor from "./V3ItineraryEditor";')
+          start = text.find('function Anchor({')
+          end = text.find('export default function V3Workspace')
+          if start != -1 and end != -1 and start < end:
+              text = text[:start] + text[end:]
+          old = '''                      <div className="v3-day-selector">
+                        {workspace.document.days.map((day) => (
+                          <button
+                            type="button"
+                            key={day.id}
+                            className={selectedDayId === day.id ? "is-active" : ""}
+                            onClick={() => setSelectedDayId(day.id)}
+                          >
+                            D{day.dayNumber}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="v3-card-list">
+                        {workspace.document.days.length === 0 && (
+                          <div className="v3-empty-state">
+                            <div>↗</div>
+                            <h3>还没有按天行程</h3>
+                            <p>先到“地点”Tab 选择 Candidate，再让 AI 根据真实地点安排每天。</p>
+                            <button type="button" onClick={() => setTab("places")}>去选择地点</button>
+                          </div>
+                        )}
+                        {workspace.document.days.map((day) => {
+                          const route = routes.get(day.id);
+                          return (
+                            <DayCard
+                              key={day.id}
+                              day={day}
+                              places={places}
+                              dirty={dirtyDays.has(day.id) || !route}
+                              routeDistance={route?.distanceKm ?? null}
+                              routeDuration={route?.durationMinutes ?? null}
+                              selected={selectedDayId === day.id}
+                              onSelect={() => setSelectedDayId(day.id)}
+                              onRoute={() => void run(`route-${day.id}`, () => recalculateRoute(workspace.tripId, day.id, workspace.generation))}
+                              onPlace={focusPlace}
+                            />
+                          );
+                        })}
+                      </div>'''
+          new = '''                      <V3ItineraryEditor
+                        workspace={workspace}
+                        selectedDayId={selectedDayId}
+                        onSelectDay={setSelectedDayId}
+                        onFocusPlace={focusPlace}
+                        onRefresh={onRefresh}
+                      />'''
+          if old not in text:
+              raise SystemExit('Phase 5 itinerary block not found; refusing unsafe patch')
+          text = text.replace(old, new, 1)
+          text = text.replace('  Day,\n', '')
+          text = text.replace('            const routes = useMemo(\n              () => new Map(workspace.routes.map((route) => [route.dayId, route])),\n              [workspace.routes],\n            );\n', '')
+          text = text.replace('            const dirtyDays = useMemo(\n              () => new Set(workspace.routeDirtyDayIds),\n              [workspace.routeDirtyDayIds],\n            );\n', '')
+          text = text.replace('                    selectedRoute={selectedDay ? routes.get(selectedDay.id) ?? null : null}', '                    selectedRoute={selectedDay ? workspace.routes.find((route) => route.dayId === selectedDay.id) ?? null : null}')
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          cat >> apps/web/src/v3-workspace.css <<'EOF'
+
+          .v3-itinerary-editor { display: grid; gap: 12px; }
+          .v3-editor-note { display: grid; gap: 3px; border: 1px solid #c7ddd7; border-radius: 13px; padding: 10px 12px; background: #edf7f4; }
+          .v3-editor-note strong { color: var(--v3-accent-dark); font-size: 12px; }
+          .v3-editor-note span { color: var(--v3-muted); font-size: 10px; line-height: 1.5; }
+          .v3-edit-day { border: 1px solid var(--v3-line); border-radius: 16px; overflow: hidden; background: white; box-shadow: 0 4px 18px rgba(29,52,47,.045); }
+          .v3-edit-day.is-active { border-color: #73bfb5; box-shadow: 0 0 0 3px rgba(15,118,110,.08); }
+          .v3-edit-day-head { display: flex; align-items: center; gap: 10px; padding: 11px 13px; background: #f4f9f7; border-bottom: 1px solid var(--v3-line); }
+          .v3-edit-day-title { flex: 1; display: grid; grid-template-columns: auto 1fr auto; gap: 9px; align-items: center; border: 0; background: transparent; text-align: left; }
+          .v3-edit-day-title span { color: var(--v3-accent); font-size: 10px; font-weight: 900; }
+          .v3-edit-day-title strong { font-size: 13px; }
+          .v3-edit-day-title small { color: var(--v3-muted); font-size: 10px; }
+          .v3-day-order-tools { display: flex; gap: 4px; }
+          .v3-day-order-tools button { width: 28px; height: 28px; border: 1px solid var(--v3-line); border-radius: 8px; background: white; color: var(--v3-accent-dark); }
+          .v3-edit-day-body { display: grid; gap: 10px; padding: 13px; }
+          .v3-anchor-editor { display: grid; grid-template-columns: 48px 1fr; align-items: center; gap: 8px; padding: 7px 9px; border-radius: 10px; background: #edf3f0; }
+          .v3-anchor-editor > span { color: var(--v3-muted); font-size: 10px; font-weight: 850; }
+          .v3-anchor-editor select { min-width: 0; border: 1px solid var(--v3-line); border-radius: 8px; background: white; padding: 7px 8px; color: var(--v3-ink); font-size: 11px; }
+          .v3-edit-stop-list { display: grid; gap: 6px; padding: 2px 0 2px 12px; margin-left: 21px; border-left: 2px solid #c4ddd7; }
+          .v3-edit-stop-list > p { color: var(--v3-muted); font-size: 11px; }
+          .v3-edit-stop { display: grid; grid-template-columns: 30px minmax(0,1fr) auto; align-items: center; gap: 7px; border: 1px solid var(--v3-line); border-radius: 11px; padding: 6px; background: white; }
+          .v3-edit-stop:active { cursor: grabbing; }
+          .v3-drag-handle { width: 28px; height: 32px; border: 0; border-radius: 8px; background: #e3f1ee; color: var(--v3-accent-dark); font-weight: 900; cursor: grab; }
+          .v3-edit-stop-main { min-width: 0; display: grid; gap: 2px; border: 0; background: transparent; text-align: left; }
+          .v3-edit-stop-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+          .v3-edit-stop-main small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--v3-muted); font-size: 9px; }
+          .v3-stop-tools { display: flex; gap: 3px; }
+          .v3-stop-tools button { min-width: 27px; height: 27px; border: 1px solid var(--v3-line); border-radius: 7px; background: #fafcfb; color: var(--v3-accent-dark); padding: 0 5px; font-size: 10px; font-weight: 850; }
+          .v3-stop-tools button.is-danger { color: var(--v3-danger); }
+          .v3-drop-zone { border: 1px dashed #b9d2cc; border-radius: 9px; padding: 7px; color: #78908a; background: #f8fbfa; text-align: center; font-size: 9px; }
+          .v3-add-stop-row { display: grid; grid-template-columns: 1fr auto; gap: 6px; }
+          .v3-add-stop-row select { min-width: 0; border: 1px solid var(--v3-line); border-radius: 9px; padding: 8px; background: white; font-size: 10px; }
+          .v3-add-stop-row button { border: 0; border-radius: 9px; padding: 8px 10px; background: var(--v3-accent); color: white; font-size: 10px; font-weight: 850; }
+          .v3-edit-route-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 9px; border-top: 1px solid var(--v3-line); }
+          .v3-edit-route-row > div { display: grid; gap: 2px; }
+          .v3-edit-route-row strong { font-size: 10px; }
+          .v3-edit-route-row strong.is-dirty { color: #946200; }
+          .v3-edit-route-row strong.is-ready { color: #167044; }
+          .v3-edit-route-row span { color: var(--v3-muted); font-size: 9px; }
+          .v3-edit-route-row button { border: 1px solid var(--v3-line); border-radius: 9px; padding: 7px 10px; background: white; color: var(--v3-accent-dark); font-size: 10px; font-weight: 850; }
+          @media (max-width: 560px) {
+            .v3-edit-stop { grid-template-columns: 28px minmax(0,1fr); }
+            .v3-stop-tools { grid-column: 1 / -1; justify-content: flex-end; }
+          }
+          EOF
+
+          cat > apps/web/src/v3-editor.test.ts <<'EOF'
+          import { describe, expect, it } from "vitest";
+          import { buildAddStopCommand, targetIndexForMove } from "./V3ItineraryEditor";
+
+          describe("deterministic itinerary editor", () => {
+            it("clamps keyboard move targets", () => {
+              expect(targetIndexForMove(0, "up", 4)).toBe(0);
+              expect(targetIndexForMove(1, "down", 4)).toBe(2);
+              expect(targetIndexForMove(3, "down", 4)).toBe(3);
+            });
+
+            it("builds a fixed add_day_stop command without coordinates", () => {
+              const command = buildAddStopCommand(
+                "d1",
+                0,
+                {
+                  id: "c1",
+                  placeId: "p1",
+                  preference: "must_go",
+                  source: "ai",
+                  aiReason: "推荐",
+                  aiScore: 90,
+                  suggestedDurationMinutes: 120,
+                  tags: [],
+                },
+                {
+                  id: "p1",
+                  nameZh: "清水寺",
+                  nameLocal: null,
+                  nameEn: null,
+                  kind: "attraction",
+                  city: "京都",
+                  region: null,
+                  country: "日本",
+                  countryCode: "JP",
+                  approximate: false,
+                },
+                "tmp-stop-1",
+              );
+              expect(command.type).toBe("add_day_stop");
+              expect(JSON.stringify(command)).not.toContain("latitude");
+              expect(JSON.stringify(command)).not.toContain("longitude");
+            });
+          });
+          EOF
+
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          path = Path('docs/IMPLEMENTATION_STATUS.md')
+          text = path.read_text(encoding='utf-8')
+          text = re.sub(r'## Current Phase\n\n.*?(?=\n## )', '## Current Phase\n\nPhase 7 — AI scoped Proposal preview, apply, reject and undo.\n', text, count=1, flags=re.S)
+          section = '''
+          ### Phase 6 — Deterministic Itinerary Editing
+
+          - Added HTML drag-and-drop for same-Day reorder and cross-Day movement.
+          - Added keyboard-accessible up/down/previous-Day/next-Day controls, Day reorder, Stop add/remove and independent start/end Anchor selection.
+          - Every edit sends one fixed PlanCommand with expectedGeneration CAS; no edit path invokes AI.
+          - Route inputs become dirty after editing and remain dirty until the user explicitly requests recalculation.
+          - Added pure tests for command construction and move-index boundaries.
+          '''
+          if '### Phase 6 — Deterministic Itinerary Editing' not in text:
+              text = text.replace('\n## Important Decisions', '\n' + section.strip() + '\n\n## Important Decisions')
+          text = re.sub(r'## Next Phase\n\n.*?(?=\n## )', '''## Next Phase
+
+          Phase 7:
+
+          - Connect Candidate/Place/Day/Trip AI scopes to stored AiProposal records.
+          - Render structured Preview/Diff before any canonical write.
+          - Implement Apply/Reject and Revision-backed Undo with generation conflict handling.
+          - Ensure Proposal UI never bypasses the proposal state machine through the normal command endpoint.
+          ''', text, count=1, flags=re.S)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: git diff --check
+
+      - name: Commit Phase 6
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/phase6-deterministic-editing.yml
+          git add -A
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Phase 6: add deterministic itinerary editing'
+          git push origin HEAD:codex/v3-runtime-ui-completion

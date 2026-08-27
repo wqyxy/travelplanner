@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Bot, ChevronDown, CircleStop, MapPinned, Route } from "lucide-react";
-import type { AiTask } from "./types";
+import type { AiTask } from "./v2-types";
 
 const ACTIVE = new Set(["starting", "running", "waiting", "reconnecting"]);
 const labels: Record<string, string> = { starting: "启动中", running: "进行中", waiting: "后台解析", reconnecting: "重连中", completed: "已完成", failed: "失败", stopped: "已停止", cancelled_by_generation: "已被新版本取代" };

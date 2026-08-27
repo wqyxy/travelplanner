@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - codex/v3-candidate-workbench
+      - codex/v3-runtime-ui-completion
   pull_request:
     branches:
       - main

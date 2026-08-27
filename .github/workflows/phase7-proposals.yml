@@ -1,0 +1,553 @@
+name: Implement Phase 7 scoped AI proposals
+
+on:
+  push:
+    branches:
+      - codex/v3-runtime-ui-completion
+    paths:
+      - .github/workflows/phase7-proposals.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: travelplanner-phase7
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+
+      - name: Verify Phase 6 base
+        run: |
+          test -f apps/web/src/V3ItineraryEditor.tsx
+          grep -q 'Deterministic Itinerary Editing' docs/IMPLEMENTATION_STATUS.md
+
+      - name: Implement scoped Proposal UI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat >> apps/web/src/v3-api.ts <<'EOF'
+
+          export type ProposalScope =
+            | { type: "candidate_pool"; id: null }
+            | { type: "candidate"; id: string }
+            | { type: "place"; id: string }
+            | { type: "day"; id: string }
+            | { type: "trip"; id: null };
+
+          export async function createProposal(
+            tripId: string,
+            generation: number,
+            scope: ProposalScope,
+            prompt: string,
+          ): Promise<void> {
+            await apiJson(`/api/trips/${encodeURIComponent(tripId)}/proposals`, {
+              method: "POST",
+              body: body({ expectedGeneration: generation, scope, prompt, message: prompt }),
+            });
+          }
+
+          export async function applyProposal(
+            tripId: string,
+            proposalId: string,
+            generation: number,
+          ): Promise<void> {
+            await apiJson(`/api/trips/${encodeURIComponent(tripId)}/proposals/${encodeURIComponent(proposalId)}/apply`, {
+              method: "POST",
+              body: body({ expectedGeneration: generation }),
+            });
+          }
+
+          export async function rejectProposal(tripId: string, proposalId: string): Promise<void> {
+            await apiJson(`/api/trips/${encodeURIComponent(tripId)}/proposals/${encodeURIComponent(proposalId)}/reject`, {
+              method: "POST",
+              body: body({}),
+            });
+          }
+
+          export async function undoProposal(
+            tripId: string,
+            proposalId: string,
+            generation: number,
+          ): Promise<void> {
+            await apiJson(`/api/trips/${encodeURIComponent(tripId)}/proposals/${encodeURIComponent(proposalId)}/undo`, {
+              method: "POST",
+              body: body({ expectedGeneration: generation }),
+            });
+          }
+          EOF
+
+          cat > apps/web/src/V3ProposalPanel.tsx <<'EOF'
+          import { useMemo, useState } from "react";
+          import {
+            applyProposal,
+            createProposal,
+            rejectProposal,
+            undoProposal,
+            type ProposalScope,
+          } from "./v3-api";
+          import type { Workspace } from "./v3-types";
+
+          type ProposalStatus = "pending" | "applied" | "rejected" | "superseded" | "undone";
+
+          export type ProposalView = {
+            id: string;
+            baseGeneration: number;
+            scope: ProposalScope;
+            status: ProposalStatus;
+            title: string;
+            explanation: string;
+            commands: Array<Record<string, unknown>>;
+            diff: {
+              summary: string;
+              commandSummaries: string[];
+              affectedCandidateIds: string[];
+              affectedPlaceIds: string[];
+              affectedDayIds: string[];
+            };
+            createdAt: string | null;
+          };
+
+          const asRecord = (value: unknown): Record<string, unknown> =>
+            value && typeof value === "object" && !Array.isArray(value)
+              ? value as Record<string, unknown>
+              : {};
+
+          const asStrings = (value: unknown): string[] =>
+            Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+
+          export function normalizeProposal(value: unknown): ProposalView | null {
+            const row = asRecord(value);
+            const id = typeof row.id === "string" ? row.id : "";
+            const scopeRecord = asRecord(row.scope);
+            const type = typeof scopeRecord.type === "string" ? scopeRecord.type : "trip";
+            const scope: ProposalScope = type === "candidate_pool" || type === "trip"
+              ? { type, id: null }
+              : type === "candidate" || type === "place" || type === "day"
+                ? { type, id: typeof scopeRecord.id === "string" ? scopeRecord.id : "" }
+                : { type: "trip", id: null };
+            if (!id || (scope.type !== "candidate_pool" && scope.type !== "trip" && !scope.id)) return null;
+            const diff = asRecord(row.diff);
+            const commands = Array.isArray(row.commands)
+              ? row.commands.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+              : [];
+            return {
+              id,
+              baseGeneration: typeof row.baseGeneration === "number" ? row.baseGeneration : 0,
+              scope,
+              status: ["pending", "applied", "rejected", "superseded", "undone"].includes(String(row.status))
+                ? row.status as ProposalStatus
+                : "pending",
+              title: typeof row.title === "string" ? row.title : "AI 调整建议",
+              explanation: typeof row.explanation === "string" ? row.explanation : "",
+              commands,
+              diff: {
+                summary: typeof diff.summary === "string" ? diff.summary : "",
+                commandSummaries: asStrings(diff.commandSummaries),
+                affectedCandidateIds: asStrings(diff.affectedCandidateIds),
+                affectedPlaceIds: asStrings(diff.affectedPlaceIds),
+                affectedDayIds: asStrings(diff.affectedDayIds),
+              },
+              createdAt: typeof row.createdAt === "string" ? row.createdAt : null,
+            };
+          }
+
+          function scopeLabel(scope: ProposalScope): string {
+            if (scope.type === "candidate_pool") return "地点池";
+            if (scope.type === "candidate") return "Candidate";
+            if (scope.type === "place") return "地点";
+            if (scope.type === "day") return "当天";
+            return "整个旅行";
+          }
+
+          function commandLabel(command: Record<string, unknown>): string {
+            const type = typeof command.type === "string" ? command.type : "change";
+            const labels: Record<string, string> = {
+              set_candidate_preference: "修改地点优先级",
+              bulk_set_candidate_preference: "批量修改地点优先级",
+              add_candidate: "增加 Candidate",
+              remove_candidate: "移除 Candidate",
+              update_candidate: "更新 Candidate 信息",
+              update_place: "更新地点语义信息",
+              set_day_anchor: "调整当天起点或终点",
+              add_day_stop: "增加行程地点",
+              update_day_stop: "更新行程地点",
+              move_day_stop: "移动行程地点",
+              remove_day_stop: "移除行程地点",
+              move_day: "调整日期顺序",
+              update_day: "更新当天信息",
+            };
+            return labels[type] ?? type;
+          }
+
+          function ProposalCard({
+            proposal,
+            generation,
+            tripId,
+            busy,
+            onRun,
+          }: {
+            proposal: ProposalView;
+            generation: number;
+            tripId: string;
+            busy: boolean;
+            onRun: (label: string, operation: () => Promise<void>) => void;
+          }) {
+            const canApply = proposal.status === "pending" && proposal.baseGeneration === generation;
+            const canUndo = proposal.status === "applied";
+            return (
+              <article className={`v3-proposal-card is-${proposal.status}`}>
+                <header>
+                  <div>
+                    <span>{scopeLabel(proposal.scope)}</span>
+                    <strong>{proposal.title}</strong>
+                  </div>
+                  <small>{proposal.status === "pending" ? "等待确认" : proposal.status === "applied" ? "已应用" : proposal.status === "rejected" ? "已取消" : proposal.status === "superseded" ? "已过期" : "已撤销"}</small>
+                </header>
+                {proposal.explanation && <p>{proposal.explanation}</p>}
+                <div className="v3-proposal-diff">
+                  <strong>修改预览</strong>
+                  {proposal.diff.summary && <p>{proposal.diff.summary}</p>}
+                  <ul>
+                    {(proposal.diff.commandSummaries.length
+                      ? proposal.diff.commandSummaries
+                      : proposal.commands.map(commandLabel)
+                    ).map((summary, index) => <li key={`${summary}-${index}`}>{summary}</li>)}
+                  </ul>
+                  <div>
+                    {proposal.diff.affectedDayIds.length > 0 && <span>影响 {proposal.diff.affectedDayIds.length} 天</span>}
+                    {proposal.diff.affectedPlaceIds.length > 0 && <span>影响 {proposal.diff.affectedPlaceIds.length} 个地点</span>}
+                    {proposal.diff.affectedCandidateIds.length > 0 && <span>影响 {proposal.diff.affectedCandidateIds.length} 个 Candidate</span>}
+                  </div>
+                </div>
+                {proposal.status === "pending" && proposal.baseGeneration !== generation && (
+                  <div className="v3-proposal-conflict">当前行程已经变化，这份建议不能再应用。请重新生成 Proposal。</div>
+                )}
+                <footer>
+                  {proposal.status === "pending" && (
+                    <>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => onRun("reject", () => rejectProposal(tripId, proposal.id))}
+                      >取消建议</button>
+                      <button
+                        type="button"
+                        className="is-primary"
+                        disabled={busy || !canApply}
+                        onClick={() => onRun("apply", () => applyProposal(tripId, proposal.id, generation))}
+                      >应用修改</button>
+                    </>
+                  )}
+                  {canUndo && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => onRun("undo", () => undoProposal(tripId, proposal.id, generation))}
+                    >撤销这次应用</button>
+                  )}
+                </footer>
+              </article>
+            );
+          }
+
+          export default function V3ProposalPanel({
+            workspace,
+            selectedCandidateId,
+            selectedPlaceId,
+            selectedDayId,
+            onRefresh,
+          }: {
+            workspace: Workspace;
+            selectedCandidateId: string | null;
+            selectedPlaceId: string | null;
+            selectedDayId: string | null;
+            onRefresh: () => Promise<void>;
+          }) {
+            const [open, setOpen] = useState(false);
+            const [scopeType, setScopeType] = useState<ProposalScope["type"]>("day");
+            const [prompt, setPrompt] = useState("");
+            const [busy, setBusy] = useState(false);
+            const [error, setError] = useState<string | null>(null);
+
+            const proposals = useMemo(
+              () => workspace.proposals.map(normalizeProposal).filter((item): item is ProposalView => item !== null),
+              [workspace.proposals],
+            );
+            const pending = proposals.filter((proposal) => proposal.status === "pending");
+            const recent = proposals.filter((proposal) => proposal.status !== "pending").slice(0, 3);
+
+            const scope: ProposalScope | null = scopeType === "candidate_pool"
+              ? { type: "candidate_pool", id: null }
+              : scopeType === "trip"
+                ? { type: "trip", id: null }
+                : scopeType === "candidate"
+                  ? selectedCandidateId ? { type: "candidate", id: selectedCandidateId } : null
+                  : scopeType === "place"
+                    ? selectedPlaceId ? { type: "place", id: selectedPlaceId } : null
+                    : selectedDayId ? { type: "day", id: selectedDayId } : null;
+
+            const run = async (_label: string, operation: () => Promise<void>) => {
+              if (busy) return;
+              setBusy(true);
+              setError(null);
+              try {
+                await operation();
+                await onRefresh();
+              } catch (cause) {
+                setError(cause instanceof Error ? cause.message : "Proposal 操作失败。");
+              } finally {
+                setBusy(false);
+              }
+            };
+
+            const submit = async () => {
+              if (!scope || !prompt.trim()) return;
+              await run("create", () => createProposal(workspace.tripId, workspace.generation, scope, prompt.trim()));
+              setPrompt("");
+              setOpen(true);
+            };
+
+            return (
+              <aside className={`v3-proposal-panel${open ? " is-open" : ""}`}>
+                <button type="button" className="v3-proposal-toggle" onClick={() => setOpen((value) => !value)}>
+                  <span>✦</span>
+                  <strong>AI 局部调整</strong>
+                  <small>{pending.length ? `${pending.length} 个待确认` : "先预览，再应用"}</small>
+                  <b>{open ? "⌄" : "⌃"}</b>
+                </button>
+                {open && (
+                  <div className="v3-proposal-body">
+                    {error && <div className="v3-error" role="alert">{error}</div>}
+                    <div className="v3-scope-row">
+                      {([
+                        ["candidate_pool", "地点池"],
+                        ["candidate", "Candidate"],
+                        ["place", "地点"],
+                        ["day", "当天"],
+                        ["trip", "整趟旅行"],
+                      ] as const).map(([value, label]) => {
+                        const disabled = (value === "candidate" && !selectedCandidateId)
+                          || (value === "place" && !selectedPlaceId)
+                          || (value === "day" && !selectedDayId);
+                        return (
+                          <button
+                            type="button"
+                            key={value}
+                            disabled={disabled}
+                            className={scopeType === value ? "is-active" : ""}
+                            onClick={() => setScopeType(value)}
+                          >{label}</button>
+                        );
+                      })}
+                    </div>
+                    <div className="v3-proposal-compose">
+                      <textarea
+                        value={prompt}
+                        onChange={(event) => setPrompt(event.target.value)}
+                        rows={3}
+                        placeholder={scopeType === "day" ? "例如：这一天太赶了，清水寺必须保留，帮我放松一点" : "告诉 AI 你希望如何调整当前范围…"}
+                      />
+                      <button type="button" disabled={busy || !scope || !prompt.trim()} onClick={() => void submit()}>
+                        {busy ? "处理中…" : "生成修改预览"}
+                      </button>
+                    </div>
+                    <p className="v3-proposal-safety">AI 只生成受限命令 Proposal。Apply 之前不会修改正式行程，也不能直接修改坐标或路线。</p>
+                    <div className="v3-proposal-list">
+                      {pending.map((proposal) => (
+                        <ProposalCard
+                          key={proposal.id}
+                          proposal={proposal}
+                          generation={workspace.generation}
+                          tripId={workspace.tripId}
+                          busy={busy}
+                          onRun={(label, operation) => void run(label, operation)}
+                        />
+                      ))}
+                      {recent.map((proposal) => (
+                        <ProposalCard
+                          key={proposal.id}
+                          proposal={proposal}
+                          generation={workspace.generation}
+                          tripId={workspace.tripId}
+                          busy={busy}
+                          onRun={(label, operation) => void run(label, operation)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </aside>
+            );
+          }
+          EOF
+
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('apps/web/src/V3Workspace.tsx')
+          text = path.read_text(encoding='utf-8')
+          if 'import V3ProposalPanel' not in text:
+              text = text.replace('import V3ItineraryEditor from "./V3ItineraryEditor";', 'import V3ItineraryEditor from "./V3ItineraryEditor";\nimport V3ProposalPanel from "./V3ProposalPanel";')
+          marker = '''                </section>
+
+                {manualPlaceId && ('''
+          insertion = '''                  <V3ProposalPanel
+                    workspace={workspace}
+                    selectedCandidateId={workspace.document.candidates.find((candidate) => candidate.placeId === selectedPlaceId)?.id ?? null}
+                    selectedPlaceId={selectedPlaceId}
+                    selectedDayId={selectedDayId}
+                    onRefresh={onRefresh}
+                  />
+                </section>
+
+                {manualPlaceId && ('''
+          if marker not in text:
+              raise SystemExit('Workspace panel close marker not found')
+          text = text.replace(marker, insertion, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          cat >> apps/web/src/v3-workspace.css <<'EOF'
+
+          .v3-proposal-panel { flex: 0 0 auto; border-top: 1px solid var(--v3-line); background: white; position: relative; z-index: 8; }
+          .v3-proposal-toggle { width: 100%; display: grid; grid-template-columns: auto auto 1fr auto; align-items: center; gap: 8px; border: 0; background: linear-gradient(90deg,#f1faf7,#ffffff); padding: 12px 18px; text-align: left; }
+          .v3-proposal-toggle > span { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 9px; background: var(--v3-accent); color: white; }
+          .v3-proposal-toggle strong { font-size: 12px; }
+          .v3-proposal-toggle small { color: var(--v3-muted); }
+          .v3-proposal-toggle b { color: var(--v3-accent); }
+          .v3-proposal-body { max-height: min(520px, 62vh); overflow-y: auto; padding: 13px 18px 18px; border-top: 1px solid var(--v3-line); }
+          .v3-scope-row { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 9px; }
+          .v3-scope-row button { border: 1px solid var(--v3-line); border-radius: 999px; background: white; color: var(--v3-muted); padding: 6px 9px; font-size: 10px; font-weight: 800; }
+          .v3-scope-row button.is-active { border-color: var(--v3-accent); background: #e4f4f0; color: var(--v3-accent-dark); }
+          .v3-proposal-compose { display: grid; grid-template-columns: 1fr auto; gap: 7px; align-items: stretch; }
+          .v3-proposal-compose textarea { min-width: 0; border: 1px solid var(--v3-line); border-radius: 11px; padding: 10px 11px; resize: vertical; outline: none; font-size: 11px; }
+          .v3-proposal-compose textarea:focus { border-color: #79c4ba; box-shadow: 0 0 0 3px rgba(15,118,110,.08); }
+          .v3-proposal-compose button { border: 0; border-radius: 11px; background: var(--v3-accent); color: white; padding: 0 12px; font-size: 10px; font-weight: 850; }
+          .v3-proposal-safety { margin: 7px 0 11px; color: var(--v3-muted); font-size: 9px; line-height: 1.5; }
+          .v3-proposal-list { display: grid; gap: 9px; }
+          .v3-proposal-card { border: 1px solid var(--v3-line); border-radius: 13px; padding: 11px; background: #fbfdfc; }
+          .v3-proposal-card.is-pending { border-color: #e9c66b; background: #fffdf5; }
+          .v3-proposal-card.is-applied { border-color: #a9d7c3; background: #f5fbf8; }
+          .v3-proposal-card header { display: flex; justify-content: space-between; gap: 10px; }
+          .v3-proposal-card header > div { display: grid; gap: 3px; }
+          .v3-proposal-card header span { color: var(--v3-accent); font-size: 8px; font-weight: 900; text-transform: uppercase; }
+          .v3-proposal-card header strong { font-size: 12px; }
+          .v3-proposal-card header small { color: var(--v3-muted); font-size: 9px; }
+          .v3-proposal-card > p { margin: 8px 0; color: #4c5c57; font-size: 10px; line-height: 1.5; }
+          .v3-proposal-diff { border-radius: 10px; padding: 9px; background: white; border: 1px solid #e8eeeb; }
+          .v3-proposal-diff > strong { font-size: 10px; }
+          .v3-proposal-diff > p { color: var(--v3-muted); font-size: 9px; }
+          .v3-proposal-diff ul { margin: 7px 0; padding-left: 18px; color: #42524d; font-size: 10px; line-height: 1.55; }
+          .v3-proposal-diff > div { display: flex; flex-wrap: wrap; gap: 5px; }
+          .v3-proposal-diff > div span { border-radius: 999px; padding: 3px 6px; background: #edf4f1; color: var(--v3-muted); font-size: 8px; }
+          .v3-proposal-conflict { margin-top: 8px; border-radius: 8px; padding: 7px; background: #fff0ee; color: var(--v3-danger); font-size: 9px; }
+          .v3-proposal-card footer { display: flex; justify-content: flex-end; gap: 6px; margin-top: 9px; }
+          .v3-proposal-card footer button { border: 1px solid var(--v3-line); border-radius: 8px; background: white; color: var(--v3-ink); padding: 6px 9px; font-size: 9px; font-weight: 850; }
+          .v3-proposal-card footer button.is-primary { border-color: var(--v3-accent); background: var(--v3-accent); color: white; }
+          @media (max-width: 560px) {
+            .v3-proposal-compose { grid-template-columns: 1fr; }
+            .v3-proposal-compose button { padding: 9px; }
+          }
+          EOF
+
+          cat > apps/web/src/v3-proposal.test.ts <<'EOF'
+          import { describe, expect, it } from "vitest";
+          import { normalizeProposal } from "./V3ProposalPanel";
+
+          describe("Proposal preview model", () => {
+            it("normalizes a pending Day proposal", () => {
+              const proposal = normalizeProposal({
+                id: "proposal-1",
+                baseGeneration: 5,
+                scope: { type: "day", id: "d1" },
+                status: "pending",
+                title: "放松 Day 1",
+                explanation: "减少移动",
+                commands: [{ type: "remove_day_stop", stopId: "s3" }],
+                diff: { summary: "移除一个可选地点", commandSummaries: ["移除可选地点"], affectedCandidateIds: [], affectedPlaceIds: ["p3"], affectedDayIds: ["d1"] },
+              });
+              expect(proposal?.scope).toEqual({ type: "day", id: "d1" });
+              expect(proposal?.status).toBe("pending");
+              expect(proposal?.diff.affectedDayIds).toEqual(["d1"]);
+            });
+
+            it("rejects a scoped proposal without its target id", () => {
+              expect(normalizeProposal({ id: "p", scope: { type: "place", id: null } })).toBeNull();
+            });
+          });
+          EOF
+
+          cat > apps/server/proposal-route-contract.test.ts <<'EOF'
+          import { readFileSync } from "node:fs";
+          import { describe, expect, it } from "vitest";
+
+          describe("v2 Proposal runtime routes", () => {
+            const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+            it("exposes create/apply/reject/undo routes", () => {
+              expect(source).toContain("/proposals");
+              expect(source).toContain("/apply");
+              expect(source).toContain("/reject");
+              expect(source).toContain("/undo");
+            });
+            it("does not send proposal apply through the normal command route", () => {
+              expect(source).toMatch(/proposals[\s\S]{0,3000}apply/);
+            });
+          });
+          EOF
+
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          path = Path('docs/IMPLEMENTATION_STATUS.md')
+          text = path.read_text(encoding='utf-8')
+          text = re.sub(r'## Current Phase\n\n.*?(?=\n## )', '## Current Phase\n\nPhase 8 — v2 itinerary refinement and remaining-day detail UI.\n', text, count=1, flags=re.S)
+          section = '''
+          ### Phase 7 — Scoped AI Proposal Preview / Apply / Undo
+
+          - Added explicit Candidate Pool, Candidate, Place, Day and Trip scopes.
+          - AI adjustment requests create stored pending Proposals and never write the canonical document directly.
+          - Added structured Diff preview, generation-conflict state, Apply, Reject and Revision-backed Undo controls.
+          - Proposal UI only calls Proposal state-machine endpoints and never bypasses them through `/commands`.
+          - Added frontend normalization tests and a server source contract test for create/apply/reject/undo routes.
+          '''
+          if '### Phase 7 — Scoped AI Proposal Preview / Apply / Undo' not in text:
+              text = text.replace('\n## Important Decisions', '\n' + section.strip() + '\n\n## Important Decisions')
+          text = re.sub(r'## Next Phase\n\n.*?(?=\n## )', '''## Next Phase
+
+          Phase 8:
+
+          - Connect the 01 detail Agent to remaining-Day refinement from the v2 workspace.
+          - Keep one controlled thread, at most two Days per batch and canonical feedback after every batch.
+          - Show per-Day detail status and a `细化剩余日期` action in the itinerary UI.
+          - Refinement may update semantic schedule fields but must not calculate routes automatically.
+          ''', text, count=1, flags=re.S)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: git diff --check
+
+      - name: Commit Phase 7
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/phase7-proposals.yml
+          git add -A
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Phase 7: add scoped AI proposal preview and undo'
+          git push origin HEAD:codex/v3-runtime-ui-completion
