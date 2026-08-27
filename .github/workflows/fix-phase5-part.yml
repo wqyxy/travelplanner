@@ -1,0 +1,31 @@
+name: Repair Phase 5 bundle transport artifact
+
+on:
+  push:
+    branches:
+      - codex/v3-runtime-ui-completion
+    paths:
+      - .github/workflows/fix-phase5-part.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Repair exact part length and remove this workflow
+        run: |
+          set -euo pipefail
+          test "$(wc -c < .github/v3-change-bundle.part-003)" -eq 12002
+          truncate -s 12000 .github/v3-change-bundle.part-003
+          test "$(git hash-object .github/v3-change-bundle.part-003)" = e700f3ad964273fb4db98cb48507c8b81c7b447f
+          rm -f .github/workflows/fix-phase5-part.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Repair Phase 5 bundle part'
+          git push
