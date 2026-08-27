@@ -55,3 +55,42 @@
   .editable-stop { grid-template-columns: auto minmax(0, 1fr) !important; }
   .stop-editor-v2 { grid-column: 1 / -1; justify-self: stretch; }
 }
+
+/* Phase 7: AI Proposal preview/apply/undo */
+.assistant-proposal-badge { display: inline-flex; align-items: center; min-height: 24px; padding: 0 9px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent-strong); font-size: 12px; font-weight: 700; }
+.assistant-mode-tabs { display: flex; gap: 8px; padding: 10px 14px 0; border-top: 1px solid var(--border); background: var(--panel); }
+.assistant-mode-tabs button { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--border); border-radius: 10px 10px 0 0; background: var(--panel-muted); color: var(--text-muted); padding: 8px 13px; font: inherit; cursor: pointer; }
+.assistant-mode-tabs button.active { border-bottom-color: var(--panel); background: var(--panel); color: var(--text); font-weight: 700; }
+.assistant-mode-tabs button span { min-width: 19px; height: 19px; border-radius: 999px; display: inline-grid; place-items: center; background: var(--accent); color: white; font-size: 11px; }
+.proposal-context-v2 { align-items: center; gap: 10px; }
+.proposal-context-v2 > span { flex: 1; }
+.proposal-context-v2 label { display: flex; align-items: center; gap: 7px; white-space: nowrap; font-weight: 650; }
+.proposal-context-v2 select { min-width: 190px; max-width: 300px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--text); padding: 7px 9px; }
+.proposal-body-v2 { background: var(--canvas); }
+.proposal-empty-v2 { display: grid; gap: 7px; margin: auto; max-width: 520px; padding: 26px; border: 1px dashed var(--border-strong); border-radius: 14px; color: var(--text-muted); text-align: center; }
+.proposal-empty-v2 strong { color: var(--text); }
+.proposal-list-v2 { display: grid; gap: 12px; }
+.proposal-card-v2 { display: grid; gap: 10px; padding: 15px; border: 1px solid var(--border); border-radius: 14px; background: var(--panel); box-shadow: var(--shadow-soft); }
+.proposal-card-v2.status-pending { border-color: color-mix(in srgb, var(--accent) 48%, var(--border)); }
+.proposal-card-v2.status-applied { border-color: color-mix(in srgb, #2d9d78 55%, var(--border)); }
+.proposal-card-v2.status-expired, .proposal-card-v2.status-superseded, .proposal-card-v2.status-rejected, .proposal-card-v2.status-undone { opacity: .78; }
+.proposal-card-v2 > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.proposal-card-v2 h3 { margin: 4px 0 0; font-size: 16px; }
+.proposal-card-v2 p { margin: 0; line-height: 1.55; }
+.proposal-card-v2 > small { color: var(--text-muted); }
+.proposal-scope-v2 { display: inline-flex; padding: 3px 7px; border-radius: 7px; background: var(--panel-muted); color: var(--text-muted); font-size: 11px; font-weight: 750; }
+.proposal-status-v2 { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; color: var(--text-muted); font-size: 12px; }
+.proposal-diff-v2 { display: grid; gap: 6px; padding: 10px 12px; border-radius: 10px; background: var(--panel-muted); }
+.proposal-diff-v2 ul { display: grid; gap: 4px; margin: 0; padding-left: 20px; color: var(--text-muted); }
+.proposal-impact-v2 { display: flex; flex-wrap: wrap; gap: 7px; }
+.proposal-impact-v2 span { padding: 4px 7px; border: 1px solid var(--border); border-radius: 999px; color: var(--text-muted); font-size: 11px; }
+.proposal-card-v2 footer { display: flex; flex-wrap: wrap; gap: 8px; }
+.proposal-card-v2 footer .button { display: inline-flex; align-items: center; gap: 5px; }
+.proposal-action-apply { background: var(--accent); color: white; border-color: var(--accent); }
+.proposal-action-reject { color: var(--danger); }
+
+@media (max-width: 760px) {
+  .proposal-context-v2 { align-items: flex-start; flex-direction: column; }
+  .proposal-context-v2 label, .proposal-context-v2 select { width: 100%; max-width: none; }
+  .assistant-bar-prompt { display: none; }
+}
