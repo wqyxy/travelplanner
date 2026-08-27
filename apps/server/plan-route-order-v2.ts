@@ -2,6 +2,7 @@ import type { DayStop, PlaceResolution, PlanGenerationOutput, TravelPlanDocument
 import { buildPlanningAreaContext } from "./planning-areas-v2.js";
 
 const LOCAL_ROUTE_KINDS = new Set(["attraction", "waypoint"]);
+const LOCAL_ROUTE_MODES = new Set(["walk", "drive", "bike"]);
 type Point = { latitude: number; longitude: number };
 
 function distanceSquared(left: Point, right: Point) {
@@ -18,6 +19,10 @@ function pointFor(placeId: string | null, resolutions: Map<string, PlaceResoluti
   return { latitude: resolution.latitude, longitude: resolution.longitude };
 }
 
+function routeMode(stop: DayStop) {
+  return stop.transportFromPrevious?.mode ?? "walk";
+}
+
 function resetProviderTime(stop: DayStop): DayStop {
   if (!stop.transportFromPrevious) return stop;
   return {
@@ -30,17 +35,12 @@ function resetProviderTime(stop: DayStop): DayStop {
   };
 }
 
-function nearestNeighbor(stops: DayStop[], start: Point | null, resolutions: Map<string, PlaceResolution>) {
+function nearestNeighbor(stops: DayStop[], resolutions: Map<string, PlaceResolution>) {
   if (stops.length < 3) return stops;
   const remaining = [...stops];
-  const ordered: DayStop[] = [];
-  let current = start;
-
-  if (!current) {
-    const first = remaining.shift()!;
-    ordered.push(first);
-    current = pointFor(first.placeId, resolutions);
-  }
+  const first = remaining.shift()!;
+  const ordered: DayStop[] = [first];
+  let current = pointFor(first.placeId, resolutions);
 
   while (remaining.length) {
     if (!current) {
@@ -79,7 +79,7 @@ export function optimizeGeneratedSightseeingOrder(
 
   const stopAreaKey = (stop: DayStop) => stop.candidateId ? areas.areaKeyByCandidateId.get(stop.candidateId) ?? null : null;
   const eligible = (stop: DayStop) => {
-    if (!stop.candidateId || !pointFor(stop.placeId, resolutionByPlace)) return false;
+    if (!stop.candidateId || !pointFor(stop.placeId, resolutionByPlace) || !LOCAL_ROUTE_MODES.has(routeMode(stop))) return false;
     const candidate = candidates.get(stop.candidateId);
     const place = candidate ? places.get(candidate.placeId) : null;
     return Boolean(place && LOCAL_ROUTE_KINDS.has(place.kind));
@@ -88,23 +88,21 @@ export function optimizeGeneratedSightseeingOrder(
   next.days = next.days.map((day) => {
     const stops = [...day.stops];
     let index = 0;
-    let previousPoint = pointFor(day.startAnchor.placeId, resolutionByPlace);
 
     while (index < stops.length) {
       const current = stops[index];
       if (!eligible(current)) {
-        previousPoint = pointFor(current.placeId, resolutionByPlace) ?? previousPoint;
         index += 1;
         continue;
       }
 
       const areaKey = stopAreaKey(current);
+      const mode = routeMode(current);
       let end = index + 1;
-      while (end < stops.length && eligible(stops[end]) && stopAreaKey(stops[end]) === areaKey) end += 1;
+      while (end < stops.length && eligible(stops[end]) && stopAreaKey(stops[end]) === areaKey && routeMode(stops[end]) === mode) end += 1;
       const block = stops.slice(index, end);
-      const optimized = nearestNeighbor(block, previousPoint, resolutionByPlace);
+      const optimized = nearestNeighbor(block, resolutionByPlace);
       stops.splice(index, block.length, ...optimized);
-      previousPoint = pointFor(stops[end - 1]?.placeId ?? null, resolutionByPlace) ?? previousPoint;
       index = end;
     }
 
