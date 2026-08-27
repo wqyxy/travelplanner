@@ -1,0 +1,399 @@
+/* Workspace v4: integrated right-side AI dock */
+.app-shell-v3 .main-workspace-v3 {
+  padding-bottom: 18px;
+}
+
+.workspace-side-v3 {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.workspace-flow-head-v3,
+.workspace-task-strip-v3,
+.assistant-dock-v4,
+.assistant-dock-collapsed-v4 {
+  flex: 0 0 auto;
+}
+
+.workspace-flow-head-v3 {
+  position: relative;
+  z-index: 3;
+}
+
+.workspace-task-strip-v3 {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 94%, var(--surface-subtle));
+}
+
+.workspace-task-strip-v3 .ai-task-topbar {
+  max-width: none;
+}
+
+.workspace-step-content-v3 {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.workspace-step-content-v3 > .candidate-panel,
+.workspace-step-content-v3 > .itinerary-v2-panel,
+.workspace-step-content-v3 > .workspace-requirements-v3 {
+  height: 100%;
+  min-height: 0;
+}
+
+/* The assistant is a real flex child. It never overlays the map or step content. */
+.assistant-dock-v4 {
+  position: relative;
+  z-index: 5;
+  display: flex;
+  width: 100%;
+  height: clamp(250px, 36vh, 390px);
+  min-height: 250px;
+  max-height: 44%;
+  flex-direction: column;
+  overflow: hidden;
+  border: 0;
+  border-top: 1px solid var(--border-strong);
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: 0 -10px 30px rgba(24, 34, 30, .07);
+  transform: none !important;
+}
+
+.assistant-dock-collapsed-v4 {
+  display: grid;
+  width: 100%;
+  min-height: 54px;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 12px;
+  border: 0;
+  border-top: 1px solid var(--border-strong);
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: 0 -7px 22px rgba(24, 34, 30, .05);
+  text-align: left;
+  transform: none !important;
+}
+
+.assistant-dock-collapsed-v4:hover {
+  background: color-mix(in srgb, var(--primary-soft) 34%, var(--surface));
+}
+
+.assistant-dock-mark-v4 {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 9px;
+  color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.assistant-dock-collapsed-copy-v4,
+.assistant-dock-identity-v4 > span:last-child {
+  min-width: 0;
+}
+
+.assistant-dock-collapsed-copy-v4 strong,
+.assistant-dock-collapsed-copy-v4 small,
+.assistant-dock-identity-v4 strong,
+.assistant-dock-identity-v4 small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assistant-dock-collapsed-copy-v4 strong,
+.assistant-dock-identity-v4 strong {
+  font-size: 12px;
+}
+
+.assistant-dock-collapsed-copy-v4 small,
+.assistant-dock-identity-v4 small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.assistant-dock-head-v4 {
+  display: grid;
+  min-height: 54px;
+  grid-template-columns: minmax(150px, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 9px 7px 12px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 96%, var(--surface-subtle));
+}
+
+.assistant-dock-identity-v4 {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+}
+
+.assistant-mode-tabs-v4 {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-subtle);
+}
+
+.assistant-mode-tabs-v4 button {
+  display: flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.assistant-mode-tabs-v4 button.active {
+  color: var(--primary);
+  background: var(--control);
+  box-shadow: 0 1px 4px rgba(20, 28, 24, .08);
+}
+
+.assistant-mode-tabs-v4 button span,
+.assistant-proposal-badge {
+  display: inline-grid;
+  min-width: 18px;
+  height: 18px;
+  place-items: center;
+  padding: 0 5px;
+  border-radius: 999px;
+  color: #fff;
+  background: var(--primary);
+  font-size: 9px;
+  font-weight: 900;
+}
+
+.assistant-dock-collapse-v4 {
+  width: 32px;
+  height: 32px;
+}
+
+.assistant-scope-toolbar-v4 {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  padding: 7px 11px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  background: var(--surface-subtle);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.assistant-scope-toolbar-v4 select {
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--control);
+  font-size: 10px;
+}
+
+.assistant-dock-body-v4 {
+  min-height: 0;
+  flex: 1 1 auto;
+  padding: 11px 14px 14px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.assistant-dock-body-v4 .message {
+  max-width: none;
+  margin: 10px 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.assistant-dock-body-v4 .message.user {
+  width: fit-content;
+  max-width: 82%;
+  margin-left: auto;
+}
+
+.assistant-dock-body-v4 .message.assistant {
+  padding-left: 21px;
+}
+
+.assistant-opening-v4 {
+  display: grid;
+  min-height: 118px;
+  place-content: center;
+  justify-items: center;
+  padding: 18px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.assistant-opening-v4 > svg {
+  margin-bottom: 8px;
+  color: var(--primary);
+}
+
+.assistant-opening-v4 p {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.assistant-opening-v4 small {
+  margin-top: 5px;
+  font-size: 10px;
+}
+
+.assistant-compose-zone-v4 {
+  padding: 8px 10px 9px;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 96%, var(--surface-subtle));
+}
+
+.assistant-composer-v4 {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 7px 8px 7px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--control);
+  box-shadow: 0 1px 3px rgba(20, 28, 24, .04);
+}
+
+.assistant-composer-v4:focus-within {
+  border-color: color-mix(in srgb, var(--primary) 62%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 11%, transparent);
+}
+
+.assistant-composer-v4 textarea {
+  width: 100%;
+  min-height: 30px;
+  max-height: 92px;
+  padding: 5px 0;
+  resize: vertical;
+  border: 0;
+  outline: 0;
+  color: var(--text);
+  background: transparent;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.assistant-compose-zone-v4 > small {
+  display: block;
+  margin-top: 4px;
+  color: var(--dim);
+  font-size: 9px;
+  text-align: right;
+}
+
+/* Make the central workflow visually independent from the AI dock. */
+.workspace-requirements-v3,
+.candidate-panel,
+.itinerary-v2-panel {
+  overscroll-behavior: contain;
+}
+
+@media (max-height: 760px) and (min-width: 901px) {
+  .assistant-dock-v4 {
+    height: 240px;
+    min-height: 220px;
+    max-height: 40%;
+  }
+
+  .assistant-dock-head-v4 {
+    min-height: 48px;
+  }
+
+  .assistant-compose-zone-v4 > small {
+    display: none;
+  }
+}
+
+@media (max-width: 1100px) and (min-width: 901px) {
+  .assistant-dock-head-v4 {
+    grid-template-columns: minmax(120px, 1fr) auto auto;
+  }
+
+  .assistant-dock-identity-v4 small {
+    display: none;
+  }
+
+  .assistant-mode-tabs-v4 button {
+    padding-inline: 7px;
+  }
+}
+
+@media (max-width: 900px) {
+  .app-shell-v3 .main-workspace-v3 {
+    padding-bottom: 12px !important;
+  }
+
+  .workspace-side-v3 {
+    min-height: 540px;
+  }
+
+  .assistant-dock-v4 {
+    height: min(320px, 44dvh);
+    min-height: 240px;
+    max-height: none;
+  }
+
+  .assistant-dock-head-v4 {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+
+  .assistant-dock-identity-v4 small,
+  .assistant-mode-tabs-v4 button > svg {
+    display: none;
+  }
+
+  .assistant-mode-tabs-v4 button {
+    min-height: 28px;
+    padding: 4px 7px;
+  }
+
+  .assistant-scope-toolbar-v4 {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .assistant-scope-toolbar-v4 > svg {
+    display: none;
+  }
+
+  .assistant-dock-collapsed-v4 {
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+  }
+
+  .assistant-dock-collapsed-v4 .assistant-proposal-badge {
+    display: none;
+  }
+}
