@@ -5,7 +5,7 @@ s = path.read_text(encoding='utf-8')
 marker = '# Tests/fixtures: required nullable field + explicit-parent/Coverage regression.'
 start = s.index(marker)
 head = s[:start]
-tail = r'''# Tests/fixtures: required nullable field + explicit-parent/Coverage regression.
+tail = r"""# Tests/fixtures: required nullable field + explicit-parent/Coverage regression.
 # ---------------------------------------------------------------------------
 # Patch the planning-area helper explicitly so function parameter types are
 # never touched by the generic fixture updater.
@@ -55,6 +55,6 @@ for test_path in Path("apps").rglob("*.test.ts"):
     test_path.write_text(value, encoding="utf-8")
 
 print("layered Macro/Micro planning transformations applied")
-'''
+"""
 path.write_text(head + marker + '\n' + tail, encoding='utf-8')
 print('layered implementation script prepared')
