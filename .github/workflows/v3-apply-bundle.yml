@@ -3,13 +3,13 @@ name: Apply verified v3 change bundle
 on:
   push:
     branches:
-      - codex/v3-candidate-workbench
+      - codex/v3-runtime-ui-completion
 
 permissions:
   contents: write
 
 concurrency:
-  group: v3-change-bundle
+  group: v3-change-bundle-runtime-ui
   cancel-in-progress: false
 
 jobs:
@@ -113,4 +113,4 @@ jobs:
             exit 0
           fi
           git commit -m "$message"
-          git push origin HEAD:codex/v3-candidate-workbench
+          git push origin HEAD:codex/v3-runtime-ui-completion
