@@ -10,7 +10,7 @@
 
 ## Current Phase
 
-Phase 5 — Candidate-first Web 工作台与地图地点模式。
+Phase 6 — 确定性行程编辑、拖拽与 Route Dirty UI。
 
 ## Completed
 
@@ -38,16 +38,25 @@ Phase 5 — Candidate-first Web 工作台与地图地点模式。
 
 ### Phase 4 — v2 Server Runtime、API、Prompt 与 Route
 
-- `apps/server/index.ts` 已切换到 `TravelStoreV2`、v2 Prompt、v2 AI Runner、v2 Resolver 和 v2 Route Service；不再运行 v1 Store、v1 Planner、旧 MapPipeline 或 CoordinateResearch。
-- 新 Runtime 使用独立结构化 Schema 运行 `conversation | discover_candidates | generate_plan | propose_adjustment`。
-- 新增受控 `StructuredAiRunnerV2`，拒绝工具审批请求、收集结构化输出、支持进度、超时和中断。
-- 新增 `DayRouteServiceV2`：根据 Day、Anchor、Stop、交通方式和当前 Resolution 构造 fingerprint；`routeDirty` 通过 fingerprint 比较派生。
-- 初次生成计划后允许自动计算第一版路线；后续编辑只形成 dirty，由显式路线 API 重算。
-- 新增完整 v2 API：workspace、Candidate discovery、单个/批量 preference、Plan generation、PlanCommand、Resolution retry/search/select/manual、Day route、Proposal create/apply/reject/undo、Revision、Task stop。
+- 服务入口切换到 `TravelStoreV2`、v2 Prompt、v2 AI Runner、v2 Resolver 和 v2 Route Service。
+- 建立 Workspace、Candidate、Plan、Command、Resolution、Route、Proposal、Revision 和 AI Task API。
 - WebSocket 广播 document、resolution、route、proposal、task 和 turn 变化。
-- 新 v3 数据使用独立 `private_data/travel-v2.sqlite3`，不会读取或覆盖旧 `travel.sqlite3`；这不是迁移或兼容层。
-- Prompt 集合严格收敛为 00/01/02；03 坐标搜索 Agent 和旧 v1 Prompt loader 已删除。
-- 保留认证、签名 Session、登录限流、Codex 账户/模型设置、地图瓦片缓存和静态资源服务。
+- Prompt 收敛为 00/01/02；03 坐标搜索 Agent 和旧 Prompt loader 已从运行链删除。
+- 新 v3 数据使用独立 `private_data/travel-v2.sqlite3`，不会读取或覆盖旧数据库。
+
+### Phase 5 — Candidate-first Web 工作台与地图地点模式
+
+- `App.tsx` 已完全切换到 `/api/trips/:id/workspace`；活动 UI 不再读取旧 `/map`、旧 itinerary 或旧 MapPipeline 响应。
+- 桌面主工作区改为左侧持久地图、右侧 `[地点] [行程]` 双 Tab，首次打开已有 Day 的旅行进入行程 Tab，否则进入地点 Tab。
+- 新增 Candidate 卡片、AI 推荐理由/分数/时长/标签、必去/想去/可选/不去四级 preference、单个与批量修改。
+- 新增全部/必去/想去/可选/不去/未定位筛选、文本搜索、选择统计、已定位/未定位统计。
+- 新增“AI 推荐地点/补充推荐”“批量重新定位”“根据选中地点生成行程”入口；未定位的已选地点会阻止排程。
+- 新增 Resolution 修复 UI：重新识别、Provider 候选选择、地图点选、手工坐标；坐标仍只来自 Provider 或用户明确输入。
+- 新增 Candidate Marker 地图模式，卡片 → Marker 与 Marker → 卡片双向选中；地图点选使用 crosshair 模式。
+- 新增 v2 行程只读视图：Day、start/end Anchor、Stop、交通、Route 状态、dirty 提示与显式更新路线按钮。
+- 新增 v2 对话抽屉，明确区分“自然语言旅行需求”与地点发现/排程按钮，不再宣传聊天是唯一规划入口。
+- 修复版本历史抽屉，使其读取 v2 Revision 的 `plan`。
+- GitHub CI 已扩展到当前实施分支。
 
 ## Important Decisions
 
@@ -62,56 +71,56 @@ Phase 5 — Candidate-first Web 工作台与地图地点模式。
 
 ## Files Changed
 
-Phase 4 关键文件：
+Phase 5 关键文件：
 
-- `apps/server/index.ts`
-- `apps/server/structured-ai-v2.ts`
-- `apps/server/planner-runtime-v2.ts`
-- `apps/server/travel-api-v2.ts`
-- `apps/server/day-route-v2.ts`
-- `apps/server/prompt-contract-v2.ts`
-- `apps/server/ai-task-monitor.ts`
-- `apps/server/config.ts`
-- `prompts/00-旅行规划Agent.md`
-- `prompts/01-行程细化Agent.md`
-- `prompts/02-地图候选消歧Agent.md`
-- 删除 `prompts/03-地图坐标搜索Agent.md`
-- 删除旧 `apps/server/prompt-contract.ts` 与测试
-- 新增对应单元测试
+- `apps/web/src/App.tsx`
+- `apps/web/src/v2-types.ts`
+- `apps/web/src/workspace-v2.ts`
+- `apps/web/src/workspace-v2.test.ts`
+- `apps/web/src/CandidatePanel.tsx`
+- `apps/web/src/WorkspaceMapV2.tsx`
+- `apps/web/src/ItineraryPanelV2.tsx`
+- `apps/web/src/WorkspaceAssistantV2.tsx`
+- `apps/web/src/VersionDrawerV2.tsx`
+- `apps/web/src/AiTaskTopbar.tsx`
+- `apps/web/src/styles.css`
+- `.github/workflows/v3-ci.yml`
+- 删除临时 `.github/workflows/export-phase4-source.yml`
 
 ## Tests / Checks
 
-Phase 4 本地验证：
+Phase 5 本地验证：
 
-- `npm run typecheck`：通过。
-- 全量 Vitest：27 个测试文件、167 个测试全部通过。
+- `npm run typecheck`：Web 与 Server 均通过。
+- 全量 Vitest：28 个测试文件、171 个测试全部通过。
+- 新增 Candidate-first Web helper：4 个测试通过。
 - `npm run build:web`：通过。
 - `npm run build:server`：通过。
-- `git diff --check`：通过。
-- 新 v3 Server 使用空临时 `private_data/` 启动成功并监听 `127.0.0.1:6688`。
+- 新增/修改源码行尾空格检查：通过。
 - 未调用真实 Codex 账户或真实地图 Provider；未读取用户真实 `private_data/`。
 
 ## Known Issues / Risks
 
-- 前端仍是旧单一行程面板；虽然可构建，但没有调用 v2 workspace/Candidate/Resolution API，因此用户视觉上仍不会看到完整 v3 工作台。
-- 浏览器端尚未实现 Candidate 筛选、批量 preference、未定位处理和 Candidate Marker 模式。
-- 拖拽、跨 Day 编辑、Proposal Preview 和 01 v2 细化 UI 留待后续阶段。
-- v1 后端模块仍存在但已无运行入口；最终 Legacy Cleanup 会删除。
+- 行程 Tab 当前可查看 Day/Anchor/Stop 和手动更新路线，但尚未提供拖拽、跨 Day 移动、增删 Stop 和 Anchor 编辑控件。
+- Proposal 后端已经存在，前端 Preview/Apply/Reject/Undo 尚未接入。
+- 01 行程细化仍未接入 v2 Runtime/UI。
+- 旧 v1 Web/Server 文件仍在仓库中但已无活动 UI/Server 入口；最终 Cleanup 会删除。
+- 未完成真实浏览器 E2E；当前以 TypeScript、纯函数测试、全量单元测试和生产构建作为门禁。
 
 ## Next Phase
 
-Phase 5：
+Phase 6：
 
-- 重写 Web 类型和 API client，完全读取 `/api/trips/:id/workspace`。
-- 右侧建立 `[地点] [行程]` 双 Tab；当前阶段重点完成地点 Tab。
-- 实现 Candidate 卡片、全部/必去/想去/可选/不去/未定位筛选、单个和批量 preference、已选择数量与“根据选中地点生成行程”。
-- 实现 Provider Resolution 状态、重试、候选选择、地图点选和手工坐标入口。
-- 地图增加 Candidate Marker 模式，支持卡片 → Marker 和 Marker → 卡片双向高亮。
-- 保留旧行程展示所需的最小过渡仅限当前 Phase；不得保留旧 API 旁路。
+- 行程 Tab 增加同日原生拖拽、跨 Day 拖拽、键盘移动替代操作。
+- 增加 Stop 添加、删除、基础字段编辑和 Day Anchor 设置。
+- 所有编辑只提交固定 PlanCommand，不调用 AI。
+- 编辑成功后刷新 Workspace；路线 dirty 只由 fingerprint 派生。
+- 用户显式点击“更新路线”才调用 Route API；连续拖拽不自动请求路线。
+- 增加纯命令构造和 UI 状态测试，覆盖同日/跨日移动和 generation 请求体。
 
 ## Recommended Model
 
-Worker 实施组件、类型和 API；高推理 Reviewer 检查状态归属、地图联动和旧 API 旁路。
+Worker 实施拖拽和编辑控件；高推理 Reviewer 检查数组索引、跨 Day 目标位置、generation CAS 和 Route Dirty 边界。
 
 ## Do Not Do
 
@@ -120,3 +129,4 @@ Worker 实施组件、类型和 API；高推理 Reviewer 检查状态归属、�
 - 不保存 routeDirty 布尔值。
 - 不让 AI 输出或直接修改坐标。
 - 不新增开放式 Patch、额外业务 stage 或新的坐标 Agent。
+- 不在拖拽或基础编辑后自动调用 Route Provider。
