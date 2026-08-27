@@ -25,9 +25,11 @@ jobs:
           node-version: '24'
           cache: npm
       - name: Apply source transformations
-        run: python .github/apply-right-control.py
+        run: |
+          python .github/apply-right-control.py
+          python .github/fix-right-control.py
       - name: Remove one-shot implementation helpers
-        run: rm -f .github/apply-right-control.py .github/workflows/apply-right-control.yml
+        run: rm -f .github/apply-right-control.py .github/fix-right-control.py .github/workflows/apply-right-control.yml
       - name: Install dependencies
         run: npm ci
       - name: Typecheck
