@@ -1,0 +1,29 @@
+name: Export verified Phase 4 source
+
+on:
+  push:
+    branches:
+      - codex/v3-runtime-ui-completion
+    paths:
+      - .github/workflows/export-phase4-source.yml
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Package source
+        run: |
+          set -euo pipefail
+          tar --exclude=.git --exclude=node_modules --exclude=dist --exclude=private_data -czf /tmp/travelplanner-phase4-source.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: travelplanner-phase4-source
+          path: /tmp/travelplanner-phase4-source.tar.gz
+          compression-level: 0
+          retention-days: 1
