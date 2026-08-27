@@ -86,6 +86,15 @@ export function candidateAreaGroups(rows: CandidateRow[]): CandidateAreaGroup[] 
     });
 }
 
+function participatingCandidateIds(rows: CandidateRow[]) {
+  const ids = new Set<string>();
+  for (const group of candidateAreaGroups(rows)) {
+    if (group.cityRow?.candidate.preference === "excluded") continue;
+    for (const row of group.rows) if (row.candidate.preference !== "excluded") ids.add(row.candidate.id);
+  }
+  return ids;
+}
+
 export function resolutionStatus(row: CandidateRow) {
   return row.resolution?.status ?? "unresolved";
 }
@@ -103,17 +112,18 @@ export function filterCandidateRows(rows: CandidateRow[], filter: CandidateFilte
 }
 
 export function candidateCounts(rows: CandidateRow[]) {
-  const result = { all: rows.length, must_go: 0, want_to_go: 0, optional: 0, excluded: 0, unresolved: 0, selected: 0 };
+  const participating = participatingCandidateIds(rows);
+  const result = { all: rows.length, must_go: 0, want_to_go: 0, optional: 0, excluded: 0, unresolved: 0, selected: participating.size };
   for (const row of rows) {
     result[row.candidate.preference] += 1;
-    if (row.candidate.preference !== "excluded") result.selected += 1;
     if (resolutionStatus(row) === "unresolved") result.unresolved += 1;
   }
   return result;
 }
 
 export function selectedUnresolvedRows(rows: CandidateRow[]) {
-  return rows.filter((row) => row.candidate.preference !== "excluded" && resolutionStatus(row) !== "resolved");
+  const participating = participatingCandidateIds(rows);
+  return rows.filter((row) => participating.has(row.candidate.id) && resolutionStatus(row) !== "resolved");
 }
 
 export function formatDuration(minutes: number | null) {
