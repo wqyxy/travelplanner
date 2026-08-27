@@ -159,8 +159,8 @@ export class CodexTravelAiV2 implements TravelAiV2 {
 
   generatePlan(input: { trip: TripDetailV2; resolutions: PlaceResolution[]; geoClusters: GeoClusterV2[] }, progress?: (value: StructuredAiProgress) => void) {
     const resolvedByPlace = new Map(input.resolutions.map((resolution) => [resolution.placeId, resolution]));
-    const selectedCandidates = input.trip.plan.candidates
-      .filter((candidate) => candidate.preference !== "excluded" && resolvedByPlace.has(candidate.placeId))
+    const planningCandidates = input.trip.plan.candidates
+      .filter((candidate) => candidate.preference !== "excluded")
       .map((candidate) => ({
         ...candidate,
         place: input.trip.plan.places.find((place) => place.id === candidate.placeId) ?? null,
@@ -170,9 +170,10 @@ export class CodexTravelAiV2 implements TravelAiV2 {
       trip: input.trip,
       taskMode: "generate_plan",
       task: {
-        selectedCandidates,
-        requiredCandidateIds: selectedCandidates.filter((candidate) => candidate.preference === "must_go").map((candidate) => candidate.id),
-        preferredCandidateIds: selectedCandidates.filter((candidate) => candidate.preference === "want_to_go").map((candidate) => candidate.id),
+        selectedCandidates: planningCandidates,
+        requiredCandidateIds: planningCandidates.filter((candidate) => candidate.preference === "must_go").map((candidate) => candidate.id),
+        preferredCandidateIds: planningCandidates.filter((candidate) => candidate.preference === "want_to_go").map((candidate) => candidate.id),
+        unresolvedCandidateIds: planningCandidates.filter((candidate) => !candidate.resolution).map((candidate) => candidate.id),
         geoClusters: input.geoClusters,
         routeProviderCapabilities: ["walk", "drive", "bike"],
       },
@@ -320,12 +321,6 @@ function expectedDayCount(plan: TravelPlanDocument) {
 function validatePlanGenerationOutput(trip: TripDetailV2, output: PlanGenerationOutput) {
   const count = expectedDayCount(trip.plan);
   if (count !== null && output.days.length !== count) throw new Error(`AI 返回 ${output.days.length} 天，但旅行要求为 ${count} 天。`);
-  const candidates = new Map(trip.plan.candidates.map((candidate) => [candidate.id, candidate]));
-  const omittedPreferred = output.unscheduledCandidates.filter((item) => candidates.get(item.candidateId)?.preference === "want_to_go");
-  if (omittedPreferred.length) {
-    const summary = omittedPreferred.map((item) => `${candidates.get(item.candidateId)?.id}: ${item.reason}`).join("；");
-    throw new Error(`“想去”地点不能被静默省略。请先把无法容纳的地点改为“可选/不去”，或调整旅行天数：${summary}`);
-  }
 }
 
 type ActiveTask = { tripId: string; interrupt: () => Promise<void>; messageId?: string };
@@ -483,23 +478,49 @@ export class TravelPlannerRuntimeV2 {
   }
 
   startPlanGeneration(tripId: string) {
-    const trip = this.options.store.requireTrip(tripId);
-    const resolutions = currentResolutions(trip, this.options.store.listPlaceResolutions(tripId));
-    const resolvedIds = new Set(resolutions.map((resolution) => resolution.placeId));
-    const selected = trip.plan.candidates.filter((candidate) => candidate.preference !== "excluded");
-    if (!selected.length) throw new Error("请先选择至少一个候选地点。");
-    const missing = selected.filter((candidate) => !resolvedIds.has(candidate.placeId));
-    if (missing.length) throw new Error(`仍有 ${missing.length} 个已选择地点未正确定位，请先处理未定位地点。`);
+    const initialTrip = this.options.store.requireTrip(tripId);
+    const planningCandidates = initialTrip.plan.candidates.filter((candidate) => candidate.preference !== "excluded");
+    if (!planningCandidates.length) throw new Error("没有可参与规划的候选地点。请至少保留一个必去、想去或可选地点。");
+
     const taskHolder = { id: "" };
     const result = this.begin({
       tripId,
-      label: "生成按天行程",
-      run: async () => this.options.ai.generatePlan({ trip, resolutions, geoClusters: buildGeoClusters(trip, resolutions) }, this.progress(taskHolder.id)),
+      label: "生成行程与路线",
+      run: async () => {
+        const trip = this.options.store.requireTrip(tripId);
+        if (trip.contentGeneration !== initialTrip.contentGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
+
+        const storedResolutions = currentResolutions(trip, this.options.store.listPlaceResolutions(tripId));
+        const resolvedIds = new Set(storedResolutions.map((resolution) => resolution.placeId));
+        const unresolvedPlaceIds = planningCandidates.filter((candidate) => !resolvedIds.has(candidate.placeId)).map((candidate) => candidate.placeId);
+
+        if (unresolvedPlaceIds.length) {
+          this.options.tasks.update(taskHolder.id, "running", `正在自动定位 ${unresolvedPlaceIds.length} 个地点`, "place:resolving");
+          const resolutionResults = await this.options.resolver.resolveMany(tripId, unresolvedPlaceIds, trip.contentGeneration);
+          for (const item of resolutionResults) this.emit("travel.resolution.changed", { tripId, placeId: item.resolution.placeId });
+        }
+
+        const latestTrip = this.options.store.requireTrip(tripId);
+        if (latestTrip.contentGeneration !== trip.contentGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
+        const resolutions = currentResolutions(latestTrip, this.options.store.listPlaceResolutions(tripId));
+        const latestResolvedIds = new Set(resolutions.map((resolution) => resolution.placeId));
+        const unresolvedMustGo = latestTrip.plan.candidates.filter((candidate) => candidate.preference === "must_go" && !latestResolvedIds.has(candidate.placeId));
+        if (unresolvedMustGo.length) {
+          const places = new Map(latestTrip.plan.places.map((place) => [place.id, place]));
+          const names = unresolvedMustGo.map((candidate) => places.get(candidate.placeId)?.nameZh ?? candidate.id).join("、");
+          throw new Error(`以下“必去”地点自动定位失败，请先确认地图地点后再生成：${names}`);
+        }
+
+        this.options.tasks.update(taskHolder.id, "running", "正在根据地点优先级规划按天行程", "plan:generating");
+        return this.options.ai.generatePlan({ trip: latestTrip, resolutions, geoClusters: buildGeoClusters(latestTrip, resolutions) }, this.progress(taskHolder.id));
+      },
       complete: async (output: PlanGenerationOutput) => {
+        const trip = this.options.store.requireTrip(tripId);
         validatePlanGenerationOutput(trip, output);
         const applied = applyPlanGenerationToStore(this.options.store, tripId, output);
         this.options.store.createAssistantMessage(tripId, output.assistantMessage, { mode: "generate_plan", changedDayIds: applied.changedDayIds, unscheduledCandidates: output.unscheduledCandidates });
         this.emit("travel.document.changed", { tripId, generation: applied.generation, changedDayIds: applied.changedDayIds });
+        this.options.tasks.update(taskHolder.id, "running", "正在生成每日真实路线", "route:calculating");
         for (const day of applied.trip.plan.days) {
           await this.options.routes.recalculate(tripId, day.id, applied.generation);
           this.emit("travel.route.changed", { tripId, dayId: day.id });
