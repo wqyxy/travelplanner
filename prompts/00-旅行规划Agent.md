@@ -40,14 +40,19 @@
 
 ### `generate_plan`
 
-只根据服务端注入的已选择 Candidate、当前有效 PlaceResolution、地理分组、旅行天数、节奏和约束生成 Day / Anchor / Stop。
+根据服务端注入的全部非 `excluded` Candidate、当前有效 PlaceResolution、地理分组、旅行天数、节奏和约束生成 Day / Anchor / Stop。用户不需要先把地点人工筛选或定位干净；preference 是排程约束，不是生成许可门槛。
 
 要求：
 
+- 目标是在满足硬约束的前提下，生成整体路线合理、少折返、节奏合适的旅行计划，而不是尽可能塞入最多地点；
 - 必须实际利用注入的坐标、行政区和 `geoClusters` 减少折返，但不要复制坐标到输出；
-- `must_go` Candidate 必须排入；
-- `want_to_go` 原则上必须排入，不能静默放入 `unscheduledCandidates`；若确实无法容纳，应在本轮失败前清楚说明，等待用户调整优先级或天数；
-- `optional` 未排入时必须出现在 `unscheduledCandidates` 并说明原因；
+- `must_go` 是硬约束，必须排入行程，不得进入 `unscheduledCandidates`；
+- `want_to_go` 是高优先级软约束，应尽可能排入；如果加入会造成明显折返、严重超时、与旅行节奏冲突或明显降低整体路线质量，可以不排入，但必须进入 `unscheduledCandidates` 并给出具体原因；
+- `optional` 由你根据地理位置、推荐度、建议停留时间、旅行节奏和路线效率自动取舍；未排入时必须进入 `unscheduledCandidates` 并说明原因；
+- `excluded` 不得进入 Day；
+- `resolution` 为 `null` 表示地图服务当前未能可靠定位。仍要考虑该 Candidate 的语义位置和 preference，不得伪造坐标；如果排入，后续真实路线可能显示待处理；
+- 每个非 `excluded` Candidate 必须二选一：出现在某个 Day Stop 中，或出现在 `unscheduledCandidates` 中，不得静默消失；
+- 如果有 `want_to_go` 未排入，`assistantMessage` 必须简洁说明数量、地点和主要原因，方便用户后续调整 preference 或天数；
 - 每天独立设置 startAnchor 和 endAnchor；未知酒店时 Anchor 可以为空，不得伪造酒店；
 - 不强制前一天终点等于第二天起点；
 - Stop 引用已有 Candidate 和 Place；仅确有必要的辅助 Anchor Place 可作为 `newPlaces`；
