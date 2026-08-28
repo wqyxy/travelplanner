@@ -34,8 +34,27 @@ function affectedDays(plan: TravelPlanDocument, commands: PlanCommand[]) {
       values.add(command.targetDayId);
     }
     if (command.type === "move_day") plan.days.forEach((day) => values.add(day.id));
-    if (command.type === "set_candidate_preference" || command.type === "remove_candidate" || command.type === "update_candidate") {
+    if (command.type === "set_candidate_preference" || command.type === "remove_candidate" || command.type === "remove_candidate_tree" || command.type === "update_candidate") {
       daysUsingCandidate(plan, command.candidateId).forEach((dayId) => values.add(dayId));
+      const placeId = plan.candidates.find((candidate) => candidate.id === command.candidateId)?.placeId;
+      if ((command.type === "remove_candidate" || command.type === "remove_candidate_tree") && placeId) daysUsingPlace(plan, placeId).forEach((dayId) => values.add(dayId));
+      if (command.type === "remove_candidate_tree") {
+        const descendants = new Set<string>([command.candidateId]);
+        let changed = true;
+        while (changed) {
+          changed = false;
+          for (const candidate of plan.candidates) {
+            if (!candidate.planningAreaCandidateId || !descendants.has(candidate.planningAreaCandidateId) || descendants.has(candidate.id)) continue;
+            descendants.add(candidate.id);
+            changed = true;
+          }
+        }
+        descendants.forEach((candidateId) => {
+          daysUsingCandidate(plan, candidateId).forEach((dayId) => values.add(dayId));
+          const descendantPlaceId = plan.candidates.find((candidate) => candidate.id === candidateId)?.placeId;
+          if (descendantPlaceId) daysUsingPlace(plan, descendantPlaceId).forEach((dayId) => values.add(dayId));
+        });
+      }
     }
     if (command.type === "bulk_set_candidate_preference") {
       command.candidateIds.forEach((candidateId) => daysUsingCandidate(plan, candidateId).forEach((dayId) => values.add(dayId)));

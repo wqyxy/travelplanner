@@ -1,6 +1,6 @@
 # TravelPlanner v3 Implementation Status
 
-更新时间：2026-08-27  
+更新时间：2026-08-28
 目标分支：`main`  
 产品依据：`docs/PRODUCT_PLAN.md`  
 数据策略：独立新数据库，不做旧数据库迁移
@@ -23,7 +23,7 @@
 
 ## Current Status
 
-本轮针对 main 静态 Review 中发现的 P0 缺口完成代码修复，并同步产品、改进和本地测试文档。
+本轮针对新生成行程出现大量无法定位地址的问题，收紧候选质量门槛，并补齐地点编辑与删除闭环。
 
 本轮按用户要求：
 
@@ -32,7 +32,7 @@
 - 不运行 typecheck；
 - 不运行 build；
 - 不启动应用；
-- 不读取或修改真实 `private_data`；
+- 诊断阶段只读检查真实 `private_data`，未修改任何私人数据；
 - 不实现数据库迁移。
 
 ## Completed in This Change
@@ -49,7 +49,10 @@
 - AI 输入包含当前 Resolution、坐标、地址、Candidate preference、建议时长和服务端地理分组。
 - Day 数量按日期范围或 requestedDurationDays 硬校验。
 - want_to_go 不允许静默未排入。
-- 首次 Candidate Discovery 要求 10–80 个地点，补充推荐上限 80。
+- 首次 Micro Candidate Discovery 默认每个 Macro 只生成 1–2 个高价值地点，单次硬上限仍为 80。
+- AI 候选写入前执行非写入式地图预检，只将可靠定位的地点写入 canonical 计划。
+- 可能闭馆、改名或搬迁的异常地点要求生成 Agent 先核验官方网站。
+- 未定位的具体地点不能进入 Day Stop；非必去地点作为未排程候选说明原因。
 
 ### Proposal Scope
 
@@ -71,6 +74,8 @@
 
 - Candidate Tab 支持手动创建 Place + Candidate。
 - 新地点保存后自动进入 Place Resolver。
+- Candidate 卡片支持编辑地点名称、本地名、英文名和地区字段，保存后旧 Resolution 自动失效并重新定位。
+- 支持删除单个地点；删除 Macro 会预览并级联删除下属 Micro，同时清理相关 Stop、Anchor 和 Trip 引用。
 - 支持全选当前筛选结果。
 - 把已排程 Candidate 标记为 excluded 前显示受影响 Day，并在确认后原子移除 Stop。
 - 行程 Tab 允许同一地点多次到访。

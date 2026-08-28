@@ -189,6 +189,7 @@ export type PlanCommand =
   | { type: "bulk_set_candidate_preference"; candidateIds: string[]; preference: CandidatePreference }
   | { type: "add_candidate"; place: Place; candidate: TripCandidate }
   | { type: "remove_candidate"; candidateId: string }
+  | { type: "remove_candidate_tree"; candidateId: string }
   | { type: "update_candidate"; candidateId: string; changes: Partial<Pick<TripCandidate, "aiReason" | "aiScore" | "suggestedDurationMinutes" | "tags">> }
   | { type: "update_place"; placeId: string; changes: Partial<Omit<Place, "id">> }
   | { type: "set_day_anchor"; dayId: string; anchor: "start" | "end"; placeId: string | null; label: string | null; notes: string | null }

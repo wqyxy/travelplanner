@@ -137,6 +137,42 @@ function removeCandidateStops(plan: MutablePlan, candidateId: string) {
   return changed;
 }
 
+function removeCandidates(plan: MutablePlan, candidateIds: Set<string>) {
+  const placeIds = new Set(plan.candidates.filter((candidate) => candidateIds.has(candidate.id)).map((candidate) => candidate.placeId));
+  const changedDays = new Set<string>();
+  for (const day of plan.days) {
+    const nextStops = day.stops.filter((stop) => !(stop.candidateId && candidateIds.has(stop.candidateId)) && !placeIds.has(stop.placeId));
+    const startRemoved = Boolean(day.startAnchor.placeId && placeIds.has(day.startAnchor.placeId));
+    const endRemoved = Boolean(day.endAnchor.placeId && placeIds.has(day.endAnchor.placeId));
+    if (nextStops.length === day.stops.length && !startRemoved && !endRemoved) continue;
+    day.stops = nextStops;
+    if (startRemoved) day.startAnchor = { ...day.startAnchor, placeId: null, label: null };
+    if (endRemoved) day.endAnchor = { ...day.endAnchor, placeId: null, label: null };
+    markDayForReview(day);
+    changedDays.add(day.id);
+  }
+  if (plan.trip.originPlaceId && placeIds.has(plan.trip.originPlaceId)) plan.trip.originPlaceId = null;
+  plan.trip.destinationPlaceIds = plan.trip.destinationPlaceIds.filter((placeId) => !placeIds.has(placeId));
+  plan.candidates = plan.candidates.filter((candidate) => !candidateIds.has(candidate.id));
+  return changedDays;
+}
+
+function removeCandidateTree(plan: MutablePlan, candidateId: string) {
+  requireCandidate(plan, candidateId);
+  const removed = new Set<string>([candidateId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const candidate of plan.candidates) {
+      if (!candidate.planningAreaCandidateId || !removed.has(candidate.planningAreaCandidateId) || removed.has(candidate.id)) continue;
+      removed.add(candidate.id);
+      changed = true;
+    }
+  }
+  const changedDays = removeCandidates(plan, removed);
+  return { removed, changedDays };
+}
+
 function setCandidatePreference(plan: MutablePlan, candidateId: string, preference: CandidatePreference) {
   const candidate = requireCandidate(plan, candidateId);
   candidate.preference = preference;
@@ -177,7 +213,7 @@ function existingStopOwner(plan: TravelPlanDocument, stopId: string) {
 }
 
 function commandTargetsCandidate(plan: TravelPlanDocument, command: PlanCommand, candidateId: string) {
-  if (command.type === "set_candidate_preference" || command.type === "remove_candidate" || command.type === "update_candidate") return command.candidateId === candidateId;
+  if (command.type === "set_candidate_preference" || command.type === "remove_candidate" || command.type === "remove_candidate_tree" || command.type === "update_candidate") return command.candidateId === candidateId;
   if (command.type === "bulk_set_candidate_preference") return command.candidateIds.every((id) => id === candidateId);
   if (command.type === "update_place") return plan.candidates.find((candidate) => candidate.id === candidateId)?.placeId === command.placeId;
   const candidate = plan.candidates.find((item) => item.id === candidateId);
@@ -192,7 +228,7 @@ function commandTargetsCandidate(plan: TravelPlanDocument, command: PlanCommand,
 
 function commandTargetsPlace(plan: TravelPlanDocument, command: PlanCommand, placeId: string) {
   if (command.type === "update_place") return command.placeId === placeId;
-  if (command.type === "set_candidate_preference" || command.type === "remove_candidate" || command.type === "update_candidate") return plan.candidates.find((candidate) => candidate.id === command.candidateId)?.placeId === placeId;
+  if (command.type === "set_candidate_preference" || command.type === "remove_candidate" || command.type === "remove_candidate_tree" || command.type === "update_candidate") return plan.candidates.find((candidate) => candidate.id === command.candidateId)?.placeId === placeId;
   if (command.type === "bulk_set_candidate_preference") return command.candidateIds.every((id) => plan.candidates.find((candidate) => candidate.id === id)?.placeId === placeId);
   if (command.type === "set_day_anchor") return command.placeId === placeId || findDay(clone(plan) as MutablePlan, command.dayId).day[command.anchor === "start" ? "startAnchor" : "endAnchor"].placeId === placeId;
   if (command.type === "add_day_stop") return command.stop.placeId === placeId;
@@ -216,7 +252,7 @@ export function assertCommandsWithinScope(plan: TravelPlanDocument, scopeValue: 
   if (!commands.length) throw new Error("Proposal 必须包含至少一条命令。");
   if (scope.type === "trip") return commands;
   if (scope.type === "candidate_pool") {
-    const allowed = new Set(["set_candidate_preference", "bulk_set_candidate_preference", "add_candidate", "remove_candidate", "update_candidate", "update_place"]);
+    const allowed = new Set(["set_candidate_preference", "bulk_set_candidate_preference", "add_candidate", "remove_candidate", "remove_candidate_tree", "update_candidate", "update_place"]);
     if (commands.some((command) => !allowed.has(command.type))) throw new Error("Candidate Pool Scope 不能修改 Day、Anchor 或 Stop。");
     return commands;
   }
@@ -275,10 +311,19 @@ export function applyPlanCommands(current: TravelPlanDocument, commandValues: un
       case "remove_candidate": {
         const id = mapper.resolve(command.candidateId);
         requireCandidate(plan, id);
-        for (const dayId of removeCandidateStops(plan, id)) explicitlyChangedDays.add(dayId);
-        plan.candidates = plan.candidates.filter((candidate) => candidate.id !== id);
+        for (const dayId of removeCandidates(plan, new Set([id]))) explicitlyChangedDays.add(dayId);
         explicitChangedCandidates.add(id);
         removedCandidates.add(id);
+        break;
+      }
+      case "remove_candidate_tree": {
+        const id = mapper.resolve(command.candidateId);
+        const result = removeCandidateTree(plan, id);
+        for (const candidateId of result.removed) {
+          explicitChangedCandidates.add(candidateId);
+          removedCandidates.add(candidateId);
+        }
+        for (const dayId of result.changedDays) explicitlyChangedDays.add(dayId);
         break;
       }
       case "update_candidate": {

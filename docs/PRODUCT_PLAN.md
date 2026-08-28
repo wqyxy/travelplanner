@@ -330,6 +330,14 @@ Micro Candidate 至少包含：
 - 定位状态；
 - preference。
 
+生成质量规则：
+
+- 首轮每个 Macro 默认只给 1–2 个高价值 Micro，优先保证可导航性，不为凑数量生成泛化名称；
+- 每个 Candidate 必须对应一个当前仍存在、可由公开地图服务唯一识别的实体；
+- “葡萄酒产区”“装饰艺术街区”“整条步道”“观鲸码头”等区域、活动或集合概念，必须具体化为游客中心、正式入口、集合点、码头或一家可访问场所；
+- 优先使用当前官方名称、本地名称或英文名称；怀疑闭馆、改名或搬迁时，由生成 Agent 先核验官方网站；
+- AI 草稿在写入正式 Candidate Pool 前必须经过非写入式地图预检，无法可靠定位的候选直接舍弃并向用户说明。
+
 ### 6.1 Macro → Micro 必须显式关联
 
 P0 不允许继续只依赖 `Place.city / region` 自由文本猜父区域。
@@ -383,11 +391,11 @@ AI 不生成可信坐标。
 ```text
 AI Micro Candidate
 ↓
-Place Resolver
+Place Resolver 非写入式预检
 ↓
 地图 Provider 搜索
 ↓
-Provider Place ID / 坐标 / 地址
+可靠候选写入 Candidate Pool，并保存 Provider Place ID / 坐标 / 地址
 ↓
 resolved / unresolved
 ```
@@ -423,7 +431,7 @@ Macro Area
 - Macro `want_to_go` 缺少 Micro 时先自动补充，仍失败可被规划器舍弃，但必须说明原因；
 - Macro `optional` 缺少 Micro 可以不采用；
 - Micro `must_go` 未定位，自动重试仍失败则阻塞生成；
-- `want_to_go / optional` Micro 未定位不统一阻塞。
+- `want_to_go / optional` Micro 未定位不阻塞生成，但不得进入 Day Stop，必须作为未排程候选返回原因。
 
 ### 7.3 异常修复入口仍只有右侧
 
@@ -435,7 +443,11 @@ Macro Area
 地图点选定位
 手工坐标
 补充搜索信息后重试
+编辑地点名称与地区信息
+删除地点
 ```
+
+删除 Macro 时必须明确预览并级联删除它的 Micro Candidate，同时原子清理相关 Stop、Anchor 和 Trip 地点引用；删除结果写入 Revision，可从版本历史恢复。
 
 即使使用“地图点选定位”，操作也必须由右侧点击“地图点选”进入一个明确模式，然后用户在地图点一下位置，完成后回到右侧确认。
 
@@ -922,17 +934,22 @@ itinerary_refinement
 - AI Macro 推荐；
 - Macro 四级 preference；
 - AI 按有效 Macro 展开 Micro；
+- 每个 Macro 首轮只保留少量通过地图预检的可靠 Micro；
 - Micro 四级 preference；
 - Macro / Micro 均可 scoped 再生成；
 - Micro 显式 `planningAreaCandidateId`；
 - 用户手动新增。
+- 用户可编辑地点名称与地区信息；
+- 用户可删除单个 Micro，或级联删除 Macro 及其下属地点。
 
 ### Coverage / Resolution
 
 - 自动定位；
+- Candidate 写入前地图预检；
 - Micro discovery 后 Coverage Check；
 - 缺少 Micro 的 must-go Macro 自动补充；
 - unresolved 有右侧修复路径；
+- 未定位的非必去 Micro 不进入 Day Stop；
 - 生成前再次 Coverage Check。
 
 ### Planning / Route

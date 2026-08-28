@@ -1,6 +1,6 @@
-import { Check, ChevronRight, LocateFixed, MapPin, Plus, RefreshCw, Search, Sparkles, WandSparkles, X } from "lucide-react";
+import { Check, ChevronRight, LocateFixed, MapPin, Pencil, Plus, RefreshCw, Search, Sparkles, Trash2, WandSparkles, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CandidatePreference, PlaceKind, ProviderPlaceCandidate, Workspace } from "./v2-types";
+import type { CandidatePreference, Place, PlaceKind, ProviderPlaceCandidate, Workspace } from "./v2-types";
 import {
   candidateAreaGroups,
   candidateCounts,
@@ -30,6 +30,10 @@ const kindLabels: Record<PlaceKind, string> = {
 
 type ManualDraft = { placeId: string; name: string; latitude: string; longitude: string; address: string };
 type ChoiceState = { placeId: string; loading: boolean; candidates: ProviderPlaceCandidate[]; error: string } | null;
+type EditDraft = Pick<Place, "id" | "nameZh" | "nameLocal" | "nameEn" | "kind" | "city" | "region" | "country" | "countryCode">;
+type DeleteState = { row: CandidateRow; descendantRows: CandidateRow[]; affectedDays: Array<{ id: string; dayNumber: number; title: string; nodeCount: number }> } | null;
+
+export type PlaceEditChanges = Pick<Place, "nameZh" | "nameLocal" | "nameEn" | "city" | "region" | "country" | "countryCode">;
 
 type NewCandidateForm = {
   nameZh: string;
@@ -82,6 +86,8 @@ export function CandidatePanel({
   onSetPreference,
   onDiscover,
   onAddCandidate,
+  onUpdatePlace,
+  onRemoveCandidate,
   onContinue,
   onRetry,
   onSearchCandidates,
@@ -97,6 +103,8 @@ export function CandidatePanel({
   onSetPreference: (candidateIds: string[], preference: CandidatePreference) => Promise<void>;
   onDiscover: () => Promise<void>;
   onAddCandidate: (draft: NewCandidateDraft) => Promise<void>;
+  onUpdatePlace: (placeId: string, changes: PlaceEditChanges) => Promise<void>;
+  onRemoveCandidate: (candidateId: string, cascade: boolean) => Promise<void>;
   onContinue: () => Promise<void>;
   onRetry: (placeIds: string[]) => Promise<void>;
   onSearchCandidates: (placeId: string) => Promise<ProviderPlaceCandidate[]>;
@@ -118,6 +126,9 @@ export function CandidatePanel({
   const [manual, setManual] = useState<ManualDraft | null>(null);
   const [newCandidate, setNewCandidate] = useState<NewCandidateForm | null>(null);
   const [newCandidateError, setNewCandidateError] = useState("");
+  const [edit, setEdit] = useState<EditDraft | null>(null);
+  const [editError, setEditError] = useState("");
+  const [deleting, setDeleting] = useState<DeleteState>(null);
   const cards = useRef(new Map<string, HTMLElement>());
   const visible = useMemo(() => filterCandidateRows(rows, filter, query), [rows, filter, query]);
   const groups = useMemo(() => {
@@ -127,6 +138,7 @@ export function CandidatePanel({
       .filter((group) => group.rows.length > 0);
   }, [allRows, visible]);
   const unresolvedSelected = useMemo(() => selectedUnresolvedRows(rows, allRows), [rows, allRows]);
+  const unresolvedMustGo = useMemo(() => unresolvedSelected.filter((row) => row.candidate.preference === "must_go"), [unresolvedSelected]);
   const visibleIds = useMemo(() => visible.map((row) => row.candidate.id), [visible]);
   const allVisibleChecked = visibleIds.length > 0 && visibleIds.every((id) => checked.has(id));
 
@@ -224,6 +236,57 @@ export function CandidatePanel({
     }
   };
 
+  const submitEdit = async () => {
+    if (!edit) return;
+    setEditError("");
+    const nameZh = edit.nameZh.trim();
+    const countryCode = edit.countryCode?.trim().toUpperCase() || null;
+    if (!nameZh) { setEditError("请输入地点中文名称。"); return; }
+    if (countryCode && !/^[A-Z]{2}$/.test(countryCode)) { setEditError("国家代码应为两个英文字母，例如 NZ、JP。"); return; }
+    try {
+      await onUpdatePlace(edit.id, {
+        nameZh,
+        nameLocal: edit.nameLocal?.trim() || null,
+        nameEn: edit.nameEn?.trim() || null,
+        city: edit.city?.trim() || null,
+        region: edit.region?.trim() || null,
+        country: edit.country?.trim() || null,
+        countryCode,
+      });
+      setEdit(null);
+    } catch (error) {
+      setEditError(error instanceof Error ? error.message : "无法保存地点信息。");
+    }
+  };
+
+  const beginDelete = (row: CandidateRow) => {
+    const ids = new Set<string>([row.candidate.id]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const candidateRow of allRows) {
+        if (!candidateRow.candidate.planningAreaCandidateId || !ids.has(candidateRow.candidate.planningAreaCandidateId) || ids.has(candidateRow.candidate.id)) continue;
+        ids.add(candidateRow.candidate.id);
+        changed = true;
+      }
+    }
+    const descendantRows = allRows.filter((candidateRow) => candidateRow.candidate.id !== row.candidate.id && ids.has(candidateRow.candidate.id));
+    const placeIds = new Set(allRows.filter((candidateRow) => ids.has(candidateRow.candidate.id)).map((candidateRow) => candidateRow.place.id));
+    const affectedDays = workspace.trip.plan.days.flatMap((day) => {
+      const stopCount = day.stops.filter((stop) => stop.candidateId && ids.has(stop.candidateId)).length;
+      const anchorCount = Number(Boolean(day.startAnchor.placeId && placeIds.has(day.startAnchor.placeId))) + Number(Boolean(day.endAnchor.placeId && placeIds.has(day.endAnchor.placeId)));
+      const nodeCount = stopCount + anchorCount;
+      return nodeCount ? [{ id: day.id, dayNumber: day.dayNumber, title: day.title, nodeCount }] : [];
+    });
+    setDeleting({ row, descendantRows, affectedDays });
+  };
+
+  const confirmDelete = async () => {
+    if (!deleting) return;
+    await onRemoveCandidate(deleting.row.candidate.id, deleting.row.place.kind === "city");
+    setDeleting(null);
+  };
+
   const renderCandidate = (row: CandidateRow, areaExcluded: boolean) => {
     const status = resolutionStatus(row);
     const selected = selectedCandidateId === row.candidate.id;
@@ -241,6 +304,7 @@ export function CandidatePanel({
         <div className="candidate-meta"><span>{macroCity ? "目的地规划节点" : row.place.city || row.place.region || row.place.country || "区域待确认"}</span>{formatDuration(row.candidate.suggestedDurationMinutes) && <span>{formatDuration(row.candidate.suggestedDurationMinutes)}</span>}{row.candidate.tags.slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}</div>
         <div className={`resolution-line ${status}`}>{status === "resolved" ? <><Check size={14}/><span>{macroCity ? "目的地位置已定位" : "已定位"}</span><small>{row.resolution?.address || `${row.resolution?.latitude?.toFixed(5)}, ${row.resolution?.longitude?.toFixed(5)}`}</small></> : status === "resolving" ? <><RefreshCw className="spin" size={14}/><span>定位中</span></> : <><MapPin size={14}/><span>{macroCity ? "目的地位置未定位" : "未定位"}</span><small>{row.resolution?.errorMessage || "生成时会自动尝试定位"}</small></>}</div>
         {status === "unresolved" && <div className="resolution-actions" onClick={(event) => event.stopPropagation()}><button disabled={busy} onClick={() => void onRetry([row.place.id])}><RefreshCw size={13}/>重新识别</button><button disabled={busy} onClick={() => void openChoices(row.place.id)}><LocateFixed size={13}/>选择地图地点</button><button disabled={busy} onClick={() => onBeginMapPick(row.place.id)}><MapPin size={13}/>地图点选</button><button disabled={busy} onClick={() => setManual({ placeId: row.place.id, name: row.place.nameZh, latitude: "", longitude: "", address: "" })}>手工坐标</button></div>}
+        <div className="resolution-actions candidate-edit-actions" onClick={(event) => event.stopPropagation()}><button disabled={busy} onClick={() => { setEditError(""); setEdit({ id: row.place.id, nameZh: row.place.nameZh, nameLocal: row.place.nameLocal, nameEn: row.place.nameEn, kind: row.place.kind, city: row.place.city, region: row.place.region, country: row.place.country, countryCode: row.place.countryCode }); }}><Pencil size={13}/>编辑地点</button><button className="danger" disabled={busy} onClick={() => beginDelete(row)}><Trash2 size={13}/>删除地点</button></div>
       </div>
       <div className="candidate-preference" onClick={(event) => event.stopPropagation()}>{(Object.keys(preferenceLabels) as CandidatePreference[]).map((preference) => <button type="button" className={row.candidate.preference === preference ? "active" : ""} title={preferenceLabels[preference]} disabled={busy} key={preference} onClick={() => void onSetPreference([row.candidate.id], preference)}>{preferenceMarks[preference]}</button>)}</div>
       <ChevronRight className="candidate-chevron" size={16}/>
@@ -291,10 +355,25 @@ export function CandidatePanel({
 
     <footer className="candidate-footer candidate-footer-flow-v3">
       <div>{!isMacro && unresolvedSelected.length > 0 && <button className="button" type="button" disabled={busy} onClick={() => void onRetry(unresolvedSelected.map((row) => row.place.id))}><RefreshCw size={14}/>批量重新定位 {unresolvedSelected.length} 个</button>}<button className="button" type="button" disabled={busy} onClick={() => void onDiscover()}><WandSparkles size={15}/>{isMacro ? (rows.length ? "重新生成目的地建议" : "生成目的地建议") : (rows.length ? "补充兴趣点" : "生成兴趣点")}</button></div>
-      <button className="button primary generate-plan" type="button" disabled={busy || !counts.selected || (!isMacro && workspace.trip.plan.days.length > 0)} onClick={() => void onContinue()}><Sparkles size={15}/>{isMacro ? "生成详细兴趣点" : workspace.trip.plan.days.length ? "行程已生成" : "生成行程与路线"}</button>
+      {!isMacro && unresolvedSelected.length > 0 && <small className="candidate-generation-warning">{unresolvedMustGo.length ? `${unresolvedMustGo.length} 个“必去”地点未定位，请先编辑或定位` : `${unresolvedSelected.length} 个未定位地点不会进入按天行程`}</small>}
+      <button className="button primary generate-plan" type="button" disabled={busy || !counts.selected || (!isMacro && (workspace.trip.plan.days.length > 0 || unresolvedMustGo.length > 0))} onClick={() => void onContinue()}><Sparkles size={15}/>{isMacro ? "生成详细兴趣点" : workspace.trip.plan.days.length ? "行程已生成" : "生成行程与路线"}</button>
     </footer>
 
     {choice && <div className="candidate-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setChoice(null); }}><section className="candidate-dialog"><header><div><strong>选择地图地点</strong><small>坐标只取自地图 Provider</small></div><button className="icon-button" onClick={() => setChoice(null)}><X size={18}/></button></header><div className="provider-candidate-list">{choice.loading && <p><RefreshCw className="spin" size={15}/>正在查询地图服务…</p>}{choice.error && <p className="inline-error">{choice.error}</p>}{choice.candidates.map((candidate) => <button type="button" key={candidate.providerPlaceId} disabled={busy} onClick={() => void onSelectResolution(choice.placeId, candidate.providerPlaceId).then(() => setChoice(null))}><MapPin size={16}/><span><strong>{candidate.name || candidate.displayName.split(",")[0]}</strong><small>{candidate.displayName}</small><em>{candidate.provider} · {candidate.placeType || candidate.category || "地点"}</em></span><ChevronRight size={16}/></button>)}</div></section></div>}
+
+    {edit && <div className="candidate-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setEdit(null); }}><section className="candidate-dialog manual-coordinate-dialog"><header><div><strong>编辑地点</strong><small>保存后旧定位会失效，并自动使用新名称重新定位</small></div><button className="icon-button" onClick={() => setEdit(null)}><X size={18}/></button></header><div className="manual-coordinate-form">
+      <label className="wide">中文名称（必填）<input value={edit.nameZh} onChange={(event) => setEdit({ ...edit, nameZh: event.target.value })}/></label>
+      <label>本地名称<input value={edit.nameLocal ?? ""} onChange={(event) => setEdit({ ...edit, nameLocal: event.target.value || null })}/></label>
+      <label>英文名称<input value={edit.nameEn ?? ""} onChange={(event) => setEdit({ ...edit, nameEn: event.target.value || null })}/></label>
+      <label>类型<input value={kindLabels[edit.kind]} disabled/></label>
+      <label>城市<input value={edit.city ?? ""} onChange={(event) => setEdit({ ...edit, city: event.target.value || null })}/></label>
+      <label>区域<input value={edit.region ?? ""} onChange={(event) => setEdit({ ...edit, region: event.target.value || null })}/></label>
+      <label>国家<input value={edit.country ?? ""} onChange={(event) => setEdit({ ...edit, country: event.target.value || null })}/></label>
+      <label>国家代码<input maxLength={2} value={edit.countryCode ?? ""} onChange={(event) => setEdit({ ...edit, countryCode: event.target.value.toUpperCase() || null })}/></label>
+      {editError && <p className="inline-error wide">{editError}</p>}
+    </div><footer><button className="button" onClick={() => setEdit(null)}>取消</button><button className="button primary" disabled={busy || !edit.nameZh.trim()} onClick={() => void submitEdit()}>保存并重新定位</button></footer></section></div>}
+
+    {deleting && <div className="candidate-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setDeleting(null); }}><section className="candidate-dialog"><header><div><strong>删除“{deleting.row.place.nameZh}”</strong><small>此操作会写入一个可从版本历史恢复的新版本</small></div><button className="icon-button" onClick={() => setDeleting(null)}><X size={18}/></button></header><div className="provider-candidate-list delete-impact-list"><p>将删除该候选地点{deleting.descendantRows.length ? `及其下属 ${deleting.descendantRows.length} 个兴趣点` : ""}。</p>{deleting.descendantRows.length > 0 && <p><strong>下属地点：</strong>{deleting.descendantRows.map((row) => row.place.nameZh).join("、")}</p>}{deleting.affectedDays.length > 0 ? <p><strong>同时移除行程节点：</strong>{deleting.affectedDays.map((day) => `Day ${day.dayNumber} ${day.title}（${day.nodeCount} 个）`).join("、")}</p> : <p>当前按天行程不引用此地点。</p>}</div><footer><button className="button" onClick={() => setDeleting(null)}>取消</button><button className="button danger" disabled={busy} onClick={() => void confirmDelete()}><Trash2 size={14}/>确认删除</button></footer></section></div>}
 
     {manual && <div className="candidate-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setManual(null); }}><section className="candidate-dialog manual-coordinate-dialog"><header><div><strong>手工输入坐标</strong><small>{manual.name}</small></div><button className="icon-button" onClick={() => setManual(null)}><X size={18}/></button></header><div className="manual-coordinate-form"><label>纬度<input inputMode="decimal" value={manual.latitude} onChange={(event) => setManual({ ...manual, latitude: event.target.value })} placeholder="例如 34.994856"/></label><label>经度<input inputMode="decimal" value={manual.longitude} onChange={(event) => setManual({ ...manual, longitude: event.target.value })} placeholder="例如 135.785046"/></label><label className="wide">地址备注（可选）<input value={manual.address} onChange={(event) => setManual({ ...manual, address: event.target.value })} placeholder="地图地址或用户备注"/></label></div><footer><button className="button" onClick={() => setManual(null)}>取消</button><button className="button primary" disabled={busy || !manual.latitude || !manual.longitude} onClick={() => void submitManual()}>保存坐标</button></footer></section></div>}
 

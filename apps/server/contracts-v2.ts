@@ -486,6 +486,7 @@ export const PlanCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("bulk_set_candidate_preference"), candidateIds: z.array(IdSchema).min(1).max(1800), preference: CandidatePreferenceSchema }).strict(),
   z.object({ type: z.literal("add_candidate"), place: PlaceSchema, candidate: TripCandidateSchema }).strict(),
   z.object({ type: z.literal("remove_candidate"), candidateId: IdSchema }).strict(),
+  z.object({ type: z.literal("remove_candidate_tree"), candidateId: IdSchema }).strict(),
   z.object({ type: z.literal("update_candidate"), candidateId: IdSchema, changes: CandidateChangesSchema }).strict(),
   z.object({ type: z.literal("update_place"), placeId: IdSchema, changes: PlaceSemanticChangesSchema }).strict(),
   z.object({ type: z.literal("set_day_anchor"), dayId: IdSchema, anchor: z.enum(["start", "end"]), placeId: IdSchema.nullable(), label: z.string().trim().min(1).max(300).nullable(), notes: z.string().max(2000).nullable() }).strict(),

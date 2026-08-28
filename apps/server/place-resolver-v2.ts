@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   DirectPlaceResolutionInputSchema,
   MapResolutionAssistOutputSchema,
+  PlaceSchema,
   ProviderResolutionSelectionInputSchema,
   type MapResolutionAssistOutput,
   type Place,
@@ -18,6 +19,7 @@ export const PLACE_AUTO_SELECT_MIN_MARGIN = 15;
 export type RankedProviderCandidate = { candidate: ProviderPlaceCandidate; score: number };
 export type PlaceResolutionAssist = (input: { place: Place; candidates: ProviderPlaceCandidate[] }) => Promise<MapResolutionAssistOutput | null>;
 export type PlaceResolutionResult = { resolution: PlaceResolution; candidates: RankedProviderCandidate[] };
+export type PlaceResolutionPreview = { geoFingerprint: string; selected: RankedProviderCandidate | null; candidates: RankedProviderCandidate[]; method: "provider_match" | "provider_choice" };
 
 type Maps = Pick<MapService, "search" | "reverse">;
 
@@ -63,7 +65,7 @@ function typeCompatible(place: Place, candidate: MapCandidate) {
   if (place.kind === "port") return ["waterway", "harbour"].includes(category) || ["harbour", "port", "marina", "ferry_terminal"].includes(type);
   if (place.kind === "city" || place.kind === "waypoint") return ["place", "boundary"].includes(category);
   if (place.kind === "lodging") return ["tourism", "building", "amenity", "place"].includes(category);
-  if (place.kind === "attraction") return ["tourism", "historic", "leisure", "natural", "amenity", "man_made", "building"].includes(category);
+  if (place.kind === "attraction") return ["tourism", "historic", "leisure", "natural", "amenity", "man_made", "building", "aerialway"].includes(category);
   if (place.kind === "meal") return ["amenity", "shop", "tourism"].includes(category);
   return ["aeroway", "railway", "public_transport", "highway", "amenity", "place"].includes(category);
 }
@@ -178,15 +180,51 @@ export class PlaceResolverV2 {
     return place;
   }
 
-  async searchCandidates(tripId: string, placeId: string, expectedGeneration: number, hints: string[] = []) {
-    const place = this.place(tripId, placeId, expectedGeneration);
+  private async searchPlaceCandidates(place: Place, hints: string[] = [], assertCurrent: () => void = () => undefined) {
     const values = new Map<string, MapCandidate>();
     for (const query of buildPlaceSearchQueries(place, hints)) {
       const candidates = await this.options.maps.search(query, place.countryCode);
-      this.currentTrip(tripId, expectedGeneration);
+      assertCurrent();
       for (const candidate of candidates) values.set(candidate.providerPlaceId, candidate);
     }
     return rankProviderCandidates(place, [...values.values()]);
+  }
+
+  async searchCandidates(tripId: string, placeId: string, expectedGeneration: number, hints: string[] = []) {
+    const place = this.place(tripId, placeId, expectedGeneration);
+    return this.searchPlaceCandidates(place, hints, () => { this.currentTrip(tripId, expectedGeneration); });
+  }
+
+  private async matchPlace(place: Place, assertCurrent: () => void = () => undefined): Promise<PlaceResolutionPreview> {
+    let candidates = await this.searchPlaceCandidates(place, [], assertCurrent);
+    let selected = chooseProviderAutomatically(place, candidates);
+    let method: PlaceResolutionPreview["method"] = "provider_match";
+    if (!selected && this.options.assist) {
+      const rawDecision = await this.options.assist({ place, candidates: candidates.slice(0, 5).map((item) => item.candidate) });
+      assertCurrent();
+      const decision = rawDecision ? MapResolutionAssistOutputSchema.parse(rawDecision) : null;
+      if (decision?.action === "choose_candidate") {
+        selected = candidates.slice(0, 5).find((item) => item.candidate.providerPlaceId === decision.providerPlaceId) ?? null;
+        if (selected) method = "provider_choice";
+      }
+      if (decision?.action === "retry_with_hints") {
+        candidates = await this.searchPlaceCandidates(place, decision.searchHints, assertCurrent);
+        selected = chooseProviderAutomatically(place, candidates);
+      }
+    }
+    return { geoFingerprint: placeGeoFingerprint(place), selected, candidates, method };
+  }
+
+  preview(place: Place) {
+    return this.matchPlace(PlaceSchema.parse(place));
+  }
+
+  commitPreview(tripId: string, placeId: string, preview: PlaceResolutionPreview, expectedGeneration: number) {
+    const place = this.place(tripId, placeId, expectedGeneration);
+    if (!preview.selected || preview.geoFingerprint !== placeGeoFingerprint(place)) throw new Error("地点预检结果与当前 Place 不一致。");
+    const resolution = resolutionFromProvider(tripId, place, preview.selected, preview.method);
+    this.options.store.upsertPlaceResolution(tripId, resolution, expectedGeneration);
+    return resolution;
   }
 
   async resolve(tripId: string, placeId: string, expectedGeneration: number): Promise<PlaceResolutionResult> {
@@ -196,24 +234,10 @@ export class PlaceResolverV2 {
       provider: null, providerPlaceId: null, latitude: null, longitude: null, address: null, confidence: null, resolvedAt: null, errorMessage: null,
     }, expectedGeneration);
     try {
-      let ranked = await this.searchCandidates(tripId, placeId, expectedGeneration);
-      let selected = chooseProviderAutomatically(place, ranked);
-      let method: "provider_match" | "provider_choice" = "provider_match";
-      if (!selected && this.options.assist) {
-        const rawDecision = await this.options.assist({ place, candidates: ranked.slice(0, 5).map((item) => item.candidate) });
-        const decision = rawDecision ? MapResolutionAssistOutputSchema.parse(rawDecision) : null;
-        if (decision?.action === "choose_candidate") {
-          selected = ranked.slice(0, 5).find((item) => item.candidate.providerPlaceId === decision.providerPlaceId) ?? null;
-          if (selected) method = "provider_choice";
-        }
-        if (decision?.action === "retry_with_hints") {
-          ranked = await this.searchCandidates(tripId, placeId, expectedGeneration, decision.searchHints);
-          selected = chooseProviderAutomatically(place, ranked);
-        }
-      }
-      const resolution = selected ? resolutionFromProvider(tripId, place, selected, method) : unresolved(tripId, place, ranked.length ? "存在多个或低置信度候选，请手动选择地点。" : "地图服务未找到可靠候选，可重试、地图点选或手工输入坐标。");
+      const matched = await this.matchPlace(place, () => { this.currentTrip(tripId, expectedGeneration); });
+      const resolution = matched.selected ? resolutionFromProvider(tripId, place, matched.selected, matched.method) : unresolved(tripId, place, matched.candidates.length ? "存在多个或低置信度候选，请手动选择地点。" : "地图服务未找到可靠候选，可重试、地图点选或手工输入坐标。");
       this.options.store.upsertPlaceResolution(tripId, resolution, expectedGeneration);
-      return { resolution, candidates: ranked };
+      return { resolution, candidates: matched.candidates };
     } catch (error) {
       this.currentTrip(tripId, expectedGeneration);
       const message = error instanceof Error ? error.message : "地点解析失败。";

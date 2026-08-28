@@ -47,6 +47,21 @@ describe("deterministic provider candidate handling", () => {
 });
 
 describe("PlaceResolverV2", () => {
+  it("previews a generated Place without writing canonical resolution state", async () => {
+    const { store } = seededStore();
+    const gondolaPlace = { ...place, id: "tmp-skyline", nameZh: "天空缆车", nameLocal: "Skyline Queenstown", nameEn: "Skyline Queenstown", city: "Queenstown", region: "Otago", country: "New Zealand", countryCode: "NZ" as const };
+    const gondola = candidate({ providerPlaceId: "gondola", name: "Queenstown Skyline Gondola", displayName: "Queenstown Skyline Gondola, 53 Brecon Street, Queenstown, New Zealand", latitude: -45.026, longitude: 168.656, category: "aerialway", placeType: "station", countryCode: "nz", city: "Queenstown", region: "Otago" });
+    const resolver = new PlaceResolverV2({
+      store,
+      maps: { search: async () => [gondola], reverse: async () => null },
+      assist: async () => ({ schemaVersion: 1, action: "choose_candidate", providerPlaceId: "gondola", searchHints: [], reason: "正式缆车入口名称与城市一致。" }),
+    });
+    const preview = await resolver.preview(gondolaPlace);
+    expect(preview.selected?.candidate.providerPlaceId).toBe("gondola");
+    expect(store.listPlaceResolutions(store.listTrips()[0].id)).toEqual([]);
+    store.close();
+  });
+
   it("writes an automatic Provider resolution without any AI coordinate output", async () => {
     const { store, tripId, generation } = seededStore();
     const maps = { search: async () => [candidate()], reverse: async () => candidate() };

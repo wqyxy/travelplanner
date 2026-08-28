@@ -15,7 +15,7 @@ function candidatePlaceId(plan: TravelPlanDocument, candidateId: string) {
 }
 
 function assertCandidatePoolScope(commands: PlanCommand[]) {
-  const allowed = new Set<PlanCommand["type"]>(["add_candidate", "remove_candidate", "update_candidate", "update_place"]);
+  const allowed = new Set<PlanCommand["type"]>(["add_candidate", "remove_candidate", "remove_candidate_tree", "update_candidate", "update_place"]);
   if (commands.some((command) => !allowed.has(command.type))) {
     throw new Error("Candidate Pool Scope 只能新增、移除或更新候选地点及其语义 Place，不能修改用户 preference、Day、Anchor 或 Stop。");
   }
@@ -28,6 +28,7 @@ function assertCandidateScope(plan: TravelPlanDocument, candidateId: string, com
     if (command.type === "update_candidate" && command.candidateId === candidateId) continue;
     if (command.type === "update_place" && command.placeId === placeId) continue;
     if (command.type === "remove_candidate" && command.candidateId === candidateId) continue;
+    if (command.type === "remove_candidate_tree" && command.candidateId === candidateId) continue;
     if (command.type === "add_candidate") continue;
     throw new Error(`Proposal 命令超出 Candidate Scope：${candidateId}`);
   }

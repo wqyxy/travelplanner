@@ -111,7 +111,9 @@
 ## E2. Candidate Pool
 
 验证：
-- 首次 AI 地点发现返回 10–80 个具体 Candidate；
+- Macro 建议均为单一、可搜索目的地，不出现“峡湾国家公园／蒂阿瑙”一类组合名称；
+- 首次 Micro 发现默认每个 Macro 返回 1–2 个高价值具体 Candidate，不为凑数量生成区域或活动概念；
+- AI 草稿经地图预检后才写入 Candidate Pool，无法可靠定位的地点被舍弃并在助手消息中说明；
 - 每个 Candidate 有 Place、理由、AI 推荐度、建议时长和标签；
 - AI 推荐度没有被标成地图平台评分；
 - 默认 preference 为 optional；
@@ -119,6 +121,8 @@
 - 搜索、单选、多选和全选当前筛选结果可用；
 - 批量 preference 可用；
 - 手动新增一个具体地点后，创建 Place + Candidate(source=user)，并自动进入地图解析；
+- 编辑地点中文名、本地名、英文名、城市、区域、国家和国家代码后，旧定位失效并自动重新解析；
+- 删除单个 Micro 会同步移除相关 Stop；删除 Macro 会在确认框预览并级联删除下属 Micro、Stop 和 Anchor 引用；
 - 同名或多语言同一地点不会静默生成重复 Candidate。
 
 ## E3. Place Resolution
@@ -144,8 +148,9 @@
 - 2 个 excluded。
 
 验证：
-- 已选地点存在 unresolved 时，生成行程按钮被阻止；
-- 所有已选地点 resolved 后可以生成；
+- 已选的 must_go 地点存在 unresolved 时，生成行程按钮被阻止；
+- want_to_go / optional unresolved 不阻止生成，但不得进入任何 Day Stop，并须说明未排程原因；
+- 所有 must_go 地点 resolved 且 Macro Coverage 通过后可以生成；
 - AI 输入包含当前有效坐标和地理分组；
 - 生成恰好 7 个 Day；
 - must_go 全部进入 Day；

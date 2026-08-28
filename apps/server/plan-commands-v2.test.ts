@@ -92,6 +92,22 @@ describe("applyPlanCommands", () => {
     expect(applied.effects.removedPlaceIds).toEqual(["p-osaka"]);
   });
 
+  it("cascades a Macro deletion through child Candidates, Stops and trip references", () => {
+    const value = plan();
+    value.places.push({ id: "p-macro", nameZh: "大阪", nameLocal: "大阪", nameEn: "Osaka", kind: "city", city: "大阪", region: null, country: "日本", countryCode: "JP", approximate: false });
+    value.candidates.push({ id: "c-macro", placeId: "p-macro", planningAreaCandidateId: null, preference: "want_to_go", source: "ai", aiReason: "关西目的地", aiScore: 90, suggestedDurationMinutes: null, tags: [] });
+    value.candidates.find((candidate) => candidate.id === "c-osaka")!.planningAreaCandidateId = "c-macro";
+    value.trip.destinationPlaceIds = ["p-macro"];
+    value.days[1].startAnchor = { ...value.days[1].startAnchor, placeId: "p-osaka", label: null };
+    const applied = applyPlanCommands(TravelPlanDocumentSchema.parse(value), [{ type: "remove_candidate_tree", candidateId: "c-macro" }]);
+    expect(applied.plan.candidates.some((candidate) => candidate.id === "c-macro" || candidate.id === "c-osaka")).toBe(false);
+    expect(applied.plan.places.some((place) => place.id === "p-macro" || place.id === "p-osaka")).toBe(false);
+    expect(applied.plan.days[1].stops).toEqual([]);
+    expect(applied.plan.days[1].startAnchor.placeId).toBeNull();
+    expect(applied.plan.trip.destinationPlaceIds).toEqual([]);
+    expect(new Set(applied.effects.removedCandidateIds)).toEqual(new Set(["c-macro", "c-osaka"]));
+  });
+
   it("rejects duplicate semantic Places instead of silently creating aliases", () => {
     expect(() => applyPlanCommands(plan(), [{
       type: "add_candidate",

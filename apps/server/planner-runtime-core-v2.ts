@@ -30,7 +30,7 @@ import {
 import { applyCandidateDiscoveryToStore, applyPlanGenerationToStore } from "./candidate-workflow-v2.js";
 import { DayRouteServiceV2 } from "./day-route-v2.js";
 import { AiTaskMonitor, aiErrorMessage, normalizePublicAiSummary } from "./ai-task-monitor.js";
-import { applyPlanCommandBatchToStore, applyPlanCommands } from "./plan-commands-v2.js";
+import { applyPlanCommandBatchToStore, applyPlanCommands, semanticPlaceKey } from "./plan-commands-v2.js";
 import { optimizeGeneratedSightseeingOrder } from "./plan-route-order-v2.js";
 import { buildPlanningAreaContext, buildPlanningCoverage } from "./planning-areas-v2.js";
 import type { AgentPromptsV2 } from "./prompt-contract-v2.js";
@@ -278,6 +278,7 @@ function commandSummary(command: PlanCommand) {
     case "bulk_set_candidate_preference": return `批量调整 ${command.candidateIds.length} 个 Candidate`;
     case "add_candidate": return `新增地点：${command.place.nameZh}`;
     case "remove_candidate": return `移除 Candidate ${command.candidateId}`;
+    case "remove_candidate_tree": return `级联移除 Candidate ${command.candidateId} 及其子地点`;
     case "update_candidate": return `更新 Candidate ${command.candidateId}`;
     case "update_place": return `更新 Place ${command.placeId}`;
     case "set_day_anchor": return `设置 Day ${command.dayId} 的${command.anchor === "start" ? "起点" : "终点"}`;
@@ -347,9 +348,21 @@ function expectedDayCount(plan: TravelPlanDocument) {
   return plan.trip.dates.requestedDurationDays;
 }
 
-function validatePlanGenerationOutput(trip: TripDetailV2, output: PlanGenerationOutput) {
+function validatePlanGenerationOutput(trip: TripDetailV2, output: PlanGenerationOutput, resolutions: PlaceResolution[]) {
   const count = expectedDayCount(trip.plan);
   if (count !== null && output.days.length !== count) throw new Error(`AI 返回 ${output.days.length} 天，但旅行要求为 ${count} 天。`);
+  const currentResolvedPlaceIds = new Set(currentResolutions(trip, resolutions).map((resolution) => resolution.placeId));
+  const candidates = new Map(trip.plan.candidates.map((candidate) => [candidate.id, candidate]));
+  const places = new Map(trip.plan.places.map((place) => [place.id, place]));
+  for (const day of output.days) {
+    for (const stop of day.stops) {
+      const candidate = stop.candidateId ? candidates.get(stop.candidateId) : null;
+      const place = candidate ? places.get(candidate.placeId) : null;
+      if (candidate && place?.kind !== "city" && !currentResolvedPlaceIds.has(candidate.placeId)) {
+        throw new Error(`未定位地点不得进入按天行程：${place?.nameZh ?? candidate.id}`);
+      }
+    }
+  }
 }
 
 type ActiveTask = { tripId: string; interrupt: () => Promise<void>; messageId?: string };
@@ -521,19 +534,97 @@ export class TravelPlannerRuntimeV2 {
     if (output.baseGeneration !== trip.contentGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
   }
 
+  private async preflightCandidateDiscovery(trip: TripDetailV2, output: CandidateDiscoveryOutput, mode: CandidateDiscoveryModeV2) {
+    const places = new Map(output.places.map((place) => [place.id, place]));
+    const existingByKey = new Map(trip.plan.places.map((place) => [semanticPlaceKey(place), place]));
+    const resolutions = new Map(currentResolutions(trip, this.options.store.listPlaceResolutions(trip.id)).map((resolution) => [resolution.placeId, resolution]));
+    const acceptedPlaceIds = new Set<string>();
+    const rejected: Array<{ name: string; reason: string }> = [];
+    const previews = new Map<string, Awaited<ReturnType<PlaceResolverV2["preview"]>>>();
+
+    for (const candidate of output.candidates) {
+      const place = places.get(candidate.placeTemporaryId);
+      if (!place) continue;
+      const existing = existingByKey.get(semanticPlaceKey(place));
+      if (existing && resolutions.has(existing.id)) {
+        acceptedPlaceIds.add(place.id);
+        continue;
+      }
+      const preview = await this.options.resolver.preview(place);
+      if (preview.selected) {
+        acceptedPlaceIds.add(place.id);
+        previews.set(place.id, preview);
+      }
+      else rejected.push({
+        name: place.nameZh,
+        reason: preview.candidates.length ? "名称存在歧义或不是唯一可导航地点" : "公开地图服务未找到该正式地点",
+      });
+    }
+
+    let candidates = output.candidates.filter((candidate) => acceptedPlaceIds.has(candidate.placeTemporaryId));
+    if (mode === "micro") {
+      const initialParents = new Set(candidates.map((candidate) => candidate.planningAreaCandidateId).filter((id): id is string => Boolean(id)));
+      for (const candidate of trip.plan.candidates) {
+        if (candidate.preference !== "excluded" && candidate.planningAreaCandidateId) initialParents.delete(candidate.planningAreaCandidateId);
+      }
+      const retained = new Set<string>();
+      for (const parentId of initialParents) {
+        const ranked = candidates
+          .filter((candidate) => candidate.planningAreaCandidateId === parentId)
+          .sort((left, right) => (right.aiScore ?? -1) - (left.aiScore ?? -1));
+        ranked.slice(0, 2).forEach((candidate) => retained.add(candidate.placeTemporaryId));
+        ranked.slice(2).forEach((candidate) => rejected.push({
+          name: places.get(candidate.placeTemporaryId)?.nameZh ?? candidate.placeTemporaryId,
+          reason: "首轮每个目的地只保留推荐度最高的 1–2 个可靠地点",
+        }));
+      }
+      candidates = candidates.filter((candidate) => !candidate.planningAreaCandidateId
+        || !initialParents.has(candidate.planningAreaCandidateId)
+        || retained.has(candidate.placeTemporaryId));
+    }
+    const referencedPlaceIds = new Set(candidates.map((candidate) => candidate.placeTemporaryId));
+    const placesAfterPreflight = output.places.filter((place) => referencedPlaceIds.has(place.id));
+    const suffix = rejected.length
+      ? `\n\n候选质量门槛已舍弃 ${rejected.length} 个结果：${rejected.map((item) => `${item.name}（${item.reason}）`).join("、")}。可使用“补充兴趣点”重新获取更具体的地点。`
+      : "";
+    return {
+      output: { ...output, assistantMessage: `${output.assistantMessage}${suffix}`.slice(0, 12000), places: placesAfterPreflight, candidates },
+      rejected,
+      previews,
+    };
+  }
+
   private async applyScopedCandidateDiscovery(tripId: string, output: CandidateDiscoveryOutput, mode: CandidateDiscoveryModeV2, requestedIds: string[]) {
     const before = this.options.store.requireTrip(tripId);
     const targetIds = this.candidateDiscoveryTargets(before, mode, requestedIds);
     if (output.candidates.length > 80) throw new Error("单次候选地点最多 80 个。");
     this.validateCandidateDiscoveryScope(before, output, mode, targetIds);
-    const applied = applyCandidateDiscoveryToStore(this.options.store, tripId, output);
+    const preflight = await this.preflightCandidateDiscovery(before, output, mode);
+    if (!preflight.output.candidates.length) {
+      return {
+        trip: before,
+        generation: before.contentGeneration,
+        output: preflight.output,
+        addedCandidateIds: [] as string[],
+        updatedCandidateIds: [] as string[],
+        addedPlaceIds: [] as string[],
+        changed: false,
+      };
+    }
+    const applied = applyCandidateDiscoveryToStore(this.options.store, tripId, preflight.output);
     this.emit("travel.document.changed", { tripId, generation: applied.generation, changedDayIds: [] });
+    for (const [temporaryPlaceId, preview] of preflight.previews) {
+      const placeId = applied.idMappings[temporaryPlaceId];
+      if (!placeId) continue;
+      this.options.resolver.commitPreview(tripId, placeId, preview, applied.generation);
+      this.emit("travel.resolution.changed", { tripId, placeId });
+    }
     const placeIds = [...new Set([
       ...applied.addedPlaceIds,
       ...applied.updatedCandidateIds.map((candidateId) => applied.trip.plan.candidates.find((candidate) => candidate.id === candidateId)?.placeId).filter((id): id is string => Boolean(id)),
     ])];
     await this.resolveChangedPlaces(tripId, placeIds, applied.generation);
-    return applied;
+    return { ...applied, changed: true };
   }
 
   startCandidateDiscovery(tripId: string, mode: CandidateDiscoveryModeV2 = "macro", planningAreaCandidateIds: string[] = [], message: string | null = null) {
@@ -549,7 +640,7 @@ export class TravelPlannerRuntimeV2 {
       },
       complete: async (output: CandidateDiscoveryOutput) => {
         const applied = await this.applyScopedCandidateDiscovery(tripId, output, mode, planningAreaCandidateIds);
-        this.options.store.createAssistantMessage(tripId, output.assistantMessage, { mode: "discover_candidates", discoveryMode: mode, addedCandidateIds: applied.addedCandidateIds });
+        this.options.store.createAssistantMessage(tripId, applied.output.assistantMessage, { mode: "discover_candidates", discoveryMode: mode, addedCandidateIds: applied.addedCandidateIds });
       },
     });
     taskHolder.id = result.taskId;
@@ -637,7 +728,7 @@ export class TravelPlannerRuntimeV2 {
         const trip = this.options.store.requireTrip(tripId);
         const resolutions = currentResolutions(trip, this.options.store.listPlaceResolutions(tripId));
         const optimized = optimizeGeneratedSightseeingOrder(trip.plan, output, resolutions);
-        validatePlanGenerationOutput(trip, optimized);
+        validatePlanGenerationOutput(trip, optimized, resolutions);
         const applied = applyPlanGenerationToStore(this.options.store, tripId, optimized);
         this.options.store.createAssistantMessage(tripId, optimized.assistantMessage, { mode: "generate_plan", changedDayIds: applied.changedDayIds, unscheduledCandidates: optimized.unscheduledCandidates });
         this.emit("travel.document.changed", { tripId, generation: applied.generation, changedDayIds: applied.changedDayIds });

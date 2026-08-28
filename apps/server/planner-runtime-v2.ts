@@ -44,6 +44,7 @@ function commandSummary(command: PlanCommand) {
     case "bulk_set_candidate_preference": return `批量调整 ${command.candidateIds.length} 个 Candidate`;
     case "add_candidate": return `新增地点：${command.place.nameZh}`;
     case "remove_candidate": return `移除 Candidate ${command.candidateId}`;
+    case "remove_candidate_tree": return `级联移除 Candidate ${command.candidateId} 及其子地点`;
     case "update_candidate": return `更新 Candidate ${command.candidateId}`;
     case "update_place": return `更新 Place ${command.placeId}`;
     case "set_day_anchor": return `设置 Day ${command.dayId} 的${command.anchor === "start" ? "起点" : "终点"}`;

@@ -1,6 +1,6 @@
 # TravelPlanner v3 改进步骤
 
-更新时间：2026-08-27  
+更新时间：2026-08-28
 产品依据：`docs/PRODUCT_PLAN.md`  
 测试依据：`docs/LOCAL_TEST_PROMPT.md`
 
@@ -25,12 +25,16 @@
 
 ### 2.2 Plan Generation
 
+- Micro 初次发现默认每个 Macro 只保留 1–2 个高价值、具体且当前存在的地点。
+- AI 草稿先经过非写入式地图预检，无法唯一定位的候选不写入 canonical 数据。
+- 抽象区域、活动概念和整条线路必须具体化为游客中心、入口、集合点或单一可访问场所。
 - AI 输入包含当前有效 Resolution、地址、坐标、Candidate preference 和建议时长。
 - 服务端提供按城市 / 位置生成的地理分组，帮助 AI 降低折返。
 - Day 数量按日期范围或 `requestedDurationDays` 硬校验。
 - `must_go` 必须排入。
 - `want_to_go` 不能静默进入未排程列表；用户需先调整天数或 preference。
 - `optional` 可以未排入，但必须返回原因。
+- 任意未定位的具体 Candidate 都不得进入 Day Stop。
 
 ### 2.3 Proposal Scope
 
@@ -54,6 +58,8 @@
 - 用户可以从地点池重复添加同一地点，对应不同 DayStop。
 - 排除已排程 Candidate 前显示确认，并原子删除相关 DayStop。
 - 用户可以手动创建 Place + Candidate，保存后自动进入 Place Resolver。
+- 用户可以编辑地点名称及地区信息，保存后自动使旧 Resolution 失效并重新定位。
+- 用户可以删除单个 Micro；删除 Macro 时预览并级联删除下属 Micro、Stop、Anchor 与 Trip 引用。
 - 同日拖拽、跨日拖拽、删除、添加、Anchor、Day 和 Stop 编辑继续使用固定 Command。
 
 ### 2.6 Route
