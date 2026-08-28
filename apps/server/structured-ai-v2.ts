@@ -21,6 +21,7 @@ export type StructuredAiRunOptions<T> = {
   model?: string;
   effort?: ReasoningEffort;
   timeoutMs?: number;
+  validateResult?: (value: T) => T;
   onProgress?: (progress: StructuredAiProgress) => void;
 };
 
@@ -36,6 +37,7 @@ type ActiveRun<T = unknown> = {
   turnId: string | null;
   content: string;
   schema: ZodType<T>;
+  validateResult?: (value: T) => T;
   outputSchema: Record<string, unknown>;
   model?: string;
   effort?: ReasoningEffort;
@@ -146,7 +148,7 @@ export function normalizeStructuredOutputTransport(value: unknown): unknown {
 function repairMessage(error: Error, attempt: number) {
   const detail = error.message.replace(/\s+/g, " ").slice(0, 4000);
   return [
-    `上一轮结构化输出未通过服务端校验，正在进行第 ${attempt}/${MAX_STRUCTURED_REPAIRS} 次修正。`,
+    `上一轮 AI 输出未通过服务端校验，正在进行第 ${attempt}/${MAX_STRUCTURED_REPAIRS} 次修正。`,
     `校验错误：${detail}`,
     "请根据当前线程中的原始任务和状态修正输出。",
     "只返回符合本轮同一 JSON Schema 的完整 JSON；不要解释，不要使用 Markdown。",
@@ -203,7 +205,8 @@ export class StructuredAiRunnerV2 {
       }
       try {
         const parsed = normalizeStructuredOutputTransport(JSON.parse(run.content));
-        this.finish(threadId, null, run.schema.parse(parsed));
+        const value = run.schema.parse(parsed);
+        this.finish(threadId, null, run.validateResult ? run.validateResult(value) : value);
       } catch (error) {
         const normalized = safeError(error);
         if (run.repairAttempts < MAX_STRUCTURED_REPAIRS) {
@@ -220,7 +223,7 @@ export class StructuredAiRunnerV2 {
     if (!run) return;
     run.repairAttempts += 1;
     run.content = "";
-    run.onProgress?.({ kind: "turn:repair", text: `结构化结果校验失败，正在自动修正（${run.repairAttempts}/${MAX_STRUCTURED_REPAIRS}）` });
+    run.onProgress?.({ kind: "turn:repair", text: `AI 结果校验失败，正在自动修正（${run.repairAttempts}/${MAX_STRUCTURED_REPAIRS}）` });
     try {
       const turn = await this.client.call("turn/start", structuredTurn({
         threadId,
@@ -292,6 +295,7 @@ export class StructuredAiRunnerV2 {
       turnId: null,
       content: "",
       schema: options.schema,
+      validateResult: options.validateResult,
       outputSchema,
       model: options.model,
       effort: options.effort,

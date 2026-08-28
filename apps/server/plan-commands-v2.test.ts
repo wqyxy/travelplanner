@@ -65,6 +65,37 @@ describe("applyPlanCommands", () => {
     expect(applied.effects.routeDirtyDayIds).toContain("d-1");
   });
 
+  it("reports the exact fields when Place and Candidate reuse one temporary ID", () => {
+    expect(() => applyPlanCommands(plan(), [{
+      type: "add_candidate",
+      place: { id: "temp-place-taupo", nameZh: "陶波", nameLocal: "Taupō", nameEn: "Taupō", kind: "city", city: "Taupō", region: "Waikato", country: "New Zealand", countryCode: "NZ", approximate: false },
+      candidate: { id: "temp-place-taupo", placeId: "temp-place-taupo", planningAreaCandidateId: null, preference: "optional", source: "ai", aiReason: "北岛湖区目的地", aiScore: 86, suggestedDurationMinutes: 2880, tags: [] },
+    }])).toThrow("新增实体临时 ID 重复：temp-place-taupo（commands[0].place.id 与 commands[0].candidate.id）");
+  });
+
+  it("rejects temporary IDs reused across commands", () => {
+    expect(() => applyPlanCommands(plan(), [
+      {
+        type: "add_candidate",
+        place: { id: "new-place-one", nameZh: "地点一", nameLocal: null, nameEn: null, kind: "attraction", city: "京都", region: null, country: "日本", countryCode: "JP", approximate: false },
+        candidate: { id: "shared-candidate", placeId: "new-place-one", planningAreaCandidateId: null, preference: "optional", source: "ai", aiReason: "测试地点一", aiScore: 70, suggestedDurationMinutes: 60, tags: [] },
+      },
+      {
+        type: "add_candidate",
+        place: { id: "new-place-two", nameZh: "地点二", nameLocal: null, nameEn: null, kind: "attraction", city: "京都", region: null, country: "日本", countryCode: "JP", approximate: false },
+        candidate: { id: "shared-candidate", placeId: "new-place-two", planningAreaCandidateId: null, preference: "optional", source: "ai", aiReason: "测试地点二", aiScore: 70, suggestedDurationMinutes: 60, tags: [] },
+      },
+    ])).toThrow("新增实体临时 ID 重复：shared-candidate（commands[0].candidate.id 与 commands[1].candidate.id）");
+  });
+
+  it("reports when a temporary definition overwrites a formal ID", () => {
+    expect(() => applyPlanCommands(plan(), [{
+      type: "add_candidate",
+      place: { id: "p-kyoto", nameZh: "新地点", nameLocal: null, nameEn: null, kind: "attraction", city: "京都", region: null, country: "日本", countryCode: "JP", approximate: false },
+      candidate: { id: "new-candidate", placeId: "p-kyoto", planningAreaCandidateId: null, preference: "optional", source: "ai", aiReason: "测试正式 ID 冲突", aiScore: 70, suggestedDurationMinutes: 60, tags: [] },
+    }])).toThrow("新增实体临时 ID 覆盖正式 ID：p-kyoto（commands[0].place.id）");
+  });
+
   it("removes scheduled Stops atomically when a Candidate becomes excluded", () => {
     const applied = applyPlanCommands(plan(), [{ type: "set_candidate_preference", candidateId: "c-osaka", preference: "excluded" }]);
     expect(applied.plan.candidates.find((candidate) => candidate.id === "c-osaka")?.preference).toBe("excluded");

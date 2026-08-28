@@ -36,6 +36,7 @@ import { buildPlanningAreaContext, buildPlanningCoverage } from "./planning-area
 import type { AgentPromptsV2 } from "./prompt-contract-v2.js";
 import { resolutionIsCurrent, type PlaceResolverV2 } from "./place-resolver-v2.js";
 import { assertProposalCommandsWithinScope } from "./proposal-scope-policy-v2.js";
+import { validateAdjustmentProposal } from "./proposal-validation-v2.js";
 import { applyRefinementBatchToStore } from "./refinement-workflow-v2.js";
 import type { StructuredAiProgress, StructuredAiRun, StructuredAiRunnerV2 } from "./structured-ai-v2.js";
 import type { TravelStoreV2, TripDetailV2 } from "./travel-store-v2.js";
@@ -108,6 +109,7 @@ export class CodexTravelAiV2 implements TravelAiV2 {
     task: unknown;
     schema: any;
     outputSchema: Record<string, unknown>;
+    validateResult?: (value: T) => T;
     progress?: (value: StructuredAiProgress) => void;
   }) {
     const run = await this.options.runner.start<T>({
@@ -121,6 +123,7 @@ export class CodexTravelAiV2 implements TravelAiV2 {
         task: input.task,
       },
       schema: input.schema,
+      validateResult: input.validateResult,
       outputSchema: input.outputSchema,
       developerInstructions: plannerInstructions,
       threadSource: "ai-travel-planner-v3",
@@ -241,6 +244,12 @@ export class CodexTravelAiV2 implements TravelAiV2 {
       task: { scope: input.scope, userMessage: input.message },
       schema: AdjustmentProposalOutputSchema,
       outputSchema: AdjustmentProposalOutputJsonSchema,
+      validateResult: (output) => {
+        if (output.baseGeneration !== input.trip.contentGeneration) {
+          throw new Error(`AI 返回的 baseGeneration 与请求不一致：期望 ${input.trip.contentGeneration}，收到 ${output.baseGeneration}。`);
+        }
+        return validateAdjustmentProposal(input.trip.plan, input.scope, output).output;
+      },
       progress,
     });
   }
@@ -782,20 +791,18 @@ export class TravelPlannerRuntimeV2 {
       complete: async (output: AdjustmentProposalOutput) => {
         const trip = this.options.store.requireTrip(tripId);
         if (output.baseGeneration !== trip.contentGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
-        if (JSON.stringify(output.scope) !== JSON.stringify(scope)) throw new Error("AI 返回的 Proposal Scope 与请求不一致。");
-        const checked = assertProposalCommandsWithinScope(trip.plan, scope, output.commands);
-        const preview = applyPlanCommands(trip.plan, checked.commands);
+        const validated = validateAdjustmentProposal(trip.plan, scope, output);
         const timestamp = new Date().toISOString();
         const proposal = this.options.store.createProposal({
           id: randomUUID(),
           tripId,
           baseGeneration: trip.contentGeneration,
-          scope: checked.scope,
+          scope: validated.scope,
           status: "pending",
           title: output.title,
           explanation: output.explanation,
-          commands: checked.commands,
-          diff: proposalDiff(checked.commands, preview.effects),
+          commands: validated.commands,
+          diff: proposalDiff(validated.commands, validated.preview.effects),
           createdAt: timestamp,
           updatedAt: timestamp,
           appliedRevisionVersion: null,

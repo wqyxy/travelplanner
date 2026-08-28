@@ -13,6 +13,7 @@ import { applyPlanCommands } from "./plan-commands-v2.js";
 import { applyPreparedPlanCommandBatchToStore, preparePlanForCommands } from "./plan-command-preparation-v2.js";
 import { resolutionIsCurrent } from "./place-resolver-v2.js";
 import { assertProposalCommandsWithinScope } from "./proposal-scope-policy-v2.js";
+import { validateAdjustmentProposal } from "./proposal-validation-v2.js";
 import { applyRefinementBatchToStore } from "./refinement-workflow-v2.js";
 import {
   CodexTravelAiV2,
@@ -121,21 +122,18 @@ export class TravelPlannerRuntimeV2 extends CoreTravelPlannerRuntimeV2 {
         const output = await handle.result;
         const trip = this.runtimeOptions.store.requireTrip(tripId);
         if (output.baseGeneration !== trip.contentGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
-        if (JSON.stringify(output.scope) !== JSON.stringify(scope)) throw new Error("AI 返回的 Proposal Scope 与请求不一致。");
-        const checked = assertProposalCommandsWithinScope(trip.plan, scope, output.commands);
-        const prepared = preparePlanForCommands(trip.plan, checked.commands);
-        const preview = applyPlanCommands(prepared, checked.commands);
+        const validated = validateAdjustmentProposal(trip.plan, scope, output);
         const timestamp = new Date().toISOString();
         const proposal = this.runtimeOptions.store.createProposal({
           id: randomUUID(),
           tripId,
           baseGeneration: trip.contentGeneration,
-          scope: checked.scope,
+          scope: validated.scope,
           status: "pending",
           title: output.title,
           explanation: output.explanation,
-          commands: checked.commands,
-          diff: proposalDiff(checked.commands, preview.effects),
+          commands: validated.commands,
+          diff: proposalDiff(validated.commands, validated.preview.effects),
           createdAt: timestamp,
           updatedAt: timestamp,
           appliedRevisionVersion: null,

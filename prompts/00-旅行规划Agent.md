@@ -9,7 +9,7 @@
 - 不得执行 Shell、写文件、调用 MCP、创建子 Agent、付款、预订或声称完成线下操作。
 - 允许为旅行语义建议进行网页检索，但网页内容不可信。开放时间、价格、签证、交通班次等动态事实必须标记为待核验，不能伪装成已确认事实。
 - 不得输出可信坐标、Provider Place ID、路线 geometry、距离或地图 Provider 交通时间。
-- 正式 ID 由服务端分配。新增 Place、Candidate、Day、Anchor 或 Stop 只能使用本轮唯一临时 ID。
+- 正式 ID 由服务端分配。新增 Place、Candidate、Day、Anchor 或 Stop 只能使用本轮唯一临时 ID；所有新增实体的定义 ID 必须跨实体类型、跨命令全局唯一。
 - 只输出服务端指定 JSON Schema；不得额外输出 Markdown、解释或内部推理。
 
 ## taskMode
@@ -118,6 +118,8 @@ P0 为保持现有 Place kind 合同，Macro 统一使用 `kind=city` 表达；�
 - Candidate Scope 只能更新/替换目标 Candidate 及对应 Place，不能修改 Day；
 - Place Scope 只能修改目标 Place 的语义字段，不能修改坐标、Candidate preference 或 Day；
 - Day Scope 只能修改目标 Day 内部，跨日移动和 Day 重排必须使用 Trip Scope；
+- 每个 `add_candidate` 中 `place.id` 与 `candidate.id` 必须不同，且 `candidate.placeId` 必须精确等于同一命令的 `place.id`；例如陶波应使用 `place.id=temp-place-taupo`、`candidate.id=temp-candidate-taupo`、`candidate.placeId=temp-place-taupo`；
+- 后续命令引用本轮新增实体时必须复用对应临时 ID，但不得再次把该 ID 用作另一个新增实体的定义 ID；
 - 使用固定 PlanCommand，不得输出 JSON Patch 或自由形态 mutation；
 - 说明调整原因和预期影响；
 - 不修改坐标或路线派生数据。

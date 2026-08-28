@@ -57,12 +57,14 @@ function allIds(plan: TravelPlanDocument) {
 
 function createIdMapper(existing: Set<string>) {
   const mappings = new Map<string, string>();
-  const registered = new Set<string>();
-  const register = (source: unknown) => {
+  const registered = new Map<string, string>();
+  const register = (source: unknown, field: string) => {
     const id = typeof source === "string" ? source.trim() : "";
-    if (!id) throw new Error("新增实体必须提供本轮临时 ID。");
-    if (existing.has(id) || registered.has(id)) throw new Error(`新增实体 ID 重复或覆盖正式 ID：${id}`);
-    registered.add(id);
+    if (!id) throw new Error(`新增实体必须提供本轮临时 ID：${field}`);
+    if (existing.has(id)) throw new Error(`新增实体临时 ID 覆盖正式 ID：${id}（${field}）`);
+    const previousField = registered.get(id);
+    if (previousField) throw new Error(`新增实体临时 ID 重复：${id}（${previousField} 与 ${field}）`);
+    registered.set(id, field);
     mappings.set(id, randomUUID());
   };
   const resolve = (source: unknown) => {
@@ -73,16 +75,16 @@ function createIdMapper(existing: Set<string>) {
 }
 
 function collectTemporaryIds(records: CommandRecord[], mapper: ReturnType<typeof createIdMapper>) {
-  for (const command of records) {
+  for (const [index, command] of records.entries()) {
     if (command.type === "add_candidate") {
       const place = command.place as Record<string, unknown> | undefined;
       const candidate = command.candidate as Record<string, unknown> | undefined;
-      mapper.register(place?.id);
-      mapper.register(candidate?.id);
+      mapper.register(place?.id, `commands[${index}].place.id`);
+      mapper.register(candidate?.id, `commands[${index}].candidate.id`);
     }
     if (command.type === "add_day_stop") {
       const stop = command.stop as Record<string, unknown> | undefined;
-      mapper.register(stop?.id);
+      mapper.register(stop?.id, `commands[${index}].stop.id`);
     }
   }
 }
