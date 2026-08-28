@@ -335,7 +335,7 @@ export function CandidatePanel({
     <div className="candidate-list">
       {!rows.length && <div className="candidate-empty"><Sparkles size={34}/><h3>{isMacro ? "还没有目的地建议" : "还没有详细兴趣点"}</h3><p>{isMacro ? "使用下方唯一主操作生成城市 / 区域建议。" : "先在“目的地”步骤确认范围，再从下方生成详细兴趣点。"}</p></div>}
       {rows.length > 0 && !visible.length && <div className="candidate-empty compact"><Search size={24}/><p>当前筛选条件下没有地点。</p></div>}
-      {groups.map((group) => {
+      {isMacro ? visible.map((row) => renderCandidate(row, row.candidate.preference === "excluded")) : groups.map((group) => {
         const collapsed = collapsedAreas.has(group.key);
         const cityPreference = group.cityRow?.candidate.preference ?? null;
         const areaExcluded = cityPreference === "excluded";

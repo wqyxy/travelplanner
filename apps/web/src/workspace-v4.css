@@ -50,6 +50,19 @@
   min-height: 0;
 }
 
+/* Keep the optional bulk-action row reserved so the list cannot displace the footer. */
+.candidate-panel > .candidate-bulk-bar {
+  grid-row: 4;
+}
+
+.candidate-panel > .candidate-list {
+  grid-row: 5;
+}
+
+.candidate-panel > .candidate-footer {
+  grid-row: 6;
+}
+
 /* The assistant is a real flex child. It never overlays the map or step content. */
 .assistant-dock-v4 {
   position: relative;
