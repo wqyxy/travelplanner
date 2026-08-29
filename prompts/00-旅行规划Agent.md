@@ -26,10 +26,6 @@
 
 ### `discover_candidates`
 
-根据服务端注入的 `task.discoveryMode` 执行分层地点发现。**Macro 与 Micro 不得在同一轮混合生成。**
-
-#### `discoveryMode=macro`
-
 只生成“这趟旅行去哪里”的 Macro 目的地候选：城市、区域、景区、岛屿或 road-trip 中具有独立停留意义的目的地。
 
 P0 为保持现有 Place kind 合同，Macro 统一使用 `kind=city` 表达；名称可以是城市或明确区域名。
@@ -43,33 +39,12 @@ P0 为保持现有 Place kind 合同，Macro 统一使用 `kind=city` 表达；�
 - 避免与当前已有 Macro 语义重复；
 - 默认 preference 固定为 `optional`；
 - 不生成坐标、Provider Place ID 或地图平台评分。
-
-#### `discoveryMode=micro`
-
-只围绕 `task.planningAreaCandidates` 中明确注入的 Macro 目的地，生成“到了这里具体玩什么”的可实际访问、可地图解析的 Micro Place。
-
-要求：
-
-- 不生成 `kind=city`；只生成 attraction / lodging / airport / station / port / waypoint / meal / stop 等具体地点；
-- 每个输出 Candidate 的 `planningAreaCandidateId` **必须精确引用一个本轮注入的 Macro Candidate 正式 ID**；
-- 不允许仅靠 `Place.city` 文本暗示归属；显式父引用是 canonical 归属；
-- 对每个目标 Macro 优先推荐若干真正有旅行价值、可搜索、可定位的地点；不要为了数量生成模糊实体；
-- 首轮每个 Macro 默认只推荐 1–2 个高价值具体地点；只有用户明确要求补充时再增加，质量优先于数量；
-- 名称必须采用当前正式名称，优先提供准确的当地语言名和英文名；对可能更名、停业或身份不清的地点，先查官方来源再决定是否输出；
-- 葡萄酒产区、商业街区、整段步道、泛称海岸或“观鲸/游船体验”等不是可导航单点。此类体验必须落到一个正式酒庄、游客中心、步道入口、报到点、码头或运营方门店；
-- 不推荐已停业、已撤展、已拆除或只有历史名称而无当前可访问实体的地点；
-- 用户要求“补充推荐”时优先补当前池中缺失的类型或区域，不重复已有地点；
-- 给出明确推荐理由、0–100 AI 推荐分、建议停留时间和标签；
-- 默认 preference 固定为 `optional`；
-- `Place.city / region / country` 仍应尽可能准确，用于显示与地图搜索，但不是父子关系来源；
-- 不生成坐标、地址坐标、Provider Place ID 或平台评分。
-
-两种模式共同要求：
-
 - 只生成语义 Place 和 TripCandidate 推荐元数据；
 - 避免与现有地点或本轮其他地点语义重复；
 - 不生成“附近商场”“某个咖啡馆”等无法定位的模糊实体；
 - 只返回服务端指定结构，不解释内部推理。
+
+具体兴趣点发现不属于本 Agent 职责，必须由独立的兴趣点发现 Prompt 完成；本模式不得生成 Micro Place。
 
 ### `generate_plan`
 

@@ -13,14 +13,24 @@ async function fixture(extra: Record<string, string> = {}) {
 }
 
 describe("prompt contract v2", () => {
-  it("loads exactly 00, 01 and 02", async () => {
+  it("loads exactly 00, 01, 02 and the isolated interest discovery prompt", async () => {
     const prompts = await loadAgentPromptsV2(await fixture());
     expect(prompts.planner.filename).toBe(V2_PROMPT_FILES.planner);
     expect(prompts.detailer.filename).toBe(V2_PROMPT_FILES.detailer);
     expect(prompts.mapResolver.filename).toBe(V2_PROMPT_FILES.mapResolver);
+    expect(prompts.interestDiscovery.filename).toBe(V2_PROMPT_FILES.interestDiscovery);
   });
 
   it("rejects a fourth coordinate agent", async () => {
-    await expect(loadAgentPromptsV2(await fixture({ "03-地图坐标搜索Agent.md": "旧坐标 Agent" }))).rejects.toThrow("只允许 00/01/02");
+    await expect(loadAgentPromptsV2(await fixture({ "04-地图坐标搜索Agent.md": "旧坐标 Agent" }))).rejects.toThrow("只允许 00/01/02/03");
+  });
+
+  it("keeps Micro research only in the dedicated prompt", async () => {
+    const prompts = await loadAgentPromptsV2(process.cwd());
+    expect(prompts.planner.content).not.toContain("discoveryMode=micro");
+    expect(prompts.interestDiscovery.content).toContain("至少参考两份相互独立");
+    expect(prompts.interestDiscovery.content).toContain("固定数量合同");
+    expect(prompts.interestDiscovery.content).toContain("整片湖泊");
+    expect(prompts.interestDiscovery.content).not.toMatch(/输出(?:经纬度|坐标)/u);
   });
 });

@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
   AdjustmentProposalOutputSchema,
-  CandidateDiscoveryOutputSchema,
+  MacroCandidateDiscoveryOutputSchema,
+  MicroCandidateDiscoveryOutputSchema,
   ConversationOutputSchema,
   DetailBatchOutputV2Schema,
   MapResolutionAssistOutputSchema,
@@ -15,7 +16,8 @@ import {
 
 const outputSchemas = [
   ConversationOutputSchema,
-  CandidateDiscoveryOutputSchema,
+  MacroCandidateDiscoveryOutputSchema,
+  MicroCandidateDiscoveryOutputSchema,
   PlanGenerationOutputSchema,
   AdjustmentProposalOutputSchema,
   DetailBatchOutputV2Schema,

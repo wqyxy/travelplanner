@@ -49,7 +49,11 @@
 - AI 输入包含当前 Resolution、坐标、地址、Candidate preference、建议时长和服务端地理分组。
 - Day 数量按日期范围或 requestedDurationDays 硬校验。
 - want_to_go 不允许静默未排入。
-- 首次 Micro Candidate Discovery 默认每个 Macro 只生成 1–2 个高价值地点，单次硬上限仍为 80。
+- Micro Candidate Discovery 已从 00 拆到独立 `03-兴趣点发现Agent.md`；每个 Macro 的初始研究和自动补位都使用新的临时线程，并强制实时检索至少两份独立攻略或目的地榜单。
+- 兴趣点总量由服务端按 Macro 建议停留时长确定为 3/5/7/9 下限，扣除未排除且已可靠定位的具体观光点；每次只研究一个 Macro、最多 9 个 Candidate，AI 不能降低固定目标。
+- Macro 按当前顺序串行处理并在地图预检后立即保存；03 请求使用独立 5 分钟超时和 30 秒安全心跳，单个目的地失败不阻断后续目的地，存在任何缺口时保留部分结果但将总任务标记为失败。
+- 每个 Micro Candidate 使用只存在于本轮输出的 `prominence`、`experienceTypes`、`visitPointType` 和 `researchBasis` 接受质量校验；服务端拒绝交通、住宿、餐饮、停车、行政、普通游客服务设施和泛称地理实体，这些研究字段和来源链接不写入旅行数据、日志或前端接口。
+- 地图预检按 Macro 统计接受数，并拒绝 Provider 明确返回其他城市或区域的同名实体；出现缺口时立即执行一次 scoped 自动补位，仍未达到下限时保留部分结果但将任务标记为失败。
 - AI 候选写入前执行非写入式地图预检，只将可靠定位的地点写入 canonical 计划。
 - 可能闭馆、改名或搬迁的异常地点要求生成 Agent 先核验官方网站。
 - 未定位的具体地点不能进入 Day Stop；非必去地点作为未排程候选说明原因。
@@ -142,6 +146,8 @@
 
 - `prompts/00-旅行规划Agent.md`
 - `prompts/01-行程细化Agent.md`
+- `prompts/02-地图候选消歧Agent.md`
+- `prompts/03-兴趣点发现Agent.md`
 
 ### Docs
 

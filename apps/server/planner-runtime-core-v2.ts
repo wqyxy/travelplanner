@@ -2,8 +2,10 @@ import { randomUUID } from "node:crypto";
 import {
   AdjustmentProposalOutputJsonSchema,
   AdjustmentProposalOutputSchema,
-  CandidateDiscoveryOutputJsonSchema,
-  CandidateDiscoveryOutputSchema,
+  MacroCandidateDiscoveryOutputJsonSchema,
+  MacroCandidateDiscoveryOutputSchema,
+  MicroCandidateDiscoveryOutputJsonSchema,
+  MicroCandidateDiscoveryOutputSchema,
   ConversationOutputJsonSchema,
   ConversationOutputSchema,
   DetailBatchOutputV2JsonSchema,
@@ -18,7 +20,9 @@ import {
   type CandidateDiscoveryOutput,
   type ConversationOutput,
   type DetailBatchOutputV2,
+  type MacroCandidateDiscoveryOutput,
   type MapResolutionAssistOutput,
+  type MicroCandidateDiscoveryOutput,
   type PlaceResolution,
   type PlanCommand,
   type PlanGenerationOutput,
@@ -28,6 +32,16 @@ import {
   type TripFactCommand,
 } from "./contracts-v2.js";
 import { applyCandidateDiscoveryToStore, applyPlanGenerationToStore } from "./candidate-workflow-v2.js";
+import {
+  buildFixedMicroDiscoveryTargets,
+  discoveryShortfalls,
+  microTourismPlaceRejection,
+  microTourismProviderRejection,
+  validateMacroCandidateDiscovery,
+  validateMicroCandidateDiscovery,
+  type FixedAreaTargetV2,
+  type RejectedDiscoveryCandidateV2,
+} from "./candidate-discovery-policy-v2.js";
 import { DayRouteServiceV2 } from "./day-route-v2.js";
 import { AiTaskMonitor, aiErrorMessage, normalizePublicAiSummary } from "./ai-task-monitor.js";
 import { applyPlanCommandBatchToStore, applyPlanCommands, semanticPlaceKey } from "./plan-commands-v2.js";
@@ -63,7 +77,16 @@ export type GeoClusterV2 = {
 
 export interface TravelAiV2 {
   conversation(input: { trip: TripDetailV2; message: string }, progress?: (value: StructuredAiProgress) => void): Promise<RuntimeAiHandle<ConversationOutput>>;
-  discoverCandidates(input: { trip: TripDetailV2; message: string | null; mode: CandidateDiscoveryModeV2; planningAreaCandidateIds: string[] }, progress?: (value: StructuredAiProgress) => void): Promise<RuntimeAiHandle<CandidateDiscoveryOutput>>;
+  discoverMacroCandidates(input: {
+    trip: TripDetailV2;
+    message: string | null;
+  }, progress?: (value: StructuredAiProgress) => void): Promise<RuntimeAiHandle<MacroCandidateDiscoveryOutput>>;
+  discoverMicroCandidates(input: {
+    trip: TripDetailV2;
+    message: string | null;
+    areaTarget: FixedAreaTargetV2;
+    rejectedCandidates?: RejectedDiscoveryCandidateV2[];
+  }, progress?: (value: StructuredAiProgress) => void): Promise<RuntimeAiHandle<MicroCandidateDiscoveryOutput>>;
   generatePlan(input: { trip: TripDetailV2; resolutions: PlaceResolution[]; geoClusters: GeoClusterV2[] }, progress?: (value: StructuredAiProgress) => void): Promise<RuntimeAiHandle<PlanGenerationOutput>>;
   detailDays(input: { trip: TripDetailV2; dayIds: string[] }, progress?: (value: StructuredAiProgress) => void): Promise<RuntimeAiHandle<DetailBatchOutputV2>>;
   proposeAdjustment(input: { trip: TripDetailV2; scope: ProposalScope; message: string }, progress?: (value: StructuredAiProgress) => void): Promise<RuntimeAiHandle<AdjustmentProposalOutput>>;
@@ -86,6 +109,23 @@ const detailerInstructions = [
   "动态事实没有可靠来源时必须使用 estimated 或 unverified，不得伪造 verified。",
   "只输出本轮指定 JSON Schema，不公开内部推理。",
 ].join("\n");
+
+const interestDiscoveryInstructions = [
+  "这是 AI Travel Planner 的独立兴趣点研究线程。",
+  "只使用当前消息注入的旅行需求、目标目的地、已有地点、固定数量和拒绝原因；不得读取项目文件、环境变量、其他线程或账户数据。",
+  "必须使用实时网页检索，并为每个目的地参考至少两份相互独立的旅游攻略或目的地榜单；官方网站只核验实体和当前状态。",
+  "不得写文件、执行 Shell、调用 MCP、创建子 Agent、付款、预订或声称完成线下操作。",
+  "不得输出坐标、来源链接、内部推理、路线 geometry、距离或地图 Provider 交通时长。",
+  "必须逐项原样返回服务端固定目标，只输出本轮指定 JSON Schema。",
+].join("\n");
+
+function withoutResearchLinks(progress?: (value: StructuredAiProgress) => void) {
+  if (!progress) return undefined;
+  return (value: StructuredAiProgress) => progress({
+    ...value,
+    text: value.text.replace(/https?:\/\/\S+/giu, "[攻略来源已隐藏]"),
+  });
+}
 
 const mapInstructions = [
   "这是 AI Travel Planner 的受控地图候选消歧线程。",
@@ -148,23 +188,70 @@ export class CodexTravelAiV2 implements TravelAiV2 {
     });
   }
 
-  discoverCandidates(input: { trip: TripDetailV2; message: string | null; mode: CandidateDiscoveryModeV2; planningAreaCandidateIds: string[] }, progress?: (value: StructuredAiProgress) => void) {
-    return this.plannerRun<CandidateDiscoveryOutput>({
+  discoverMacroCandidates(input: {
+    trip: TripDetailV2;
+    message: string | null;
+  }, progress?: (value: StructuredAiProgress) => void) {
+    return this.plannerRun<MacroCandidateDiscoveryOutput>({
       trip: input.trip,
       taskMode: "discover_candidates",
       task: {
         userRequest: input.message,
-        discoveryMode: input.mode,
-        initialDiscovery: input.mode === "macro" && !input.trip.plan.candidates.some((candidate) => input.trip.plan.places.find((place) => place.id === candidate.placeId)?.kind === "city"),
+        initialDiscovery: !input.trip.plan.candidates.some((candidate) => input.trip.plan.places.find((place) => place.id === candidate.placeId)?.kind === "city"),
         existingCandidatePlaceIds: input.trip.plan.candidates.map((item) => item.placeId),
-        planningAreaCandidateIds: input.planningAreaCandidateIds,
-        planningAreaCandidates: input.trip.plan.candidates
-          .filter((candidate) => input.planningAreaCandidateIds.includes(candidate.id))
-          .map((candidate) => ({ ...candidate, place: input.trip.plan.places.find((place) => place.id === candidate.placeId) ?? null })),
       },
-      schema: CandidateDiscoveryOutputSchema,
-      outputSchema: CandidateDiscoveryOutputJsonSchema,
+      schema: MacroCandidateDiscoveryOutputSchema,
+      outputSchema: MacroCandidateDiscoveryOutputJsonSchema,
+      validateResult: validateMacroCandidateDiscovery,
       progress,
+    });
+  }
+
+  async discoverMicroCandidates(input: {
+    trip: TripDetailV2;
+    message: string | null;
+    areaTarget: FixedAreaTargetV2;
+    rejectedCandidates?: RejectedDiscoveryCandidateV2[];
+  }, progress?: (value: StructuredAiProgress) => void) {
+    const places = new Map(input.trip.plan.places.map((place) => [place.id, place]));
+    const targetId = input.areaTarget.planningAreaCandidateId;
+    return this.options.runner.start<MicroCandidateDiscoveryOutput>({
+      cwd: this.options.root,
+      prompt: this.options.prompts.interestDiscovery.content,
+      state: {
+        baseGeneration: input.trip.contentGeneration,
+        planLanguage: input.trip.planLanguage,
+        tripFacts: input.trip.plan.trip,
+        task: {
+          userRequest: input.message,
+          areaTarget: input.areaTarget,
+          planningAreaCandidates: input.trip.plan.candidates
+            .filter((candidate) => candidate.id === targetId)
+            .map((candidate) => ({ ...candidate, place: places.get(candidate.placeId) ?? null })),
+          existingPlaces: input.trip.plan.candidates
+            .filter((candidate) => candidate.planningAreaCandidateId === targetId)
+            .map((candidate) => ({ candidateId: candidate.id, planningAreaCandidateId: candidate.planningAreaCandidateId, place: places.get(candidate.placeId) ?? null })),
+          coveragePolicy: {
+            targetCountMeaning: "服务端确定的本轮固定新增可靠兴趣点数量",
+            batchAreaLimit: 1,
+            batchCandidateLimit: 9,
+            microPlaceKind: "attraction",
+            requiredResearchBasis: "multi_guide_consensus",
+            excludedFromInterestPool: ["机场", "车站", "港口", "住宿", "餐饮", "停车场", "行政机构", "普通游客中心", "信息中心", "整片湖泊", "海湾", "公园", "泛称区域"],
+          },
+          rejectedCandidates: input.rejectedCandidates ?? [],
+        },
+      },
+      schema: MicroCandidateDiscoveryOutputSchema,
+      outputSchema: MicroCandidateDiscoveryOutputJsonSchema,
+      validateResult: (output) => validateMicroCandidateDiscovery(output, [targetId], [input.areaTarget]),
+      developerInstructions: interestDiscoveryInstructions,
+      threadSource: "ai-travel-interest-discovery-v3",
+      ephemeral: true,
+      webSearch: "live",
+      timeoutMs: 300_000,
+      ...this.options.modelOptions(),
+      onProgress: withoutResearchLinks(progress),
     });
   }
 
@@ -375,9 +462,23 @@ function validatePlanGenerationOutput(trip: TripDetailV2, output: PlanGeneration
 }
 
 type ActiveTask = { tripId: string; interrupt: () => Promise<void>; messageId?: string };
+type MicroDiscoveryBatchResult = {
+  areaLabel: string;
+  messages: string[];
+  areaTargets: MicroCandidateDiscoveryOutput["areaTargets"];
+  addedCandidateIds: string[];
+  rejected: RejectedDiscoveryCandidateV2[];
+  initialTargetCount: number;
+  initialAcceptedCount: number;
+  supplementTargetCount: number;
+  supplementAcceptedCount: number;
+  remainingShortfalls: FixedAreaTargetV2[];
+  supplementError: string | null;
+};
 
 export class TravelPlannerRuntimeV2 {
   private readonly active = new Map<string, ActiveTask>();
+  private readonly stopRequested = new Set<string>();
 
   constructor(private readonly options: {
     store: TravelStoreV2;
@@ -454,6 +555,7 @@ export class TravelPlannerRuntimeV2 {
         }
       } finally {
         this.active.delete(taskId);
+        this.stopRequested.delete(taskId);
       }
     })();
     return { taskId, messageId: input.messageId ?? null };
@@ -476,6 +578,7 @@ export class TravelPlannerRuntimeV2 {
   stopTask(tripId: string, taskId: string) {
     const active = this.active.get(taskId);
     if (!active || active.tripId !== tripId) throw new Error("当前任务已经结束。");
+    this.stopRequested.add(taskId);
     void active.interrupt().catch(() => undefined);
     return { ok: true };
   }
@@ -524,7 +627,13 @@ export class TravelPlannerRuntimeV2 {
     return targetIds;
   }
 
-  private validateCandidateDiscoveryScope(trip: TripDetailV2, output: CandidateDiscoveryOutput, mode: CandidateDiscoveryModeV2, targetIds: string[]) {
+  private validateCandidateDiscoveryScope(
+    trip: TripDetailV2,
+    output: CandidateDiscoveryOutput,
+    mode: CandidateDiscoveryModeV2,
+    targetIds: string[],
+    fixedTargets: FixedAreaTargetV2[] = [],
+  ) {
     const outputPlaces = new Map(output.places.map((place) => [place.id, place]));
     const allowedParents = new Set(targetIds);
     for (const candidate of output.candidates) {
@@ -540,74 +649,94 @@ export class TravelPlannerRuntimeV2 {
         throw new Error(`详细兴趣点必须显式归属于本次指定的 Macro Candidate：${place.nameZh}`);
       }
     }
+    if (mode === "macro") validateMacroCandidateDiscovery(output as MacroCandidateDiscoveryOutput);
+    else validateMicroCandidateDiscovery(output as MicroCandidateDiscoveryOutput, targetIds, fixedTargets);
     if (output.baseGeneration !== trip.contentGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
   }
 
-  private async preflightCandidateDiscovery(trip: TripDetailV2, output: CandidateDiscoveryOutput, mode: CandidateDiscoveryModeV2) {
+  private async preflightCandidateDiscovery<T extends CandidateDiscoveryOutput>(trip: TripDetailV2, output: T, mode: CandidateDiscoveryModeV2) {
     const places = new Map(output.places.map((place) => [place.id, place]));
     const existingByKey = new Map(trip.plan.places.map((place) => [semanticPlaceKey(place), place]));
     const resolutions = new Map(currentResolutions(trip, this.options.store.listPlaceResolutions(trip.id)).map((resolution) => [resolution.placeId, resolution]));
     const acceptedPlaceIds = new Set<string>();
-    const rejected: Array<{ name: string; reason: string }> = [];
+    const rejected: RejectedDiscoveryCandidateV2[] = [];
     const previews = new Map<string, Awaited<ReturnType<PlaceResolverV2["preview"]>>>();
 
     for (const candidate of output.candidates) {
       const place = places.get(candidate.placeTemporaryId);
       if (!place) continue;
+      if (mode === "micro") {
+        const reason = microTourismPlaceRejection(place);
+        if (reason) {
+          rejected.push({ planningAreaCandidateId: candidate.planningAreaCandidateId, name: place.nameZh, reason });
+          continue;
+        }
+      }
       const existing = existingByKey.get(semanticPlaceKey(place));
+      if (mode === "micro" && existing) {
+        rejected.push({
+          planningAreaCandidateId: candidate.planningAreaCandidateId,
+          name: place.nameZh,
+          reason: "候选地点已存在于当前兴趣点池",
+        });
+        continue;
+      }
       if (existing && resolutions.has(existing.id)) {
         acceptedPlaceIds.add(place.id);
         continue;
       }
       const preview = await this.options.resolver.preview(place);
-      if (preview.selected) {
+      const providerRejection = mode === "micro" && preview.selected
+        ? microTourismProviderRejection(preview.selected.candidate, place)
+        : null;
+      if (preview.selected && !providerRejection) {
         acceptedPlaceIds.add(place.id);
         previews.set(place.id, preview);
       }
       else rejected.push({
+        planningAreaCandidateId: candidate.planningAreaCandidateId,
         name: place.nameZh,
-        reason: preview.candidates.length ? "名称存在歧义或不是唯一可导航地点" : "公开地图服务未找到该正式地点",
+        reason: providerRejection ?? (preview.candidates.length ? "名称存在歧义或不是唯一可导航地点" : "公开地图服务未找到该正式地点"),
       });
     }
 
-    let candidates = output.candidates.filter((candidate) => acceptedPlaceIds.has(candidate.placeTemporaryId));
+    let candidates = output.candidates.filter((candidate) => acceptedPlaceIds.has(candidate.placeTemporaryId)) as T["candidates"];
     if (mode === "micro") {
-      const initialParents = new Set(candidates.map((candidate) => candidate.planningAreaCandidateId).filter((id): id is string => Boolean(id)));
-      for (const candidate of trip.plan.candidates) {
-        if (candidate.preference !== "excluded" && candidate.planningAreaCandidateId) initialParents.delete(candidate.planningAreaCandidateId);
-      }
+      const microOutput = output as MicroCandidateDiscoveryOutput;
+      const targets = new Map(microOutput.areaTargets.map((target) => [target.planningAreaCandidateId, target.targetCount]));
       const retained = new Set<string>();
-      for (const parentId of initialParents) {
+      for (const [parentId, targetCount] of targets) {
         const ranked = candidates
           .filter((candidate) => candidate.planningAreaCandidateId === parentId)
           .sort((left, right) => (right.aiScore ?? -1) - (left.aiScore ?? -1));
-        ranked.slice(0, 2).forEach((candidate) => retained.add(candidate.placeTemporaryId));
-        ranked.slice(2).forEach((candidate) => rejected.push({
+        ranked.slice(0, targetCount).forEach((candidate) => retained.add(candidate.placeTemporaryId));
+        ranked.slice(targetCount).forEach((candidate) => rejected.push({
+          planningAreaCandidateId: parentId,
           name: places.get(candidate.placeTemporaryId)?.nameZh ?? candidate.placeTemporaryId,
-          reason: "首轮每个目的地只保留推荐度最高的 1–2 个可靠地点",
+          reason: `超过服务端为该目的地设定的本轮 ${targetCount} 个固定目标`,
         }));
       }
-      candidates = candidates.filter((candidate) => !candidate.planningAreaCandidateId
-        || !initialParents.has(candidate.planningAreaCandidateId)
-        || retained.has(candidate.placeTemporaryId));
+      candidates = candidates.filter((candidate) => retained.has(candidate.placeTemporaryId)) as T["candidates"];
     }
     const referencedPlaceIds = new Set(candidates.map((candidate) => candidate.placeTemporaryId));
     const placesAfterPreflight = output.places.filter((place) => referencedPlaceIds.has(place.id));
-    const suffix = rejected.length
-      ? `\n\n候选质量门槛已舍弃 ${rejected.length} 个结果：${rejected.map((item) => `${item.name}（${item.reason}）`).join("、")}。可使用“补充兴趣点”重新获取更具体的地点。`
-      : "";
     return {
-      output: { ...output, assistantMessage: `${output.assistantMessage}${suffix}`.slice(0, 12000), places: placesAfterPreflight, candidates },
+      output: { ...output, places: placesAfterPreflight, candidates } as T,
       rejected,
       previews,
     };
   }
 
-  private async applyScopedCandidateDiscovery(tripId: string, output: CandidateDiscoveryOutput, mode: CandidateDiscoveryModeV2, requestedIds: string[]) {
+  private async applyScopedCandidateDiscovery<T extends CandidateDiscoveryOutput>(
+    tripId: string,
+    output: T,
+    mode: CandidateDiscoveryModeV2,
+    requestedIds: string[],
+    fixedTargets: FixedAreaTargetV2[] = [],
+  ) {
     const before = this.options.store.requireTrip(tripId);
     const targetIds = this.candidateDiscoveryTargets(before, mode, requestedIds);
-    if (output.candidates.length > 80) throw new Error("单次候选地点最多 80 个。");
-    this.validateCandidateDiscoveryScope(before, output, mode, targetIds);
+    this.validateCandidateDiscoveryScope(before, output, mode, targetIds, fixedTargets);
     const preflight = await this.preflightCandidateDiscovery(before, output, mode);
     if (!preflight.output.candidates.length) {
       return {
@@ -617,6 +746,8 @@ export class TravelPlannerRuntimeV2 {
         addedCandidateIds: [] as string[],
         updatedCandidateIds: [] as string[],
         addedPlaceIds: [] as string[],
+        rejected: preflight.rejected,
+        acceptedCandidates: preflight.output.candidates,
         changed: false,
       };
     }
@@ -633,23 +764,296 @@ export class TravelPlannerRuntimeV2 {
       ...applied.updatedCandidateIds.map((candidateId) => applied.trip.plan.candidates.find((candidate) => candidate.id === candidateId)?.placeId).filter((id): id is string => Boolean(id)),
     ])];
     await this.resolveChangedPlaces(tripId, placeIds, applied.generation);
-    return { ...applied, changed: true };
+    return { ...applied, rejected: preflight.rejected, acceptedCandidates: preflight.output.candidates, changed: true };
+  }
+
+  private assertMicroTaskRunning(taskId: string) {
+    if (this.stopRequested.has(taskId)) throw new Error("AI 任务已停止。");
+  }
+
+  private microAreaLabel(trip: TripDetailV2, planningAreaCandidateId: string) {
+    const candidate = trip.plan.candidates.find((item) => item.id === planningAreaCandidateId);
+    const place = candidate ? trip.plan.places.find((item) => item.id === candidate.placeId) : null;
+    return place?.nameZh ?? place?.nameLocal ?? place?.nameEn ?? planningAreaCandidateId;
+  }
+
+  private async awaitMicroResearch(
+    tripId: string,
+    taskId: string,
+    handle: RuntimeAiHandle<MicroCandidateDiscoveryOutput>,
+    areaLabel: string,
+    phase: "研究" | "补位研究",
+  ) {
+    const startedAt = Date.now();
+    this.active.set(taskId, { tripId, interrupt: handle.interrupt });
+    if (this.stopRequested.has(taskId)) {
+      await handle.interrupt().catch(() => undefined);
+      throw new Error("AI 任务已停止。");
+    }
+    const heartbeat = setInterval(() => {
+      const elapsedSeconds = Math.max(30, Math.floor((Date.now() - startedAt) / 30_000) * 30);
+      this.options.tasks.update(taskId, "running", `${areaLabel}仍在${phase}，已用时 ${elapsedSeconds} 秒`, "interest:heartbeat");
+    }, 30_000);
+    heartbeat.unref();
+    try {
+      const output = await handle.result;
+      this.assertMicroTaskRunning(taskId);
+      return output;
+    } finally {
+      clearInterval(heartbeat);
+      const current = this.active.get(taskId);
+      if (current?.interrupt === handle.interrupt) this.active.set(taskId, { tripId, interrupt: async () => undefined });
+    }
+  }
+
+  private microFailureMessage(areaLabel: string, targetCount: number, error: unknown, phase = "研究") {
+    const raw = normalizePublicAiSummary(aiErrorMessage(error)) || `${phase}失败`;
+    if (/超时/u.test(raw)) return `${areaLabel}（目标 ${targetCount} 个）${phase}超过 5 分钟，已跳过并继续下一个目的地`;
+    return `${areaLabel}（目标 ${targetCount} 个）${phase}失败：${raw}`;
+  }
+
+  private async completeMicroDiscoveryArea(
+    tripId: string,
+    areaTarget: FixedAreaTargetV2,
+    areaLabel: string,
+    taskId: string,
+    message: string | null,
+  ): Promise<MicroDiscoveryBatchResult> {
+    this.assertMicroTaskRunning(taskId);
+    const initialTrip = this.options.store.requireTrip(tripId);
+    const initialHandle = await this.options.ai.discoverMicroCandidates({
+      trip: initialTrip,
+      message,
+      areaTarget,
+    }, this.progress(taskId));
+    const initialOutput = await this.awaitMicroResearch(tripId, taskId, initialHandle, areaLabel, "研究");
+    this.options.tasks.update(taskId, "running", `${areaLabel}正在地图预检`, "interest:map-preflight");
+    const initial = await this.applyScopedCandidateDiscovery(
+      tripId,
+      initialOutput,
+      "micro",
+      [areaTarget.planningAreaCandidateId],
+      [areaTarget],
+    );
+    this.assertMicroTaskRunning(taskId);
+    const initialAccepted = initial.acceptedCandidates as MicroCandidateDiscoveryOutput["candidates"];
+    const shortfalls = discoveryShortfalls(initialOutput, initialAccepted);
+    const result: MicroDiscoveryBatchResult = {
+      areaLabel,
+      messages: [initialOutput.assistantMessage],
+      areaTargets: initialOutput.areaTargets,
+      addedCandidateIds: [...initial.addedCandidateIds],
+      rejected: [...initial.rejected],
+      initialTargetCount: areaTarget.targetCount,
+      initialAcceptedCount: initialAccepted.length,
+      supplementTargetCount: shortfalls[0]?.targetCount ?? 0,
+      supplementAcceptedCount: 0,
+      remainingShortfalls: shortfalls,
+      supplementError: null,
+    };
+    if (!shortfalls.length) {
+      this.options.tasks.update(taskId, "running", `${areaLabel}已保存 ${initialAccepted.length} 个可靠兴趣点`, "interest:saved");
+      return result;
+    }
+
+    this.options.tasks.update(
+      taskId,
+      "running",
+      `${areaLabel}地图预检接受 ${initialAccepted.length}/${areaTarget.targetCount}，正在补位`,
+      "coverage:supplementing",
+    );
+    try {
+      const trip = this.options.store.requireTrip(tripId);
+      const resolvedIds = new Set(currentResolutions(trip, this.options.store.listPlaceResolutions(tripId)).map((resolution) => resolution.placeId));
+      const refreshedTarget = buildFixedMicroDiscoveryTargets(trip.plan, [areaTarget.planningAreaCandidateId], resolvedIds)[0];
+      if (!refreshedTarget) {
+        result.remainingShortfalls = [];
+        this.options.tasks.update(taskId, "running", `${areaLabel}已保存 ${initialAccepted.length} 个可靠兴趣点`, "interest:saved");
+        return result;
+      }
+      result.supplementTargetCount = refreshedTarget.targetCount;
+      const supplementHandle = await this.options.ai.discoverMicroCandidates({
+        trip,
+        message: "根据服务端给出的缺口自动补位。重新检索多份旅游攻略，不得重复已有地点或被拒地点；只能改用当前正式、可导航且被攻略推荐的地标、经典拍照点、主要景点、观景台、博物馆、文化场馆、自然景观或正式体验入口，不得使用交通、住宿、餐饮或游客服务设施。",
+        areaTarget: refreshedTarget,
+        rejectedCandidates: initial.rejected,
+      }, this.progress(taskId));
+      const supplementOutput = await this.awaitMicroResearch(tripId, taskId, supplementHandle, areaLabel, "补位研究");
+      this.options.tasks.update(taskId, "running", `${areaLabel}正在地图预检补位结果`, "interest:map-preflight");
+      const supplement = await this.applyScopedCandidateDiscovery(
+        tripId,
+        supplementOutput,
+        "micro",
+        [refreshedTarget.planningAreaCandidateId],
+        [refreshedTarget],
+      );
+      this.assertMicroTaskRunning(taskId);
+      result.messages.push(supplementOutput.assistantMessage);
+      result.addedCandidateIds.push(...supplement.addedCandidateIds);
+      result.rejected.push(...supplement.rejected);
+      const supplementAccepted = supplement.acceptedCandidates as MicroCandidateDiscoveryOutput["candidates"];
+      result.supplementAcceptedCount = supplementAccepted.length;
+      result.remainingShortfalls = discoveryShortfalls(supplementOutput, supplementAccepted);
+      const acceptedTotal = initialAccepted.length + supplementAccepted.length;
+      this.options.tasks.update(taskId, "running", `${areaLabel}已保存 ${acceptedTotal} 个可靠兴趣点`, "interest:saved");
+    } catch (error) {
+      const errorMessage = aiErrorMessage(error);
+      if (errorMessage === "CONTENT_GENERATION_SUPERSEDED" || errorMessage === "AI 任务已停止。") throw error;
+      result.supplementError = this.microFailureMessage(areaLabel, result.supplementTargetCount, error, "补位研究");
+      this.options.tasks.update(taskId, "running", result.supplementError, "coverage:attention");
+    }
+    return result;
+  }
+
+  private async runMicroDiscoveryQueue(
+    tripId: string,
+    taskId: string,
+    fixedTargets: FixedAreaTargetV2[],
+    message: string | null,
+  ) {
+    const results: MicroDiscoveryBatchResult[] = [];
+    for (let index = 0; index < fixedTargets.length; index += 1) {
+      this.assertMicroTaskRunning(taskId);
+      const requestedTarget = fixedTargets[index];
+      const trip = this.options.store.requireTrip(tripId);
+      const resolvedIds = new Set(currentResolutions(trip, this.options.store.listPlaceResolutions(tripId)).map((resolution) => resolution.placeId));
+      const currentTarget = buildFixedMicroDiscoveryTargets(trip.plan, [requestedTarget.planningAreaCandidateId], resolvedIds)[0];
+      if (!currentTarget) continue;
+      const areaLabel = this.microAreaLabel(trip, currentTarget.planningAreaCandidateId);
+      this.options.tasks.update(
+        taskId,
+        "running",
+        `正在研究 ${index + 1}/${fixedTargets.length}：${areaLabel}（目标 ${currentTarget.targetCount} 个）`,
+        "interest:researching",
+      );
+      try {
+        results.push(await this.completeMicroDiscoveryArea(tripId, currentTarget, areaLabel, taskId, message));
+      } catch (error) {
+        const errorMessage = aiErrorMessage(error);
+        if (errorMessage === "CONTENT_GENERATION_SUPERSEDED" || errorMessage === "AI 任务已停止。") throw error;
+        const failure = this.microFailureMessage(areaLabel, currentTarget.targetCount, error);
+        this.options.tasks.update(taskId, "running", failure, "interest:failed-area");
+        results.push({
+          areaLabel,
+          messages: [],
+          areaTargets: [{ ...currentTarget, reason: "服务端固定目标" }],
+          addedCandidateIds: [],
+          rejected: [],
+          initialTargetCount: currentTarget.targetCount,
+          initialAcceptedCount: 0,
+          supplementTargetCount: 0,
+          supplementAcceptedCount: 0,
+          remainingShortfalls: [currentTarget],
+          supplementError: failure,
+        });
+      }
+    }
+
+    this.assertMicroTaskRunning(taskId);
+    const initialTargetCount = results.reduce((sum, item) => sum + item.initialTargetCount, 0);
+    const initialAcceptedCount = results.reduce((sum, item) => sum + item.initialAcceptedCount, 0);
+    const supplementTargetCount = results.reduce((sum, item) => sum + item.supplementTargetCount, 0);
+    const supplementAcceptedCount = results.reduce((sum, item) => sum + item.supplementAcceptedCount, 0);
+    const remainingShortfalls = results.flatMap((item) => item.remainingShortfalls);
+    const rejected = results.flatMap((item) => item.rejected);
+    const latestTrip = this.options.store.requireTrip(tripId);
+    const latestResolvedIds = new Set(currentResolutions(latestTrip, this.options.store.listPlaceResolutions(tripId)).map((resolution) => resolution.placeId));
+    const targetedIds = new Set(fixedTargets.map((target) => target.planningAreaCandidateId));
+    const uncoveredAreaCount = buildPlanningCoverage(latestTrip.plan, latestResolvedIds)
+      .filter((item) => targetedIds.has(item.macroCandidateId) && item.status !== "ready").length;
+    const reasonCounts = new Map<string, number>();
+    for (const item of rejected) reasonCounts.set(item.reason, (reasonCounts.get(item.reason) ?? 0) + 1);
+    const failureMessages = results.map((item) => item.supplementError).filter((item): item is string => Boolean(item));
+    const modelMessages = [...new Set(results.flatMap((item) => item.messages).filter(Boolean))];
+    const summary = [
+      `AI 本轮目标 ${initialTargetCount} 个兴趣点，首次地图预检接受 ${initialAcceptedCount} 个。`,
+      supplementTargetCount ? `系统自动补位目标 ${supplementTargetCount} 个，接受 ${supplementAcceptedCount} 个。` : "无需自动补位。",
+      remainingShortfalls.length ? `仍有 ${remainingShortfalls.length} 个目的地未达到可靠兴趣点下限。` : "所有目的地均已达到可靠兴趣点下限。",
+      uncoveredAreaCount ? `其中 ${uncoveredAreaCount} 个目的地仍没有可靠兴趣点，页面保持需要关注或阻塞状态。` : "所有目标目的地都至少有 1 个可靠兴趣点。",
+      reasonCounts.size ? `候选拒绝原因：${[...reasonCounts].map(([reason, count]) => `${reason} ${count} 个`).join("；")}。` : "",
+      failureMessages.length ? `未完成项：${failureMessages.join("；")}。` : "",
+    ].filter(Boolean).join("\n");
+    this.options.store.createAssistantMessage(tripId, `${modelMessages.join("\n\n")}\n\n${summary}`.trim().slice(0, 12000), {
+      mode: "discover_candidates",
+      discoveryMode: "micro",
+      areaTargets: results.flatMap((item) => item.areaTargets),
+      addedCandidateIds: results.flatMap((item) => item.addedCandidateIds),
+      initialTargetCount,
+      initialAcceptedCount,
+      supplementTargetCount,
+      supplementAcceptedCount,
+      uncoveredAreaCount,
+      remainingAreaIds: remainingShortfalls.map((item) => item.planningAreaCandidateId),
+      rejectedReasonCounts: Object.fromEntries(reasonCounts),
+    });
+    if (remainingShortfalls.length || failureMessages.length) {
+      throw new Error(`兴趣点生成未达到质量与数量门槛：${remainingShortfalls.length} 个目的地仍有缺口${failureMessages.length ? `；${failureMessages.join("；")}` : ""}`);
+    }
+  }
+
+  private startMicroCandidateDiscovery(tripId: string, fixedTargets: FixedAreaTargetV2[], message: string | null) {
+    const taskId = `planner:${randomUUID()}`;
+    const label = "生成详细兴趣点";
+    this.options.tasks.start({ id: taskId, tripId, agent: "planner", label, summary: `准备${label}` });
+    this.active.set(taskId, { tripId, interrupt: async () => undefined });
+    void (async () => {
+      try {
+        await this.runMicroDiscoveryQueue(tripId, taskId, fixedTargets, message);
+        this.options.tasks.update(taskId, "completed", `${label}已完成`, "task:completed");
+      } catch (error) {
+        const failure = normalizePublicAiSummary(aiErrorMessage(error)) || `${label}失败`;
+        const status = failure === "CONTENT_GENERATION_SUPERSEDED" ? "cancelled_by_generation" : failure === "AI 任务已停止。" ? "stopped" : "failed";
+        this.options.tasks.update(taskId, status, failure, `task:${status}`);
+      } finally {
+        this.active.delete(taskId);
+        this.stopRequested.delete(taskId);
+      }
+    })();
+    return { taskId, messageId: null };
   }
 
   startCandidateDiscovery(tripId: string, mode: CandidateDiscoveryModeV2 = "macro", planningAreaCandidateIds: string[] = [], message: string | null = null) {
+    const trip = this.options.store.requireTrip(tripId);
+    if (mode === "micro") {
+      const targetIds = this.candidateDiscoveryTargets(trip, mode, planningAreaCandidateIds);
+      const resolvedIds = new Set(currentResolutions(trip, this.options.store.listPlaceResolutions(tripId)).map((resolution) => resolution.placeId));
+      const fixedTargets = buildFixedMicroDiscoveryTargets(trip.plan, targetIds, resolvedIds);
+      if (!fixedTargets.length) {
+        const taskId = `planner:${randomUUID()}`;
+        this.options.tasks.start({ id: taskId, tripId, agent: "planner", label: "生成详细兴趣点", summary: "准备生成详细兴趣点" });
+        const summary = "所选目的地均已达到建议的可靠兴趣点数量，无需再次生成。";
+        this.options.store.createAssistantMessage(tripId, summary, {
+          mode: "discover_candidates",
+          discoveryMode: mode,
+          areaTargets: [],
+          addedCandidateIds: [],
+          initialTargetCount: 0,
+          initialAcceptedCount: 0,
+          supplementTargetCount: 0,
+          supplementAcceptedCount: 0,
+          uncoveredAreaCount: 0,
+          remainingAreaIds: [],
+          rejectedReasonCounts: {},
+        });
+        this.options.tasks.update(taskId, "completed", "已达到建议数量", "task:completed");
+        return { taskId, messageId: null };
+      }
+      return this.startMicroCandidateDiscovery(tripId, fixedTargets, message?.trim() || null);
+    }
+
     const taskHolder = { id: "" };
-    const label = mode === "macro" ? "生成目的地建议" : "生成详细兴趣点";
     const result = this.begin({
       tripId,
-      label,
-      run: async () => {
-        const trip = this.options.store.requireTrip(tripId);
-        const targetIds = this.candidateDiscoveryTargets(trip, mode, planningAreaCandidateIds);
-        return this.options.ai.discoverCandidates({ trip, message: message?.trim() || null, mode, planningAreaCandidateIds: targetIds }, this.progress(taskHolder.id));
-      },
-      complete: async (output: CandidateDiscoveryOutput) => {
-        const applied = await this.applyScopedCandidateDiscovery(tripId, output, mode, planningAreaCandidateIds);
-        this.options.store.createAssistantMessage(tripId, applied.output.assistantMessage, { mode: "discover_candidates", discoveryMode: mode, addedCandidateIds: applied.addedCandidateIds });
+      label: "生成目的地建议",
+      run: async () => this.options.ai.discoverMacroCandidates({ trip: this.options.store.requireTrip(tripId), message: message?.trim() || null }, this.progress(taskHolder.id)),
+      complete: async (output: MacroCandidateDiscoveryOutput) => {
+        const applied = await this.applyScopedCandidateDiscovery(tripId, output, "macro", []);
+        this.options.store.createAssistantMessage(tripId, applied.output.assistantMessage, {
+          mode: "discover_candidates",
+          discoveryMode: "macro",
+          areaTargets: [],
+          addedCandidateIds: applied.addedCandidateIds,
+        });
       },
     });
     taskHolder.id = result.taskId;
@@ -693,16 +1097,42 @@ export class TravelPlannerRuntimeV2 {
           this.options.tasks.update(taskHolder.id, "running", `正在为 ${supplementMacroIds.length} 个目的地自动补充具体兴趣点`, "coverage:supplementing");
           try {
             const supplementTrip = this.options.store.requireTrip(tripId);
-            const handle = await this.options.ai.discoverCandidates({
-              trip: supplementTrip,
-              message: "自动补全缺少可用于真实路线的具体兴趣点；只补充本次指定的目的地，不修改其他目的地。",
-              mode: "micro",
-              planningAreaCandidateIds: supplementMacroIds,
-            }, this.progress(taskHolder.id));
-            const discoveryOutput = await handle.result;
-            await this.applyScopedCandidateDiscovery(tripId, discoveryOutput, "micro", supplementMacroIds);
+            const currentResolvedIds = new Set(currentResolutions(supplementTrip, this.options.store.listPlaceResolutions(tripId)).map((resolution) => resolution.placeId));
+            const targets = buildFixedMicroDiscoveryTargets(supplementTrip.plan, supplementMacroIds, currentResolvedIds);
+            const failures: string[] = [];
+            this.active.set(taskHolder.id, { tripId, interrupt: async () => undefined });
+            for (let index = 0; index < targets.length; index += 1) {
+              this.assertMicroTaskRunning(taskHolder.id);
+              const target = targets[index];
+              const currentTrip = this.options.store.requireTrip(tripId);
+              const currentResolvedIdsForArea = new Set(currentResolutions(currentTrip, this.options.store.listPlaceResolutions(tripId)).map((resolution) => resolution.placeId));
+              const currentTarget = buildFixedMicroDiscoveryTargets(currentTrip.plan, [target.planningAreaCandidateId], currentResolvedIdsForArea)[0];
+              if (!currentTarget) continue;
+              const areaLabel = this.microAreaLabel(currentTrip, currentTarget.planningAreaCandidateId);
+              this.options.tasks.update(taskHolder.id, "running", `正在研究 ${index + 1}/${targets.length}：${areaLabel}（目标 ${currentTarget.targetCount} 个）`, "interest:researching");
+              try {
+                const areaResult = await this.completeMicroDiscoveryArea(
+                  tripId,
+                  currentTarget,
+                  areaLabel,
+                  taskHolder.id,
+                  "自动补全缺少可用于真实路线的具体兴趣点；只补充本次指定的目的地，不修改其他目的地。",
+                );
+                if (areaResult.remainingShortfalls.length || areaResult.supplementError) {
+                  failures.push(areaResult.supplementError ?? `${areaLabel}自动补充后仍未达到可靠兴趣点下限`);
+                }
+              } catch (error) {
+                const errorMessage = aiErrorMessage(error);
+                if (errorMessage === "CONTENT_GENERATION_SUPERSEDED" || errorMessage === "AI 任务已停止。") throw error;
+                const failure = this.microFailureMessage(areaLabel, currentTarget.targetCount, error);
+                failures.push(failure);
+                this.options.tasks.update(taskHolder.id, "running", failure, "interest:failed-area");
+              }
+            }
+            if (failures.length) throw new Error(failures.join("；"));
           } catch (error) {
             const summary = normalizePublicAiSummary(aiErrorMessage(error)) || "自动补充兴趣点失败";
+            if (summary === "CONTENT_GENERATION_SUPERSEDED" || summary === "AI 任务已停止。") throw error;
             this.options.tasks.update(taskHolder.id, "running", `自动补充未完成：${summary}；继续检查可生成性`, "coverage:attention");
           }
           latestTrip = this.options.store.requireTrip(tripId);

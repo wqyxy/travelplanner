@@ -313,7 +313,7 @@ export function CandidatePanel({
 
   return <section className="candidate-panel" aria-label="候选地点">
     <header className="candidate-panel-head">
-      <div><p className="eyebrow">{isMacro ? "DESTINATIONS" : "INTERESTS"}</p><h2>{isMacro ? "目的地" : "详细兴趣点"}</h2><small>{isMacro ? "先决定这趟旅行去哪些城市或区域；这里不安排每天路线。" : "只看实际可访问的景点、住宿和交通节点；完成后再生成按天行程。"}</small></div>
+      <div><p className="eyebrow">{isMacro ? "DESTINATIONS" : "INTERESTS"}</p><h2>{isMacro ? "目的地" : "详细兴趣点"}</h2><small>{isMacro ? "先决定这趟旅行去哪些城市或区域；这里不安排每天路线。" : "这里只生成实际可访问的观光点；住宿和交通节点由后续行程流程处理。"}</small></div>
       <div className="candidate-head-actions"><button className="button small" type="button" disabled={busy} onClick={() => setNewCandidate(emptyCandidateForm(isMacro ? "city" : "attraction"))}><Plus size={15}/>手动添加{isMacro ? "目的地" : "兴趣点"}</button></div>
     </header>
 
@@ -354,7 +354,7 @@ export function CandidatePanel({
     </div>
 
     <footer className="candidate-footer candidate-footer-flow-v3">
-      <div>{!isMacro && unresolvedSelected.length > 0 && <button className="button" type="button" disabled={busy} onClick={() => void onRetry(unresolvedSelected.map((row) => row.place.id))}><RefreshCw size={14}/>批量重新定位 {unresolvedSelected.length} 个</button>}<button className="button" type="button" disabled={busy} onClick={() => void onDiscover()}><WandSparkles size={15}/>{isMacro ? (rows.length ? "重新生成目的地建议" : "生成目的地建议") : (rows.length ? "补充兴趣点" : "生成兴趣点")}</button></div>
+      <div>{!isMacro && unresolvedSelected.length > 0 && <button className="button" type="button" disabled={busy} onClick={() => void onRetry(unresolvedSelected.map((row) => row.place.id))}><RefreshCw size={14}/>批量重新定位 {unresolvedSelected.length} 个</button>}<button className="button" type="button" disabled={busy} onClick={() => void onDiscover()}><WandSparkles size={15}/>{isMacro ? (rows.length ? "重新生成目的地建议" : "生成目的地建议") : (rows.length ? "补齐兴趣点" : "生成兴趣点")}</button></div>
       {!isMacro && unresolvedSelected.length > 0 && <small className="candidate-generation-warning">{unresolvedMustGo.length ? `${unresolvedMustGo.length} 个“必去”地点未定位，请先编辑或定位` : `${unresolvedSelected.length} 个未定位地点不会进入按天行程`}</small>}
       <button className="button primary generate-plan" type="button" disabled={busy || !counts.selected || (!isMacro && (workspace.trip.plan.days.length > 0 || unresolvedMustGo.length > 0))} onClick={() => void onContinue()}><Sparkles size={15}/>{isMacro ? "生成详细兴趣点" : workspace.trip.plan.days.length ? "行程已生成" : "生成行程与路线"}</button>
     </footer>

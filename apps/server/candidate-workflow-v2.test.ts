@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { emptyTravelPlan, type CandidateDiscoveryOutput, type PlanGenerationOutput, type TravelPlanDocument } from "./contracts-v2.js";
+import { emptyTravelPlan, type MacroCandidateDiscoveryOutput, type PlanGenerationOutput, type TravelPlanDocument } from "./contracts-v2.js";
 import { applyCandidateDiscovery, applyCandidateDiscoveryToStore, applyPlanGeneration, applyPlanGenerationToStore } from "./candidate-workflow-v2.js";
 import { TravelStoreV2 } from "./travel-store-v2.js";
 
@@ -10,7 +10,7 @@ const roots: string[] = [];
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
 function databasePath() { const root = mkdtempSync(path.join(tmpdir(), "candidate-workflow-v2-")); roots.push(root); return path.join(root, "travel.sqlite3"); }
 
-const discovery = (generation = 0): CandidateDiscoveryOutput => ({
+const discovery = (generation = 0): MacroCandidateDiscoveryOutput => ({
   schemaVersion: 1,
   baseGeneration: generation,
   assistantMessage: "先整理一批京都候选地点。",
@@ -59,6 +59,7 @@ describe("Candidate discovery", () => {
     expect(result.plan.places).toHaveLength(2);
     expect(result.plan.candidates).toHaveLength(2);
     expect(result.plan.candidates.every((candidate) => candidate.preference === "optional" && candidate.source === "ai")).toBe(true);
+    expect(result.plan.candidates.every((candidate) => !("prominence" in candidate) && !("experienceTypes" in candidate) && !("visitPointType" in candidate) && !("researchBasis" in candidate))).toBe(true);
     expect(result.idMappings["tmp-place-1"]).not.toBe("tmp-place-1");
     expect(result.idMappings["tmp-candidate-1"]).not.toBe("tmp-candidate-1");
   });

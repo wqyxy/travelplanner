@@ -560,22 +560,62 @@ export const ConversationOutputSchema = z.object({
 }).strict();
 export type ConversationOutput = z.infer<typeof ConversationOutputSchema>;
 
-export const CandidateDiscoveryOutputSchema = z.object({
-  schemaVersion: z.literal(1),
-  baseGeneration: z.number().int().min(0),
-  assistantMessage: TextSchema.max(12000),
-  places: z.array(PlaceSchema).min(1).max(200),
-  candidates: z.array(z.object({
-    temporaryId: IdSchema,
-    placeTemporaryId: IdSchema,
-    planningAreaCandidateId: IdSchema.nullable(),
-    aiReason: TextSchema.max(1000),
-    aiScore: z.number().finite().min(0).max(100),
-    suggestedDurationMinutes: z.number().int().min(0).max(10080).nullable(),
-    tags: z.array(TextSchema.max(120)).max(30),
-    defaultPreference: z.literal("optional"),
-  }).strict()).min(1).max(200),
-}).strict().superRefine((value, context) => {
+export const CandidateProminenceSchema = z.enum(["iconic", "major", "supporting"]);
+export type CandidateProminence = z.infer<typeof CandidateProminenceSchema>;
+
+export const CandidateExperienceTypeSchema = z.enum([
+  "landmark",
+  "photo",
+  "viewpoint",
+  "museum_culture",
+  "nature",
+  "heritage_architecture",
+  "family",
+  "outdoor",
+]);
+export type CandidateExperienceType = z.infer<typeof CandidateExperienceTypeSchema>;
+
+export const CandidateVisitPointTypeSchema = z.enum([
+  "venue",
+  "landmark",
+  "photo_spot",
+  "viewpoint",
+  "trailhead",
+  "attraction_entrance",
+  "experience_meeting_point",
+]);
+export type CandidateVisitPointType = z.infer<typeof CandidateVisitPointTypeSchema>;
+
+export const CandidateResearchBasisSchema = z.enum([
+  "multi_guide_consensus",
+  "official_status_verified",
+  "user_theme_match",
+]);
+export type CandidateResearchBasis = z.infer<typeof CandidateResearchBasisSchema>;
+
+const CandidateDiscoveryFieldsSchema = z.object({
+  temporaryId: IdSchema,
+  placeTemporaryId: IdSchema,
+  planningAreaCandidateId: IdSchema.nullable(),
+  aiReason: TextSchema.max(1000),
+  aiScore: z.number().finite().min(0).max(100),
+  suggestedDurationMinutes: z.number().int().min(0).max(10080).nullable(),
+  tags: z.array(TextSchema.max(120)).max(30),
+  defaultPreference: z.literal("optional"),
+}).strict();
+
+const MacroCandidateDiscoveryItemSchema = CandidateDiscoveryFieldsSchema;
+const MicroCandidateDiscoveryItemSchema = CandidateDiscoveryFieldsSchema.extend({
+  prominence: CandidateProminenceSchema,
+  experienceTypes: z.array(CandidateExperienceTypeSchema).min(1).max(8),
+  visitPointType: CandidateVisitPointTypeSchema,
+  researchBasis: z.array(CandidateResearchBasisSchema).min(1).max(3),
+}).strict();
+
+function validateDiscoveryReferences(
+  value: { places: z.infer<typeof PlaceSchema>[]; candidates: Array<{ temporaryId: string; placeTemporaryId: string }> },
+  context: z.RefinementCtx,
+) {
   const placeIds = new Set(value.places.map((place) => place.id));
   if (placeIds.size !== value.places.length) context.addIssue({ code: "custom", path: ["places"], message: "临时 Place ID 不能重复。" });
   const candidateIds = new Set<string>();
@@ -587,7 +627,32 @@ export const CandidateDiscoveryOutputSchema = z.object({
     candidateIds.add(candidate.temporaryId);
     placeRefs.add(candidate.placeTemporaryId);
   }
-});
+}
+
+export const MacroCandidateDiscoveryOutputSchema = z.object({
+  schemaVersion: z.literal(1),
+  baseGeneration: z.number().int().min(0),
+  assistantMessage: TextSchema.max(12000),
+  places: z.array(PlaceSchema).min(1).max(200),
+  candidates: z.array(MacroCandidateDiscoveryItemSchema).min(1).max(200),
+}).strict().superRefine(validateDiscoveryReferences);
+export type MacroCandidateDiscoveryOutput = z.infer<typeof MacroCandidateDiscoveryOutputSchema>;
+
+export const MicroCandidateDiscoveryOutputSchema = z.object({
+  schemaVersion: z.literal(1),
+  baseGeneration: z.number().int().min(0),
+  assistantMessage: TextSchema.max(12000),
+  areaTargets: z.array(z.object({
+    planningAreaCandidateId: IdSchema,
+    targetCount: z.number().int().min(1).max(9),
+    reason: TextSchema.max(1000),
+  }).strict()).length(1),
+  places: z.array(PlaceSchema).min(1).max(9),
+  candidates: z.array(MicroCandidateDiscoveryItemSchema).min(1).max(9),
+}).strict().superRefine(validateDiscoveryReferences);
+export type MicroCandidateDiscoveryOutput = z.infer<typeof MicroCandidateDiscoveryOutputSchema>;
+
+export const CandidateDiscoveryOutputSchema = z.union([MacroCandidateDiscoveryOutputSchema, MicroCandidateDiscoveryOutputSchema]);
 export type CandidateDiscoveryOutput = z.infer<typeof CandidateDiscoveryOutputSchema>;
 
 export const PlanGenerationOutputSchema = z.object({
@@ -666,7 +731,8 @@ function strictJson(value: unknown): unknown {
 
 export const TravelPlanDocumentJsonSchema = strictJson(z.toJSONSchema(TravelPlanDocumentSchema)) as Record<string, unknown>;
 export const ConversationOutputJsonSchema = strictJson(z.toJSONSchema(ConversationOutputSchema)) as Record<string, unknown>;
-export const CandidateDiscoveryOutputJsonSchema = strictJson(z.toJSONSchema(CandidateDiscoveryOutputSchema)) as Record<string, unknown>;
+export const MacroCandidateDiscoveryOutputJsonSchema = strictJson(z.toJSONSchema(MacroCandidateDiscoveryOutputSchema)) as Record<string, unknown>;
+export const MicroCandidateDiscoveryOutputJsonSchema = strictJson(z.toJSONSchema(MicroCandidateDiscoveryOutputSchema)) as Record<string, unknown>;
 export const PlanGenerationOutputJsonSchema = strictJson(z.toJSONSchema(PlanGenerationOutputSchema)) as Record<string, unknown>;
 export const AdjustmentProposalOutputJsonSchema = strictJson(z.toJSONSchema(AdjustmentProposalOutputSchema)) as Record<string, unknown>;
 export const DetailBatchOutputV2JsonSchema = strictJson(z.toJSONSchema(DetailBatchOutputV2Schema)) as Record<string, unknown>;

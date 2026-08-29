@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   AdjustmentProposalOutputJsonSchema,
-  CandidateDiscoveryOutputJsonSchema,
+  MacroCandidateDiscoveryOutputJsonSchema,
+  MicroCandidateDiscoveryOutputJsonSchema,
   ConversationOutputJsonSchema,
   MapResolutionAssistOutputJsonSchema,
   PlanGenerationOutputJsonSchema,
@@ -77,7 +78,7 @@ describe("controlled resolution and AI contracts", () => {
   });
 
   it("keeps every AI output JSON Schema free of coordinate fields", () => {
-    for (const schema of [ConversationOutputJsonSchema, CandidateDiscoveryOutputJsonSchema, PlanGenerationOutputJsonSchema, AdjustmentProposalOutputJsonSchema, MapResolutionAssistOutputJsonSchema]) {
+    for (const schema of [ConversationOutputJsonSchema, MacroCandidateDiscoveryOutputJsonSchema, MicroCandidateDiscoveryOutputJsonSchema, PlanGenerationOutputJsonSchema, AdjustmentProposalOutputJsonSchema, MapResolutionAssistOutputJsonSchema]) {
       expect(containsForbiddenCoordinateKey(schema)).toBe(false);
     }
   });
