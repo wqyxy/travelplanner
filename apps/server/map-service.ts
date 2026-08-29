@@ -25,15 +25,15 @@ export type MapRouteResult = { geometry: unknown | null; distanceKm: number | nu
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 export const ROUTE_SUCCESS_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const ROUTE_FAILURE_CACHE_TTL_MS = 60 * 60 * 1000;
-export const GEOCODE_CACHE_VERSION = "v4";
+export const GEOCODE_CACHE_VERSION = "v5-ai-led";
 
-export function nominatimSearchUrl(query: string, countryCode?: string | null, language = "en") {
+export function nominatimSearchUrl(query: string, _countryCode?: string | null, language = "en") {
   const url = new URL("https://nominatim.openstreetmap.org/search");
   url.searchParams.set("format", "jsonv2");
-  url.searchParams.set("limit", "5");
+  // Technical provider cap only. Application code does not rank or semantically trim these results.
+  url.searchParams.set("limit", "20");
   url.searchParams.set("addressdetails", "1");
   url.searchParams.set("accept-language", language);
-  if (countryCode?.trim()) url.searchParams.set("countrycodes", countryCode.trim().toLowerCase());
   url.searchParams.set("q", query);
   return url;
 }
@@ -105,13 +105,12 @@ export class MapService {
     return run;
   }
 
-  async search(query: string, countryCode?: string | null): Promise<MapCandidate[]> {
-    const country = countryCode?.trim().toLowerCase() || "";
-    const key = `${GEOCODE_CACHE_VERSION}:${country}:${query.normalize("NFKC").trim().toLocaleLowerCase()}`;
+  async search(query: string, _countryCode?: string | null): Promise<MapCandidate[]> {
+    const key = `${GEOCODE_CACHE_VERSION}:${query.normalize("NFKC").trim().toLocaleLowerCase()}`;
     const cached = this.cached<MapCandidate[]>("geocode_cache", key);
     if (cached) return cached;
     const candidates = await this.request(async () => {
-      const response = await this.fetcher(nominatimSearchUrl(query, country), { headers: { "User-Agent": "AI-Travel-Planner/0.1 (personal local travel planner)", Accept: "application/json" } });
+      const response = await this.fetcher(nominatimSearchUrl(query), { headers: { "User-Agent": "AI-Travel-Planner/0.1 (personal local travel planner)", Accept: "application/json" } });
       if (!response.ok) throw new Error("公开地点服务暂时不可用。");
       const payload = await response.json() as unknown;
       return Array.isArray(payload) ? payload.map(candidateFromNominatim).filter((item): item is MapCandidate => item !== null) : [];
