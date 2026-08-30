@@ -19,7 +19,10 @@ export type LoadedPromptRegistryV3 = {
 };
 
 const LEGACY_PROMPT_PATTERN = /^\d{2}-.*Agent\.md$/u;
-const FORBIDDEN_PROMPT_PATTERN = /03-地图坐标搜索Agent|CoordinateResearch|(?:请|必须|允许|可以).{0,24}(?:直接生成(?:可信)?坐标|输出(?:经纬度|坐标)|执行\s*(?:Shell|命令)|调用\s*MCP|创建(?:子)?\s*Agent)/iu;
+const LEGACY_FORBIDDEN_PROMPT_PATTERN = /03-地图坐标搜索Agent|CoordinateResearch/iu;
+const FORBIDDEN_OPERATION_PATTERN = /(?:直接生成(?:可信)?坐标|输出(?:经纬度|坐标)|执行\s*(?:Shell|命令)|调用\s*MCP|创建(?:子)?\s*Agent)/iu;
+const FORBIDDEN_DIRECTIVE_CANDIDATE_PATTERN = /(?:请|必须|允许|可以).{0,48}(?:直接生成(?:可信)?坐标|输出(?:经纬度|坐标)|执行\s*(?:Shell|命令)|调用\s*MCP|创建(?:子)?\s*Agent)/giu;
+const NEGATED_FORBIDDEN_OPERATION_PATTERN = /(?:不得|不能|不可|禁止|不要|不应|不允许|严禁|勿)\s*(?:直接|自行|主动|私自)?\s*(?:直接生成(?:可信)?坐标|输出(?:经纬度|坐标)|执行\s*(?:Shell|命令)|调用\s*MCP|创建(?:子)?\s*Agent)/iu;
 
 function normalizeRelative(value: string) {
   return value.split(path.sep).join("/");
@@ -37,10 +40,21 @@ async function listMarkdown(root: string, relative = ""): Promise<string[]> {
   return result.sort();
 }
 
+function containsForbiddenDirective(value: string) {
+  if (LEGACY_FORBIDDEN_PROMPT_PATTERN.test(value)) return true;
+  for (const match of value.matchAll(FORBIDDEN_DIRECTIVE_CANDIDATE_PATTERN)) {
+    const candidate = match[0];
+    if (!FORBIDDEN_OPERATION_PATTERN.test(candidate)) continue;
+    if (NEGATED_FORBIDDEN_OPERATION_PATTERN.test(candidate)) continue;
+    return true;
+  }
+  return false;
+}
+
 function validatePromptContent(relativePath: string, content: string) {
   const value = content.trim();
   if (!value) throw new Error(`Prompt 不能为空：${relativePath}`);
-  if (FORBIDDEN_PROMPT_PATTERN.test(value)) throw new Error(`Prompt 包含废弃或越权指令：${relativePath}`);
+  if (containsForbiddenDirective(value)) throw new Error(`Prompt 包含废弃或越权指令：${relativePath}`);
   return value;
 }
 
