@@ -22,18 +22,38 @@ export type MapCandidate = {
 
 export type MapRouteResult = { geometry: unknown | null; distanceKm: number | null; durationMinutes: number | null; warning: string | null };
 
-const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+function abortError(signal?: AbortSignal) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  return new Error("AI 任务已停止。");
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw abortError(signal);
+}
+
+const sleep = (milliseconds: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+  if (signal?.aborted) return reject(abortError(signal));
+  const timer = setTimeout(() => {
+    signal?.removeEventListener("abort", onAbort);
+    resolve();
+  }, milliseconds);
+  const onAbort = () => {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+    reject(abortError(signal));
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+});
 export const ROUTE_SUCCESS_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const ROUTE_FAILURE_CACHE_TTL_MS = 60 * 60 * 1000;
-export const GEOCODE_CACHE_VERSION = "v4";
+export const GEOCODE_CACHE_VERSION = "v5-ai-led";
 
-export function nominatimSearchUrl(query: string, countryCode?: string | null, language = "en") {
+export function nominatimSearchUrl(query: string, _countryCode?: string | null, language = "en") {
   const url = new URL("https://nominatim.openstreetmap.org/search");
   url.searchParams.set("format", "jsonv2");
-  url.searchParams.set("limit", "5");
+  url.searchParams.set("limit", "20");
   url.searchParams.set("addressdetails", "1");
   url.searchParams.set("accept-language", language);
-  if (countryCode?.trim()) url.searchParams.set("countrycodes", countryCode.trim().toLowerCase());
   url.searchParams.set("q", query);
   return url;
 }
@@ -94,10 +114,12 @@ export class MapService {
     this.db.prepare(`INSERT INTO ${table}(key,payload_json,expires_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET payload_json=excluded.payload_json,expires_at=excluded.expires_at`).run(key, JSON.stringify(payload), Date.now() + ttl);
   }
 
-  private request<T>(operation: () => Promise<T>) {
+  private request<T>(operation: () => Promise<T>, signal?: AbortSignal) {
     const run = this.serial.then(async () => {
+      throwIfAborted(signal);
       const wait = Math.max(0, this.nextNominatimRequestAt - Date.now());
-      if (wait) await sleep(wait);
+      if (wait) await sleep(wait, signal);
+      throwIfAborted(signal);
       this.nextNominatimRequestAt = Date.now() + 1100;
       return operation();
     });
@@ -105,30 +127,35 @@ export class MapService {
     return run;
   }
 
-  async search(query: string, countryCode?: string | null): Promise<MapCandidate[]> {
-    const country = countryCode?.trim().toLowerCase() || "";
-    const key = `${GEOCODE_CACHE_VERSION}:${country}:${query.normalize("NFKC").trim().toLocaleLowerCase()}`;
+  async search(query: string, _countryCode?: string | null, signal?: AbortSignal): Promise<MapCandidate[]> {
+    throwIfAborted(signal);
+    const key = `${GEOCODE_CACHE_VERSION}:${query.normalize("NFKC").trim().toLocaleLowerCase()}`;
     const cached = this.cached<MapCandidate[]>("geocode_cache", key);
     if (cached) return cached;
     const candidates = await this.request(async () => {
-      const response = await this.fetcher(nominatimSearchUrl(query, country), { headers: { "User-Agent": "AI-Travel-Planner/0.1 (personal local travel planner)", Accept: "application/json" } });
+      throwIfAborted(signal);
+      const response = await this.fetcher(nominatimSearchUrl(query), { signal, headers: { "User-Agent": "AI-Travel-Planner/0.1 (personal local travel planner)", Accept: "application/json" } });
       if (!response.ok) throw new Error("公开地点服务暂时不可用。");
       const payload = await response.json() as unknown;
       return Array.isArray(payload) ? payload.map(candidateFromNominatim).filter((item): item is MapCandidate => item !== null) : [];
-    });
+    }, signal);
+    throwIfAborted(signal);
     this.save("geocode_cache", key, candidates, 30 * 24 * 60 * 60 * 1000);
     return candidates;
   }
 
-  async reverse(latitude: number, longitude: number): Promise<MapCandidate | null> {
+  async reverse(latitude: number, longitude: number, signal?: AbortSignal): Promise<MapCandidate | null> {
+    throwIfAborted(signal);
     const key = `${GEOCODE_CACHE_VERSION}:reverse:${latitude.toFixed(6)},${longitude.toFixed(6)}`;
     const cached = this.cached<MapCandidate | null>("geocode_cache", key);
     if (cached !== null) return cached;
     const candidate = await this.request(async () => {
-      const response = await this.fetcher(nominatimReverseUrl(latitude, longitude), { headers: { "User-Agent": "AI-Travel-Planner/0.1 (personal local travel planner)", Accept: "application/json" } });
+      throwIfAborted(signal);
+      const response = await this.fetcher(nominatimReverseUrl(latitude, longitude), { signal, headers: { "User-Agent": "AI-Travel-Planner/0.1 (personal local travel planner)", Accept: "application/json" } });
       if (!response.ok) throw new Error("公开地点服务暂时不可用。");
       return candidateFromNominatim(await response.json() as unknown);
-    });
+    }, signal);
+    throwIfAborted(signal);
     this.save("geocode_cache", key, candidate, 30 * 24 * 60 * 60 * 1000);
     return candidate;
   }
