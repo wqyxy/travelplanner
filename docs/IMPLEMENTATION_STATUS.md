@@ -1,6 +1,6 @@
 # TravelPlanner Implementation Status
 
-更新时间：2026-08-30  
+更新时间：2026-08-31  
 实施分支：`refactor/stage-dialogue-actions-v3`  
 目标文档：`docs/AI_STAGE_DIALOGUE_AND_ACTION_REFACTOR_PLAN.md`
 
@@ -10,69 +10,110 @@
 
 ## Current Phase
 
-### Phase 6 / 7 — Atomic Code Cutover & Cleanup
+### Phase 7 — Post-review hardening / second verification gate
 
-**代码级状态：完成。**  
-**完整验证：尚未执行，等待用户按项目规则明确授权。**  
+**Phase 1–7 代码级重构与 cutover 已完成。**  
+**第一次 Codex 验收：FAIL，发现 A–I 边界问题及 typecheck/test/build 失败。**  
+**针对该报告的修复批次：已提交 `4279cd6d27fa2c3790d613342efa623a317f92c4`。**  
+**第二次验证：尚未执行，当前不能宣称测试通过。**  
 **真实本地数据库破坏性 cutover：尚未执行，必须独立确认。**
 
-## Completed
+## First Verification Findings
 
-### Phase 0 — Repository Analysis
-- 完成目标方案与 current main 映射，确认旧全局 Planner Prompt/Thread/Message/taskMode 是主要替换层。
-- 明确保留 Candidate-first、PlanCommand、Proposal Scope、generation CAS、Place Resolver、Route Provider 和兴趣点 save-first / map-best-effort 能力。
+第一次 Codex 验收基于 `b31d3755db7fb72e2904986ba6ea833631b4bc67`，确认：
 
-### Phase 1 — Foundations
-- 新增 `ConversationStage`、`AiActionType / Executor / Status`、Stage Dialogue/Web 合同。
-- 建立 Prompt Registry / Action Registry，明确 AI 与 deterministic executor。
-- Structured AI 支持 per-call `effort / reasoningSummary / web`；`structuredTurn()` 不再强制所有调用 `summary=detailed`。
+- A：Stage Dialogue 在 canonical generation 变化后仍可把旧推理包装成最新 generation Action；
+- B：20 天整体 replan / repair 会机械展开为 120 条命令并触发 100 条上限；
+- C：两个 Macro 的 interest.discover 会产生 3 次 AI 调用，且 stop 无法命中当前内部 child run；
+- D：`itinerary.stop.add` 的 `index=null` 被解释为 0；
+- E：Action Registry 的 `inputContract` 没有成为运行时服务端校验边界；
+- F：replan / repair 可把 unresolved concrete Place 放入 Proposal；
+- G：Candidate / Place 关联 Scope 的并发冲突检测过窄，可错误 rebase；
+- H：`itinerary.verify` 可借通用 `update_day_stop` 修改 Candidate / Place；
+- I：单日 AI Action 和 Stage Dialogue 缺少足够的上下文窗口化。
 
-### Phase 2 — Prompts & Contracts
-- 新 Prompt 目录固定为 `prompts/shared / dialogues / actions`。
-- 四个 Dialogue Prompt 独立；每个 AI Action 使用独立 Prompt。
-- strict Prompt Registry 递归校验缺失、额外、重复、空 Prompt。
-- Dialogue Action `parameters` 已从自由 `Record<string, unknown>` 模型输出收紧为固定 closed 参数信封；未使用字段使用 null/[]，不能创造任意键。
-- active itinerary AI 输出合同不包含 `newPlaces / newCandidates`；需要新地点时返回 `requiresStage=interests`。
-- 新增 strict structured-output 合同测试。
+同时：
+- `git diff --check` PASS；
+- `npm run typecheck` FAIL；
+- `npm test` FAIL（233 passed / 5 failed）；
+- `npm run build` FAIL（Web build 成功，server tsc 失败）；
+- strict Prompt / Structured Output 定向测试、fresh v3 Store、Resolver / Route、cutover 静态检查通过。
 
-### Phase 3 — Fresh SQLite v3
-- 新建 `TravelStoreV3`，只接受空 DB 创建或完整 user_version=3 DB。
-- version 2 / 未知 / 损坏数据库 fail closed；不实现迁移、双写、静默 reset。
-- messages 增加 stage；增加 stage threads、ai_actions；AiTask agent 改为 dialogue/action/map。
-- Action confirm 使用数据库条件更新原子抢占，requestKey 保证 CTA 幂等。
-- duplicate 只复制 canonical plan。
+## Post-review Repair — `4279cd6d27fa2c3790d613342efa623a317f92c4`
 
-### Phase 4 — Server Orchestration
-- 四阶段 Dialogue 只回答、澄清、`web_required` 或识别 Action，不直接 mutation。
-- `web_required` 第一轮不保存最终结论；第二次 live web 后才持久化最终回答和 verification。
-- 主 CTA 进入统一 Action service，点击即确认；聊天 Action 保持 pending_confirmation。
-- deterministic Action 不调用模型；AI Action 使用 Registry 指定 Prompt / reasoning / web / output contract。
-- AI 修改类结果使用 Proposal → Apply；`itinerary.refine` 也走 Proposal。
-- 继续复用现有 Resolution、Route、PlanCommand、Proposal Scope 与 generation CAS。
+### A — stale Dialogue generation
+- Dialogue 启动时固定 `baseGeneration`。
+- 第一轮 AI 返回后、Web 第二轮返回后均重新检查 canonical generation。
+- generation 已变化时结果直接进入 `cancelled_by_generation` / failed turn，不保存旧回答、不创建 Action。
+- Dialogue Action 不再调用 `latestGeneration()` 偷换 generation。
 
-### Phase 5 — Right-Side UI
-- `AppV3` 固定 requirements / destinations / interests / itinerary 四步。
-- `WorkspaceAssistantV3` 删除旧“对话 / 调整”双模式。
-- 四阶段 message history 与 draft 独立；Action Card / Proposal 挂在右侧对应消息或阶段任务区。
-- 地图没有第二套 AI 输入；地图只负责展示、选择和 Provider/手工坐标交互。
-- 主 CTA 不再重复确认；精确 preference、编辑、拖拽、Anchor、地图、Route 等继续 deterministic。
-- Action Card 已显示 pending/executing/awaiting_apply/completed/applied/rejected/cancelled/failed/superseded。
+### B — long itinerary replan / repair
+- `replacementCommands()` 改为语义 diff：优先复用已有 Stop，只有实际顺序变化才 move，字段变化才 update，真正新增/删除才 add/remove。
+- 20 天 × 2 Stop 的纯重排不再机械生成 120 条 remove/add/anchor 命令。
+- 仍保留单 Proposal 100 条受控命令资源上限；不是简单把常量调大。
 
-### Phase 6 — Atomic Code Cutover
-- 前端 `main.tsx` 已切换 `AppV3` + `stage-ai-v3.css`。
-- 服务端 active runtime 已切换 `index-v3.ts / TravelStoreV3 / StagedTravelAiV3 / TravelPlannerRuntimeV3 / travel-api-v3`。
-- 新增 `index-cutover-v3.ts` 启动守卫：HTTP server 监听前先执行 strict Prompt 校验、fresh-v3/fail-closed DB 校验和运行时数据库不变量安装。
-- package dev/dev:server/start 已全部指向 `index-cutover-v3`。
-- run.cmd / run.ps1 / run.command 已同步指向 `dist/server/index-cutover-v3.js`。
-- 旧 00–03 Prompt 已删除；strict Prompt Registry 是唯一 Prompt 入口。
-- 旧 planner-runtime-v2/core/base、旧 prompt-contract-v2、旧全局 App/Assistant/ProposalPanel 和旧 AI API 主路径已从分支删除。
-- 新数据库不变量：canonical generation 变化会清理 Stage thread；stale context-generation thread 不保留；deterministic Action 成功最终态归一为 `applied`。
-- 为数据库不变量增加独立测试，并将 Runtime deterministic 测试基线更新为 `applied`。
+### C — multi-Macro interest discovery
+- `interest.discover / supplement` 不再先做一轮多 Macro AI 调用。
+- Runtime 直接逐 Macro 启动单职责 child run，每个 Macro 恰好一次调用。
+- 当前 child handle 会写入 active task，因此用户 stop 命中当前正在执行的 Macro。
 
-### Phase 7 — Docs & Cleanup
-- README、docs/README、AGENTS 已更新到 staged-v3 / fresh-v3 / right-side-only 基线。
-- `docs/LOCAL_TEST_PROMPT.md` 已改写为 staged-v3 验收流程，删除旧固定 3/5/7/9、map-precheck-before-save、single-trip-thread 等过期断言。
-- 便携启动入口已与 V3 cutover guard 对齐。
+### D — null stop index
+- `index == null` 统一解释为追加到 Day 末尾。
+
+### E — Action inputContract enforcement
+- 新增 `ai-action-input-contracts-v3.ts`。
+- 每个 Action 有 strict CTA 参数 Schema，并与 Registry `inputContract` 映射校验。
+- conversation 的固定参数信封先解析，再压缩为 action-specific 参数。
+- Runtime 创建 Action 时校验一次；`TravelStoreV3.createAction()` 落库前再校验一次。
+- 未知字段、空 requirements.update 等不再允许持久化或生成空 revision。
+
+### F — unresolved Place in itinerary mutation
+- 新增统一 itinerary reference / current Resolution 校验。
+- itinerary.generate、replan、repair 都拒绝把未定位 non-city Place 加入 Day。
+
+### G — Proposal / Action conflict scope
+- Candidate scope 同时观察关联 Place；Place scope 同时观察关联 Candidate。
+- Day scope 同时观察该 Day 引用的 Candidate / Place。
+- 关联事实发生冲突修改时旧 Proposal / Action superseded，不再错误 rebase。
+
+### H — itinerary.verify boundary
+- AI 输出 Schema 已收窄为只允许 `update_day_stop` 的动态事实字段。
+- Runtime 再次白名单校验允许字段：时间、时长、transport、schedule/cost verification、costNote、notes。
+- `candidateId / placeId / activity` 等身份或结构字段不得由 verify 修改。
+
+### I — context windowing
+- itinerary Dialogue 改为全局轻量 `dayIndex` + 当前 Day/Stop 所在 Day ±1 的详细窗口。
+- 超过 64 KB 时进一步压缩为当前 Day + 截断长文本 / Stop 数量，而不是立即抛错。
+- `itinerary.day.optimize / refine` 只注入目标 Day、相邻 Day 摘要、目标 Day 引用 Candidate 和必要 Route state。
+- interests Dialogue 优先当前 Macro 的 Micro Candidate。
+
+## Typecheck / Test Drift Repairs
+
+修复批次同时处理第一次报告中的已知非业务失败：
+
+- `ai-registries-v3.ts` Registry validation 类型收窄；
+- `staged-ai-v3.ts` runnable PromptId / Zod 泛型 cast；
+- itinerary `requires_stage` discriminated-union narrowing；
+- 删除 planner Runtime 中无意义的 `stage === "map"` 比较；
+- `candidate-discovery-policy-v2.test.ts` 更新到当前 AI 自主 0–9、单 Macro、无补位 / 业务过滤规则；
+- `map-service.test.ts` 更新当前 geocode cache key，并增强 Windows SQLite 临时目录清理重试。
+
+## Added Regression Coverage
+
+新增/扩展正式测试覆盖：
+
+- stale Dialogue generation；
+- conversation Action 确认前不 mutation；
+- CTA idempotency；
+- stop.add `index=null` 默认追加；
+- multi-Macro interest discover 调用次数与 stop；
+- 20 天 replan 语义 diff；
+- replan unresolved Place 拒绝；
+- Action inputContract 未知字段拒绝；
+- Candidate scope + linked Place 并发 supersede；
+- verify 动态字段白名单；
+- 20 天 Stage Context 窗口化；
+- itinerary schema 继续禁止 `newPlaces / newCandidates`。
 
 ## Database Cutover Decision
 
@@ -82,58 +123,45 @@
 private_data/travel-v2.sqlite3
 ```
 
-但活动 Runtime 要求内部：
+活动 Runtime 要求内部：
 
 ```text
 PRAGMA user_version = 3
 ```
 
-已确认策略：
+固定策略：
 - 不迁移、不保留现有 v2 数据；
-- 正常启动绝不自动删除/移动/覆盖旧库；
-- 旧 v2 文件仍存在时，V3 会在 server 监听前 fail closed；
-- 真正删除或人工移走真实 `private_data/travel-v2.sqlite3` 是独立破坏性步骤，尚未执行，也无法通过 GitHub connector 代替用户执行。
+- 正常启动绝不自动删除、移动、覆盖旧库；
+- 旧 v2 / 未知 / 损坏数据库在 HTTP listen 前 fail closed；
+- 真正删除或人工移走真实 `private_data/travel-v2.sqlite3` 是独立破坏性步骤，尚未执行。
 
-## Tests / Checks
+## Verification Status
 
 截至本状态更新：
-- 已完成 GitHub 只读静态 Review、入口/Prompt 目录/branch diff 检查；
-- 已编写/更新 V3 Registry、Prompt、Store、Runtime、strict Dialogue schema、runtime invariant 测试；
-- **尚未运行**完整 Vitest、`npm run typecheck`、`npm run build`、真实 Codex smoke、浏览器 E2E 或便携打包。
 
-根据 `AGENTS.md`，完整验证必须在代码修改收尾后一次性向用户说明范围并获得明确授权，不能自动执行。
-
-## Known Issues / Risks
-
-### P1 — 多 Macro 兴趣点 CTA 有一轮冗余 AI 调用
-
-当前 `interest.discover / interest.supplement` 在 targetIds 包含多个 Macro 时，Runtime 首先启动一次 Action AI，然后持久化阶段再逐 Macro 串行研究；多目标情况下首轮结果会被丢弃，因此会多消耗一次模型调用。最终每个 Macro 的结果仍按单目标合同验证并保存，数据正确性不受影响。
-
-处理建议：完整 typecheck/test 通过后，再决定是否对 841 行 Runtime 做一个受控小重构，把首个 Macro 直接复用第一次输出。不要为了省一轮调用在验证前大面积改写 Runtime。
-
-### Verification Risk
-
-- `AppV3` 继续通过结构兼容 cast 复用 CandidatePanel / ItineraryPanelV2 / WorkspaceMapV2；最终 typecheck 是确认该复用边界的必要关卡。
-- strict Stage Dialogue Schema 本轮刚收紧，需要最终合同测试确认 OpenAI transport 没有自由 additionalProperties / mixed required-optional 问题。
-- V3 startup guard 和 SQLite triggers 需要自动化测试 + fresh DB smoke 双重确认。
+- 本次修复只完成 GitHub 代码修改与静态复核；
+- **没有在 ChatGPT 侧运行** Vitest、typecheck、build、真实 Codex、浏览器 E2E；
+- 第二轮必须由本地 Codex 对 `4279cd6d27fa2c3790d613342efa623a317f92c4` 重新执行 Review A–I + 完整自动化检查；
+- 只有 A–I、typecheck、unit tests、build 全部通过后，才进入真实 Codex / Browser E2E；
+- E2E 通过后才考虑 merge main；
+- merge 后再单独确认真实旧 v2 DB 的备份 / 移走 / 删除。
 
 ## Next Step
 
-完整验证建议一次性执行：
-1. `git diff --check`；
-2. V3/相关 Vitest（或 `npm test`）；
-3. `npm run typecheck`；
-4. `npm run build`；
-5. 临时 v2 DB fail-closed smoke；
-6. 临时 fresh v3 启动 smoke；
-7. 真实 Codex Stage Dialogue / AI Action smoke；
-8. 浏览器四阶段 E2E；
-9. 验证通过后再 fast-forward / merge 到 main；
-10. 最后单独确认真实本地旧 v2 DB 的备份/移走/删除。
+第二轮 Codex 验收顺序：
+
+1. 确认 branch / HEAD / clean worktree；
+2. 重跑 Review A–I；
+3. `git diff --check`；
+4. `npm run typecheck`；
+5. `npm test`；
+6. `npm run build`；
+7. 若全部通过，再使用隔离 fresh v3 DB 做最小真实 Codex / Browser E2E；
+8. 不操作真实 `private_data/travel-v2.sqlite3`。
 
 ## Do Not Do
 
 - 不自动删除、迁移或覆盖真实 v2 数据库。
-- 不恢复旧全局 AI Conversation/Adjustment、旧 00–03 Prompt 或 taskMode 主链。
+- 不恢复旧全局 AI Conversation / Adjustment、旧 00–03 Prompt 或 taskMode 主链。
 - 不增加新 PlaceKind 或四阶段 canonical TripStage。
-- 未获用户明确授权前不运行完整测试、typecheck、build、真实 Codex 或浏览器 E2E。
+- 第二轮验证完成前不 merge main，不宣称实现已验收通过。
