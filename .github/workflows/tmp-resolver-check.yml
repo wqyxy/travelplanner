@@ -1,0 +1,23 @@
+name: Temporary resolver check
+
+on:
+  push:
+    branches:
+      - feat/ai-led-place-discovery-resolution
+
+permissions:
+  contents: read
+
+jobs:
+  resolver:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Resolver unit test
+        run: npx vitest run --config vitest.config.ts apps/server/place-resolver-v2.test.ts
