@@ -7,6 +7,8 @@ export const ConversationStageSchema = z.enum([
   "itinerary",
 ]);
 export type ConversationStage = z.infer<typeof ConversationStageSchema>;
+export const AiActionStageSchema = z.union([ConversationStageSchema, z.literal("map")]);
+export type AiActionStage = z.infer<typeof AiActionStageSchema>;
 
 export const AiActionTypeSchema = z.enum([
   "requirements.update",
@@ -85,19 +87,9 @@ const ActionDialogueResultSchema = z.object({
 export const StageDialogueOutputSchema = z.object({
   schemaVersion: z.literal(1),
   result: z.discriminatedUnion("type", [
-    z.object({
-      type: z.literal("reply"),
-      assistantMessage: z.string().trim().min(1).max(12000),
-    }).strict(),
-    z.object({
-      type: z.literal("clarification"),
-      assistantMessage: z.string().trim().min(1).max(12000),
-    }).strict(),
-    z.object({
-      type: z.literal("web_required"),
-      queryIntent: z.string().trim().min(1).max(2000),
-      reason: z.string().trim().min(1).max(2000),
-    }).strict(),
+    z.object({ type: z.literal("reply"), assistantMessage: z.string().trim().min(1).max(12000) }).strict(),
+    z.object({ type: z.literal("clarification"), assistantMessage: z.string().trim().min(1).max(12000) }).strict(),
+    z.object({ type: z.literal("web_required"), queryIntent: z.string().trim().min(1).max(2000), reason: z.string().trim().min(1).max(2000) }).strict(),
     ActionDialogueResultSchema,
   ]),
 }).strict();
@@ -119,14 +111,9 @@ export const StageConversationTurnInputSchema = z.object({
 }).strict();
 export type StageConversationTurnInput = z.infer<typeof StageConversationTurnInputSchema>;
 
-export const ActionConfirmationInputSchema = z.object({
-  expectedGeneration: z.number().int().min(0),
-}).strict();
+export const ActionConfirmationInputSchema = z.object({ expectedGeneration: z.number().int().min(0) }).strict();
 export type ActionConfirmationInput = z.infer<typeof ActionConfirmationInputSchema>;
-
-export const ActionCancellationInputSchema = z.object({
-  expectedGeneration: z.number().int().min(0).optional(),
-}).strict();
+export const ActionCancellationInputSchema = z.object({ expectedGeneration: z.number().int().min(0).optional() }).strict();
 export type ActionCancellationInput = z.infer<typeof ActionCancellationInputSchema>;
 
 export const AiTaskTimingSchema = z.object({
@@ -156,7 +143,7 @@ export type StageThreadRecord = z.infer<typeof StageThreadRecordSchema>;
 export const AiActionRecordSchema = z.object({
   id: z.string().trim().min(1).max(160),
   tripId: z.string().trim().min(1).max(160),
-  stage: ConversationStageSchema,
+  stage: AiActionStageSchema,
   actionType: AiActionTypeSchema,
   executor: AiActionExecutorSchema,
   origin: AiActionOriginSchema,
@@ -174,12 +161,9 @@ export const AiActionRecordSchema = z.object({
   completedAt: z.string().datetime({ offset: true }).nullable(),
   errorSummary: z.string().max(2000).nullable(),
 }).strict().superRefine((value, context) => {
-  if (value.origin === "conversation" && !value.sourceMessageId) {
-    context.addIssue({ code: "custom", path: ["sourceMessageId"], message: "conversation Action 必须关联 sourceMessageId。" });
-  }
-  if (value.origin === "cta" && value.sourceMessageId !== null) {
-    context.addIssue({ code: "custom", path: ["sourceMessageId"], message: "CTA Action 不得关联聊天消息。" });
-  }
+  if (value.origin === "conversation" && !value.sourceMessageId) context.addIssue({ code: "custom", path: ["sourceMessageId"], message: "conversation Action 必须关联 sourceMessageId。" });
+  if (value.origin === "cta" && value.sourceMessageId !== null) context.addIssue({ code: "custom", path: ["sourceMessageId"], message: "CTA Action 不得关联聊天消息。" });
+  if (value.stage === "map" && value.origin === "conversation") context.addIssue({ code: "custom", path: ["origin"], message: "地图内部 Action 不来自阶段对话。" });
 });
 export type AiActionRecord = z.infer<typeof AiActionRecordSchema>;
 
