@@ -75,11 +75,118 @@ export const WorkspaceSelectionV3Schema = z.discriminatedUnion("type", [
 ]);
 export type WorkspaceSelectionV3 = z.infer<typeof WorkspaceSelectionV3Schema>;
 
+const RequirementFieldSchema = z.enum([
+  "title",
+  "dates",
+  "travelers",
+  "budget",
+  "pace",
+  "themes",
+  "preferences",
+  "constraints",
+  "assumptions",
+]);
+
+const AssumptionInputSchema = z.object({
+  text: z.string().trim().min(1).max(500),
+  source: z.enum(["user", "ai", "system"]),
+  confidence: z.enum(["low", "medium", "high"]),
+}).strict();
+
+// `changes` is deliberately a closed, all-optional patch object. The structured
+// output transport converts all-optional objects to the internal __patch format,
+// so the model never receives an arbitrary additionalProperties schema.
+const DialogueChangesSchema = z.object({
+  title: z.string().trim().min(1).max(300).optional(),
+  date: z.string().trim().min(1).max(40).nullable().optional(),
+  activity: z.string().trim().min(1).max(2000).optional(),
+  period: z.enum(["morning", "afternoon", "evening", "night", "all_day"]).nullable().optional(),
+  startTime: z.string().trim().min(1).max(20).nullable().optional(),
+  endTime: z.string().trim().min(1).max(20).nullable().optional(),
+  durationMinutes: z.number().int().min(0).max(10080).nullable().optional(),
+  costNote: z.string().max(1000).nullable().optional(),
+  notes: z.string().max(2000).nullable().optional(),
+  pace: z.string().trim().min(1).max(120).nullable().optional(),
+  themes: z.array(z.string().trim().min(1).max(120)).max(30).optional(),
+  preferences: z.array(z.string().trim().min(1).max(500)).max(40).optional(),
+  constraints: z.array(z.string().trim().min(1).max(500)).max(40).optional(),
+  assumptions: z.array(AssumptionInputSchema).max(40).optional(),
+  dates: z.object({
+    start: z.string().trim().min(1).max(40).nullable(),
+    end: z.string().trim().min(1).max(40).nullable(),
+    requestedDurationDays: z.number().int().min(1).max(365).nullable(),
+  }).strict().optional(),
+  travelers: z.object({
+    summary: z.string().max(1000),
+    adults: z.number().int().min(0).max(100).nullable(),
+    children: z.number().int().min(0).max(100).nullable(),
+  }).strict().optional(),
+  budget: z.object({
+    amount: z.number().finite().nonnegative().nullable(),
+    currency: z.string().trim().min(1).max(20).nullable(),
+    note: z.string().max(1000).nullable(),
+  }).strict().optional(),
+  scheduleVerification: z.object({
+    status: z.enum(["verified", "estimated", "unverified"]),
+    checkedAt: z.string().datetime({ offset: true }).nullable(),
+  }).strict().nullable().optional(),
+  costVerification: z.object({
+    status: z.enum(["verified", "estimated", "unverified"]),
+    checkedAt: z.string().datetime({ offset: true }).nullable(),
+  }).strict().nullable().optional(),
+}).strict();
+
+const DialoguePlaceChangesSchema = z.object({
+  nameZh: z.string().trim().min(1).max(300).optional(),
+  nameLocal: z.string().trim().min(1).max(300).nullable().optional(),
+  nameEn: z.string().trim().min(1).max(300).nullable().optional(),
+  kind: z.enum(["city", "attraction", "lodging", "meal", "airport", "station", "port", "stop", "waypoint"]).optional(),
+  city: z.string().trim().min(1).max(160).nullable().optional(),
+  region: z.string().trim().min(1).max(160).nullable().optional(),
+  country: z.string().trim().min(1).max(160).nullable().optional(),
+  countryCode: z.string().trim().min(2).max(2).nullable().optional(),
+  approximate: z.boolean().optional(),
+}).strict();
+
+const DialogueCandidateChangesSchema = z.object({
+  aiReason: z.string().trim().min(1).max(1000).nullable().optional(),
+  aiScore: z.number().finite().min(0).max(100).nullable().optional(),
+  suggestedDurationMinutes: z.number().int().min(0).max(10080).nullable().optional(),
+  tags: z.array(z.string().trim().min(1).max(120)).max(30).optional(),
+}).strict();
+
+// All top-level fields are required and use null/[] for "not used". This avoids
+// mixed required/optional objects in OpenAI strict JSON Schema while preserving
+// the runtime's existing action.parameters field names.
+export const DialogueActionParametersSchema = z.object({
+  request: z.string().trim().min(1).max(4000).nullable(),
+  candidateId: z.string().trim().min(1).max(160).nullable(),
+  candidateIds: z.array(z.string().trim().min(1).max(160)).max(200),
+  preference: z.enum(["must_go", "want_to_go", "optional", "excluded"]).nullable(),
+  dayId: z.string().trim().min(1).max(160).nullable(),
+  dayIds: z.array(z.string().trim().min(1).max(160)).max(90),
+  stopId: z.string().trim().min(1).max(160).nullable(),
+  targetDayId: z.string().trim().min(1).max(160).nullable(),
+  targetIndex: z.number().int().min(0).max(100).nullable(),
+  index: z.number().int().min(0).max(100).nullable(),
+  anchor: z.enum(["start", "end"]).nullable(),
+  placeId: z.string().trim().min(1).max(160).nullable(),
+  label: z.string().trim().min(1).max(300).nullable(),
+  notes: z.string().max(2000).nullable(),
+  activity: z.string().trim().min(1).max(2000).nullable(),
+  fields: z.array(RequirementFieldSchema).max(9),
+  changes: DialogueChangesSchema.nullable(),
+  placeChanges: DialoguePlaceChangesSchema.nullable(),
+  candidateChanges: DialogueCandidateChangesSchema.nullable(),
+  allowWeb: z.boolean().nullable(),
+}).strict();
+export type DialogueActionParameters = z.infer<typeof DialogueActionParametersSchema>;
+
 const ActionDialogueResultSchema = z.object({
   type: z.literal("action"),
   assistantMessage: z.string().trim().min(1).max(12000),
   actionType: AiActionTypeSchema,
-  parameters: z.record(z.string(), z.unknown()),
+  parameters: DialogueActionParametersSchema,
   targetIds: z.array(z.string().trim().min(1).max(160)).max(200),
   impactSummary: z.string().trim().min(1).max(2000),
 }).strict();
