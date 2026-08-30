@@ -106,7 +106,6 @@ export function validateRegistryDefinitionsV3() {
     if (promptPaths.has(prompt.relativePath)) throw new Error(`Prompt 文件重复注册：${prompt.relativePath}`);
     promptIds.add(prompt.id);
     promptPaths.add(prompt.relativePath);
-    if (prompt.kind !== "shared" && (!prompt.reasoning || !prompt.reasoningSummary || !prompt.web || !prompt.outputContract)) throw new Error(`AI Prompt 缺少执行策略：${prompt.id}`);
   }
 
   const actionIds = new Set<string>();

@@ -15,10 +15,10 @@ function databasePath() {
 }
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
 
-function pendingDeterministicAction(tripId: string, sourceMessageId: string, generation: number): AiActionRecord {
+function pendingDeterministicAction(tripId: string, generation: number): AiActionRecord {
   const timestamp = new Date().toISOString();
   return {
-    id: randomUUID(), tripId, stage: "requirements", actionType: "requirements.update", executor: "deterministic", origin: "conversation", sourceMessageId,
+    id: randomUUID(), tripId, stage: "requirements", actionType: "requirements.update", executor: "deterministic", origin: "cta", sourceMessageId: null,
     parameters: { changes: { pace: "relaxed" } }, targetIds: [], scope: { type: "trip", id: null }, baseGeneration: generation,
     status: "pending_confirmation", taskId: null, proposalId: null, resultRef: null, startedAt: null, updatedAt: timestamp, completedAt: null, errorSummary: null,
   };
@@ -49,9 +49,7 @@ describe("V3 runtime database invariants", () => {
     installRuntimeInvariantsV3(filename);
 
     const store = new TravelStoreV3(filename);
-    const messageId = store.createUserMessage(trip.id, "requirements", "节奏改轻松");
-    store.updateTurn(messageId, "completed");
-    const action = store.createAction(pendingDeterministicAction(trip.id, messageId, 0)).action;
+    const action = store.createAction(pendingDeterministicAction(trip.id, 0)).action;
     expect(store.claimActionForExecution(action.id, 0).claimed).toBe(true);
     expect(store.completeAction(action.id, "generation:1")?.status).toBe("applied");
     store.close();
