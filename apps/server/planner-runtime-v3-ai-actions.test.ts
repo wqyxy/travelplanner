@@ -11,7 +11,7 @@ import type { LoadedPromptRegistryV3 } from "./prompt-registry-v3.js";
 import type { PlaceResolverV2 } from "./place-resolver-v2.js";
 import { placeGeoFingerprint } from "./place-resolver-v2.js";
 import type { DayRouteServiceV2 } from "./day-route-v2.js";
-import { TravelPlanDocumentSchema, type Day, type TravelPlanDocument } from "./contracts-v2.js";
+import { TravelPlanDocumentSchema, type Day, type PlaceResolution, type TravelPlanDocument } from "./contracts-v2.js";
 
 const roots: string[] = [];
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
@@ -127,16 +127,25 @@ describe("TravelPlannerRuntimeV3 AI action regressions", () => {
     store.close();
   });
 
-  it("resolves newly generated Macro Places best-effort before destination generation completes", async () => {
+  it("resolves every generated Macro mapping best-effort before destination generation completes", async () => {
     const store = db(); const created = store.createTrip(); const resolvedIds: string[] = [];
     const resolver = {
-      resolve: async (tripId: string, placeId: string, generation: number) => {
-        const trip = store.requireTrip(tripId); const place = trip.plan.places.find((item) => item.id === placeId)!;
-        resolvedIds.push(placeId);
-        store.upsertPlaceResolution(tripId, { tripId, placeId, geoFingerprint: placeGeoFingerprint(place), status: "resolved", method: "manual_coordinates", provider: null, providerPlaceId: null, latitude: 40 + resolvedIds.length, longitude: 170 + resolvedIds.length, address: null, confidence: null, resolvedAt: new Date().toISOString(), errorMessage: null }, generation);
-        return { resolution: null, candidates: [] };
+      resolve: async () => ({ resolution: null, candidates: [] }),
+      resolveMany: async (tripId: string, placeIds: string[], generation: number, _signal?: AbortSignal, onProgress?: (event: any) => void) => {
+        const results: Array<{ resolution: PlaceResolution; candidates: [] }> = [];
+        for (const [index, placeId] of placeIds.entries()) {
+          const trip = store.requireTrip(tripId); const place = trip.plan.places.find((item) => item.id === placeId)!;
+          const resolving: PlaceResolution = { tripId, placeId, geoFingerprint: placeGeoFingerprint(place), status: "resolving", method: "provider_match", provider: null, providerPlaceId: null, latitude: null, longitude: null, address: null, confidence: null, resolvedAt: null, errorMessage: null };
+          store.upsertPlaceResolution(tripId, resolving, generation);
+          onProgress?.({ placeId, status: "resolving", completed: index, total: placeIds.length, resolution: resolving });
+          const resolution: PlaceResolution = { ...resolving, status: "resolved", method: "manual_coordinates", latitude: 40 + index, longitude: 170 + index, resolvedAt: new Date().toISOString() };
+          store.upsertPlaceResolution(tripId, resolution, generation);
+          resolvedIds.push(placeId);
+          onProgress?.({ placeId, status: "resolved", completed: index + 1, total: placeIds.length, resolution });
+          results.push({ resolution, candidates: [] });
+        }
+        return results;
       },
-      resolveMany: async () => [],
       searchCandidates: async () => [],
     } as unknown as PlaceResolverV2;
     const rt = runtime(store, async () => run({
@@ -156,6 +165,21 @@ describe("TravelPlannerRuntimeV3 AI action regressions", () => {
     await waitFor(() => store.getAction(started.action.id)?.status === "completed");
     expect(resolvedIds).toHaveLength(2);
     expect(store.listPlaceResolutions(created.id).filter((item) => item.status === "resolved")).toHaveLength(2);
+    expect(store.getAction(started.action.id)?.resultRef).toMatch(/resolved:2\/2/);
+    store.close();
+  });
+
+  it("exposes current resolving and unresolved records through the V3 workspace", () => {
+    const store = db(); const created = store.createTrip(); const written = store.writePlan(created.id, macroPlan(created.plan), 0, { source: "test", summary: "resolution visibility fixture" });
+    const trip = store.requireTrip(created.id);
+    const p1 = trip.plan.places.find((place) => place.id === "place-m1")!;
+    const p2 = trip.plan.places.find((place) => place.id === "place-m2")!;
+    store.upsertPlaceResolution(created.id, { tripId: created.id, placeId: p1.id, geoFingerprint: placeGeoFingerprint(p1), status: "resolving", method: "provider_match", provider: null, providerPlaceId: null, latitude: null, longitude: null, address: null, confidence: null, resolvedAt: null, errorMessage: null }, written.generation);
+    store.upsertPlaceResolution(created.id, { tripId: created.id, placeId: p2.id, geoFingerprint: placeGeoFingerprint(p2), status: "unresolved", method: "provider_match", provider: null, providerPlaceId: null, latitude: null, longitude: null, address: null, confidence: null, resolvedAt: null, errorMessage: "需要人工确认地图实体。" }, written.generation);
+    const rt = runtime(store, async () => run({}));
+    const workspace = rt.workspace(created.id);
+    expect(workspace.resolutions.map((resolution) => [resolution.placeId, resolution.status])).toEqual(expect.arrayContaining([[p1.id, "resolving"], [p2.id, "unresolved"]]));
+    expect(workspace.resolutions.find((resolution) => resolution.placeId === p2.id)?.errorMessage).toBe("需要人工确认地图实体。");
     store.close();
   });
 

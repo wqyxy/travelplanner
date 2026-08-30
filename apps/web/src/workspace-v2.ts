@@ -121,10 +121,12 @@ export function filterCandidateRows(rows: CandidateRow[], filter: CandidateFilte
 
 export function candidateCounts(rows: CandidateRow[], contextRows: CandidateRow[] = rows) {
   const participating = participatingCandidateIds(contextRows);
-  const result = { all: rows.length, must_go: 0, want_to_go: 0, optional: 0, excluded: 0, unresolved: 0, selected: rows.filter((row) => participating.has(row.candidate.id)).length };
+  const result = { all: rows.length, must_go: 0, want_to_go: 0, optional: 0, excluded: 0, resolving: 0, unresolved: 0, selected: rows.filter((row) => participating.has(row.candidate.id)).length };
   for (const row of rows) {
     result[row.candidate.preference] += 1;
-    if (resolutionStatus(row) === "unresolved") result.unresolved += 1;
+    const status = resolutionStatus(row);
+    if (status === "resolving") result.resolving += 1;
+    else if (status === "unresolved") result.unresolved += 1;
   }
   return result;
 }

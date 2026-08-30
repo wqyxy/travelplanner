@@ -38,7 +38,14 @@ describe("candidate-first web helpers", () => {
   });
   it("counts selected and unresolved candidates", () => {
     const rows = candidateRows(workspace());
-    expect(candidateCounts(rows)).toMatchObject({ all: 2, must_go: 1, optional: 1, selected: 2, unresolved: 1 });
+    expect(candidateCounts(rows)).toMatchObject({ all: 2, must_go: 1, optional: 1, selected: 2, resolving: 0, unresolved: 1 });
+    expect(selectedUnresolvedRows(rows).map((row) => row.candidate.id)).toEqual(["c2"]);
+  });
+  it("counts an in-flight resolution separately from unresolved", () => {
+    const active = workspace();
+    active.resolutions.push({ tripId: "t", placeId: "p2", geoFingerprint: "g2", status: "resolving", method: "provider_match", provider: null, providerPlaceId: null, latitude: null, longitude: null, address: null, confidence: null, resolvedAt: null, errorMessage: null });
+    const rows = candidateRows(active);
+    expect(candidateCounts(rows)).toMatchObject({ resolving: 1, unresolved: 0 });
     expect(selectedUnresolvedRows(rows).map((row) => row.candidate.id)).toEqual(["c2"]);
   });
   it("formats suggested durations", () => {

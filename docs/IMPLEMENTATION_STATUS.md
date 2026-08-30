@@ -6,174 +6,153 @@
 
 ## Current Gate
 
-Phase 1–7 staged-v3 重构、atomic cutover 与 A–I post-review hardening 已完成。
+Phase 1–7 staged-v3、cutover、A–I hardening、Prompt Registry 修复以及 itinerary refine / Resolution 边界 hardening 已完成。
 
-最近一次完整自动化验收基于 `e2c0ce9356b8f27385a246aa4a3b25e239e1171d`：
+最近一次完整 Codex 验收在上一轮代码上确认：
 
-- strict Prompt Registry 真实 Prompt Tree：PASS；
+- strict Prompt Registry：PASS；
 - Review A–I：全部 PASS；
-- fresh v3 / cutover：PASS；
-- `git diff --check`：PASS；
+- fresh-v3 / cutover：PASS；
 - `npm run typecheck`：PASS；
-- `npm test`：PASS，45 files / 251 tests；
+- 全量 Vitest：PASS；
 - `npm run build`：PASS；
-- 真实 Codex structured-output smoke：PASS；
-- Browser E2E：已运行，但在 itinerary 最终链路发现 2 个剩余问题，因此仍未 READY FOR MERGE。
+- real Codex structured-output smoke：PASS。
 
-## Latest Browser E2E Findings
+Browser E2E 随后发现并已修复：
 
-### P0 — itinerary.refine 真实模型无法稳定形成 Proposal
+- `itinerary.refine` 改为 patch-only `dayUpdates`，模型不再能表达 Anchor / Day identity / Candidate / Place 改动；
+- itinerary 中任何 Anchor / Stop Place，包括 `kind=city`，都必须具有当前有效 Resolution。
 
-真实模型在 Day 2 / Day 3 refine 时均改变了 Anchor。旧 `itinerary.refine.output` 使用完整 `DetailedDaySchema`，因此 Anchor、Day identity、Candidate/Place identity 虽由 Runtime fail closed，但仍暴露在模型输出合同中；Prompt 约束不足以保证真实模型稳定原样返回。
+这些修复尚待与本轮地点定位调度改造一起重新验收，因此当前仍不能标记 `READY FOR MERGE`。
 
-### P1 — unresolved Macro city 可进入 itinerary
+## Latest Location Finding
 
-旧 `validateItineraryReferences()` 对 `Place.kind === "city"` 存在 Resolution 豁免。E2E 中两个未定位 Macro city 被作为 Anchor/Stop 引用，Route 因此进入 attention。
+实际使用中发现：目的地生成后很长时间只出现极少数定位结果，其他地点看起来像完全没有开始定位。
 
-目标边界已经明确为：**任何非 null 的 Day Anchor / Stop Place 都必须拥有当前有效 Provider/手工 Resolution，city 不例外。**
+核对当前 V3 后，问题由三部分构成：
 
-## Final E2E Hardening
+1. 最新 Runtime 已存在 destination.generate 后的 best-effort Resolver 调用，但旧实现只处理 `addedPlaceIds`，无法保证本轮所有经 `idMappings` 正式化的生成地点（包括与已有 Place 去重/复用的地点）都进入自动定位；
+2. `TravelPlannerRuntimeV3.resolveChangedPlaces()` 与 `PlaceResolverV2.resolveMany()` 都逐 Place 严格串行。单个地点最多需要 4 次 Provider 搜索，存在合理歧义时还可能进入 1–2 次 AI 消歧，因此一个慢地点会阻塞后面的所有地点；
+3. V3 `workspace()` 过去只返回 `status=resolved` 的 Resolution。数据库即使已经写入 `resolving` 或 `unresolved + errorMessage`，右侧 UI 也看不到，因此用户会误以为“根本没有定位”。
 
-本轮针对上述两个真实 E2E 问题做结构性修复。
+注意：`MapService` 对 Nominatim 的约 1.1 秒全局请求间隔是有意的 Provider 限速，不应删除或并发打穿。
 
-### 1. itinerary.refine 改为 patch-only 输出合同
+## Location Scheduling Hardening
 
-`itinerary.refine.output` 不再返回完整 Day。
+### 1. 保留 Provider 限速，改为 3 个 Place worker 协作推进
 
-成功结果只包含：
+`PlaceResolverV2.resolveMany()` 已从逐 Place 严格串行改为有界 worker pool：
 
-- `dayIds`
-- `dayUpdates[]`
-  - `dayId`
-  - `stops[]`
-    - `stopId`
-    - activity / period
-    - startTime / endTime / durationMinutes
-    - transportFromPrevious
-    - scheduleVerification
-    - costNote / costVerification
-    - notes
+- `PLACE_RESOLUTION_BATCH_CONCURRENCY = 3`；
+- 最多同时推进 3 个 Place 的解析状态机；
+- 每个 Place 仍保留最多 4 次 Provider 搜索预算；
+- 实际 Nominatim HTTP 仍全部经过 `MapService` 原有全局 serial/rate limiter；
+- 当某个 Place 等待 AI 消歧时，其他 worker 可以继续取得 Provider 搜索机会；
+- 一个歧义地点不再阻塞整批地点。
 
-模型输出中不再存在：
+这提高的是调度公平性和首批结果速度，不提高对地图 Provider 的请求频率。
 
-- Day title/date/identity；
-- startAnchor / endAnchor；
-- Candidate ID / Place ID；
-- Stop 新增、删除、排序字段。
+### 2. Resolution 状态实时可见
 
-Runtime 再执行以下校验：
+`PlaceResolverV2.resolve()` 现在对状态变化提供回调：
 
-- dayIds 与 dayUpdates 必须一一对应；
-- 每个目标 Day 必须恰好覆盖全部现有 Stop ID；
-- 不允许重复、缺失或额外 Stop；
-- 只生成 `update_day_stop` PlanCommand；
-- Proposal 前先预演命令，并把目标 Day 临时标记为 detailed/ready 后通过 `TravelPlanDocumentSchema` 完整验证；
-- Apply 后仍由服务端把目标 Day 标记为 detailed/ready。
+- 开始时先持久化 `resolving`；
+- 成功后持久化 `resolved`；
+- 无法确认时持久化 `unresolved + errorMessage`；
+- 每次变化都通知 Runtime。
 
-因此 Anchor、Day identity、地点引用和 Stop 顺序不再依赖 Prompt 服从，而是在模型输出 Schema 上不可表达。
+Runtime 对每个变化广播：
 
-### 2. itinerary Resolution 边界统一
+`travel.resolution.changed`
 
-`validateItineraryReferences()` 已删除 city 豁免：
+前端已有 WebSocket 监听，会立即重新读取 workspace，因此地点卡能逐个显示：
 
-- Anchor Place 必须存在当前有效 Resolution；
-- Stop Place 必须存在当前有效 Resolution；
-- `kind=city` 与其他 Place 使用完全相同的规则。
+- 定位中；
+- 已定位；
+- 未定位及具体错误。
 
-该边界应用于：
+### 3. workspace 不再隐藏失败和进行中状态
 
-- itinerary.generate；
-- itinerary.replan；
-- itinerary.repair；
-- deterministic itinerary Actions；
-- 直接 PlanCommand itinerary mutation。
+`TravelPlannerRuntimeV3.workspace()` 现在返回所有 fingerprint 当前有效的 Resolution：
 
-因此 AI、按钮动作和直接编辑均不能把 unresolved Place 写入 canonical itinerary。
+- resolving；
+- resolved；
+- unresolved。
 
-### 3. Macro destination save-first + map-best-effort
+地图和 coverage 仍只把 `resolved` 当作可用地理事实，因此不会把无坐标状态误画到地图或误当作可路由地点。
 
-为了避免统一 Resolution 边界导致 destination.generate 后普遍无法进入 itinerary：
+### 4. 自动生成覆盖全部本轮正式化地点
 
-- destination.generate 仍先保存 Macro Candidate / Place；
-- 保存成功后立即对本轮新增 Macro Place 执行 Resolver best-effort；
-- 定位失败的 Macro 仍保留并显示 unresolved，不删除、不补位、不回滚整批；
-- 但 unresolved Macro 在完成 Resolution 前不能进入 Day Anchor / Stop。
+`destination.generate` 现在根据本轮 Candidate 的 `placeTemporaryId -> idMappings` 获取全部 canonical Place ID，再进入自动定位，而不是只依赖 `addedPlaceIds`。
 
-这与 Micro Candidate 的 save-first / map-best-effort 原则保持一致。
+因此：
 
-### 4. Prompt 同步
+- 新增 Place 会定位；
+- 被语义去重并复用的已有 Place 也会检查/补定位；
+- 每个本轮生成的 Candidate 都有明确的 canonical Place 定位去向。
 
-生成行程、重新规划、修复行程 Prompt 已明确：
+`interest.discover / supplement` 同样使用本轮正式化后的 canonical Place ID 集合进行定位。
 
-- 任何 Anchor / Stop Place 都必须具有服务端提供的当前有效 Resolution；
-- city 不例外；
-- unresolved Place 不得进入输出 Days；
-- 缺少足够可定位地点时按合同返回 `requiresStage=interests` / 保守处理，不得伪造地图事实。
+仍保持 save-first：
 
-refine Prompt 已同步到新的 patch-only `dayUpdates` 合同。
+- Candidate / Place 先保存；
+- 地图定位失败不回滚、不补位、不删除 Candidate；
+- 最终 unresolved 继续留在右侧供重试或人工定位。
+
+### 5. 自动定位任务显示整体进度
+
+对于 destination / interest AI Action，定位阶段会继续复用当前 Action Task，并更新摘要，例如：
+
+`正在定位地点 4/9 · 已定位`
+
+因此 Action 不会在 AI 刚生成 Candidate 后就表现为“全部结束”；只有本轮 best-effort 定位批次结束后才进入 completed。
+
+手动批量重新定位继续使用原 API，但现在同样使用 cooperative `resolveMany()`，并通过 WebSocket 逐 Place 刷新卡片状态。
 
 ## Regression Coverage Added
 
-新增/扩展正式回归测试覆盖：
+新增/扩展正式测试覆盖：
 
-- `itinerary.refine.output` 接受 patch-only dayUpdates；
-- refine 输出尝试携带 Anchor 会被 strict Schema 拒绝；
-- destination.generate 新增 Macro Place 后会逐个触发 best-effort Resolver；
-- unresolved Macro city 作为 itinerary Anchor 会被拒绝；
-- refine patch-only 输出可以生成 Proposal；
-- Proposal 只包含 `update_day_stop`；
-- Proposal Apply 后 Anchor、Stop ID、Candidate/Place identity 保持不变；
-- Apply 后目标 Day 为 detailed/ready。
+- `resolveMany()` 同时最多推进 3 个 Place worker；
+- 每个 Place 都产生 `resolving -> resolved/unresolved` 状态流；
+- batch progress 最终 `completed === total`；
+- 一个等待 AI 消歧的慢 Place 不阻塞其他简单 Place 先完成；
+- destination.generate 会对全部本轮 canonical Place 映射触发自动定位；
+- Action resultRef 记录 resolved/total；
+- V3 workspace 可以读取 current `resolving` 与 `unresolved + errorMessage`；
+- Web helper 将 resolving 与 unresolved 分开计数。
+
+此前的 refine、unresolved itinerary、A–I、Prompt Registry、Store/Route regression 仍需在最终全量测试中保持通过。
 
 ## Verification Status
 
-本轮 E2E hardening 已完成代码与测试修改，但**尚未对最终 HEAD 重新运行**：
+本轮代码和回归测试已经写入，但**尚未运行测试**。
 
-- targeted Vitest；
-- `npm run typecheck`；
-- 全量 `npm test`；
-- `npm run build`；
-- 真实 Codex refine；
-- Browser Proposal → Apply → UI/Map/Route 最终链路。
+下一轮需要由 Codex 执行：
 
-因此当前状态仍是：**等待最终复测，不能宣称 READY FOR MERGE。**
+1. targeted Place Resolver / Runtime / Web helper tests；
+2. `git diff --check`；
+3. `npm run typecheck`；
+4. `npm test`；
+5. `npm run build`；
+6. 上述全部 PASS 后再运行 isolated fresh-v3 real Browser E2E；
+7. 实际观察 9 个左右目的地生成后的自动定位触发、逐个状态出现、慢歧义地点不阻塞其他地点；
+8. 再继续 itinerary.generate → refine → Proposal → Apply 的最终闭环。
 
 ## Data Safety
 
-固定数据库路径仍为：
+真实固定数据库仍为：
 
-```text
-private_data/travel-v2.sqlite3
-```
+`private_data/travel-v2.sqlite3`
 
-活动 Runtime 要求 `PRAGMA user_version = 3`。
+本轮 GitHub 修改没有读取、删除、移动、覆盖或迁移真实数据库。
 
-固定策略：
-
-- 不迁移现有 v2 数据；
-- 正常启动绝不自动删除、移动或覆盖旧库；
-- v2 / 未知 / 损坏数据库在 HTTP listen 前 fail closed；
-- 真正删除或人工移走真实数据库仍是独立破坏性步骤；
-- GitHub 修复未触碰任何真实 `private_data` 数据。
-
-## Final Gate
-
-下一轮仅做最终复测：
-
-1. branch / HEAD / clean worktree；
-2. targeted refine + resolution regressions；
-3. `git diff --check`；
-4. `npm run typecheck`；
-5. `npm test`；
-6. `npm run build`；
-7. 全部 PASS 后使用 isolated fresh-v3 运行真实 Codex + Browser E2E；
-8. 必须完成 `itinerary.refine → awaiting_apply → Proposal Apply → UI/Map/Route sync`；
-9. 全部通过后才可标记 `READY FOR MERGE`；
-10. merge 后真实本地旧 v2 DB 的备份/移走/删除仍需独立确认。
+正常启动仍要求内部 `PRAGMA user_version=3`，旧 v2 / unknown / corrupt DB 在 HTTP listen 前 fail closed，不自动迁移或删除。
 
 ## Do Not Do
 
-- 不自动删除、迁移或覆盖真实 v2 数据库。
-- 不恢复旧全局 AI Conversation/Adjustment、旧 00–03 Prompt 或 taskMode 主链。
-- 不增加新 PlaceKind 或把 ConversationStage 写入 canonical TripStage。
-- 最终门禁未通过前不宣称重构验收完成。
+- 不取消 MapService / Nominatim 全局限速；
+- 不因定位失败回滚或删除 Candidate；
+- 不让 unresolved Place 进入 itinerary；
+- 不恢复旧全局 AI Conversation / Adjustment / 00–03 Prompt；
+- 最终自动化与 isolated Browser E2E 未全部 PASS 前，不宣称 `READY FOR MERGE`。

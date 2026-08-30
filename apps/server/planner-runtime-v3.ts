@@ -44,7 +44,7 @@ import { CANDIDATE_DISCOVERY_BATCH_LIMIT, validateMicroCandidateDiscovery } from
 import type { DayRouteServiceV2 } from "./day-route-v2.js";
 import { applyPlanCommands } from "./plan-commands-v2.js";
 import { buildPlanningCoverage } from "./planning-areas-v2.js";
-import type { PlaceResolverV2 } from "./place-resolver-v2.js";
+import type { PlaceResolutionBatchProgress, PlaceResolverV2 } from "./place-resolver-v2.js";
 import { resolutionIsCurrent } from "./place-resolver-v2.js";
 import { assertProposalCommandsWithinScope } from "./proposal-scope-policy-v2.js";
 import type { LoadedPromptRegistryV3 } from "./prompt-registry-v3.js";
@@ -121,12 +121,16 @@ function expectedDayCount(plan: TravelPlanDocument) {
   return plan.trip.dates.requestedDurationDays;
 }
 
-function currentResolvedPlaces(trip: TripDetailV3, resolutions: PlaceResolution[]) {
+function currentPlaceResolutions(trip: TripDetailV3, resolutions: PlaceResolution[]) {
   const places = new Map(trip.plan.places.map((place) => [place.id, place]));
   return resolutions.filter((resolution) => {
     const place = places.get(resolution.placeId);
-    return Boolean(place && resolution.status === "resolved" && resolutionIsCurrent(place, resolution));
+    return Boolean(place && resolutionIsCurrent(place, resolution));
   });
+}
+
+function currentResolvedPlaces(trip: TripDetailV3, resolutions: PlaceResolution[]) {
+  return currentPlaceResolutions(trip, resolutions).filter((resolution) => resolution.status === "resolved");
 }
 
 function validateItineraryReferences(trip: TripDetailV3, sourceDays: Day[], resolutions: PlaceResolution[]) {
@@ -312,7 +316,8 @@ export class TravelPlannerRuntimeV3 {
 
   workspace(tripId: string) {
     const workspace = this.options.store.getWorkspace(tripId);
-    const resolutions = currentResolvedPlaces(workspace.trip, workspace.resolutions);
+    const resolutions = currentPlaceResolutions(workspace.trip, workspace.resolutions);
+    const resolved = resolutions.filter((resolution) => resolution.status === "resolved");
     const routeStates = this.options.routes.workspaceRouteState(tripId);
     return {
       ...workspace,
@@ -326,7 +331,7 @@ export class TravelPlannerRuntimeV3 {
       },
       tasks: this.options.tasks.list(tripId),
       revisions: this.options.store.listRevisions(tripId),
-      coverage: buildPlanningCoverage(workspace.trip.plan, new Set(resolutions.map((resolution) => resolution.placeId))),
+      coverage: buildPlanningCoverage(workspace.trip.plan, new Set(resolved.map((resolution) => resolution.placeId))),
     };
   }
 
@@ -533,7 +538,7 @@ export class TravelPlannerRuntimeV3 {
         const output = await run.result;
         if (Number(output?.baseGeneration) !== action.baseGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
         if (this.options.store.requireTrip(action.tripId).contentGeneration !== action.baseGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
-        await this.persistAiActionOutput(action, output);
+        await this.persistAiActionOutput(action, output, taskId);
       }
 
       const final = this.options.store.getAction(action.id);
@@ -706,22 +711,31 @@ export class TravelPlannerRuntimeV3 {
     throw new Error(`未实现 deterministic Action：${action.actionType}`);
   }
 
-  private async resolveChangedPlaces(tripId: string, placeIds: string[], expectedGeneration: number) {
-    for (const placeId of [...new Set(placeIds)]) {
-      const current = this.options.store.requireTrip(tripId);
-      if (current.contentGeneration !== expectedGeneration) return;
-      if (!current.plan.places.some((place) => place.id === placeId)) continue;
-      try {
-        await this.options.resolver.resolve(tripId, placeId, expectedGeneration);
-        this.emit("travel.resolution.changed", { tripId, placeId });
-      } catch (error) {
-        if (aiErrorMessageV3(error) === "CONTENT_GENERATION_SUPERSEDED") return;
-      }
+  private resolutionProgress(tripId: string, taskId?: string) {
+    return (progress: PlaceResolutionBatchProgress) => {
+      this.emit("travel.resolution.changed", { tripId, placeId: progress.placeId });
+      if (!taskId) return;
+      const state = progress.status === "resolving" ? "定位中" : progress.status === "resolved" ? "已定位" : "未定位";
+      this.options.tasks.update(taskId, "running", `正在定位地点 ${progress.completed}/${progress.total} · ${state}`, "map:resolution");
+    };
+  }
+
+  private async resolveChangedPlaces(tripId: string, placeIds: string[], expectedGeneration: number, taskId?: string) {
+    const current = this.options.store.requireTrip(tripId);
+    if (current.contentGeneration !== expectedGeneration) return [];
+    const existing = new Set(current.plan.places.map((place) => place.id));
+    const ids = [...new Set(placeIds)].filter((placeId) => existing.has(placeId));
+    if (!ids.length) return [];
+    try {
+      return await this.options.resolver.resolveMany(tripId, ids, expectedGeneration, undefined, this.resolutionProgress(tripId, taskId));
+    } catch (error) {
+      if (aiErrorMessageV3(error) === "CONTENT_GENERATION_SUPERSEDED") return [];
+      return [];
     }
   }
 
-  private async persistAiActionOutput(action: AiActionRecord, output: ActionOutput) {
-    if (action.actionType === "destination.generate") return this.persistDestinationGenerate(action, output as DestinationGenerateOutput);
+  private async persistAiActionOutput(action: AiActionRecord, output: ActionOutput, taskId: string | null = null) {
+    if (action.actionType === "destination.generate") return this.persistDestinationGenerate(action, output as DestinationGenerateOutput, taskId);
     if (action.actionType === "destination.add" || action.actionType === "destination.replace" || action.actionType === "interest.add" || action.actionType === "interest.replace") return this.persistCandidateProposal(action, output as any);
     if (action.actionType === "itinerary.generate") return this.persistItineraryGenerate(action, output as ItineraryGenerateOutput);
     if (action.actionType === "itinerary.replan") return this.persistItineraryReplacement(action, output as ItineraryReplanOutput);
@@ -732,15 +746,16 @@ export class TravelPlannerRuntimeV3 {
     throw new Error(`未实现 AI Action：${action.actionType}`);
   }
 
-  private async persistDestinationGenerate(action: AiActionRecord, output: DestinationGenerateOutput) {
+  private async persistDestinationGenerate(action: AiActionRecord, output: DestinationGenerateOutput, taskId: string | null = null) {
     const trip = this.options.store.requireTrip(action.tripId);
     const normalized = normalizeCandidateDiscoveryOutput(output, "macro");
     const applied = applyCandidateDiscovery(trip.plan, normalized);
+    const resolutionPlaceIds = [...new Set<string>(normalized.candidates.map((candidate: any) => applied.idMappings[candidate.placeTemporaryId]).filter((value: unknown): value is string => typeof value === "string" && Boolean(value)))];
     const written = this.options.store.writePlan(action.tripId, applied.plan, action.baseGeneration, { source: "action:destination.generate", summary: "AI 生成目的地建议" }, { keepActionId: action.id });
     this.emit("travel.document.changed", { tripId: action.tripId, generation: written.generation, changedDayIds: [] });
-    await this.resolveChangedPlaces(action.tripId, applied.addedPlaceIds, written.generation);
-    const resolved = currentResolvedPlaces(this.options.store.requireTrip(action.tripId), this.options.store.listPlaceResolutions(action.tripId)).filter((item) => applied.addedPlaceIds.includes(item.placeId)).length;
-    this.options.store.completeAction(action.id, `generation:${written.generation};resolved:${resolved}/${applied.addedPlaceIds.length}`);
+    await this.resolveChangedPlaces(action.tripId, resolutionPlaceIds, written.generation, taskId ?? undefined);
+    const resolved = currentResolvedPlaces(this.options.store.requireTrip(action.tripId), this.options.store.listPlaceResolutions(action.tripId)).filter((item) => resolutionPlaceIds.includes(item.placeId)).length;
+    this.options.store.completeAction(action.id, `generation:${written.generation};resolved:${resolved}/${resolutionPlaceIds.length}`);
   }
 
   private async persistInterestDiscovery(action: AiActionRecord, firstOutput: any | null, taskId: string | null = null) {
@@ -750,6 +765,7 @@ export class TravelPlannerRuntimeV3 {
     if (!targets.length) throw new Error("请先生成并保留至少一个目的地。");
     let plan = structuredClone(original.plan);
     const addedPlaceIds = new Set<string>();
+    const resolutionPlaceIds = new Set<string>();
     for (let index = 0; index < targets.length; index += 1) {
       const targetId = targets[index];
       const target = plan.candidates.find((candidate) => candidate.id === targetId);
@@ -776,9 +792,14 @@ export class TravelPlannerRuntimeV3 {
       if (this.options.store.requireTrip(action.tripId).contentGeneration !== action.baseGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
       validateMicroCandidateDiscovery(output, [targetId], [{ planningAreaCandidateId: targetId, targetCount: CANDIDATE_DISCOVERY_BATCH_LIMIT }]);
       if (!output.candidates.length) continue;
-      const applied = applyCandidateDiscovery(plan, normalizeCandidateDiscoveryOutput(output, "micro"));
+      const normalized = normalizeCandidateDiscoveryOutput(output, "micro");
+      const applied = applyCandidateDiscovery(plan, normalized);
       plan = applied.plan;
       for (const id of applied.addedPlaceIds) addedPlaceIds.add(id);
+      for (const candidate of normalized.candidates) {
+        const placeId = applied.idMappings[candidate.placeTemporaryId];
+        if (placeId) resolutionPlaceIds.add(placeId);
+      }
     }
     if (same(plan, original.plan)) {
       this.options.store.completeAction(action.id, "no-new-candidates");
@@ -786,9 +807,9 @@ export class TravelPlannerRuntimeV3 {
     }
     const written = this.options.store.writePlan(action.tripId, plan, action.baseGeneration, { source: `action:${action.actionType}`, summary: "AI 发现兴趣点" }, { keepActionId: action.id });
     this.emit("travel.document.changed", { tripId: action.tripId, generation: written.generation, changedDayIds: [] });
-    await this.resolveChangedPlaces(action.tripId, [...addedPlaceIds], written.generation);
-    const resolved = this.options.store.listPlaceResolutions(action.tripId).filter((item) => item.status === "resolved" && addedPlaceIds.has(item.placeId)).length;
-    this.options.store.completeAction(action.id, `added:${addedPlaceIds.size};resolved:${resolved}`);
+    await this.resolveChangedPlaces(action.tripId, [...resolutionPlaceIds], written.generation, taskId ?? undefined);
+    const resolved = currentResolvedPlaces(this.options.store.requireTrip(action.tripId), this.options.store.listPlaceResolutions(action.tripId)).filter((item) => resolutionPlaceIds.has(item.placeId)).length;
+    this.options.store.completeAction(action.id, `added:${addedPlaceIds.size};resolved:${resolved}/${resolutionPlaceIds.size}`);
   }
 
   private persistCandidateProposal(action: AiActionRecord, output: DestinationAddOutput | DestinationReplaceOutput | InterestAddOutput | InterestReplaceOutput) {
@@ -941,7 +962,9 @@ export class TravelPlannerRuntimeV3 {
     return { ...applied, trip: written.trip, generation: written.generation, version: written.version };
   }
 
-  async retryResolutions(tripId: string, placeIds: string[], expectedGeneration: number) { return this.options.resolver.resolveMany(tripId, placeIds, expectedGeneration); }
+  async retryResolutions(tripId: string, placeIds: string[], expectedGeneration: number) {
+    return this.options.resolver.resolveMany(tripId, placeIds, expectedGeneration, undefined, this.resolutionProgress(tripId));
+  }
   searchResolutionCandidates(tripId: string, placeId: string, expectedGeneration: number) { return this.options.resolver.searchCandidates(tripId, placeId, expectedGeneration); }
   selectResolution(tripId: string, placeId: string, input: unknown) { return (this.options.resolver as any).selectCandidate(tripId, placeId, input); }
   setDirectResolution(tripId: string, placeId: string, input: unknown) { return (this.options.resolver as any).setDirect(tripId, placeId, input); }
