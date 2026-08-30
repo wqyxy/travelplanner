@@ -19,7 +19,7 @@ export type LoadedPromptRegistryV3 = {
 };
 
 const LEGACY_PROMPT_PATTERN = /^\d{2}-.*Agent\.md$/u;
-const FORBIDDEN_PROMPT_PATTERN = /03-地图坐标搜索Agent|CoordinateResearch|直接生成(?:可信)?坐标|输出(?:经纬度|坐标)|执行\s*(?:Shell|命令)|调用\s*MCP|创建(?:子)?\s*Agent/iu;
+const FORBIDDEN_PROMPT_PATTERN = /03-地图坐标搜索Agent|CoordinateResearch|(?:请|必须|允许|可以).{0,24}(?:直接生成(?:可信)?坐标|输出(?:经纬度|坐标)|执行\s*(?:Shell|命令)|调用\s*MCP|创建(?:子)?\s*Agent)/iu;
 
 function normalizeRelative(value: string) {
   return value.split(path.sep).join("/");
