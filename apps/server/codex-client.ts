@@ -44,7 +44,7 @@ export function classifyCodexFailure(error: unknown): CodexFailureKind {
 }
 export const MAX_CODEX_RETRIES = 3;
 export function nextCodexRetry(retryCount: number) { const attempt = Math.max(0, Math.trunc(retryCount)) + 1; return attempt > MAX_CODEX_RETRIES ? null : { attempt, delayMs: 15_000 * 2 ** (attempt - 1) }; }
-export function structuredTurn(input: Omit<TurnStartParams, "summary">): TurnStartParams { return { ...input, summary: "detailed" }; }
+export function structuredTurn(input: Omit<TurnStartParams, "summary">, summary: ReasoningSummary = "detailed"): TurnStartParams { return { ...input, summary }; }
 type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout };
 export class CodexClient extends EventEmitter {
   private child: ChildProcessWithoutNullStreams | null = null; private nextId = 1; private pending = new Map<number, Pending>(); private starting: Promise<void> | null = null;
