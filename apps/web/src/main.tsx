@@ -3,7 +3,8 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 import "./v3-fixes.css";
 import "./workspace-v4.css";
-import App from "./App";
+import "./stage-ai-v3.css";
+import AppV3 from "./AppV3";
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
   state = { error: null as string | null };
@@ -16,4 +17,4 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, { error: strin
   }
 }
 
-createRoot(document.getElementById("root")!).render(<StrictMode><AppErrorBoundary><App/></AppErrorBoundary></StrictMode>);
+createRoot(document.getElementById("root")!).render(<StrictMode><AppErrorBoundary><AppV3/></AppErrorBoundary></StrictMode>);
