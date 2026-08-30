@@ -10,105 +10,86 @@
 
 ## Current Phase
 
-### Phase 4 — Server Orchestration
+### Phase 5 — Right-Side UI Migration
 
-**状态：完成。下一阶段：Phase 5。**
+**状态：完成。下一阶段：Phase 6。**
 
 ## Completed
 
-### Foundations / Prompts / Store
-- Phase 1–3 已完成：公共合同、Registry、19 份新 Prompt、专用 Action 输出合同、递归 Prompt loader、fresh v3 Store、stage message/thread/action/task persistence 与原子 Action confirm。
+### Phase 1–4
+- 公共合同、Prompt/Action Registry、专用 Prompt、fresh v3 Store、Stage Dialogue、Action Runtime、Proposal/Apply 与 v3 API 已建立。
 
-### Stage Dialogue Runtime
-- 新增阶段白名单 Context Builder；普通 Dialogue 不再注入完整 canonical plan。
-- `requirements / destinations / interests / itinerary` 分别构造最小必要状态，并对 selection 做阶段越界校验。
-- Stage Dialogue 默认 `effort=none / summary=none / web=disabled`。
-- 如果 Codex/模型协议不支持 none，自动用新线程安全降级为 `minimal / auto`；不改变业务合同。
-- `web_required` 第一轮不展示最终动态结论；服务端立即执行同阶段第二次 `web=live` 调用，并只保存第二次核验后的最终回答。
-- Stage Thread 保存 prompt hash/version/context generation/turn count；Prompt 变化、达到 turn 上限或 resume 失效时自动换新线程。
-- 同一 stage 并发 turn 由 v3 Store 串行保护。
-- Dialogue 检出的 Action 只创建 `pending_confirmation` Action；不直接修改 canonical。
-
-### Action Runtime
-- CTA 和自然语言 Action 都进入同一 Action Registry / 执行服务。
-- CTA 使用稳定 `requestKey` 创建幂等；服务端内部立即 claim，不增加重复确认 UI。
-- 对话 Action 使用数据库条件更新抢占 `pending_confirmation → executing`；重复 confirm 不会重复执行。
-- 同一 trip 同时只允许一个 AI Action 执行；deterministic Action 不占 AI 执行槽位。
-- deterministic Actions 直接转换为受控 canonical mutation/PlanCommand，不调用模型。
-- AI Actions 使用 Registry 固定 Prompt、reasoning、summary、web、output contract，且使用临时独立线程。
-- generation 在启动、AI 结果保存和 Proposal Apply 处重新校验；计划变化会 supersede 冲突 Action。
-- Action/Dialogue task metadata 保存 input bytes、action type、reasoning、web policy、timing 和失败阶段；不保存 Prompt 全文、完整计划或模型内部推理。
-
-### Existing Business Capability Reuse
-- Candidate 正式化继续复用现有 `applyCandidateDiscovery`，没有新建第二套 Candidate 事实系统。
-- Interest discover/supplement 继续采用“先保存 Candidate，再 best-effort Place Resolution”；定位失败不撤回候选。
-- Place Resolver 继续是唯一地图地点解析链；新增 adapter 仅统一 v3 Runtime 方法名。
-- Route Provider 继续是路线 geometry/距离/时长唯一事实来源。
-- 初次 `itinerary.generate` 只引用已有 Place/Candidate；服务端重新分配 Day/Anchor/Stop 正式 ID，不信任 AI 自造正式 ID。
-- 未定位的非 Macro Place 不允许进入新行程；must_go 具体地点不能静默漏排。
-- `itinerary.replan / repair / day.optimize / verify / refine` 均转换为受控 Proposal，而不是直接写计划。
-- `itinerary.refine` 的 Stop 字段变更存为 PlanCommand；Apply 后服务端再确定性设置受影响 Day 为 `detailed / ready`，因此仍严格经过 Proposal → Apply。
-- `requiresStage=interests` 会完成当前行程 Action 而不创建新 Place/Candidate。
-- Proposal Apply 时重新执行 Scope validation 和 generation CAS。
-
-### v3 API
-- 新增显式 stage messages/turns API。
-- 新增统一 CTA Action API、Action confirm/cancel API。
-- 保留精确 UI 编辑需要的 commands、candidate preference、resolution、route、proposal、revision、task API。
-- v3 API 不再提供旧 `/plan/generate`、`/refinement/next`、`/proposals` 直接创建等 AI 旁路。
-- 新增 API 路由测试，明确旧 plan-generation endpoint 在 v3 dispatcher 中不存在。
+### Phase 5 — Right-Side UI
+- 新增 `WorkspaceV3` 前端类型：四阶段 message map、Action、v3 Task。
+- 新增 `WorkspaceAssistantV3`，完全移除原“对话 / 调整”双模式。
+- 四阶段固定助手名称与边界：旅行需求 AI、目的地 AI、兴趣点 AI、行程 AI。
+- 每阶段独立 message history 与独立输入 draft；切换阶段不会复用另一阶段草稿。
+- 对话识别出的 Action 作为 Action Card 挂在对应消息下，可 Confirm/Cancel。
+- CTA Action 在当前阶段任务区显示，不伪装成聊天消息。
+- AI 修改类 Action 的 Proposal 显示在关联 Action 下，支持 Apply / Reject / Undo。
+- Action Card 展示 executor、generation、target、状态和失败原因；superseded/failed 不制造伪成功。
+- 新 UI 没有地图 AI 输入框，也没有其他第二套 AI 输入入口。
+- 新增 `AppV3`：固定右侧四步 `requirements / destinations / interests / itinerary`。
+- 新建旅行固定进入需求阶段并选择 trip scope。
+- 阶段对话调用显式 stage turn API。
+- 主 CTA 统一调用 `/actions/cta`；点击本身即确认，不再弹重复确认卡。
+- 目的地主 CTA → `destination.generate`；进入兴趣点 → `interest.discover`；补充 → `interest.supplement`；生成行程 → `itinerary.generate`；行程细化 → `itinerary.refine`。
+- 页面 Candidate preference、手工新增地点、字段编辑、删除、拖拽、Anchor、地图选择、手工坐标、Route recalc 继续走确定性代码，不调用 AI。
+- 全局 reasoning 强度不再暴露给正常阶段动作；服务端 Registry 决定 reasoning。UI 只保留模型选择。
+- WebSocket 监听新增 `travel.action.changed`，刷新后 Action/Proposal 可从数据库恢复。
+- 复用现有 CandidatePanel、ItineraryPanelV2、WorkspaceMapV2，没有新建第二套 Candidate/Map/Route UI 事实模型。
+- 新增 Stage Action/Proposal 样式文件。
 
 ## Important Decisions
 
-1. Prompt thread 不是历史事实源；数据库 message 才是持久化历史。Thread 只是性能上下文，可随时轮换。
-2. 地图消歧仍由同一 Action Prompt/Registry 定义并作为内部 Map AI 能力使用，不产生第二个用户 AI 输入入口。
-3. 旧 Proposal Command 模型足以承载 refinement：所有可见 Stop 细化字段进入 commands，`detailLevel/detailStatus` 在 Apply 时由服务端根据受影响 Day 确定性设置，不需要新增 Patch/Repair 持久化系统。
-4. AI replan/repair 若转换后的命令超过 100 条，会明确失败并要求缩小范围，而不是绕过受控命令上限。
-5. 当前 v3 Runtime/API 仍未接到 `index.ts`；活动 main runtime 在 Phase 6 cutover 前继续是旧实现。
+1. Phase 5 采用新增 `AppV3.tsx` 而不是直接覆盖活动 `App.tsx`，确保 Phase 6 原子 cutover 前旧运行链仍可用。
+2. CandidatePanel/ItineraryPanel 的精确操作继续是 deterministic；其中“发现/继续/细化”按钮的 callback 已由 AppV3 统一改为 Action CTA。
+3. 所有 AI 入口均位于右侧工作区；地图只负责展示、选择和 Provider 交互。
+4. 目标计划明确要求 v3 继续使用文件路径 `private_data/travel-v2.sqlite3`，只是内部 `user_version` 升级到 3；Phase 6 代码切换仍使用该路径。现有 v2 文件若未显式移走/删除，新 Store 会 fail closed，不会迁移或覆盖。
 
 ## Files Changed
 
-- `apps/server/ai-task-monitor-v3.ts`
-- `apps/server/stage-context-v3.ts`
-- `apps/server/staged-ai-v3.ts`
-- `apps/server/place-resolver-adapter-v3.ts`
-- `apps/server/planner-runtime-v3.ts`
-- `apps/server/travel-api-v3.ts`
-- `apps/server/planner-runtime-v3.test.ts`
-- `apps/server/travel-api-v3.test.ts`
-- Phase 1–3 文件继续保留。
+- `apps/web/src/v3-types.ts`
+- `apps/web/src/WorkspaceAssistantV3.tsx`
+- `apps/web/src/AppV3.tsx`
+- `apps/web/src/stage-ai-v3.css`
+- Phase 1–4 文件继续保留。
 
 ## Tests / Checks
 
-新测试已写入，但尚未执行 Vitest、server typecheck、web typecheck、build、真实 Codex、地图 smoke 或浏览器 E2E。完整验证仍按项目规则等全部实施完成后统一征求用户确认。
+未执行 Vitest、typecheck、build、真实 Codex、地图 Smoke 或浏览器 E2E。按照项目规则，完整验证在所有代码修改与静态 Review 完成后一次性征求用户确认。
 
 ## Known Issues / Risks
 
-- 新 Runtime 尚未成为活动启动链，因此 Phase 5 UI 先面向 v3 API 编写，Phase 6 再原子切换 `index.ts`/DB/Prompt loader。
-- `TravelStoreV3` 与现有 Resolver/Route 类存在旧 concrete type 注解；Phase 6 启动装配会使用明确 adapter/窄类型转换来复用同一运行实现，而不是复制服务。
-- map.disambiguate 是内部地图 AI，不应显示为用户阶段 Action Card。
-- AI Action 多目的地兴趣点发现使用同一独立 Prompt逐目的地执行；最终 cutover 前需通过单测/Smoke 确认批量目标不会产生重复首轮调用。
-- 最终 typecheck 可能暴露当前阶段静态未运行代码中的窄类型问题；这些必须在 Phase 7 验收前修完。
+- `AppV3` 尚未成为活动前端入口；Phase 6 才修改 `main.tsx`。
+- 新 server Runtime 尚未成为活动 `index.ts` 装配；Phase 6 才做原子切换。
+- `stage-ai-v3.css` 需要在 Phase 6/7 静态 Review 中与现有 CSS variable 命名对齐。
+- 现有 CandidatePanel/ItineraryPanel 的 prop 类型仍引用旧 `Workspace`，AppV3 当前通过结构兼容 cast 复用；最终 typecheck 若暴露不兼容必须修正。
+- 当前 `private_data/travel-v2.sqlite3` 的真实删除/移动是破坏性操作，尚未执行，也不能通过 GitHub connector执行。
 
 ## Next Phase
 
-### Phase 5 — Right-Side UI Migration
+### Phase 6 — Atomic Code Cutover & Legacy Cleanup
 
-- `ConversationStage` 成为右侧工作区固定四步。
-- 每阶段独立 message history、draft、assistant title/boundary。
-- 删除全局“对话 / 调整”双模式。
-- 对话识别 Action 显示 Action Card；confirm/cancel 调 v3 Action API。
-- CTA 直接调用统一 Action API，不再二次确认。
-- Proposal 显示在来源 Action/阶段区域并支持 Apply/Reject/Undo。
-- 页面现有 preference、拖拽、明确编辑继续走 deterministic commands。
-- 地图不新增 AI 输入入口。
+代码级切换：
+- `index.ts` 切到 strict v3 Prompt loader、TravelStoreV3、StagedTravelAiV3、TravelPlannerRuntimeV3、v3 API。
+- 数据库路径仍是目标文档指定的 `private_data/travel-v2.sqlite3`；旧 version 2 文件存在时必须 fail closed。
+- `main.tsx` 切到 `AppV3` 和 staged UI stylesheet。
+- 删除旧 00–03 Prompt；strict Registry 成为唯一 Prompt 入口。
+- 删除活动入口中的旧 `/turns`、direct plan/refinement/proposal-create AI 旁路。
+- 通过引用搜索删除可安全删除的旧 Runtime/Assistant 代码；仍被 Resolver/Route 类型依赖的基础能力不得误删。
+- 更新 README/docs 数据库和用户流程说明。
+
+破坏性本地 cutover：
+- **不在代码里自动执行。**
+- 真实 `private_data/travel-v2.sqlite3` 的删除或人工移走必须在停止旧 Runtime 后由用户明确确认。
 
 ## Recommended Model
 
-Worker 可用高性价比编码模型；完成后由高推理 Reviewer 检查 Phase 5。
+高推理 Reviewer 参与 Phase 6/7。
 
 ## Do Not Do
 
-- 不在 Phase 5 做真实数据库删除。
-- 不重新设计地图或 Candidate 数据模型。
-- 不保留全局 adjustment AI 旁路。
+- 不自动删除、迁移或覆盖真实 v2 数据库。
+- 不恢复旧全局 AI 对话/adjustment 入口。
+- 不增加新 PlaceKind 或四阶段 canonical TripStage。
