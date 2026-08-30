@@ -194,7 +194,7 @@ describe("PlaceResolverV2", () => {
     const direct = await resolver.setDirectCoordinates(tripId, "p-1", { expectedGeneration: generation, method: "map_pick", latitude: 34.99, longitude: 135.78, address: null });
     expect(direct).toMatchObject({ status: "resolved", method: "map_pick", provider: null, providerPlaceId: null, address: "Kiyomizu-dera, Kyoto, Japan" });
     const mismatched = new PlaceResolverV2({ store, maps: { search: async () => [], reverse: async () => candidate({ countryCode: "us" }) } });
-    await expect(mismatched.setDirectCoordinates(tripId, "p-1", { expectedGeneration: generation, method: "manual_coordinates", latitude: 40, longitude: -74, address: null })).rejects.toThrow(/countryCode 不一致/);
+    await expect(mismatched.setDirectCoordinates(tripId, "p-1", { expectedGeneration: generation, method: "manual_coordinates", latitude: 40, longitude: -74, address: null })).rejects.toThrow(/countryCode.*不一致/);
     store.close();
   });
 
