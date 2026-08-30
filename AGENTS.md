@@ -27,8 +27,10 @@
 - 用户可见 AI 流程固定为 `requirements / destinations / interests / itinerary` 四个 `ConversationStage`；它们只属于 UI、message、thread、Action 命名空间，绝不能写入或替换 canonical `TripStage`。
 - canonical `TravelPlanDocument` 继续使用现有三阶段 `TripStage`，不得新增四阶段状态，也不得扩展 `PlaceKind` 来表达区域或岛屿；Macro 内部继续使用现有 `kind=city`。
 - 新提示词以 `prompts/shared/`、`prompts/dialogues/`、`prompts/actions/` 分类，并由 `apps/server/ai-registries-v3.ts` 显式注册。运行时只能拼接“共享规则 + 当前一份具体 Prompt”。
-- `prompts/00-旅行规划Agent.md`、`01-行程细化Agent.md`、`02-地图候选消歧Agent.md`、`03-兴趣点发现Agent.md` 是重构期间的临时旧 Runtime 依赖；不得继续扩展，最终 cutover 后必须删除。
+- 旧 `prompts/00-旅行规划Agent.md`、`01-行程细化Agent.md`、`02-地图候选消歧Agent.md`、`03-兴趣点发现Agent.md` 已在 V3 cutover 删除；不得恢复兼容别名或重新引入旧 loader / `taskMode` 主链。
+- 活动服务入口通过 `apps/server/index-cutover-v3.ts` 启动；它必须在 HTTP server 前完成 strict Prompt 校验、fresh-v3/fail-closed 数据库校验和 V3 数据库不变量安装。
 - Dialogue 只回答、澄清、返回 `web_required` 或识别一个 Action；不得输出 PlanCommand、Proposal 或直接 mutation。
+- Dialogue `action.parameters` 必须使用服务端固定受控参数信封，不得输出任意自由 JSON 键。
 - 普通 Dialogue 首次调用必须禁用网页并使用 `reasoning=none` / `summary=none`（模型不支持时由服务端安全降级）；需要当前核验时，第一轮只返回 `web_required`，第二次联网调用才产生最终回答。
 - 每个 AI Action 必须由 Action Registry 固定唯一 Prompt、reasoning、web、输入/输出合同、Scope Policy 和 resultPolicy；deterministic Action 不得绑定 Prompt 或再次调用模型。
 - AI 修改类 Action 必须先生成 Proposal，Apply 后才写 canonical；主 CTA 的点击本身视为确认，自然语言识别出的 Action 才需要 Action Card 确认。
