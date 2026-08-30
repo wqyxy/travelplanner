@@ -1,0 +1,243 @@
+import { z } from "zod";
+
+export const ConversationStageSchema = z.enum([
+  "requirements",
+  "destinations",
+  "interests",
+  "itinerary",
+]);
+export type ConversationStage = z.infer<typeof ConversationStageSchema>;
+
+export const AiActionTypeSchema = z.enum([
+  "requirements.update",
+  "requirements.clear",
+  "destination.generate",
+  "destination.add",
+  "destination.remove",
+  "destination.replace",
+  "destination.edit",
+  "destination.preference",
+  "interest.discover",
+  "interest.supplement",
+  "interest.add",
+  "interest.remove",
+  "interest.replace",
+  "interest.edit",
+  "interest.preference",
+  "itinerary.generate",
+  "itinerary.replan",
+  "itinerary.stop.add",
+  "itinerary.stop.remove",
+  "itinerary.stop.replace",
+  "itinerary.stop.move",
+  "itinerary.day.reorder",
+  "itinerary.edit",
+  "itinerary.anchor.set",
+  "itinerary.day.optimize",
+  "itinerary.repair",
+  "itinerary.verify",
+  "itinerary.refine",
+  "map.disambiguate",
+]);
+export type AiActionType = z.infer<typeof AiActionTypeSchema>;
+
+export const AiActionExecutorSchema = z.enum(["ai", "deterministic"]);
+export type AiActionExecutor = z.infer<typeof AiActionExecutorSchema>;
+
+export const AiActionStatusSchema = z.enum([
+  "pending_confirmation",
+  "executing",
+  "awaiting_apply",
+  "completed",
+  "failed",
+  "cancelled",
+  "superseded",
+  "applied",
+  "rejected",
+]);
+export type AiActionStatus = z.infer<typeof AiActionStatusSchema>;
+
+export const AiActionOriginSchema = z.enum(["conversation", "cta"]);
+export type AiActionOrigin = z.infer<typeof AiActionOriginSchema>;
+
+export const AiTaskAgentV3Schema = z.enum(["dialogue", "action", "map"]);
+export type AiTaskAgentV3 = z.infer<typeof AiTaskAgentV3Schema>;
+
+export const WorkspaceSelectionV3Schema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("trip"), id: z.null() }).strict(),
+  z.object({ type: z.literal("candidate_pool"), id: z.null() }).strict(),
+  z.object({ type: z.literal("candidate"), id: z.string().trim().min(1).max(160) }).strict(),
+  z.object({ type: z.literal("place"), id: z.string().trim().min(1).max(160) }).strict(),
+  z.object({ type: z.literal("day"), id: z.string().trim().min(1).max(160) }).strict(),
+  z.object({ type: z.literal("stop"), id: z.string().trim().min(1).max(160) }).strict(),
+]);
+export type WorkspaceSelectionV3 = z.infer<typeof WorkspaceSelectionV3Schema>;
+
+const ActionDialogueResultSchema = z.object({
+  type: z.literal("action"),
+  assistantMessage: z.string().trim().min(1).max(12000),
+  actionType: AiActionTypeSchema,
+  parameters: z.record(z.string(), z.unknown()),
+  targetIds: z.array(z.string().trim().min(1).max(160)).max(200),
+  impactSummary: z.string().trim().min(1).max(2000),
+}).strict();
+
+export const StageDialogueOutputSchema = z.object({
+  schemaVersion: z.literal(1),
+  result: z.discriminatedUnion("type", [
+    z.object({
+      type: z.literal("reply"),
+      assistantMessage: z.string().trim().min(1).max(12000),
+    }).strict(),
+    z.object({
+      type: z.literal("clarification"),
+      assistantMessage: z.string().trim().min(1).max(12000),
+    }).strict(),
+    z.object({
+      type: z.literal("web_required"),
+      queryIntent: z.string().trim().min(1).max(2000),
+      reason: z.string().trim().min(1).max(2000),
+    }).strict(),
+    ActionDialogueResultSchema,
+  ]),
+}).strict();
+export type StageDialogueOutput = z.infer<typeof StageDialogueOutputSchema>;
+
+export const WebDialogueOutputSchema = z.object({
+  schemaVersion: z.literal(1),
+  assistantMessage: z.string().trim().min(1).max(12000),
+  verification: z.object({
+    status: z.enum(["verified", "partially_verified", "unverified"]),
+    checkedAt: z.string().datetime({ offset: true }),
+  }).strict(),
+}).strict();
+export type WebDialogueOutput = z.infer<typeof WebDialogueOutputSchema>;
+
+export const StageConversationTurnInputSchema = z.object({
+  message: z.string().trim().min(1).max(4000),
+  selection: WorkspaceSelectionV3Schema,
+}).strict();
+export type StageConversationTurnInput = z.infer<typeof StageConversationTurnInputSchema>;
+
+export const ActionConfirmationInputSchema = z.object({
+  expectedGeneration: z.number().int().min(0),
+}).strict();
+export type ActionConfirmationInput = z.infer<typeof ActionConfirmationInputSchema>;
+
+export const ActionCancellationInputSchema = z.object({
+  expectedGeneration: z.number().int().min(0).optional(),
+}).strict();
+export type ActionCancellationInput = z.infer<typeof ActionCancellationInputSchema>;
+
+export const AiTaskTimingSchema = z.object({
+  startupMs: z.number().int().min(0).optional(),
+  webMs: z.number().int().min(0).optional(),
+  generationMs: z.number().int().min(0).optional(),
+  validationMs: z.number().int().min(0).optional(),
+  persistenceMs: z.number().int().min(0).optional(),
+  totalMs: z.number().int().min(0),
+  failedPhase: z.enum(["startup", "web", "generation", "validation", "persistence"]).optional(),
+}).strict();
+export type AiTaskTiming = z.infer<typeof AiTaskTimingSchema>;
+
+export const StageThreadRecordSchema = z.object({
+  tripId: z.string().trim().min(1).max(160),
+  stage: ConversationStageSchema,
+  threadId: z.string().trim().min(1).max(240),
+  promptHash: z.string().trim().min(1).max(160),
+  promptVersion: z.string().trim().min(1).max(80),
+  contextGeneration: z.number().int().min(0),
+  turnCount: z.number().int().min(0),
+  createdAt: z.string().datetime({ offset: true }),
+  updatedAt: z.string().datetime({ offset: true }),
+}).strict();
+export type StageThreadRecord = z.infer<typeof StageThreadRecordSchema>;
+
+export const AiActionRecordSchema = z.object({
+  id: z.string().trim().min(1).max(160),
+  tripId: z.string().trim().min(1).max(160),
+  stage: ConversationStageSchema,
+  actionType: AiActionTypeSchema,
+  executor: AiActionExecutorSchema,
+  origin: AiActionOriginSchema,
+  sourceMessageId: z.string().trim().min(1).max(160).nullable(),
+  parameters: z.record(z.string(), z.unknown()),
+  targetIds: z.array(z.string().trim().min(1).max(160)).max(200),
+  scope: z.record(z.string(), z.unknown()),
+  baseGeneration: z.number().int().min(0),
+  status: AiActionStatusSchema,
+  taskId: z.string().trim().min(1).max(160).nullable(),
+  proposalId: z.string().trim().min(1).max(160).nullable(),
+  resultRef: z.string().trim().min(1).max(1000).nullable(),
+  startedAt: z.string().datetime({ offset: true }).nullable(),
+  updatedAt: z.string().datetime({ offset: true }),
+  completedAt: z.string().datetime({ offset: true }).nullable(),
+  errorSummary: z.string().max(2000).nullable(),
+}).strict().superRefine((value, context) => {
+  if (value.origin === "conversation" && !value.sourceMessageId) {
+    context.addIssue({ code: "custom", path: ["sourceMessageId"], message: "conversation Action 必须关联 sourceMessageId。" });
+  }
+  if (value.origin === "cta" && value.sourceMessageId !== null) {
+    context.addIssue({ code: "custom", path: ["sourceMessageId"], message: "CTA Action 不得关联聊天消息。" });
+  }
+});
+export type AiActionRecord = z.infer<typeof AiActionRecordSchema>;
+
+export type PromptKindV3 = "shared" | "dialogue" | "action";
+export type PromptWebPolicyV3 = "disabled" | "allowed" | "required";
+export type ActionResultPolicyV3 = "save_result" | "proposal_required" | "deterministic_apply";
+
+export type PromptIdV3 =
+  | "shared.travel-rules"
+  | "dialogue.requirements"
+  | "dialogue.destinations"
+  | "dialogue.interests"
+  | "dialogue.itinerary"
+  | "action.destination.generate"
+  | "action.destination.add"
+  | "action.destination.replace"
+  | "action.interest.discover"
+  | "action.interest.supplement"
+  | "action.interest.add"
+  | "action.interest.replace"
+  | "action.itinerary.generate"
+  | "action.itinerary.replan"
+  | "action.itinerary.day.optimize"
+  | "action.itinerary.repair"
+  | "action.itinerary.verify"
+  | "action.itinerary.refine"
+  | "action.map.disambiguate";
+
+export type InputContractIdV3 =
+  | "requirements.mutation.input"
+  | "destination.action.input"
+  | "interest.action.input"
+  | "itinerary.action.input"
+  | "map.disambiguate.input";
+
+export type OutputContractIdV3 =
+  | "stage.dialogue.output"
+  | "stage.web-dialogue.output"
+  | "deterministic.result"
+  | "destination.generate.output"
+  | "destination.add.output"
+  | "destination.replace.output"
+  | "interest.discover.output"
+  | "interest.supplement.output"
+  | "interest.add.output"
+  | "interest.replace.output"
+  | "itinerary.generate.output"
+  | "itinerary.replan.output"
+  | "itinerary.day.optimize.output"
+  | "itinerary.repair.output"
+  | "itinerary.verify.output"
+  | "itinerary.refine.output"
+  | "map.disambiguate.output";
+
+export type ScopePolicyIdV3 =
+  | "trip-facts"
+  | "macro-candidate"
+  | "micro-candidate"
+  | "itinerary"
+  | "day"
+  | "map-candidate";
