@@ -66,9 +66,14 @@ function ActionCard({ action, proposal, currentGeneration, busy, onConfirm, onCa
     {action.errorSummary && <p className="inline-error">{action.errorSummary}</p>}
     {pending && <footer><button className="button" disabled={busy} onClick={() => void onCancel(action)}>取消</button><button className="button primary" disabled={busy || action.baseGeneration !== currentGeneration} onClick={() => void onConfirm(action)}>{action.executor === "ai" ? "确认并生成方案" : "确认执行"}</button></footer>}
     {action.status === "executing" && <div className="stage-action-running-v3"><LoaderCircle className="spin" size={14}/><span>正在执行…</span></div>}
+    {action.status === "awaiting_apply" && <small>方案已生成，等待你检查并 Apply。</small>}
     {action.status === "completed" && <small>已完成{action.resultRef?.startsWith("requiresStage:") ? " · 需要返回兴趣点阶段" : ""}</small>}
+    {action.status === "applied" && <small>已执行并应用到当前旅行。</small>}
+    {action.status === "rejected" && <small>方案已拒绝，正式计划未修改。</small>}
+    {action.status === "cancelled" && <small>动作已取消。</small>}
+    {action.status === "failed" && <small>动作执行失败。</small>}
     {action.status === "superseded" && <small>计划已变化，此动作已失效。</small>}
-    {proposal && <ProposalCard proposal={proposal} currentGeneration={currentGeneration} busy={busy} onAction={onProposalAction}/>}
+    {proposal && <ProposalCard proposal={proposal} currentGeneration={currentGeneration} busy={busy} onAction={onProposalAction}/>} 
   </section>;
 }
 
