@@ -137,7 +137,7 @@ function validateItineraryReferences(trip: TripDetailV3, sourceDays: Day[], reso
     if (!placeId) return;
     const place = places.get(placeId);
     if (!place) throw new Error(`行程引用未知 Place：${placeId}`);
-    if (place.kind !== "city" && !resolved.has(placeId)) throw new Error(`未定位地点不得进入行程：${place.nameZh}`);
+    if (!resolved.has(placeId)) throw new Error(`未定位地点不得进入行程：${place.nameZh}`);
   };
   for (const day of sourceDays) {
     checkPlace(day.startAnchor.placeId);
@@ -272,21 +272,25 @@ function refinementCommands(current: TravelPlanDocument, output: ItineraryRefine
   if (result.type !== "success") return [];
   const requested = new Set(result.dayIds);
   const commands: PlanCommand[] = [];
-  for (const source of result.days) {
-    const target = current.days.find((day) => day.id === source.id);
-    if (!target || !requested.has(target.id)) throw new Error(`细化结果引用未知 Day：${source.id}`);
-    if (source.dayNumber !== target.dayNumber || source.date !== target.date || source.title !== target.title) throw new Error(`细化不得改变 Day identity/title/date：${target.id}`);
-    if (!same(source.startAnchor, target.startAnchor) || !same(source.endAnchor, target.endAnchor)) throw new Error(`细化不得改变 Anchor：${target.id}`);
-    if (source.stops.length !== target.stops.length) throw new Error(`细化不得新增或删除 Stop：${target.id}`);
-    for (let index = 0; index < target.stops.length; index += 1) {
-      const before = target.stops[index];
-      const after = source.stops[index];
-      if (before.id !== after.id || before.placeId !== after.placeId || before.candidateId !== after.candidateId) throw new Error(`细化不得改变 Stop identity/reference/order：${before.id}`);
+  for (const update of result.dayUpdates) {
+    const target = current.days.find((day) => day.id === update.dayId);
+    if (!target || !requested.has(target.id)) throw new Error(`细化结果引用未知 Day：${update.dayId}`);
+    const returned = new Map(update.stops.map((stop) => [stop.stopId, stop]));
+    if (returned.size !== update.stops.length || update.stops.length !== target.stops.length || target.stops.some((stop) => !returned.has(stop.id))) {
+      throw new Error(`细化必须恰好返回目标 Day 的全部现有 Stop：${target.id}`);
+    }
+    for (const before of target.stops) {
+      const after = returned.get(before.id)!;
       const changes: Record<string, unknown> = {};
       for (const key of STOP_FIELDS) if (!same(before[key], after[key])) changes[key] = structuredClone(after[key]);
       if (Object.keys(changes).length) commands.push(PlanCommandSchema.parse({ type: "update_day_stop", stopId: before.id, changes }));
     }
   }
+  const preview = applyPlanCommands(current, commands).plan;
+  TravelPlanDocumentSchema.parse({
+    ...preview,
+    days: preview.days.map((day) => requested.has(day.id) ? { ...day, detailLevel: "detailed", detailStatus: "ready" } : day),
+  });
   return commands;
 }
 
@@ -635,6 +639,7 @@ export class TravelPlannerRuntimeV3 {
 
     const commands = this.deterministicCommands(action, trip);
     const applied = applyPlanCommands(trip.plan, commands);
+    if (action.actionType.startsWith("itinerary.")) validateItineraryReferences(trip, applied.plan.days, this.options.store.listPlaceResolutions(action.tripId));
     const written = this.options.store.writePlan(action.tripId, applied.plan, action.baseGeneration, { source: `action:${action.actionType}`, summary: `执行 ${action.actionType}` }, { keepActionId: action.id });
     this.emit("travel.document.changed", { tripId: action.tripId, generation: written.generation, changedDayIds: applied.effects.changedDayIds });
     await this.resolveChangedPlaces(action.tripId, applied.effects.changedPlaceIds, written.generation);
@@ -727,13 +732,15 @@ export class TravelPlannerRuntimeV3 {
     throw new Error(`未实现 AI Action：${action.actionType}`);
   }
 
-  private persistDestinationGenerate(action: AiActionRecord, output: DestinationGenerateOutput) {
+  private async persistDestinationGenerate(action: AiActionRecord, output: DestinationGenerateOutput) {
     const trip = this.options.store.requireTrip(action.tripId);
     const normalized = normalizeCandidateDiscoveryOutput(output, "macro");
     const applied = applyCandidateDiscovery(trip.plan, normalized);
     const written = this.options.store.writePlan(action.tripId, applied.plan, action.baseGeneration, { source: "action:destination.generate", summary: "AI 生成目的地建议" }, { keepActionId: action.id });
-    this.options.store.completeAction(action.id, `generation:${written.generation}`);
     this.emit("travel.document.changed", { tripId: action.tripId, generation: written.generation, changedDayIds: [] });
+    await this.resolveChangedPlaces(action.tripId, applied.addedPlaceIds, written.generation);
+    const resolved = currentResolvedPlaces(this.options.store.requireTrip(action.tripId), this.options.store.listPlaceResolutions(action.tripId)).filter((item) => applied.addedPlaceIds.includes(item.placeId)).length;
+    this.options.store.completeAction(action.id, `generation:${written.generation};resolved:${resolved}/${applied.addedPlaceIds.length}`);
   }
 
   private async persistInterestDiscovery(action: AiActionRecord, firstOutput: any | null, taskId: string | null = null) {
@@ -924,7 +931,11 @@ export class TravelPlannerRuntimeV3 {
     if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 0) throw new Error("expectedGeneration 无效。");
     const commands = Array.isArray(input.commands) ? input.commands.map((command) => PlanCommandSchema.parse(command)) : [];
     const trip = this.options.store.requireTrip(tripId); if (trip.contentGeneration !== expectedGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
-    const applied = applyPlanCommands(trip.plan, commands); const written = this.options.store.writePlan(tripId, applied.plan, expectedGeneration, { source: "command", summary: "编辑旅行计划" });
+    const applied = applyPlanCommands(trip.plan, commands);
+    if (commands.some((command) => ["set_day_anchor", "add_day_stop", "update_day_stop", "move_day_stop", "remove_day_stop", "move_day", "update_day"].includes(command.type))) {
+      validateItineraryReferences(trip, applied.plan.days, this.options.store.listPlaceResolutions(tripId));
+    }
+    const written = this.options.store.writePlan(tripId, applied.plan, expectedGeneration, { source: "command", summary: "编辑旅行计划" });
     this.emit("travel.document.changed", { tripId, generation: written.generation, changedDayIds: applied.effects.changedDayIds });
     void this.resolveChangedPlaces(tripId, applied.effects.changedPlaceIds, written.generation);
     return { ...applied, trip: written.trip, generation: written.generation, version: written.version };

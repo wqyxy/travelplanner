@@ -2,15 +2,14 @@ import { z } from "zod";
 import {
   CandidatePreferenceSchema,
   DaySchema,
-  DetailedDaySchema,
   IdSchema,
   MapResolutionAssistOutputSchema,
+  PeriodSchema,
   PlaceSchema,
   TextSchema,
   TimeSchema,
   TransportSchema,
   VerificationSchema,
-  type Day,
 } from "./contracts-v2.js";
 import { AiLedMicroCandidateDiscoveryOutputSchema } from "./ai-led-micro-contract-v2.js";
 import { StageDialogueOutputSchema, WebDialogueOutputSchema } from "./ai-stage-contracts-v3.js";
@@ -179,6 +178,32 @@ export const ItineraryVerifyOutputSchema = z.object({
 }).strict();
 export type ItineraryVerifyOutput = z.infer<typeof ItineraryVerifyOutputSchema>;
 
+const ItineraryRefineStopSchema = z.object({
+  stopId: IdSchema,
+  activity: TextSchema,
+  period: PeriodSchema.nullable(),
+  startTime: TimeSchema,
+  endTime: TimeSchema,
+  durationMinutes: z.number().int().min(0).max(1440),
+  transportFromPrevious: TransportSchema.nullable(),
+  scheduleVerification: VerificationSchema,
+  costNote: z.string().max(1000).nullable(),
+  costVerification: VerificationSchema.nullable(),
+  notes: z.string().max(2000).nullable(),
+}).strict().superRefine((value, context) => {
+  if (value.endTime <= value.startTime) context.addIssue({ code: "custom", path: ["endTime"], message: "结束时间必须晚于开始时间。" });
+  const minutes = (time: string) => Number(time.slice(0, 2)) * 60 + Number(time.slice(3));
+  if (minutes(value.endTime) - minutes(value.startTime) !== value.durationMinutes) context.addIssue({ code: "custom", path: ["durationMinutes"], message: "停留时长必须等于开始和结束时间之差。" });
+});
+
+const ItineraryRefineDayUpdateSchema = z.object({
+  dayId: IdSchema,
+  stops: z.array(ItineraryRefineStopSchema).max(80),
+}).strict().superRefine((value, context) => {
+  const ids = value.stops.map((stop) => stop.stopId);
+  if (new Set(ids).size !== ids.length) context.addIssue({ code: "custom", path: ["stops"], message: "同一个 Stop 只能细化一次。" });
+});
+
 export const ItineraryRefineOutputSchema = z.object({
   schemaVersion: z.literal(1),
   baseGeneration: z.number().int().min(0),
@@ -189,11 +214,11 @@ export const ItineraryRefineOutputSchema = z.object({
       title: TextSchema.max(300),
       explanation: TextSchema.max(4000),
       dayIds: z.array(IdSchema).min(1).max(2),
-      days: z.array(DetailedDaySchema).min(1).max(2),
+      dayUpdates: z.array(ItineraryRefineDayUpdateSchema).min(1).max(2),
     }).strict().superRefine((value, context) => {
       const requested = new Set(value.dayIds);
-      const returned = new Set(value.days.map((day: Day) => day.id));
-      if (requested.size !== value.dayIds.length || returned.size !== value.days.length || requested.size !== returned.size || [...requested].some((id) => !returned.has(id))) context.addIssue({ code: "custom", path: ["days"], message: "细化动作必须恰好返回指定 Day。" });
+      const returned = new Set(value.dayUpdates.map((day) => day.dayId));
+      if (requested.size !== value.dayIds.length || returned.size !== value.dayUpdates.length || requested.size !== returned.size || [...requested].some((id) => !returned.has(id))) context.addIssue({ code: "custom", path: ["dayUpdates"], message: "细化动作必须恰好返回指定 Day。" });
     }),
     RequiresInterestsSchema,
   ]),

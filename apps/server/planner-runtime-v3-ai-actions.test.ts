@@ -26,9 +26,9 @@ function prompts(): LoadedPromptRegistryV3 {
   const compose = (id: any) => ({ id, relativePath: `${id}.md`, content: `# ${id}`, hash: `hash:${id}`, version: "v1" });
   return { prompts: new Map(), get: ((id: any) => compose(id)) as any, compose: compose as any };
 }
-function runtime(store: TravelStoreV3, startAction: (input: any) => Promise<any>) {
+function runtime(store: TravelStoreV3, startAction: (input: any) => Promise<any>, resolverOverride?: PlaceResolverV2) {
   const ai = { startAction, startDialogue: async () => { throw new Error("dialogue not expected"); }, startWebDialogue: async () => { throw new Error("web dialogue not expected"); } } as unknown as StagedTravelAiV3;
-  const resolver = { resolve: async () => ({ resolution: null, candidates: [] }), resolveMany: async () => [], searchCandidates: async () => [] } as unknown as PlaceResolverV2;
+  const resolver = resolverOverride ?? ({ resolve: async () => ({ resolution: null, candidates: [] }), resolveMany: async () => [], searchCandidates: async () => [] } as unknown as PlaceResolverV2);
   const routes = { workspaceRouteState: () => [], recalculate: async () => { throw new Error("route not expected"); } } as unknown as DayRouteServiceV2;
   return new TravelPlannerRuntimeV3({ store, ai, prompts: prompts(), tasks: new AiTaskMonitorV3(store, () => undefined), resolver, routes, emit: () => undefined });
 }
@@ -124,6 +124,99 @@ describe("TravelPlannerRuntimeV3 AI action regressions", () => {
     await waitFor(() => store.getAction(started.action.id)?.status === "failed");
     expect(store.listProposals(created.id)).toHaveLength(0);
     expect(store.getAction(started.action.id)?.errorSummary).toMatch(/未定位地点不得进入行程/);
+    store.close();
+  });
+
+  it("resolves newly generated Macro Places best-effort before destination generation completes", async () => {
+    const store = db(); const created = store.createTrip(); const resolvedIds: string[] = [];
+    const resolver = {
+      resolve: async (tripId: string, placeId: string, generation: number) => {
+        const trip = store.requireTrip(tripId); const place = trip.plan.places.find((item) => item.id === placeId)!;
+        resolvedIds.push(placeId);
+        store.upsertPlaceResolution(tripId, { tripId, placeId, geoFingerprint: placeGeoFingerprint(place), status: "resolved", method: "manual_coordinates", provider: null, providerPlaceId: null, latitude: 40 + resolvedIds.length, longitude: 170 + resolvedIds.length, address: null, confidence: null, resolvedAt: new Date().toISOString(), errorMessage: null }, generation);
+        return { resolution: null, candidates: [] };
+      },
+      resolveMany: async () => [],
+      searchCandidates: async () => [],
+    } as unknown as PlaceResolverV2;
+    const rt = runtime(store, async () => run({
+      schemaVersion: 1,
+      baseGeneration: 0,
+      assistantMessage: "生成目的地",
+      places: [
+        { id: "tmp-place-1", nameZh: "目的地一", nameLocal: null, nameEn: "Macro One", kind: "city", city: "Macro One", region: null, country: "Test", countryCode: "TT", approximate: false },
+        { id: "tmp-place-2", nameZh: "目的地二", nameLocal: null, nameEn: "Macro Two", kind: "city", city: "Macro Two", region: null, country: "Test", countryCode: "TT", approximate: false },
+      ],
+      candidates: [
+        { temporaryId: "tmp-candidate-1", placeTemporaryId: "tmp-place-1", planningAreaCandidateId: null, aiReason: "适合", aiScore: 90, suggestedDurationMinutes: 1440, tags: [], defaultPreference: "optional" },
+        { temporaryId: "tmp-candidate-2", placeTemporaryId: "tmp-place-2", planningAreaCandidateId: null, aiReason: "适合", aiScore: 88, suggestedDurationMinutes: 1440, tags: [], defaultPreference: "optional" },
+      ],
+    }), resolver);
+    const started = rt.createCtaAction({ tripId: created.id, stage: "destinations", actionType: "destination.generate", parameters: {}, targetIds: [], requestKey: "destination-resolve" });
+    await waitFor(() => store.getAction(started.action.id)?.status === "completed");
+    expect(resolvedIds).toHaveLength(2);
+    expect(store.listPlaceResolutions(created.id).filter((item) => item.status === "resolved")).toHaveLength(2);
+    store.close();
+  });
+
+  it("rejects an unresolved Macro city in itinerary anchors just like any other Place", async () => {
+    const store = db(); const created = store.createTrip(); store.writePlan(created.id, macroPlan(created.plan), 0, { source: "test", summary: "macro itinerary fixture" });
+    const rt = runtime(store, async () => run({
+      schemaVersion: 1,
+      baseGeneration: 1,
+      result: {
+        type: "success",
+        assistantMessage: "生成一天",
+        days: [{
+          id: "ai-day-1", dayNumber: 1, date: null, title: "Day 1", detailLevel: "planned", detailStatus: null,
+          startAnchor: { id: "ai-start-1", placeId: "place-m1", label: "目的地一", notes: null },
+          stops: [],
+          endAnchor: { id: "ai-end-1", placeId: "place-m1", label: "目的地一", notes: null },
+        }],
+        unscheduledCandidates: [],
+      },
+    }));
+    const started = rt.createCtaAction({ tripId: created.id, stage: "itinerary", actionType: "itinerary.generate", parameters: {}, targetIds: [], requestKey: "generate-unresolved-macro" });
+    await waitFor(() => store.getAction(started.action.id)?.status === "failed");
+    expect(store.requireTrip(created.id).plan.days).toHaveLength(0);
+    expect(store.getAction(started.action.id)?.errorSummary).toMatch(/未定位地点不得进入行程/);
+    store.close();
+  });
+
+  it("creates and applies a refine Proposal without exposing Anchor or identity fields to the model", async () => {
+    const store = db(); const created = store.createTrip(); store.writePlan(created.id, itineraryPlan(created.plan, 1), 0, { source: "test", summary: "refine fixture" }); resolveAB(store, created.id, 1);
+    const before = structuredClone(store.requireTrip(created.id).plan.days[0]);
+    const rt = runtime(store, async () => run({
+      schemaVersion: 1,
+      baseGeneration: 1,
+      result: {
+        type: "success",
+        assistantMessage: "已细化",
+        title: "Day 1 细化",
+        explanation: "补充时间与核验状态",
+        dayIds: ["day-1"],
+        dayUpdates: [{
+          dayId: "day-1",
+          stops: [
+            { stopId: "stop-a-1", activity: "上午游览 A", period: "morning", startTime: "09:00", endTime: "10:00", durationMinutes: 60, transportFromPrevious: null, scheduleVerification: { status: "estimated", checkedAt: null }, costNote: null, costVerification: null, notes: "预留入场时间" },
+            { stopId: "stop-b-1", activity: "上午游览 B", period: "morning", startTime: "10:30", endTime: "11:30", durationMinutes: 60, transportFromPrevious: null, scheduleVerification: { status: "estimated", checkedAt: null }, costNote: null, costVerification: null, notes: null },
+          ],
+        }],
+      },
+    }));
+    const started = rt.createCtaAction({ tripId: created.id, stage: "itinerary", actionType: "itinerary.refine", parameters: { dayIds: ["day-1"] }, targetIds: ["day-1"], requestKey: "refine-day-1" });
+    await waitFor(() => store.getAction(started.action.id)?.status === "awaiting_apply");
+    const action = store.getAction(started.action.id)!; const proposal = store.getProposal(action.proposalId!)!;
+    expect(proposal.commands.length).toBe(2);
+    expect(proposal.commands.every((command) => command.type === "update_day_stop")).toBe(true);
+    await rt.applyProposal(created.id, proposal.id);
+    const after = store.requireTrip(created.id).plan.days[0];
+    expect(after.startAnchor).toEqual(before.startAnchor);
+    expect(after.endAnchor).toEqual(before.endAnchor);
+    expect(after.stops.map((stop) => [stop.id, stop.candidateId, stop.placeId])).toEqual(before.stops.map((stop) => [stop.id, stop.candidateId, stop.placeId]));
+    expect(after.detailLevel).toBe("detailed");
+    expect(after.detailStatus).toBe("ready");
+    expect(store.getProposal(proposal.id)?.status).toBe("applied");
     store.close();
   });
 });
