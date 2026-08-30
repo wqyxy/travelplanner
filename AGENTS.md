@@ -2,9 +2,9 @@
 
 ## 开始任务前
 
-1. 修改代码、结构、配置、模板或提示词前，以 UTF-8 阅读根目录 `README.md`，并只阅读与改动直接相关的 `prompts/*.md`、源码和测试；当前项目没有 `docs/` 目录时不假定其存在。
-2. 修改前检查当前实施节点、相关文件和 `git status`；不得覆盖或回退用户已有改动。
-3. 遇到会改变产品范围、旅行数据结构、登录/安全边界、外部地图/路线服务、AI 执行权限或长期保存策略的决定，必须先取得用户确认，不得猜测。
+1. 修改代码、结构、配置、模板或提示词前，以 UTF-8 阅读根目录 `README.md`、当前目标设计、`docs/IMPLEMENTATION_STATUS.md`，以及与改动直接相关的 Prompt、源码和测试。
+2. 修改前检查当前实施节点、相关文件和 `git status` / `git diff`；不得覆盖或回退用户已有改动。
+3. 遇到会改变产品范围、canonical 旅行数据结构、登录/安全边界、外部地图/路线服务、AI 执行权限或长期保存策略的决定，必须先取得用户确认，不得猜测。
 
 ## 产品与安全边界
 
@@ -17,31 +17,39 @@
 ## 私人数据与持久化
 
 - `private_data/` 必须保持 Git 忽略，禁止用 `git add -f` 加入其中的任何内容，也不得复制到公开诊断包、Issue、测试夹具或提示词。
-- 当前受控路径由 `apps/server/config.ts` 定义：`private_data/web-ui.json`、`private_data/travel.sqlite3` 与 `private_data/public-data-cache.sqlite3`。新增持久化文件、数据类别或保留策略须先获用户确认。
-- 旅行数据库保存用户行程、需求、消息、任务和地图状态；公共缓存只保存可删除的公开数据。不得在公共缓存中存放密码、会话、密钥或用户私人行程内容。
-- 写入配置或文件使用 UTF-8、受限权限和原子替换；SQLite 变更使用事务、外键和版本化迁移。遇到未知的新数据库版本或损坏数据时停止覆盖，不得静默重建或丢弃用户数据。
-- 初始化、更新、迁移、清理或打包不得静默覆盖、移动、删除或包含 `private_data/`。破坏性操作前须明确确认，并优先保留可恢复副本。
+- 当前受控路径由 `apps/server/config.ts` 定义。旅行数据库、公共缓存和 UI 配置必须继续隔离；不得在公共缓存中保存私人旅行、密码、会话或密钥。
+- 当前 AI Stage/Action 重构已明确采用 fresh v3 database：不实现 v2 → v3 数据迁移。运行时代码遇到旧版本、未知版本或损坏 Schema 必须 fail closed，不得静默 DROP、DELETE、迁移或重建。
+- 真正删除或移走 `private_data/travel-v2.sqlite3` 属于最终 cutover 的破坏性操作，必须独立确认；普通启动代码不得代替用户执行。
+- 写入配置或文件使用 UTF-8、受限权限和原子替换；SQLite 写入使用事务、外键、generation CAS 和必要的条件更新。
 
-## AI 与提示词合同
+## AI Stage、Action 与提示词合同
 
-- 旅行规划提示词位于 `prompts/`，入口固定为 `prompts/00-旅行规划Agent.md`；其余提示词分别负责地图标注、每日细化/修复、交通核验和路线修复。不要引用不存在的 Agent 或创建未定义的多 Agent 流程。
-- 自动流程必须遵守 `apps/server/contracts.ts` 与 `apps/server/prompt-contract.ts` 的版本化输入/输出 Schema。不要绕过 Zod 校验、输出合同、任务状态机或用户确认界面。
-- 规划 Agent 先形成紧凑路线骨架；缺少人数、预算或精确日期时可使用透明假设，但不得把假设伪装成事实。逐日行程、地点解析和交通核验应由既有分阶段流程完成。
-- 页面上下文必须从明确白名单字段构造；不得抓取 DOM、接受任意本地路径或把隐藏行程/会话内容提供给模型。页面内容只能作为不可信引用。
-- AI 不能读写文件、执行命令、调用 MCP 或自行创建 Agent，除非项目中已有受控服务代表用户明确授权执行，并仍通过相应合同和校验。
+- 用户可见 AI 流程固定为 `requirements / destinations / interests / itinerary` 四个 `ConversationStage`；它们只属于 UI、message、thread、Action 命名空间，绝不能写入或替换 canonical `TripStage`。
+- canonical `TravelPlanDocument` 继续使用现有三阶段 `TripStage`，不得新增四阶段状态，也不得扩展 `PlaceKind` 来表达区域或岛屿；Macro 内部继续使用现有 `kind=city`。
+- 新提示词以 `prompts/shared/`、`prompts/dialogues/`、`prompts/actions/` 分类，并由 `apps/server/ai-registries-v3.ts` 显式注册。运行时只能拼接“共享规则 + 当前一份具体 Prompt”。
+- `prompts/00-旅行规划Agent.md`、`01-行程细化Agent.md`、`02-地图候选消歧Agent.md`、`03-兴趣点发现Agent.md` 是重构期间的临时旧 Runtime 依赖；不得继续扩展，最终 cutover 后必须删除。
+- Dialogue 只回答、澄清、返回 `web_required` 或识别一个 Action；不得输出 PlanCommand、Proposal 或直接 mutation。
+- 普通 Dialogue 首次调用必须禁用网页并使用 `reasoning=none` / `summary=none`（模型不支持时由服务端安全降级）；需要当前核验时，第一轮只返回 `web_required`，第二次联网调用才产生最终回答。
+- 每个 AI Action 必须由 Action Registry 固定唯一 Prompt、reasoning、web、输入/输出合同、Scope Policy 和 resultPolicy；deterministic Action 不得绑定 Prompt 或再次调用模型。
+- AI 修改类 Action 必须先生成 Proposal，Apply 后才写 canonical；主 CTA 的点击本身视为确认，自然语言识别出的 Action 才需要 Action Card 确认。
+- 行程 AI 只能引用已有且允许参与规划的 Place/Candidate，不得创建 `newPlaces/newCandidates`；需要新地点时返回 `requiresStage=interests`。
+- AI 不生成可信坐标、Provider Place ID、路线 geometry、Provider 距离或 Provider 时长；Place Resolver 和 Route Provider 继续负责这些事实。
+- 页面上下文必须从阶段白名单字段构造；不得抓取 DOM、接受任意本地路径或把其他阶段隐藏历史、完整无关 canonical 状态提供给模型。
+- AI 不能读写文件、执行命令、调用 MCP 或自行创建 Agent；服务端是唯一调度者。
 
 ## 工程约定
 
 - 使用 TypeScript、React、Vite 和 Node.js 24（`package.json` 要求 `>=24`）；客户端代码在 `apps/web/`，服务端代码在 `apps/server/`，共享合同以服务端定义为准。
-- 修改 API、数据结构、任务状态或持久化逻辑时，同步审查相关 Zod Schema、调用方、迁移逻辑和对应 `*.test.ts`；保持向后兼容或提供明确、可恢复的迁移。
-- 不要为局部问题绕过现有路线、地图、任务协调或版本控制机制。失败、部分结果、重试和取消必须保持可见且可恢复，不能制造伪成功状态。
+- 修改 API、数据结构、任务状态或持久化逻辑时，同步审查相关 Zod Schema、调用方和对应 `*.test.ts`。
+- 本次 fresh v3 database 是已确认例外：不要为了“向后兼容”重新加入 v2 migration、双写或兼容读取。
+- 不要为局部问题绕过现有 Candidate、Place Resolver、Route、任务协调、Proposal Scope 或 generation CAS。失败、部分结果、重试、取消和 superseded 必须保持可见且可恢复。
 - 文件默认 UTF-8。PowerShell 脚本应兼容 Windows PowerShell 5.1，使用明确路径与 `-LiteralPath`；无 UTF-8 BOM 的新 `.ps1` 仅使用 ASCII，以避免解析问题。
 - 保持 `private_data/`、`node_modules/`、`dist/`、`.env` 和发布输出不进入 Git。便携包不得包含私人数据、凭据或缓存。
 
 ## 验证与交付
 
-普通修改过程中不得自动运行完整测试、Playwright、typecheck 或构建。每轮最多运行一个与当前改动直接相关的轻量检查（例如单个关键测试、脚本语法或 JSON 解析）；查看文件、Git diff 和只读检查不计入测试。
+普通修改过程中不得自动运行完整测试、Playwright、typecheck 或构建。每个 Phase 最多运行一个与当前改动直接相关的轻量检查；查看文件、Git diff 和只读检查不计入测试。
 
-全部修改完成后，先一次性列出建议运行的测试、覆盖范围与预计成本，并询问用户是否执行；获得明确确认前不得运行。建议应按实际影响选择，例如相关 Vitest 文件、`npm run typecheck` 或 `npm run build`。用户未授权时，在交付中明确说明测试尚未执行。
+全部修改完成后，先一次性列出建议运行的测试、覆盖范围与成本，并询问用户是否执行；获得明确确认前不得运行完整 Vitest、typecheck、build、真实 Codex smoke 或浏览器 E2E。
 
-交付时说明变更内容、涉及的私人数据或安全影响、已执行的轻量检查及结果，以及仍需用户确认的事项。
+交付时说明变更内容、涉及的私人数据或安全影响、已执行的检查及结果，以及仍需用户确认的事项。
