@@ -5,6 +5,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { afterEach, describe, expect, it } from "vitest";
 import { TravelStoreV3 } from "./travel-store-v3.js";
+import { TravelPlanDocumentSchema } from "./contracts-v2.js";
 import type { AiActionRecord } from "./ai-stage-contracts-v3.js";
 
 type SqliteModule = typeof import("node:sqlite");
@@ -19,28 +20,37 @@ function databasePath() {
 
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
 
+function dialogueParameters() {
+  return {
+    request: "把节奏改轻松一点",
+    candidateId: null,
+    candidateIds: [],
+    preference: null,
+    dayId: null,
+    dayIds: [],
+    stopId: null,
+    targetDayId: null,
+    targetIndex: null,
+    index: null,
+    anchor: null,
+    placeId: null,
+    label: null,
+    notes: null,
+    activity: null,
+    fields: [],
+    changes: { pace: "relaxed" },
+    placeChanges: null,
+    candidateChanges: null,
+    allowWeb: null,
+  };
+}
+
 function pendingAction(tripId: string, sourceMessageId: string, generation: number): AiActionRecord {
   const timestamp = new Date().toISOString();
   return {
-    id: randomUUID(),
-    tripId,
-    stage: "requirements",
-    actionType: "requirements.update",
-    executor: "deterministic",
-    origin: "conversation",
-    sourceMessageId,
-    parameters: { field: "pace", value: "relaxed" },
-    targetIds: [],
-    scope: { type: "trip", id: null },
-    baseGeneration: generation,
-    status: "pending_confirmation",
-    taskId: null,
-    proposalId: null,
-    resultRef: null,
-    startedAt: null,
-    updatedAt: timestamp,
-    completedAt: null,
-    errorSummary: null,
+    id: randomUUID(), tripId, stage: "requirements", actionType: "requirements.update", executor: "deterministic", origin: "conversation", sourceMessageId,
+    parameters: dialogueParameters(), targetIds: [], scope: { type: "trip", id: null }, baseGeneration: generation, status: "pending_confirmation",
+    taskId: null, proposalId: null, resultRef: null, startedAt: null, updatedAt: timestamp, completedAt: null, errorSummary: null,
   };
 }
 
@@ -51,7 +61,6 @@ describe("TravelStoreV3", () => {
     const trip = store.createTrip();
     expect(trip.plan.schemaVersion).toBe(2);
     store.close();
-
     const db = new DatabaseSync(filename);
     expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(3);
     const messageColumns = (db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>).map((row) => row.name);
@@ -105,10 +114,49 @@ describe("TravelStoreV3", () => {
     store.updateTurn(messageId, "completed");
     const created = store.createAction(pendingAction(trip.id, messageId, 0), "request-1");
     expect(created.created).toBe(true);
+    expect(created.action.parameters).toEqual({ changes: { pace: "relaxed" } });
     expect(store.createAction(pendingAction(trip.id, messageId, 0), "request-1").created).toBe(false);
     expect(store.claimActionForExecution(created.action.id, 0).claimed).toBe(true);
     expect(store.claimActionForExecution(created.action.id, 0).claimed).toBe(false);
     expect(store.getAction(created.action.id)?.status).toBe("executing");
+    store.close();
+  });
+
+  it("rejects unregistered free-form Action parameters before persistence", () => {
+    const store = new TravelStoreV3(databasePath());
+    const trip = store.createTrip();
+    const timestamp = new Date().toISOString();
+    expect(() => store.createAction({
+      id: randomUUID(), tripId: trip.id, stage: "requirements", actionType: "requirements.update", executor: "deterministic", origin: "cta", sourceMessageId: null,
+      parameters: { totallyUnknownField: "accepted" }, targetIds: [], scope: { type: "trip", id: null }, baseGeneration: 0, status: "pending_confirmation",
+      taskId: null, proposalId: null, resultRef: null, startedAt: null, updatedAt: timestamp, completedAt: null, errorSummary: null,
+    })).toThrow();
+    expect(store.listActions(trip.id)).toHaveLength(0);
+    expect(store.requireTrip(trip.id).contentGeneration).toBe(0);
+    store.close();
+  });
+
+  it("supersedes a candidate-scope Proposal when its linked Place changes", () => {
+    const store = new TravelStoreV3(databasePath());
+    const created = store.createTrip();
+    const plan = TravelPlanDocumentSchema.parse({
+      ...created.plan,
+      places: [{ id: "place-1", nameZh: "原地点", nameLocal: null, nameEn: null, kind: "attraction", city: null, region: null, country: null, countryCode: null, approximate: false }],
+      candidates: [{ id: "candidate-1", placeId: "place-1", planningAreaCandidateId: null, preference: "optional", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: 60, tags: [] }],
+    });
+    store.writePlan(created.id, plan, 0, { source: "test", summary: "fixture" });
+    const timestamp = new Date().toISOString();
+    store.createProposal({
+      id: "proposal-linked-place", tripId: created.id, baseGeneration: 1, scope: { type: "candidate", id: "candidate-1" }, status: "pending", title: "修改地点", explanation: "测试关联冲突",
+      commands: [{ type: "update_place", placeId: "place-1", changes: { nameZh: "AI 新名称" } }],
+      diff: { summary: "修改地点", commandSummaries: ["修改地点"], affectedCandidateIds: [], affectedPlaceIds: ["place-1"], affectedDayIds: [] },
+      createdAt: timestamp, updatedAt: timestamp, appliedRevisionVersion: null,
+    });
+    const concurrent = structuredClone(store.requireTrip(created.id).plan);
+    concurrent.places[0].nameZh = "用户先改的新名称";
+    store.writePlan(created.id, concurrent, 1, { source: "test", summary: "concurrent place edit" });
+    expect(store.getProposal("proposal-linked-place")?.status).toBe("superseded");
+    expect(store.getProposal("proposal-linked-place")?.baseGeneration).toBe(1);
     store.close();
   });
 

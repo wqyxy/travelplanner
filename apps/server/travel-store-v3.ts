@@ -20,6 +20,8 @@ import {
   type ConversationStage,
   type StageThreadRecord,
 } from "./ai-stage-contracts-v3.js";
+import { actionRegistration } from "./ai-registries-v3.js";
+import { parseActionParametersV3 } from "./ai-action-input-contracts-v3.js";
 
 type SqliteModule = typeof import("node:sqlite");
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as SqliteModule;
@@ -106,16 +108,31 @@ function canonicalChanges(before: TravelPlanDocument, after: TravelPlanDocument)
   };
 }
 
-function scopeConflicts(scope: unknown, changes: CanonicalChanges) {
+function scopeConflicts(scope: unknown, changes: CanonicalChanges, before: TravelPlanDocument) {
   if (!scope || typeof scope !== "object" || Array.isArray(scope)) return true;
   const value = scope as Record<string, unknown>;
   const type = String(value.type ?? "");
   const id = typeof value.id === "string" ? value.id : null;
   if (type === "trip") return changes.trip || changes.candidateIds.size > 0 || changes.placeIds.size > 0 || changes.dayIds.size > 0;
   if (type === "candidate_pool") return changes.candidateIds.size > 0 || changes.placeIds.size > 0;
-  if (type === "candidate") return !id || changes.candidateIds.has(id);
-  if (type === "place") return !id || changes.placeIds.has(id);
-  if (type === "day") return !id || changes.dayIds.has(id);
+  if (type === "candidate") {
+    if (!id) return true;
+    const candidate = before.candidates.find((item) => item.id === id);
+    return changes.candidateIds.has(id) || Boolean(candidate && changes.placeIds.has(candidate.placeId));
+  }
+  if (type === "place") {
+    if (!id) return true;
+    const linkedCandidateIds = before.candidates.filter((candidate) => candidate.placeId === id).map((candidate) => candidate.id);
+    return changes.placeIds.has(id) || linkedCandidateIds.some((candidateId) => changes.candidateIds.has(candidateId));
+  }
+  if (type === "day") {
+    if (!id) return true;
+    const day = before.days.find((item) => item.id === id);
+    if (!day) return true;
+    const placeIds = new Set([day.startAnchor.placeId, day.endAnchor.placeId, ...day.stops.map((stop) => stop.placeId)].filter((placeId): placeId is string => Boolean(placeId)));
+    const candidateIds = new Set(day.stops.map((stop) => stop.candidateId).filter((candidateId): candidateId is string => Boolean(candidateId)));
+    return changes.dayIds.has(id) || [...placeIds].some((placeId) => changes.placeIds.has(placeId)) || [...candidateIds].some((candidateId) => changes.candidateIds.has(candidateId));
+  }
   return true;
 }
 
@@ -345,7 +362,7 @@ export class TravelStoreV3 {
     for (const row of this.db.prepare("SELECT * FROM ai_proposals WHERE trip_id=? AND status='pending' AND base_generation=?").all(tripId, oldGeneration) as Row[]) {
       if (String(row.id) === options.keepPendingProposalId) continue;
       const proposal = this.rowToProposal(row);
-      if (scopeConflicts(proposal.scope, changes)) {
+      if (scopeConflicts(proposal.scope, changes, before)) {
         const superseded = AiProposalSchema.parse({ ...proposal, status: "superseded", updatedAt: timestamp });
         this.updateProposalRow(superseded);
       } else {
@@ -356,7 +373,7 @@ export class TravelStoreV3 {
     for (const row of this.db.prepare("SELECT * FROM ai_actions WHERE trip_id=? AND base_generation=? AND status IN ('pending_confirmation','executing','awaiting_apply')").all(tripId, oldGeneration) as Row[]) {
       if (String(row.id) === options.keepActionId) continue;
       const action = this.rowToAction(row);
-      if (scopeConflicts(action.scope, changes)) {
+      if (scopeConflicts(action.scope, changes, before)) {
         this.db.prepare("UPDATE ai_actions SET status='superseded',updated_at=?,completed_at=?,error_summary=? WHERE id=?").run(timestamp, timestamp, "计划已发生冲突修改。", action.id);
       } else {
         this.db.prepare("UPDATE ai_actions SET base_generation=?,updated_at=? WHERE id=?").run(newGeneration, timestamp, action.id);
@@ -528,7 +545,10 @@ export class TravelStoreV3 {
   }
 
   createAction(value: unknown, requestKey: string | null = null) {
-    const action = AiActionRecordSchema.parse(value);
+    const parsed = AiActionRecordSchema.parse(value);
+    const registration = actionRegistration(parsed.actionType);
+    const parameters = parseActionParametersV3(parsed.actionType, registration.inputContract, parsed.origin, parsed.parameters);
+    const action = AiActionRecordSchema.parse({ ...parsed, parameters });
     const trip = this.requireTrip(action.tripId);
     if (action.baseGeneration !== trip.contentGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
     if (requestKey) {

@@ -10,6 +10,7 @@ import type { StagedAiHandle, StagedTravelAiV3 } from "./staged-ai-v3.js";
 import { TravelStoreV3 } from "./travel-store-v3.js";
 import type { PlaceResolverV2 } from "./place-resolver-v2.js";
 import type { DayRouteServiceV2 } from "./day-route-v2.js";
+import { TravelPlanDocumentSchema } from "./contracts-v2.js";
 
 const roots: string[] = [];
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
@@ -22,7 +23,7 @@ function store() {
   return db;
 }
 function handle<T>(value: T, id = `thread-${Math.random()}`): StagedAiHandle<T> { return { threadId: () => id, result: Promise.resolve(value), interrupt: async () => undefined, turnId: () => "turn-1" }; }
-async function waitFor(check: () => boolean) { for (let i = 0; i < 50; i += 1) { if (check()) return; await new Promise((resolve) => setTimeout(resolve, 5)); } throw new Error("condition timeout"); }
+async function waitFor(check: () => boolean) { for (let i = 0; i < 80; i += 1) { if (check()) return; await new Promise((resolve) => setTimeout(resolve, 5)); } throw new Error("condition timeout"); }
 
 function promptRegistry(): LoadedPromptRegistryV3 {
   const compose = (id: any) => ({ id, relativePath: `${id}.md`, content: `# ${id}`, hash: `hash:${id}`, version: "v1" });
@@ -86,6 +87,31 @@ describe("TravelPlannerRuntimeV3", () => {
     db.close();
   });
 
+  it("discards a dialogue result when canonical generation changes while the model is running", async () => {
+    const db = store();
+    const trip = db.createTrip();
+    let resolveDialogue!: (value: any) => void;
+    const delayed: StagedAiHandle<any> = {
+      threadId: () => "thread-stale",
+      result: new Promise((resolve) => { resolveDialogue = resolve; }),
+      interrupt: async () => undefined,
+      turnId: () => "turn-stale",
+    };
+    const rt = runtime({ store: db, dialogue: () => delayed });
+    const turn = rt.startConversation(trip.id, "requirements", { message: "清空限制", selection: { type: "trip", id: null } });
+    await waitFor(() => db.listMessages(trip.id, "requirements")[0]?.turn?.status === "active");
+    const mutation = rt.createCtaAction({ tripId: trip.id, stage: "requirements", actionType: "requirements.update", parameters: { changes: { pace: "舒缓" } }, targetIds: [], requestKey: "concurrent-edit" });
+    await waitFor(() => db.getAction(mutation.action.id)?.status === "applied");
+    expect(db.requireTrip(trip.id).contentGeneration).toBe(1);
+    resolveDialogue({ schemaVersion: 1, result: { type: "action", assistantMessage: "可以清空限制。", actionType: "requirements.clear", parameters: { ...dialogueParameters({}), fields: ["constraints"] }, targetIds: [], impactSummary: "清空限制" } });
+    await waitFor(() => db.listMessages(trip.id, "requirements").find((message) => message.id === turn.messageId)?.turn?.status === "failed");
+    const actions = db.listActions(trip.id, "requirements");
+    expect(actions).toHaveLength(1);
+    expect(actions[0].origin).toBe("cta");
+    expect(db.listAiTasks(trip.id).find((task) => task.agent === "dialogue")?.status).toBe("cancelled_by_generation");
+    db.close();
+  });
+
   it("deterministic CTA is idempotent and never starts an AI action model", async () => {
     const db = store();
     const trip = db.createTrip();
@@ -96,6 +122,31 @@ describe("TravelPlannerRuntimeV3", () => {
     await waitFor(() => db.getAction(first.action.id)?.status === "applied");
     expect(db.requireTrip(trip.id).contentGeneration).toBe(1);
     expect(db.requireTrip(trip.id).plan.trip.pace).toBe("舒缓");
+    db.close();
+  });
+
+  it("treats a null stop index as append rather than index zero", async () => {
+    const db = store();
+    const created = db.createTrip();
+    const plan = TravelPlanDocumentSchema.parse({
+      ...created.plan,
+      stage: "itinerary_planning",
+      places: [
+        { id: "place-a", nameZh: "A", nameLocal: null, nameEn: null, kind: "attraction", city: null, region: null, country: null, countryCode: null, approximate: false },
+        { id: "place-b", nameZh: "B", nameLocal: null, nameEn: null, kind: "attraction", city: null, region: null, country: null, countryCode: null, approximate: false },
+        { id: "place-c", nameZh: "C", nameLocal: null, nameEn: null, kind: "attraction", city: null, region: null, country: null, countryCode: null, approximate: false },
+      ],
+      candidates: ["a", "b", "c"].map((id) => ({ id: `candidate-${id}`, placeId: `place-${id}`, planningAreaCandidateId: null, preference: "optional", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: 60, tags: [] })),
+      days: [{ id: "day-1", dayNumber: 1, date: null, title: "Day 1", detailLevel: "planned", detailStatus: null, startAnchor: { id: "start-1", placeId: null, label: null, notes: null }, stops: [
+        { id: "stop-a", candidateId: "candidate-a", placeId: "place-a", activity: "A", period: null, startTime: null, endTime: null, durationMinutes: 60, transportFromPrevious: null, scheduleVerification: null, costNote: null, costVerification: null, notes: null },
+        { id: "stop-b", candidateId: "candidate-b", placeId: "place-b", activity: "B", period: null, startTime: null, endTime: null, durationMinutes: 60, transportFromPrevious: null, scheduleVerification: null, costNote: null, costVerification: null, notes: null },
+      ], endAnchor: { id: "end-1", placeId: null, label: null, notes: null } }],
+    });
+    db.writePlan(created.id, plan, 0, { source: "test", summary: "fixture" });
+    const rt = runtime({ store: db, dialogue: () => handle({ schemaVersion: 1, result: { type: "reply", assistantMessage: "ok" } }) });
+    const action = rt.createCtaAction({ tripId: created.id, stage: "itinerary", actionType: "itinerary.stop.add", parameters: { dayId: "day-1", candidateId: "candidate-c", index: null }, targetIds: [], requestKey: "append-stop" });
+    await waitFor(() => db.getAction(action.action.id)?.status === "applied");
+    expect(db.requireTrip(created.id).plan.days[0].stops.map((stop) => stop.candidateId)).toEqual(["candidate-a", "candidate-b", "candidate-c"]);
     db.close();
   });
 

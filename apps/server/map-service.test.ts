@@ -6,7 +6,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { GEOCODE_CACHE_VERSION, MapService, ROUTE_FAILURE_CACHE_TTL_MS, ROUTE_SUCCESS_CACHE_TTL_MS } from "./map-service.js";
 
 const directories: string[] = [];
-afterEach(async () => { await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))); });
+afterEach(async () => {
+  await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 })));
+});
 
 describe("public route cache", () => {
   it("treats an HTTP outage as transient rather than a seven-day no-route result", async () => {
@@ -50,6 +52,6 @@ describe("public geocode cache", () => {
     expect(fetches).toBe(1); maps.close();
     const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
     const db = new DatabaseSync(filename); const key = String((db.prepare("SELECT key FROM geocode_cache").get() as { key: string }).key);
-    expect(key.startsWith(`${GEOCODE_CACHE_VERSION}:ex:`)).toBe(true); db.close();
+    expect(key).toBe(`${GEOCODE_CACHE_VERSION}:example city, ex`); db.close();
   });
 });

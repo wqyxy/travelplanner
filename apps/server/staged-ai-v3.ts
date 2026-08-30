@@ -6,6 +6,7 @@ import {
   WebDialogueOutputSchema,
   type AiActionType,
   type ConversationStage,
+  type PromptIdV3,
   type StageDialogueOutput,
   type WebDialogueOutput,
 } from "./ai-stage-contracts-v3.js";
@@ -19,6 +20,8 @@ export type StagedAiHandle<T> = {
   interrupt: () => Promise<void>;
   turnId: () => string | null;
 };
+
+type RunnablePromptIdV3 = Exclude<PromptIdV3, "shared.travel-rules">;
 
 const dialoguePromptIds: Record<ConversationStage, "dialogue.requirements" | "dialogue.destinations" | "dialogue.interests" | "dialogue.itinerary"> = {
   requirements: "dialogue.requirements",
@@ -77,7 +80,7 @@ export class StagedTravelAiV3 {
   }) {}
 
   private start<T>(input: {
-    promptId: Exclude<Parameters<LoadedPromptRegistryV3["compose"]>[0], "shared.travel-rules">;
+    promptId: RunnablePromptIdV3;
     state: unknown;
     schema: ZodType<T>;
     developerInstructions: string;
@@ -198,13 +201,14 @@ export class StagedTravelAiV3 {
   }): Promise<StructuredAiRun<T>> {
     const registration = actionRegistration(input.actionType);
     if (registration.executor !== "ai" || !registration.promptId || !registration.reasoning || !registration.reasoningSummary || !registration.web) throw new Error(`Action 不是 AI executor：${input.actionType}`);
-    const prompt = promptRegistration(registration.promptId);
+    const promptId = registration.promptId as RunnablePromptIdV3;
+    const prompt = promptRegistration(promptId);
     if (prompt.kind !== "action") throw new Error(`Action Prompt 类型无效：${registration.promptId}`);
-    const schema = OUTPUT_CONTRACT_SCHEMAS_V3[registration.outputContract as keyof typeof OUTPUT_CONTRACT_SCHEMAS_V3] as ZodType<T> | undefined;
+    const schema = OUTPUT_CONTRACT_SCHEMAS_V3[registration.outputContract as keyof typeof OUTPUT_CONTRACT_SCHEMAS_V3] as unknown as ZodType<T> | undefined;
     if (!schema) throw new Error(`Action 缺少输出 Schema：${registration.outputContract}`);
     const webSearch = registration.web === "required" || (registration.web === "allowed" && input.allowWeb !== false) ? "live" : "disabled";
     return this.start<T>({
-      promptId: registration.promptId,
+      promptId,
       state: input.state,
       schema,
       developerInstructions: actionInstructions,

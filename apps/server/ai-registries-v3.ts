@@ -12,31 +12,9 @@ import type {
 } from "./ai-stage-contracts-v3.js";
 
 export type PromptRegistrationV3 =
-  | {
-      id: "shared.travel-rules";
-      relativePath: string;
-      kind: "shared";
-    }
-  | {
-      id: PromptIdV3;
-      relativePath: string;
-      kind: "dialogue";
-      stage: ConversationStage;
-      reasoning: "none";
-      reasoningSummary: "none";
-      web: "disabled";
-      outputContract: "stage.dialogue.output";
-    }
-  | {
-      id: PromptIdV3;
-      relativePath: string;
-      kind: "action";
-      stage: ConversationStage | "map";
-      reasoning: "low" | "medium" | "high";
-      reasoningSummary: "none" | "auto" | "detailed";
-      web: PromptWebPolicyV3;
-      outputContract: OutputContractIdV3;
-    };
+  | { id: "shared.travel-rules"; relativePath: string; kind: "shared" }
+  | { id: PromptIdV3; relativePath: string; kind: "dialogue"; stage: ConversationStage; reasoning: "none"; reasoningSummary: "none"; web: "disabled"; outputContract: "stage.dialogue.output" }
+  | { id: PromptIdV3; relativePath: string; kind: "action"; stage: ConversationStage | "map"; reasoning: "low" | "medium" | "high"; reasoningSummary: "none" | "auto" | "detailed"; web: PromptWebPolicyV3; outputContract: OutputContractIdV3 };
 
 export type ActionRegistrationV3 = {
   id: AiActionType;
@@ -128,21 +106,16 @@ export function validateRegistryDefinitionsV3() {
     if (promptPaths.has(prompt.relativePath)) throw new Error(`Prompt 文件重复注册：${prompt.relativePath}`);
     promptIds.add(prompt.id);
     promptPaths.add(prompt.relativePath);
-    if (prompt.kind !== "shared") {
-      if (!prompt.reasoning || !prompt.reasoningSummary || !prompt.web || !prompt.outputContract) {
-        throw new Error(`AI Prompt 缺少执行策略：${prompt.id}`);
-      }
-    }
+    if (prompt.kind !== "shared" && (!prompt.reasoning || !prompt.reasoningSummary || !prompt.web || !prompt.outputContract)) throw new Error(`AI Prompt 缺少执行策略：${prompt.id}`);
   }
 
   const actionIds = new Set<string>();
-  for (const action of ACTION_REGISTRY_V3) {
+  for (const raw of ACTION_REGISTRY_V3) {
+    const action: ActionRegistrationV3 = raw;
     if (actionIds.has(action.id)) throw new Error(`Action ID 重复：${action.id}`);
     actionIds.add(action.id);
     if (action.executor === "ai") {
-      if (!action.promptId || !action.reasoning || !action.reasoningSummary || !action.web) {
-        throw new Error(`AI Action 缺少 Prompt/reasoning/web：${action.id}`);
-      }
+      if (!action.promptId || !action.reasoning || !action.reasoningSummary || !action.web) throw new Error(`AI Action 缺少 Prompt/reasoning/web：${action.id}`);
       const prompt = promptRegistration(action.promptId);
       if (prompt.kind !== "action") throw new Error(`AI Action 只能绑定 action Prompt：${action.id}`);
       if (prompt.stage !== action.stage) throw new Error(`Action 与 Prompt stage 不一致：${action.id}`);

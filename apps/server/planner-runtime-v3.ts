@@ -6,7 +6,6 @@ import {
   ProposalScopeSchema,
   TravelPlanDocumentSchema,
   emptyTravelPlan,
-  type AiProposal,
   type Day,
   type DayStop,
   type PlaceResolution,
@@ -23,7 +22,6 @@ import {
   type AiActionRecord,
   type AiActionType,
   type ConversationStage,
-  type WorkspaceSelectionV3,
 } from "./ai-stage-contracts-v3.js";
 import type {
   DestinationAddOutput,
@@ -39,6 +37,7 @@ import type {
   ItineraryVerifyOutput,
 } from "./ai-action-contracts-v3.js";
 import { actionRegistration } from "./ai-registries-v3.js";
+import { parseActionParametersV3 } from "./ai-action-input-contracts-v3.js";
 import { AiTaskMonitorV3, aiErrorMessageV3, normalizePublicAiSummaryV3 } from "./ai-task-monitor-v3.js";
 import { applyCandidateDiscovery } from "./candidate-workflow-v2.js";
 import { CANDIDATE_DISCOVERY_BATCH_LIMIT, validateMicroCandidateDiscovery } from "./candidate-discovery-policy-v2.js";
@@ -69,9 +68,10 @@ const dialoguePromptIds: Record<ConversationStage, "dialogue.requirements" | "di
   interests: "dialogue.interests",
   itinerary: "dialogue.itinerary",
 };
-const ACTIVE_TASKS = new Set(["starting", "running", "waiting", "reconnecting"]);
 const STOP_FIELDS = ["activity", "period", "startTime", "endTime", "durationMinutes", "transportFromPrevious", "scheduleVerification", "costNote", "costVerification", "notes"] as const;
+const VERIFY_STOP_FIELDS = new Set(["startTime", "endTime", "durationMinutes", "transportFromPrevious", "scheduleVerification", "costNote", "costVerification", "notes"]);
 const REQUIREMENT_FIELDS = ["title", "dates", "travelers", "budget", "pace", "themes", "preferences", "constraints", "assumptions"] as const;
+const REPLACEMENT_COMMAND_LIMIT = 100;
 
 type ActiveRun = { tripId: string; interrupt: () => Promise<void>; actionId?: string; messageId?: string; stage?: ConversationStage };
 type ActionOutput = Record<string, any>;
@@ -84,7 +84,8 @@ function actionScope(actionType: AiActionType, targetIds: string[], parameters: 
   if (actionType.startsWith("requirements.")) return { type: "trip", id: null };
   if (actionType.startsWith("destination.") || actionType.startsWith("interest.")) return { type: "candidate_pool", id: null };
   if (actionType === "itinerary.day.optimize" || actionType === "itinerary.refine") {
-    const id = targetIds[0] || (typeof parameters.dayId === "string" ? parameters.dayId : "");
+    const ids = Array.isArray(parameters.dayIds) ? parameters.dayIds.filter((value): value is string => typeof value === "string") : [];
+    const id = targetIds[0] || (typeof parameters.dayId === "string" ? parameters.dayId : ids[0] ?? "");
     return id ? { type: "day", id } : { type: "trip", id: null };
   }
   return { type: "trip", id: null };
@@ -128,32 +129,40 @@ function currentResolvedPlaces(trip: TripDetailV3, resolutions: PlaceResolution[
   });
 }
 
-function formalizeGeneratedDays(trip: TripDetailV3, sourceDays: Day[], resolutions: PlaceResolution[]) {
-  const count = expectedDayCount(trip.plan);
-  if (count !== null && sourceDays.length !== count) throw new Error(`AI 返回 ${sourceDays.length} 天，但旅行要求为 ${count} 天。`);
+function validateItineraryReferences(trip: TripDetailV3, sourceDays: Day[], resolutions: PlaceResolution[]) {
   const places = new Map(trip.plan.places.map((place) => [place.id, place]));
   const candidates = new Map(trip.plan.candidates.map((candidate) => [candidate.id, candidate]));
   const resolved = new Set(currentResolvedPlaces(trip, resolutions).map((resolution) => resolution.placeId));
-  const start = trip.plan.trip.dates.start;
-  const scheduled = new Set<string>();
-  const days = sourceDays.map((source, index): Day => {
-    const checkPlace = (placeId: string | null) => {
-      if (!placeId) return;
-      const place = places.get(placeId);
-      if (!place) throw new Error(`行程引用未知 Place：${placeId}`);
-      if (place.kind !== "city" && !resolved.has(placeId)) throw new Error(`未定位地点不得进入行程：${place.nameZh}`);
-    };
-    checkPlace(source.startAnchor.placeId);
-    checkPlace(source.endAnchor.placeId);
-    const stops = source.stops.map((stop) => {
+  const checkPlace = (placeId: string | null) => {
+    if (!placeId) return;
+    const place = places.get(placeId);
+    if (!place) throw new Error(`行程引用未知 Place：${placeId}`);
+    if (place.kind !== "city" && !resolved.has(placeId)) throw new Error(`未定位地点不得进入行程：${place.nameZh}`);
+  };
+  for (const day of sourceDays) {
+    checkPlace(day.startAnchor.placeId);
+    checkPlace(day.endAnchor.placeId);
+    for (const stop of day.stops) {
       checkPlace(stop.placeId);
-      if (stop.candidateId) {
-        const candidate = candidates.get(stop.candidateId);
-        if (!candidate) throw new Error(`行程引用未知 Candidate：${stop.candidateId}`);
-        if (candidate.preference === "excluded") throw new Error(`已排除 Candidate 不得进入行程：${candidate.id}`);
-        if (candidate.placeId !== stop.placeId) throw new Error(`Stop Candidate 与 Place 不一致：${candidate.id}`);
-        scheduled.add(candidate.id);
-      }
+      if (!stop.candidateId) continue;
+      const candidate = candidates.get(stop.candidateId);
+      if (!candidate) throw new Error(`行程引用未知 Candidate：${stop.candidateId}`);
+      if (candidate.preference === "excluded") throw new Error(`已排除 Candidate 不得进入行程：${candidate.id}`);
+      if (candidate.placeId !== stop.placeId) throw new Error(`Stop Candidate 与 Place 不一致：${candidate.id}`);
+    }
+  }
+}
+
+function formalizeGeneratedDays(trip: TripDetailV3, sourceDays: Day[], resolutions: PlaceResolution[]) {
+  const count = expectedDayCount(trip.plan);
+  if (count !== null && sourceDays.length !== count) throw new Error(`AI 返回 ${sourceDays.length} 天，但旅行要求为 ${count} 天。`);
+  validateItineraryReferences(trip, sourceDays, resolutions);
+  const places = new Map(trip.plan.places.map((place) => [place.id, place]));
+  const scheduled = new Set<string>();
+  const start = trip.plan.trip.dates.start;
+  const days = sourceDays.map((source, index): Day => {
+    const stops = source.stops.map((stop) => {
+      if (stop.candidateId) scheduled.add(stop.candidateId);
       return { ...structuredClone(stop), id: randomUUID() };
     });
     return {
@@ -207,6 +216,11 @@ function candidateCommand(output: { places: any[]; candidates: any[] }) {
   });
 }
 
+function stopsRepresentSameVisit(left: DayStop, right: DayStop) {
+  if (left.candidateId && right.candidateId) return left.candidateId === right.candidateId && left.placeId === right.placeId;
+  return left.placeId === right.placeId;
+}
+
 function replacementCommands(current: TravelPlanDocument, sourceDays: Day[], onlyDayIds?: Set<string>) {
   const commands: PlanCommand[] = [];
   const currentByNumber = new Map(current.days.map((day) => [day.dayNumber, day]));
@@ -218,20 +232,47 @@ function replacementCommands(current: TravelPlanDocument, sourceDays: Day[], onl
     if (!target) throw new Error(`AI 返回未知 dayNumber：${source.dayNumber}`);
     if (onlyDayIds && !onlyDayIds.has(target.id)) throw new Error(`AI 修改了 Scope 外 Day：${target.id}`);
     if (target.title !== source.title) commands.push({ type: "update_day", dayId: target.id, changes: { title: source.title } });
-    commands.push({ type: "set_day_anchor", dayId: target.id, anchor: "start", placeId: source.startAnchor.placeId, label: source.startAnchor.label, notes: source.startAnchor.notes });
-    commands.push({ type: "set_day_anchor", dayId: target.id, anchor: "end", placeId: source.endAnchor.placeId, label: source.endAnchor.label, notes: source.endAnchor.notes });
-    for (const stop of target.stops) commands.push({ type: "remove_day_stop", stopId: stop.id });
-    for (const [index, stop] of source.stops.entries()) commands.push({ type: "add_day_stop", dayId: target.id, index, stop: { ...structuredClone(stop), id: `tmp-stop-${randomUUID()}` } });
+    if (!same(target.startAnchor, source.startAnchor)) commands.push({ type: "set_day_anchor", dayId: target.id, anchor: "start", placeId: source.startAnchor.placeId, label: source.startAnchor.label, notes: source.startAnchor.notes });
+    if (!same(target.endAnchor, source.endAnchor)) commands.push({ type: "set_day_anchor", dayId: target.id, anchor: "end", placeId: source.endAnchor.placeId, label: source.endAnchor.label, notes: source.endAnchor.notes });
+
+    const working = target.stops.map((stop) => structuredClone(stop));
+    for (let index = 0; index < source.stops.length; index += 1) {
+      const desired = source.stops[index];
+      const matchIndex = working.findIndex((stop, workingIndex) => workingIndex >= index && stopsRepresentSameVisit(stop, desired));
+      if (matchIndex >= 0) {
+        if (matchIndex !== index) {
+          const [moved] = working.splice(matchIndex, 1);
+          working.splice(index, 0, moved);
+          commands.push({ type: "move_day_stop", stopId: moved.id, targetDayId: target.id, targetIndex: index });
+        }
+        const before = working[index];
+        const changes: Record<string, unknown> = {};
+        for (const key of STOP_FIELDS) if (!same(before[key], desired[key])) changes[key] = structuredClone(desired[key]);
+        if (Object.keys(changes).length) {
+          commands.push(PlanCommandSchema.parse({ type: "update_day_stop", stopId: before.id, changes }));
+          Object.assign(before, changes);
+        }
+      } else {
+        const added = { ...structuredClone(desired), id: `tmp-stop-${randomUUID()}` };
+        commands.push(PlanCommandSchema.parse({ type: "add_day_stop", dayId: target.id, index, stop: added }));
+        working.splice(index, 0, added);
+      }
+    }
+    for (let index = working.length - 1; index >= source.stops.length; index -= 1) {
+      commands.push({ type: "remove_day_stop", stopId: working[index].id });
+      working.splice(index, 1);
+    }
   }
-  if (commands.length > 100) throw new Error("本次行程修改超过 100 条受控命令；请缩小修改范围后重试。");
+  if (commands.length > REPLACEMENT_COMMAND_LIMIT) throw new Error(`本次行程修改需要 ${commands.length} 条受控命令，超过单个 Proposal 的 ${REPLACEMENT_COMMAND_LIMIT} 条资源上限；请缩小修改范围后重试。`);
   return commands.map((command) => PlanCommandSchema.parse(command));
 }
 
 function refinementCommands(current: TravelPlanDocument, output: ItineraryRefineOutput) {
-  if (output.result.type !== "success") return [];
-  const requested = new Set(output.result.dayIds);
+  const result = output.result;
+  if (result.type !== "success") return [];
+  const requested = new Set(result.dayIds);
   const commands: PlanCommand[] = [];
-  for (const source of output.result.days) {
+  for (const source of result.days) {
     const target = current.days.find((day) => day.id === source.id);
     if (!target || !requested.has(target.id)) throw new Error(`细化结果引用未知 Day：${source.id}`);
     if (source.dayNumber !== target.dayNumber || source.date !== target.date || source.title !== target.title) throw new Error(`细化不得改变 Day identity/title/date：${target.id}`);
@@ -311,9 +352,7 @@ export class TravelPlannerRuntimeV3 {
     const prompt = this.options.prompts.compose(dialoguePromptIds[stage]);
     const finalThreadId = handle.threadId();
     const existing = this.options.store.getStageThread(trip.id, stage);
-    if (existing && existing.threadId === finalThreadId && priorThreadId === finalThreadId) {
-      return this.options.store.incrementStageThreadTurn(trip.id, stage, finalThreadId, trip.contentGeneration);
-    }
+    if (existing && existing.threadId === finalThreadId && priorThreadId === finalThreadId) return this.options.store.incrementStageThreadTurn(trip.id, stage, finalThreadId, trip.contentGeneration);
     return this.options.store.setStageThread({ tripId: trip.id, stage, threadId: finalThreadId, promptHash: prompt.hash, promptVersion: prompt.version, contextGeneration: trip.contentGeneration, turnCount: 1 });
   }
 
@@ -321,7 +360,7 @@ export class TravelPlannerRuntimeV3 {
     const stored = this.options.store.getStageThread(trip.id, stage);
     if (!stored) return null;
     const prompt = this.options.prompts.compose(dialoguePromptIds[stage]);
-    if (stored.promptHash !== prompt.hash || stored.promptVersion !== prompt.version || stored.turnCount >= STAGE_THREAD_MAX_TURNS) {
+    if (stored.promptHash !== prompt.hash || stored.promptVersion !== prompt.version || stored.contextGeneration !== trip.contentGeneration || stored.turnCount >= STAGE_THREAD_MAX_TURNS) {
       this.options.store.deleteStageThread(trip.id, stage);
       return null;
     }
@@ -330,6 +369,7 @@ export class TravelPlannerRuntimeV3 {
 
   startConversation(tripId: string, stage: ConversationStage, inputValue: unknown) {
     const trip = this.options.store.requireTrip(tripId);
+    const baseGeneration = trip.contentGeneration;
     const input = StageConversationTurnInputSchema.parse(inputValue);
     const selection = validateSelectionForStage(trip, stage, input.selection);
     const messageId = this.options.store.createUserMessage(tripId, stage, input.message);
@@ -344,22 +384,23 @@ export class TravelPlannerRuntimeV3 {
       let handle: StagedAiHandle<any> | null = null;
       try {
         const current = this.options.store.requireTrip(tripId);
-        if (current.contentGeneration !== trip.contentGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
+        if (current.contentGeneration !== baseGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
         const existingThreadId = this.usableThread(current, stage);
         handle = await this.options.ai.startDialogue({ stage, state: { ...context.state, userMessage: input.message }, existingThreadId, onProgress: this.progress(taskId, messageId, stage) });
         this.rememberActive(taskId, { tripId, interrupt: handle.interrupt, messageId, stage });
         this.options.store.updateTurn(messageId, "active", { progress: "正在处理", codexTurnId: handle.turnId() });
         const firstStarted = Date.now();
         const output = await handle.result;
-        this.saveDialogueThread(current, stage, handle, existingThreadId);
+        const afterFirst = this.options.store.requireTrip(tripId);
+        if (afterFirst.contentGeneration !== baseGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
+        this.saveDialogueThread(afterFirst, stage, handle, existingThreadId);
         let webMs = 0;
 
         if (output.result.type === "web_required") {
           this.options.tasks.update(taskId, "waiting", "正在核验实时信息", "dialogue:web-required");
           const webStarted = Date.now();
-          const latest = this.options.store.requireTrip(tripId);
-          const webContext = buildStageContext({ trip: latest, stage, selection, resolutions: this.options.store.listPlaceResolutions(tripId), routeStates: stage === "itinerary" ? this.options.routes.workspaceRouteState(tripId) : undefined });
-          const webThread = this.usableThread(latest, stage);
+          const webContext = buildStageContext({ trip: afterFirst, stage, selection, resolutions: this.options.store.listPlaceResolutions(tripId), routeStates: stage === "itinerary" ? this.options.routes.workspaceRouteState(tripId) : undefined });
+          const webThread = this.usableThread(afterFirst, stage);
           const webHandle = await this.options.ai.startWebDialogue({
             stage,
             state: { ...webContext.state, userMessage: input.message, queryIntent: output.result.queryIntent, webRequiredReason: output.result.reason },
@@ -369,16 +410,19 @@ export class TravelPlannerRuntimeV3 {
           handle = webHandle;
           this.rememberActive(taskId, { tripId, interrupt: webHandle.interrupt, messageId, stage });
           const verified = await webHandle.result;
-          this.saveDialogueThread(latest, stage, webHandle, webThread);
+          const afterWeb = this.options.store.requireTrip(tripId);
+          if (afterWeb.contentGeneration !== baseGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
+          this.saveDialogueThread(afterWeb, stage, webHandle, webThread);
           webMs = Date.now() - webStarted;
           this.options.store.createAssistantMessage(tripId, stage, verified.assistantMessage, { type: "reply", verification: verified.verification });
         } else if (output.result.type === "action") {
           const registration = actionRegistration(output.result.actionType);
-          if (registration.stage !== stage || registration.stage === "map") throw new Error(`阶段对话识别了越界 Action：${output.result.actionType}`);
-          const scope = actionScope(output.result.actionType, output.result.targetIds, output.result.parameters);
+          if (registration.stage !== stage) throw new Error(`阶段对话识别了越界 Action：${output.result.actionType}`);
+          const normalizedParameters = parseActionParametersV3(output.result.actionType, registration.inputContract, "conversation", output.result.parameters);
+          const scope = actionScope(output.result.actionType, output.result.targetIds, normalizedParameters);
           const action = AiActionRecordSchema.parse({
             id: randomUUID(), tripId, stage, actionType: output.result.actionType, executor: registration.executor, origin: "conversation", sourceMessageId: messageId,
-            parameters: output.result.parameters, targetIds: output.result.targetIds, scope, baseGeneration: latestGeneration(this.options.store, tripId), status: "pending_confirmation",
+            parameters: output.result.parameters, targetIds: output.result.targetIds, scope, baseGeneration, status: "pending_confirmation",
             taskId: null, proposalId: null, resultRef: null, startedAt: null, updatedAt: now(), completedAt: null, errorSummary: null,
           });
           const stored = this.options.store.createAction(action).action;
@@ -410,13 +454,14 @@ export class TravelPlannerRuntimeV3 {
 
   createCtaAction(input: { tripId: string; stage: ConversationStage; actionType: AiActionType; parameters?: Record<string, unknown>; targetIds?: string[]; requestKey: string }) {
     const registration = actionRegistration(input.actionType);
-    if (registration.stage !== input.stage || registration.stage === "map") throw new Error(`CTA Action 与阶段不匹配：${input.actionType}`);
+    if (registration.stage !== input.stage) throw new Error(`CTA Action 与阶段不匹配：${input.actionType}`);
     const trip = this.options.store.requireTrip(input.tripId);
-    const parameters = input.parameters ?? {};
+    const rawParameters = input.parameters ?? {};
+    const normalizedParameters = parseActionParametersV3(input.actionType, registration.inputContract, "cta", rawParameters);
     const targetIds = input.targetIds ?? [];
     const action = AiActionRecordSchema.parse({
       id: randomUUID(), tripId: input.tripId, stage: input.stage, actionType: input.actionType, executor: registration.executor, origin: "cta", sourceMessageId: null,
-      parameters, targetIds, scope: actionScope(input.actionType, targetIds, parameters), baseGeneration: trip.contentGeneration, status: "pending_confirmation",
+      parameters: rawParameters, targetIds, scope: actionScope(input.actionType, targetIds, normalizedParameters), baseGeneration: trip.contentGeneration, status: "pending_confirmation",
       taskId: null, proposalId: null, resultRef: null, startedAt: null, updatedAt: now(), completedAt: null, errorSummary: null,
     });
     const created = this.options.store.createAction(action, input.requestKey);
@@ -473,13 +518,20 @@ export class TravelPlannerRuntimeV3 {
       const registration = actionRegistration(action.actionType);
       const state = this.buildActionState(action);
       this.options.tasks.start({ id: taskId, tripId: action.tripId, agent: "action", label: action.actionType, summary: `准备执行 ${action.actionType}`, metadata: { actionType: action.actionType, executor: "ai", reasoning: registration.reasoning, webPolicy: registration.web, inputBytes: stringifySize(state) } });
-      const run = await this.options.ai.startAction<ActionOutput>({ actionType: action.actionType, state, allowWeb: action.parameters.allowWeb !== false, onProgress: this.progress(taskId) });
-      this.rememberActive(taskId, { tripId: action.tripId, actionId: action.id, interrupt: run.interrupt });
-      this.options.tasks.update(taskId, "running", `正在执行 ${action.actionType}`, "action:running");
-      const output = await run.result;
-      if (Number(output?.baseGeneration) !== action.baseGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
-      if (this.options.store.requireTrip(action.tripId).contentGeneration !== action.baseGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
-      await this.persistAiActionOutput(action, output);
+
+      if (action.actionType === "interest.discover" || action.actionType === "interest.supplement") {
+        this.options.tasks.update(taskId, "running", `正在执行 ${action.actionType}`, "action:running");
+        await this.persistInterestDiscovery(action, null, taskId);
+      } else {
+        const run = await this.options.ai.startAction<ActionOutput>({ actionType: action.actionType, state, allowWeb: action.parameters.allowWeb !== false, onProgress: this.progress(taskId) });
+        this.rememberActive(taskId, { tripId: action.tripId, actionId: action.id, interrupt: run.interrupt });
+        this.options.tasks.update(taskId, "running", `正在执行 ${action.actionType}`, "action:running");
+        const output = await run.result;
+        if (Number(output?.baseGeneration) !== action.baseGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
+        if (this.options.store.requireTrip(action.tripId).contentGeneration !== action.baseGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
+        await this.persistAiActionOutput(action, output);
+      }
+
       const final = this.options.store.getAction(action.id);
       this.options.tasks.metadata(taskId, { actionType: action.actionType, executor: "ai", reasoning: registration.reasoning, webPolicy: registration.web, inputBytes: stringifySize(state), timing: { totalMs: Date.now() - started } });
       this.options.tasks.update(taskId, "completed", final?.status === "awaiting_apply" ? "方案已生成，等待 Apply" : "Action 已完成", "task:completed");
@@ -502,21 +554,57 @@ export class TravelPlannerRuntimeV3 {
     const trip = this.options.store.requireTrip(action.tripId);
     const places = new Map(trip.plan.places.map((place) => [place.id, place]));
     const resolutions = this.options.store.listPlaceResolutions(action.tripId);
+    const currentResolutions = currentResolvedPlaces(trip, resolutions);
+    const resolutionByPlace = new Map(currentResolutions.map((resolution) => [resolution.placeId, resolution]));
+    const candidateState = (candidate: TripDetailV3["plan"]["candidates"][number]) => ({ ...candidate, place: places.get(candidate.placeId) ?? null, resolution: resolutionByPlace.get(candidate.placeId) ?? null });
     const base = { actionType: action.actionType, baseGeneration: action.baseGeneration, planLanguage: trip.planLanguage, parameters: action.parameters, targetIds: action.targetIds };
     if (action.actionType.startsWith("destination.")) {
       return { ...base, tripFacts: trip.plan.trip, destinations: trip.plan.candidates.filter((candidate) => places.get(candidate.placeId)?.kind === "city").map((candidate) => ({ ...candidate, place: places.get(candidate.placeId) })) };
     }
     if (action.actionType.startsWith("interest.")) {
       const targetIds = action.targetIds.length ? action.targetIds : trip.plan.candidates.filter((candidate) => candidate.preference !== "excluded" && places.get(candidate.placeId)?.kind === "city").map((candidate) => candidate.id);
-      return { ...base, tripFacts: trip.plan.trip, targetMacroCandidateIds: targetIds, candidates: trip.plan.candidates.map((candidate) => ({ ...candidate, place: places.get(candidate.placeId) ?? null })) };
+      return { ...base, tripFacts: trip.plan.trip, targetMacroCandidateIds: targetIds };
     }
-    if (action.actionType.startsWith("itinerary.")) {
-      const currentResolutions = currentResolvedPlaces(trip, resolutions);
+    if (action.actionType === "itinerary.day.optimize" || action.actionType === "itinerary.refine") {
+      const requested = action.actionType === "itinerary.day.optimize"
+        ? [String(action.parameters.dayId ?? action.targetIds[0] ?? "")].filter(Boolean)
+        : (Array.isArray(action.parameters.dayIds) && action.parameters.dayIds.length
+            ? action.parameters.dayIds.map(String).slice(0, 2)
+            : action.targetIds.length
+              ? action.targetIds.slice(0, 2)
+              : trip.plan.days.filter((day) => day.detailLevel !== "detailed" || day.detailStatus !== "ready").slice(0, 2).map((day) => day.id));
+      if (!requested.length) throw new Error("单日 AI Action 缺少目标 Day。");
+      const targetDays = requested.map((dayId) => {
+        const day = trip.plan.days.find((item) => item.id === dayId);
+        if (!day) throw new Error(`未知 Day：${dayId}`);
+        return day;
+      });
+      const targetIndexes = targetDays.map((day) => trip.plan.days.findIndex((item) => item.id === day.id));
+      const adjacentIds = new Set<string>();
+      for (const index of targetIndexes) {
+        if (trip.plan.days[index - 1]) adjacentIds.add(trip.plan.days[index - 1].id);
+        if (trip.plan.days[index + 1]) adjacentIds.add(trip.plan.days[index + 1].id);
+      }
+      for (const day of targetDays) adjacentIds.delete(day.id);
+      const candidateIds = new Set(targetDays.flatMap((day) => day.stops.map((stop) => stop.candidateId).filter((id): id is string => Boolean(id))));
+      const routeStates = this.options.routes.workspaceRouteState(action.tripId);
       return {
         ...base,
         tripFacts: trip.plan.trip,
         stage: trip.plan.stage,
-        candidates: trip.plan.candidates.filter((candidate) => candidate.preference !== "excluded").map((candidate) => ({ ...candidate, place: places.get(candidate.placeId) ?? null, resolution: currentResolutions.find((item) => item.placeId === candidate.placeId) ?? null })),
+        targetDayIds: targetDays.map((day) => day.id),
+        days: targetDays,
+        adjacentDays: trip.plan.days.filter((day) => adjacentIds.has(day.id)).map((day) => ({ id: day.id, dayNumber: day.dayNumber, date: day.date, title: day.title, startPlaceId: day.startAnchor.placeId, endPlaceId: day.endAnchor.placeId, stopPlaceIds: day.stops.map((stop) => stop.placeId) })),
+        candidates: trip.plan.candidates.filter((candidate) => candidateIds.has(candidate.id)).map(candidateState),
+        routeStates: routeStates.filter((route) => requested.includes(route.dayId) || adjacentIds.has(route.dayId)),
+      };
+    }
+    if (action.actionType.startsWith("itinerary.")) {
+      return {
+        ...base,
+        tripFacts: trip.plan.trip,
+        stage: trip.plan.stage,
+        candidates: trip.plan.candidates.filter((candidate) => candidate.preference !== "excluded").map(candidateState),
         days: trip.plan.days,
         routeStates: this.options.routes.workspaceRouteState(action.tripId),
       };
@@ -531,10 +619,12 @@ export class TravelPlannerRuntimeV3 {
       const defaults = emptyTravelPlan().trip;
       const next = structuredClone(trip.plan);
       if (action.actionType === "requirements.update") {
-        const raw = action.parameters.changes && typeof action.parameters.changes === "object" && !Array.isArray(action.parameters.changes) ? action.parameters.changes as Record<string, unknown> : typeof action.parameters.field === "string" ? { [action.parameters.field]: action.parameters.value } : {};
+        const raw = action.parameters.changes && typeof action.parameters.changes === "object" && !Array.isArray(action.parameters.changes) ? action.parameters.changes as Record<string, unknown> : {};
+        if (!Object.keys(raw).length) throw new Error("requirements.update 没有可执行字段。");
         for (const key of REQUIREMENT_FIELDS) if (key in raw) (next.trip as any)[key] = structuredClone(raw[key]);
       } else {
-        const fields = Array.isArray(action.parameters.fields) ? action.parameters.fields.map(String) : REQUIREMENT_FIELDS.filter((key) => key !== "title");
+        const fields = Array.isArray(action.parameters.fields) ? action.parameters.fields.map(String) : [];
+        if (!fields.length) throw new Error("requirements.clear 没有指定字段。");
         for (const key of fields) if ((REQUIREMENT_FIELDS as readonly string[]).includes(key)) (next.trip as any)[key] = structuredClone((defaults as any)[key]);
       }
       const parsed = TravelPlanDocumentSchema.parse(next);
@@ -569,7 +659,7 @@ export class TravelPlannerRuntimeV3 {
       return [{ type: "remove_candidate", candidateId: item.id }];
     }
     if (action.actionType === "destination.preference" || action.actionType === "interest.preference") {
-      const ids = Array.isArray(p.candidateIds) ? p.candidateIds.map(String) : action.targetIds.length ? action.targetIds : [targetCandidateId];
+      const ids = Array.isArray(p.candidateIds) && p.candidateIds.length ? p.candidateIds.map(String) : action.targetIds.length ? action.targetIds : [targetCandidateId];
       const preference = CandidatePreferenceSchema.parse(p.preference);
       if (!ids.length) throw new Error("缺少 Candidate ID。");
       for (const id of ids) {
@@ -600,7 +690,7 @@ export class TravelPlannerRuntimeV3 {
     if (action.actionType === "itinerary.stop.add") {
       const dayId = String(p.dayId ?? action.targetIds[0] ?? ""); const item = candidate(String(p.candidateId ?? "")); const place = places.get(item.placeId); if (!place) throw new Error("Candidate 引用未知 Place。");
       const day = trip.plan.days.find((value) => value.id === dayId); if (!day) throw new Error(`未知 Day：${dayId}`);
-      const index = p.index === undefined ? day.stops.length : Number(p.index);
+      const index = p.index == null ? day.stops.length : Number(p.index);
       const stop: DayStop = { id: `tmp-stop-${randomUUID()}`, candidateId: item.id, placeId: item.placeId, activity: typeof p.activity === "string" && p.activity.trim() ? p.activity.trim() : `游览${place.nameZh}`, period: null, startTime: null, endTime: null, durationMinutes: item.suggestedDurationMinutes, transportFromPrevious: null, scheduleVerification: null, costNote: null, costVerification: null, notes: null };
       return [PlanCommandSchema.parse({ type: "add_day_stop", dayId, index, stop })];
     }
@@ -627,7 +717,6 @@ export class TravelPlannerRuntimeV3 {
 
   private async persistAiActionOutput(action: AiActionRecord, output: ActionOutput) {
     if (action.actionType === "destination.generate") return this.persistDestinationGenerate(action, output as DestinationGenerateOutput);
-    if (action.actionType === "interest.discover" || action.actionType === "interest.supplement") return this.persistInterestDiscovery(action, output);
     if (action.actionType === "destination.add" || action.actionType === "destination.replace" || action.actionType === "interest.add" || action.actionType === "interest.replace") return this.persistCandidateProposal(action, output as any);
     if (action.actionType === "itinerary.generate") return this.persistItineraryGenerate(action, output as ItineraryGenerateOutput);
     if (action.actionType === "itinerary.replan") return this.persistItineraryReplacement(action, output as ItineraryReplanOutput);
@@ -647,27 +736,38 @@ export class TravelPlannerRuntimeV3 {
     this.emit("travel.document.changed", { tripId: action.tripId, generation: written.generation, changedDayIds: [] });
   }
 
-  private async persistInterestDiscovery(action: AiActionRecord, firstOutput: any) {
+  private async persistInterestDiscovery(action: AiActionRecord, firstOutput: any | null, taskId: string | null = null) {
     const original = this.options.store.requireTrip(action.tripId);
     const places = new Map(original.plan.places.map((place) => [place.id, place]));
     const targets = action.targetIds.length ? action.targetIds : original.plan.candidates.filter((candidate) => candidate.preference !== "excluded" && places.get(candidate.placeId)?.kind === "city").map((candidate) => candidate.id);
     if (!targets.length) throw new Error("请先生成并保留至少一个目的地。");
     let plan = structuredClone(original.plan);
     const addedPlaceIds = new Set<string>();
-    const outputs: any[] = [];
     for (let index = 0; index < targets.length; index += 1) {
       const targetId = targets[index];
       const target = plan.candidates.find((candidate) => candidate.id === targetId);
       const targetPlace = target ? plan.places.find((place) => place.id === target.placeId) : null;
       if (!target || target.preference === "excluded" || targetPlace?.kind !== "city") throw new Error(`兴趣点研究目标不是有效 Macro Candidate：${targetId}`);
-      let output = index === 0 && targets.length === 1 ? firstOutput : null;
+      let output = index === 0 ? firstOutput : null;
       if (!output) {
-        const run = await this.options.ai.startAction<any>({ actionType: action.actionType, state: { actionType: action.actionType, baseGeneration: action.baseGeneration, tripFacts: original.plan.trip, targetMacroCandidate: { ...target, place: targetPlace }, existingPlaces: plan.candidates.filter((candidate) => candidate.planningAreaCandidateId === targetId).map((candidate) => ({ ...candidate, place: plan.places.find((place) => place.id === candidate.placeId) ?? null })), areaRequest: { planningAreaCandidateId: targetId, maxNewCandidates: CANDIDATE_DISCOVERY_BATCH_LIMIT } } });
+        const run = await this.options.ai.startAction<any>({
+          actionType: action.actionType,
+          state: {
+            actionType: action.actionType,
+            baseGeneration: action.baseGeneration,
+            tripFacts: original.plan.trip,
+            targetMacroCandidate: { ...target, place: targetPlace },
+            existingPlaces: plan.candidates.filter((candidate) => candidate.planningAreaCandidateId === targetId).map((candidate) => ({ ...candidate, place: plan.places.find((place) => place.id === candidate.placeId) ?? null })),
+            areaRequest: { planningAreaCandidateId: targetId, maxNewCandidates: CANDIDATE_DISCOVERY_BATCH_LIMIT },
+          },
+          onProgress: taskId ? this.progress(taskId) : undefined,
+        });
+        if (taskId) this.rememberActive(taskId, { tripId: action.tripId, actionId: action.id, interrupt: run.interrupt });
         output = await run.result;
       }
       if (output.baseGeneration !== action.baseGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
+      if (this.options.store.requireTrip(action.tripId).contentGeneration !== action.baseGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
       validateMicroCandidateDiscovery(output, [targetId], [{ planningAreaCandidateId: targetId, targetCount: CANDIDATE_DISCOVERY_BATCH_LIMIT }]);
-      outputs.push(output);
       if (!output.candidates.length) continue;
       const applied = applyCandidateDiscovery(plan, normalizeCandidateDiscoveryOutput(output, "micro"));
       plan = applied.plan;
@@ -689,19 +789,18 @@ export class TravelPlannerRuntimeV3 {
     if (action.actionType === "destination.replace") commands.push({ type: "remove_candidate_tree", candidateId: String((output as DestinationReplaceOutput).replaceCandidateId || action.targetIds[0] || "") });
     if (action.actionType === "interest.replace") commands.push({ type: "remove_candidate", candidateId: String((output as InterestReplaceOutput).replaceCandidateId || action.targetIds[0] || "") });
     commands.push(candidateCommand(output));
-    const title = output.title;
-    const explanation = output.explanation;
-    return this.createProposalForAction(action, title, explanation, commands, { type: "candidate_pool", id: null });
+    return this.createProposalForAction(action, output.title, output.explanation, commands, { type: "candidate_pool", id: null });
   }
 
   private persistItineraryGenerate(action: AiActionRecord, output: ItineraryGenerateOutput) {
-    if (output.result.type === "requires_stage") {
-      this.options.store.completeAction(action.id, `requiresStage:${output.result.requiresStage}`);
+    const result = output.result;
+    if (result.type === "requires_stage") {
+      this.options.store.completeAction(action.id, `requiresStage:${result.requiresStage}`);
       return;
     }
     const trip = this.options.store.requireTrip(action.tripId);
     if (trip.plan.days.length) throw new Error("首次生成行程只能在尚未存在 Day 时执行；已有行程请使用重新规划。");
-    const days = formalizeGeneratedDays(trip, output.result.days, this.options.store.listPlaceResolutions(action.tripId));
+    const days = formalizeGeneratedDays(trip, result.days, this.options.store.listPlaceResolutions(action.tripId));
     const plan = TravelPlanDocumentSchema.parse({ ...trip.plan, stage: "itinerary_planning", days });
     const written = this.options.store.writePlan(action.tripId, plan, action.baseGeneration, { source: "action:itinerary.generate", summary: "AI 生成按天行程" }, { keepActionId: action.id });
     this.options.store.completeAction(action.id, `generation:${written.generation}`);
@@ -710,26 +809,33 @@ export class TravelPlannerRuntimeV3 {
   }
 
   private persistItineraryReplacement(action: AiActionRecord, output: ItineraryReplanOutput) {
-    if (output.result.type === "requires_stage") { this.options.store.completeAction(action.id, `requiresStage:${output.result.requiresStage}`); return; }
+    const result = output.result;
+    if (result.type === "requires_stage") { this.options.store.completeAction(action.id, `requiresStage:${result.requiresStage}`); return; }
     const trip = this.options.store.requireTrip(action.tripId);
-    if (output.result.days.length !== trip.plan.days.length) throw new Error("重新规划必须保持旅行 Day 数量不变。");
-    const commands = replacementCommands(trip.plan, output.result.days);
-    return this.createProposalForAction(action, output.result.title, output.result.explanation, commands, { type: "trip", id: null });
+    if (result.days.length !== trip.plan.days.length) throw new Error("重新规划必须保持旅行 Day 数量不变。");
+    validateItineraryReferences(trip, result.days, this.options.store.listPlaceResolutions(action.tripId));
+    const commands = replacementCommands(trip.plan, result.days);
+    if (!commands.length) { this.options.store.completeAction(action.id, "no-change"); return; }
+    return this.createProposalForAction(action, result.title, result.explanation, commands, { type: "trip", id: null });
   }
 
   private persistItineraryRepair(action: AiActionRecord, output: ItineraryRepairOutput) {
-    if (output.result.type === "requires_stage") { this.options.store.completeAction(action.id, `requiresStage:${output.result.requiresStage}`); return; }
+    const result = output.result;
+    if (result.type === "requires_stage") { this.options.store.completeAction(action.id, `requiresStage:${result.requiresStage}`); return; }
     const trip = this.options.store.requireTrip(action.tripId);
-    const commands = replacementCommands(trip.plan, output.result.days);
-    return this.createProposalForAction(action, output.result.title, output.result.explanation, commands, { type: "trip", id: null });
+    validateItineraryReferences(trip, result.days, this.options.store.listPlaceResolutions(action.tripId));
+    const commands = replacementCommands(trip.plan, result.days);
+    if (!commands.length) { this.options.store.completeAction(action.id, "no-change"); return; }
+    return this.createProposalForAction(action, result.title, result.explanation, commands, { type: "trip", id: null });
   }
 
   private persistDayOptimize(action: AiActionRecord, output: ItineraryDayOptimizeOutput) {
-    if (output.result.type === "requires_stage") { this.options.store.completeAction(action.id, `requiresStage:${output.result.requiresStage}`); return; }
+    const result = output.result;
+    if (result.type === "requires_stage") { this.options.store.completeAction(action.id, `requiresStage:${result.requiresStage}`); return; }
     const trip = this.options.store.requireTrip(action.tripId);
-    const day = trip.plan.days.find((item) => item.id === output.result.dayId);
-    if (!day) throw new Error(`未知 Day：${output.result.dayId}`);
-    const desired = output.result.orderedStopIds;
+    const day = trip.plan.days.find((item) => item.id === result.dayId);
+    if (!day) throw new Error(`未知 Day：${result.dayId}`);
+    const desired = result.orderedStopIds;
     if (desired.length !== day.stops.length || new Set(desired).size !== desired.length || day.stops.some((stop) => !desired.includes(stop.id))) throw new Error("单日优化必须原样覆盖目标 Day 的现有 Stop ID。");
     const working = day.stops.map((stop) => stop.id);
     const commands: PlanCommand[] = [];
@@ -739,23 +845,28 @@ export class TravelPlannerRuntimeV3 {
       commands.push({ type: "move_day_stop", stopId: id, targetDayId: day.id, targetIndex: index });
     }
     if (!commands.length) { this.options.store.completeAction(action.id, "no-change"); return; }
-    return this.createProposalForAction(action, output.result.title, output.result.explanation, commands, { type: "day", id: day.id });
+    return this.createProposalForAction(action, result.title, result.explanation, commands, { type: "day", id: day.id });
   }
 
   private persistVerify(action: AiActionRecord, output: ItineraryVerifyOutput) {
     const allowed = output.commands.map((command) => PlanCommandSchema.parse(command));
-    if (allowed.some((command) => command.type !== "update_day_stop" && command.type !== "update_day")) throw new Error("动态核验 Action 只能更新现有 Day/Stop 字段。");
+    for (const command of allowed) {
+      if (command.type !== "update_day_stop") throw new Error("动态核验 Action 只能更新现有 Stop 的动态事实字段。");
+      const keys = Object.keys(command.changes);
+      if (!keys.length || keys.some((key) => !VERIFY_STOP_FIELDS.has(key))) throw new Error("动态核验 Action 尝试修改地点身份或其他非动态字段。");
+    }
     if (!allowed.length) { this.options.store.completeAction(action.id, `verified:${output.checkedAt};no-change`); return; }
     return this.createProposalForAction(action, output.title, output.explanation, allowed, { type: "trip", id: null });
   }
 
   private persistRefine(action: AiActionRecord, output: ItineraryRefineOutput) {
-    if (output.result.type === "requires_stage") { this.options.store.completeAction(action.id, `requiresStage:${output.result.requiresStage}`); return; }
+    const result = output.result;
+    if (result.type === "requires_stage") { this.options.store.completeAction(action.id, `requiresStage:${result.requiresStage}`); return; }
     const trip = this.options.store.requireTrip(action.tripId);
     const commands = refinementCommands(trip.plan, output);
     if (!commands.length) { this.options.store.completeAction(action.id, "no-change"); return; }
-    const dayId = output.result.dayIds.length === 1 ? output.result.dayIds[0] : null;
-    return this.createProposalForAction(action, output.result.title, output.result.explanation, commands, dayId ? { type: "day", id: dayId } : { type: "trip", id: null });
+    const dayId = result.dayIds.length === 1 ? result.dayIds[0] : null;
+    return this.createProposalForAction(action, result.title, result.explanation, commands, dayId ? { type: "day", id: dayId } : { type: "trip", id: null });
   }
 
   private createProposalForAction(action: AiActionRecord, title: string, explanation: string, commandValues: PlanCommand[], scopeValue: ProposalScope) {
@@ -837,5 +948,3 @@ export class TravelPlannerRuntimeV3 {
     }
   }
 }
-
-function latestGeneration(store: TravelStoreV3, tripId: string) { return store.requireTrip(tripId).contentGeneration; }
