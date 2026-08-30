@@ -3,6 +3,7 @@ import {
   CodexClient,
   structuredTurn,
   type ReasoningEffort,
+  type ReasoningSummary,
   type RpcEnvelope,
 } from "./codex-client.js";
 
@@ -20,6 +21,7 @@ export type StructuredAiRunOptions<T> = {
   webSearch?: "live" | "disabled";
   model?: string;
   effort?: ReasoningEffort;
+  reasoningSummary?: ReasoningSummary;
   timeoutMs?: number;
   validateResult?: (value: T) => T;
   onProgress?: (progress: StructuredAiProgress) => void;
@@ -41,6 +43,7 @@ type ActiveRun<T = unknown> = {
   outputSchema: Record<string, unknown>;
   model?: string;
   effort?: ReasoningEffort;
+  reasoningSummary: ReasoningSummary;
   repairAttempts: number;
   settle: (value: T) => void;
   reject: (error: Error) => void;
@@ -231,7 +234,7 @@ export class StructuredAiRunnerV2 {
         outputSchema: run.outputSchema,
         ...(run.model ? { model: run.model } : {}),
         ...(run.effort ? { effort: run.effort } : {}),
-      }), 120_000);
+      }, run.reasoningSummary), 120_000);
       run.turnId = String(turn?.turn?.id ?? run.turnId ?? "") || null;
     } catch (repairError) {
       this.finish(threadId, safeError(repairError));
@@ -299,6 +302,7 @@ export class StructuredAiRunnerV2 {
       outputSchema,
       model: options.model,
       effort: options.effort,
+      reasoningSummary: options.reasoningSummary ?? "detailed",
       repairAttempts: 0,
       settle,
       reject,
@@ -314,7 +318,7 @@ export class StructuredAiRunnerV2 {
         outputSchema,
         ...(options.model ? { model: options.model } : {}),
         ...(options.effort ? { effort: options.effort } : {}),
-      }), 120_000);
+      }, run.reasoningSummary), 120_000);
       run.turnId = String(turn?.turn?.id ?? run.turnId ?? "") || null;
     } catch (error) {
       this.finish(threadId, safeError(error));
