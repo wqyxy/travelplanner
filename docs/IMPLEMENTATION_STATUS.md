@@ -10,42 +10,49 @@
 
 ## Current Phase
 
-### Phase 2 — New Prompts & Output Contracts
+### Phase 3 — v3 Store & Persistence
 
-**状态：完成。下一阶段：Phase 3。**
+**状态：完成。下一阶段：Phase 4。**
 
 ## Completed
 
 ### Phase 1 — Foundations
-- 新增 `ConversationStage`、封闭 `AiActionType`、executor/status/origin/task-agent 合同。
-- 新增 Stage Dialogue、Web Dialogue、Action、thread、timing 公共合同。
-- 新增 Prompt Registry / Action Registry 与完整性校验。
-- `StructuredAiRunnerV2` 支持 per-call `reasoningSummary`；旧调用未指定时保持 `detailed` 兼容。
+- `ConversationStage` 与 canonical `TripStage` 分离。
+- 封闭 Action/Executor/Status/Origin 合同与 Prompt/Action Registry。
+- Structured AI 支持 per-call effort/summary/web 策略。
 
 ### Phase 2 — Prompts & Contracts
-- 创建 `prompts/shared/旅行规划共享规则.md`。
-- 创建四份阶段 Dialogue Prompt：旅行需求、目的地、兴趣点、行程。
-- 创建目的地 AI Action Prompt：生成、新增、替换。
-- 创建兴趣点 AI Action Prompt：发现、补充、新增、替换。
-- 创建行程 AI Action Prompt：生成、重新规划、单日优化、可行性修复、动态核验、每日细化。
-- 创建地图消歧 Action Prompt。
-- 新增 `ai-action-contracts-v3.ts`，为每个 AI Action 提供固定输出合同。
-- itinerary 新合同没有 `newPlaces/newCandidates`；需要新地点时结构化返回 `requiresStage: interests`。
-- 新增 `prompt-registry-v3.ts`：递归 UTF-8 加载、缺失/额外 Prompt 拒绝、重复注册由 Registry 拒绝、共享 + 当前单 Prompt 拼接、prompt hash/version。
-- loader 提供仅供开发过渡的 `allowLegacyFiles`；最终 Runtime 默认严格模式不会接受旧 00–03。
-- 更新根 `AGENTS.md`，把四阶段、Action Registry、fresh v3 database、Prompt 新目录和安全边界设为当前规则；旧 00–03 明确仅为 cutover 前临时依赖。
-- 新增 Registry 与 Prompt loader 测试文件。
+- shared + 四个 Dialogue + 每个 AI 动作独立 Prompt 已建立。
+- 专用 Action 输出合同已建立；itinerary AI 无 `newPlaces/newCandidates`，需要新地点返回 `requiresStage=interests`。
+- 新 Prompt loader 支持递归 UTF-8、显式注册、hash/version 和额外/缺失文件拒绝。
+- `AGENTS.md` 已切到新架构规则；旧 00–03 仍仅作为旧 Runtime 临时依赖保留。
+
+### Phase 3 — Fresh v3 Persistence
+- 新增独立 `TravelStoreV3`，数据库 `PRAGMA user_version=3`。
+- Store 只接受：空库→创建完整 v3；完整 version 3→打开；其他情况 fail closed。
+- 没有任何 v2→v3 migration、双写或兼容读取。
+- v3 `messages.stage` 为非空四阶段值，并可按 stage 隔离查询。
+- 同一 `(tripId, stage)` 只允许一个 queued/starting/active 用户 turn；不同阶段可独立存在。
+- 新增 `stage_conversation_threads`，保存 thread id、prompt hash/version、context generation、turn count 和时间戳。
+- 新增 `ai_actions`，保存 action type、executor、origin、source message、validated parameters、target IDs、server scope、base generation、status、task/proposal/result reference 和时间/错误信息。
+- Action confirm 使用事务内条件 UPDATE 抢占 `pending_confirmation → executing`，重复确认不会再次 claimed。
+- 增加 `(trip_id, request_key)` 唯一约束，CTA/网络重试可使用稳定 request key 实现创建幂等。
+- canonical 写入继续使用 generation CAS、revision 和 derived cleanup。
+- canonical 变化会按 concrete Scope 判断 pending/executing/awaiting Action 与 pending Proposal：冲突则 superseded；不冲突则安全 rebase 到新 generation。
+- `AiTask.agent` 在 v3 Store 中改为 `dialogue | action | map`。
+- 应用重启会中断 stage turn、停止 active task，并把 executing Action 标记 failed，不制造伪成功。
+- duplicate 只复制正式 canonical plan 和新初始 revision，不复制 message/thread/action/task/proposal。
+- permanent delete 通过外键级联清理新增持久化对象。
+- 新增 v3 Store 测试：fresh create、v2 fail closed、stage isolation、same-stage serial、thread metadata、atomic confirm、request idempotency、duplicate isolation。
 
 ## Important Decisions
 
-1. `ConversationStage` 永远不进入 canonical plan。
-2. Macro 后台仍统一 `kind=city`；区域/岛屿仅是 UI 语义。
-3. Dialogue 不直接 mutation；`web_required` 第一轮不输出最终动态结论。
-4. deterministic Action 无 Prompt、无 reasoning、无 web。
-5. itinerary AI 不能创建 Place/Candidate。
-6. Prompt 运行时只允许“共享规则 + 当前具体 Prompt”。
-7. Phase 2 仍保留旧 00–03，未切旧 Runtime。
-8. 真实 `private_data/travel-v2.sqlite3` 尚未删除/移动/修改。
+1. `ConversationStage` 不写入 `TravelPlanDocument`。
+2. `AiActionStage` 类型允许内部 `map`，而 stage conversation thread 仍只允许四个 ConversationStage。
+3. 地图消歧是内部 AI Action；它不产生阶段对话历史。
+4. Proposal 仍沿用现有受控 `AiProposal`/Scope/Apply 事实边界；Phase 4 会把 replan/repair/refine 输出确定性转换成可审查 PlanCommand diff，其中 refinement Apply 时由服务端确定性设置 detailLevel/detailStatus。
+5. 不新增“AI 结果文件”或把结果正文塞进 task metadata；task metadata 只保存诊断信息。
+6. 当前真实 `private_data/travel-v2.sqlite3` 尚未删除、移动或打开为 v3。
 
 ## Files Changed
 
@@ -53,44 +60,42 @@
 - `apps/server/ai-registries-v3.ts`
 - `apps/server/ai-action-contracts-v3.ts`
 - `apps/server/prompt-registry-v3.ts`
-- `apps/server/codex-client.ts`
-- `apps/server/structured-ai-v2.ts`
+- `apps/server/travel-store-v3.ts`
+- `apps/server/travel-store-v3.test.ts`
 - `apps/server/ai-registries-v3.test.ts`
 - `apps/server/prompt-registry-v3.test.ts`
+- `apps/server/codex-client.ts`
+- `apps/server/structured-ai-v2.ts`
 - `AGENTS.md`
-- `prompts/shared/旅行规划共享规则.md`
-- `prompts/dialogues/*.md`
-- `prompts/actions/destinations/*.md`
-- `prompts/actions/interests/*.md`
-- `prompts/actions/itinerary/*.md`
-- `prompts/actions/maps/地图地点消歧.md`
+- `prompts/shared/**`
+- `prompts/dialogues/**`
+- `prompts/actions/**`
 - `docs/IMPLEMENTATION_STATUS.md`
 
 ## Tests / Checks
 
-未运行测试、typecheck、build、真实 Codex 或浏览器验收。测试文件已补齐，但完整验证按项目规则需在全部代码完成后单独取得用户许可。
+测试文件已编写，但未执行测试、typecheck、build、真实 Codex 或浏览器验收。完整验证按项目规则留到全部修改后一次确认。
 
 ## Known Issues / Risks
 
-- 新 Prompt/Registry 尚未接入活动 Runtime；这是 Phase 4/6 的工作。
-- v3 Store 尚未实现，stage message/thread/action 目前还不能持久化。
-- 行程修改类新输出需要服务端在 Phase 4 转换为受控 Proposal/diff；不能直接落 canonical。
-- 底层模型不支持 none effort/summary 时的能力降级仍需 Runtime 处理。
-- 旧 00–03 仍存在是有意的开发过渡状态，不得提前删除。
+- `TravelStoreV3` 目前是与旧 `TravelStoreV2` 并存的开发实现，活动 `index.ts` 仍使用旧 Store；这是有意的 pre-cutover 状态。
+- `map.disambiguate` 注册为 `stage=map`；Phase 4 内部执行路径不得把它伪装成用户 ConversationStage。
+- 新 Store 与旧业务服务存在 TypeScript concrete store 类型耦合；Phase 4 应通过窄接口/适配层复用 Candidate/Resolver/Route 能力，不复制第二套业务事实链。
+- 旧 `AiProposal` 的 command 模型不直接保存 Day 的 detailLevel/detailStatus；Phase 4 必须把 refinement 的可见字段变成 commands，并在 Apply 时基于 proposal affectedDayIds 确定性设置 `detailed/ready`，不能绕过 Proposal。
 
 ## Next Phase
 
-### Phase 3 — v3 Store & Persistence
+### Phase 4 — Server Orchestration
 
-- fresh SQLite schema version 3；不提供 v2 migration。
-- `messages.stage` 非空。
-- `stage_conversation_threads` 与 prompt hash/version/context generation/turn count。
-- `ai_actions` 按目标字段完整持久化并实现原子 confirm 状态抢占。
-- `AiTask.agent` 改为 `dialogue | action | map`。
-- duplicate 只复制正式计划；permanent delete 依靠外键级联。
-- canonical 改动使冲突 Action/Proposal superseded。
-- Store 遇到旧 v2、未知版本或损坏 Schema fail closed。
-- 本阶段只写代码和测试，不删除当前真实数据库，不做 cutover。
+- v3 Task monitor 与阶段白名单 context builder。
+- 四阶段 Dialogue：首次 no-web/no-reasoning；`web_required` → 第二次 live web → 最终回答。
+- stage thread hash/version/context/turn rotation 与同阶段串行。
+- Action create/confirm/cancel + Registry 分发。
+- deterministic Action 直接受控命令，不调用模型。
+- AI Action 使用独立 Prompt、固定 reasoning/web、临时 thread。
+- destination / interest / itinerary / map 适配现有 Candidate、Resolver、Route、PlanCommand、Proposal 业务服务。
+- generation CAS、停止、失败、superseded、幂等和 timing/input-size 诊断。
+- 新 stage/action API；仍不做真实 DB cutover。
 
 ## Recommended Model
 
@@ -98,7 +103,7 @@ GPT-5.6 Sol / high。
 
 ## Do Not Do
 
-- 不实现 v2 → v3 migration。
-- 不删除真实数据库。
-- 不切换 `main` 活动 Runtime。
+- 不迁移或删除真实 v2 数据库。
+- 不切 `main` 活动 runtime。
+- 不复制新的 Candidate/Map/Route 事实系统。
 - 不扩 PlaceKind 或 canonical TripStage。
