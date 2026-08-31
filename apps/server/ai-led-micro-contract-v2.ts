@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { containsForbiddenResearchLink } from "./candidate-discovery-policy-v2.js";
 import {
   IdSchema,
   PlaceSchema,
@@ -55,8 +56,8 @@ export const AiLedMicroCandidateDiscoveryOutputSchema = z.object({
   places: z.array(PlaceSchema).max(9),
   candidates: z.array(item).max(9),
 }).strict().superRefine((value, context) => {
-  if (/https?:\/\//iu.test(JSON.stringify(value))) {
-    context.addIssue({ code: "custom", path: [], message: "兴趣点研究来源链接不得写入结构化输出。" });
+  if (containsForbiddenResearchLink(value)) {
+    context.addIssue({ code: "custom", path: [], message: "兴趣点研究来源链接或引用列表不得写入结构化输出。" });
   }
   const targetId = value.areaTargets[0]?.planningAreaCandidateId;
   const placeIds = new Set(value.places.map((place) => place.id));
