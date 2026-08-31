@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { emptyTravelPlan, type MicroCandidateDiscoveryOutput, type TravelPlanDocument } from "./contracts-v2.js";
 import {
+  CANDIDATE_DISCOVERY_BATCH_LIMIT,
   buildFixedMicroDiscoveryTargets,
   discoveryShortfalls,
   microTourismPlaceRejection,
   microTourismProviderRejection,
-  recommendedMicroMinimum,
   splitMicroDiscoveryTargets,
   validateMicroCandidateDiscovery,
 } from "./candidate-discovery-policy-v2.js";
@@ -27,8 +27,8 @@ function microOutput(): MicroCandidateDiscoveryOutput {
   return {
     schemaVersion: 1,
     baseGeneration: 0,
-    assistantMessage: "已按固定目标筛选观光点。",
-    areaTargets: [{ planningAreaCandidateId: "area-a", targetCount: 3, reason: "服务端固定目标" }],
+    assistantMessage: "已按本轮目标研究具体地点。",
+    areaTargets: [{ planningAreaCandidateId: "area-a", targetCount: 3, reason: "AI 判断本轮建议 3 个" }],
     places: [
       { id: "p-a1", nameZh: "A1 地标", nameLocal: null, nameEn: "A1 Landmark", kind: "attraction", city: "Large City", region: "North", country: "Test", countryCode: "TT", approximate: false },
       { id: "p-a2", nameZh: "A2 观景台", nameLocal: null, nameEn: "A2 Viewpoint", kind: "attraction", city: "Large City", region: "North", country: "Test", countryCode: "TT", approximate: false },
@@ -42,63 +42,46 @@ function microOutput(): MicroCandidateDiscoveryOutput {
   };
 }
 
-describe("candidate discovery quality policy", () => {
-  it("maps Macro stay duration to deterministic 3/5/7/9 minimums and deducts reliable existing points", () => {
-    expect([null, 1440, 2880, 4320, 5760].map(recommendedMicroMinimum)).toEqual([3, 3, 5, 7, 9]);
+describe("candidate discovery resource policy", () => {
+  it("uses a 0-9 AI-selected budget instead of deterministic 3/5/7/9 minimums", () => {
     const plan = planWithAreas();
     plan.places.push({ id: "existing", nameZh: "现有博物馆", nameLocal: null, nameEn: "Existing Museum", kind: "attraction", city: "Large City", region: "North", country: "Test", countryCode: "TT", approximate: false });
     plan.candidates.push({ id: "existing-candidate", placeId: "existing", planningAreaCandidateId: "area-a", preference: "optional", source: "ai", aiReason: null, aiScore: 80, suggestedDurationMinutes: 60, tags: [] });
     expect(buildFixedMicroDiscoveryTargets(plan, ["area-a", "area-b"], new Set(["existing"]))).toEqual([
-      { planningAreaCandidateId: "area-a", targetCount: 6 },
-      { planningAreaCandidateId: "area-b", targetCount: 3 },
+      { planningAreaCandidateId: "area-a", targetCount: CANDIDATE_DISCOVERY_BATCH_LIMIT },
+      { planningAreaCandidateId: "area-b", targetCount: CANDIDATE_DISCOVERY_BATCH_LIMIT },
     ]);
   });
 
-  it("requires fixed targets, multi-guide evidence, core prominence and experience diversity", () => {
+  it("accepts AI-selected counts when count, places and candidates agree", () => {
     const output = microOutput();
-    const fixed = [{ planningAreaCandidateId: "area-a", targetCount: 3 }];
-    expect(validateMicroCandidateDiscovery(output, ["area-a"], fixed)).toBe(output);
-
+    expect(validateMicroCandidateDiscovery(output, ["area-a"], [{ planningAreaCandidateId: "area-a", targetCount: 9 }])).toBe(output);
     const lowered = structuredClone(output);
     lowered.areaTargets[0].targetCount = 2;
+    lowered.places.splice(2, 1);
     lowered.candidates.splice(2, 1);
-    expect(() => validateMicroCandidateDiscovery(lowered, ["area-a"], fixed)).toThrow(/不得降低固定目标/);
-
-    const missingResearch = structuredClone(output);
-    missingResearch.candidates[0].researchBasis = ["official_status_verified"];
-    expect(() => validateMicroCandidateDiscovery(missingResearch, ["area-a"], fixed)).toThrow(/多份攻略共识/);
-
+    expect(validateMicroCandidateDiscovery(lowered, ["area-a"], [{ planningAreaCandidateId: "area-a", targetCount: 9 }])).toBe(lowered);
+    const mismatched = structuredClone(output);
+    mismatched.areaTargets[0].targetCount = 2;
+    expect(() => validateMicroCandidateDiscovery(mismatched, ["area-a"], [{ planningAreaCandidateId: "area-a", targetCount: 9 }])).toThrow(/targetCount/);
     const leakedSource = structuredClone(output);
     leakedSource.assistantMessage = "来源：https://example.com/guide";
-    expect(() => validateMicroCandidateDiscovery(leakedSource, ["area-a"], fixed)).toThrow(/来源链接不得写入/);
-
-    const noCore = structuredClone(output);
-    noCore.candidates.filter((candidate) => candidate.planningAreaCandidateId === "area-a").forEach((candidate) => { candidate.prominence = "supporting"; });
-    expect(() => validateMicroCandidateDiscovery(noCore, ["area-a"], fixed)).toThrow(/iconic 或 major/);
-
-    const noDiversity = structuredClone(output);
-    noDiversity.candidates.filter((candidate) => candidate.planningAreaCandidateId === "area-a").forEach((candidate) => { candidate.experienceTypes = ["landmark"]; });
-    expect(() => validateMicroCandidateDiscovery(noDiversity, ["area-a"], fixed)).toThrow(/至少需要覆盖 2 类体验/);
+    expect(() => validateMicroCandidateDiscovery(leakedSource, ["area-a"], [{ planningAreaCandidateId: "area-a", targetCount: 9 }])).toThrow(/来源链接不得写入/);
   });
 
-  it("computes map shortfalls and splits every destination into an independent request", () => {
+  it("splits every Macro into an independent request and never creates map replenishment shortfalls", () => {
     const output = microOutput();
     const accepted = output.candidates.filter((candidate) => candidate.temporaryId === "c-a1");
-    expect(discoveryShortfalls(output, accepted)).toEqual([{ planningAreaCandidateId: "area-a", targetCount: 2 }]);
-    const targets = Array.from({ length: 9 }, (_, index) => ({ planningAreaCandidateId: `area-${index}`, targetCount: index % 2 ? 5 : 7 }));
+    expect(discoveryShortfalls(output, accepted)).toEqual([]);
+    const targets = Array.from({ length: 9 }, (_, index) => ({ planningAreaCandidateId: `area-${index}`, targetCount: 9 }));
     const batches = splitMicroDiscoveryTargets(targets);
     expect(batches.every((batch) => batch.length === 1 && batch[0].targetCount <= 9)).toBe(true);
     expect(batches.flat()).toEqual(targets);
+    expect(() => validateMicroCandidateDiscovery(output, ["area-a", "area-b"], targets.slice(0, 2))).toThrow(/必须且只能处理 1 个目的地/);
   });
 
-  it("rejects facilities, broad geography and cross-city provider matches", () => {
-    const attraction = { id: "p", nameZh: "城市观景台", nameLocal: null, nameEn: "City Viewpoint", kind: "attraction" as const, city: "City", region: "North", country: "Test", countryCode: "TT", approximate: false };
-    expect(microTourismPlaceRejection(attraction)).toBeNull();
-    expect(microTourismPlaceRejection({ ...attraction, nameZh: "城市游客中心" })).toMatch(/游客服务/);
-    expect(microTourismPlaceRejection({ ...attraction, nameZh: "瓦卡蒂普湖", nameEn: "Lake Wakatipu" })).toMatch(/泛称地理实体/);
-    expect(microTourismPlaceRejection({ ...attraction, kind: "airport" })).toMatch(/只接受观光景点/);
-    expect(microTourismProviderRejection({ category: "tourism", placeType: "viewpoint", countryCode: "tt", city: "City", region: "North" }, attraction)).toBeNull();
-    expect(microTourismProviderRejection({ category: "railway", placeType: "station", countryCode: "tt", city: "City", region: "North" }, attraction)).toMatch(/公开地图/);
-    expect(microTourismProviderRejection({ category: "tourism", placeType: "viewpoint", countryCode: "tt", city: "Other City", region: "North" }, attraction)).toMatch(/其他城市/);
+  it("does not apply business-category, geography or provider-category rejection filters", () => {
+    expect(microTourismPlaceRejection()).toBeNull();
+    expect(microTourismProviderRejection()).toBeNull();
   });
 });

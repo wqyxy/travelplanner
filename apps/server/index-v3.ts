@@ -4,24 +4,31 @@ import path from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import { createSessionKey, hashPassword, LoginRateLimiter, PersistentSessionStore, verifyPassword } from "./auth.js";
 import { loadConfig, mapCategoryColorDefaults, projectPaths, saveConfig, type AppConfig } from "./config.js";
-import { CodexClient, type ReasoningEffort, type RpcEnvelope } from "./codex-client.js";
+import { CodexClient, type RpcEnvelope } from "./codex-client.js";
 import { MapService } from "./map-service.js";
 import { MapTileCache, TileFetchError } from "./map-tile-cache.js";
-import { AiTaskMonitor, aiErrorMessage, normalizePublicAiSummary } from "./ai-task-monitor.js";
+import { AiTaskMonitorV3, aiErrorMessageV3, normalizePublicAiSummaryV3 } from "./ai-task-monitor-v3.js";
 import { DayRouteServiceV2 } from "./day-route-v2.js";
 import { PlaceResolverV2 } from "./place-resolver-v2.js";
-import { CodexTravelAiV2, TravelPlannerRuntimeV2, type RuntimeEventV2 } from "./planner-runtime-v2.js";
-import { loadAgentPromptsV2 } from "./prompt-contract-v2.js";
+import { PlaceResolverAdapterV3 } from "./place-resolver-adapter-v3.js";
+import { TravelPlannerRuntimeV3, type RuntimeEventV3 } from "./planner-runtime-v3.js";
+import { loadPromptRegistryV3 } from "./prompt-registry-v3.js";
+import { StagedTravelAiV3 } from "./staged-ai-v3.js";
 import { StructuredAiRunnerV2 } from "./structured-ai-v2.js";
-import { handleTravelApiV2, readJsonBody } from "./travel-api-v2.js";
-import { TravelStoreV2 } from "./travel-store-v2.js";
+import { handleTravelApiV3, readJsonBodyV3 } from "./travel-api-v3.js";
+import type { TravelStoreV2 } from "./travel-store-v2.js";
+import { TravelStoreV3 } from "./travel-store-v3.js";
 
 const root = path.resolve(process.cwd());
 const paths = projectPaths(root);
 await fs.mkdir(paths.privateRoot, { recursive: true });
-const prompts = await loadAgentPromptsV2(root);
+// Strict loader: after cutover every prompts/**/*.md file must be explicitly registered.
+const prompts = await loadPromptRegistryV3(root);
 let config = await loadConfig(root);
-const store = new TravelStoreV2(paths.travelV2Db);
+// The target design intentionally keeps the filename travel-v2.sqlite3 while
+// upgrading the INTERNAL database version to 3. A pre-existing v2 file fails
+// closed here; normal startup never migrates, drops, deletes or overwrites it.
+const store = new TravelStoreV3(paths.travelV2Db);
 store.stopInterruptedAiRuns();
 const codex = new CodexClient(root);
 const structuredAi = new StructuredAiRunnerV2(codex);
@@ -37,22 +44,26 @@ function broadcast(kind: string, payload: unknown) {
   for (const client of clients) if (client.readyState === WebSocket.OPEN) client.send(message);
 }
 
-const tasks = new AiTaskMonitor(store, (snapshot) => broadcast("ai-task.updated", snapshot));
-function modelOptions() {
-  const configured = config.ai.reasoningEffort;
-  const effort: ReasoningEffort = configured === "none" || configured === "minimal" || configured === "low" || configured === "medium" || configured === "high" || configured === "xhigh" ? configured : "medium";
-  return { ...(config.ai.model ? { model: config.ai.model } : {}), effort };
-}
-const travelAi = new CodexTravelAiV2({ root, runner: structuredAi, prompts, modelOptions, saveThread: (tripId, threadId) => store.setThread(tripId, threadId) });
-const resolver = new PlaceResolverV2({ store, maps, assist: (input) => travelAi.assistResolution(input) });
-const routes = new DayRouteServiceV2({ store, maps });
-const runtime = new TravelPlannerRuntimeV2({
+const tasks = new AiTaskMonitorV3(store, (snapshot) => broadcast("ai-task.updated", snapshot));
+const travelAi = new StagedTravelAiV3({ root, runner: structuredAi, prompts, model: () => config.ai.model || undefined });
+// Resolver and route calculation remain the existing single fact chain. Their
+// constructor annotations still name TravelStoreV2, so v3 is passed through a
+// narrow compile-time cast; the runtime methods are the same store capabilities.
+const resolverCore = new PlaceResolverV2({
+  store: store as unknown as TravelStoreV2,
+  maps,
+  assist: (input) => travelAi.assistResolution(input),
+});
+const resolver = new PlaceResolverAdapterV3(resolverCore);
+const routes = new DayRouteServiceV2({ store: store as unknown as TravelStoreV2, maps });
+const runtime = new TravelPlannerRuntimeV3({
   store,
   ai: travelAi,
+  prompts,
   tasks,
-  resolver,
+  resolver: resolver as unknown as PlaceResolverV2,
   routes,
-  emit: (event: RuntimeEventV2) => broadcast(event.kind, event.payload),
+  emit: (event: RuntimeEventV3) => broadcast(event.kind, event.payload),
 });
 
 codex.on("notification", (event: RpcEnvelope) => {
@@ -69,12 +80,12 @@ function failure(response: ServerResponse, status: number, value: string, code?:
   response.end(JSON.stringify({ error: { message: value, ...(code ? { code } : {}) } }));
 }
 function errorStatus(error: unknown) {
-  const value = aiErrorMessage(error);
-  if (value === "CONTENT_GENERATION_SUPERSEDED" || value === "PROPOSAL_UNDO_SUPERSEDED") return 409;
+  const value = aiErrorMessageV3(error);
+  if (value === "CONTENT_GENERATION_SUPERSEDED" || value === "PROPOSAL_UNDO_SUPERSEDED" || value === "STAGE_TURN_BUSY") return 409;
   if (/找不到|未知/u.test(value)) return 404;
   return 400;
 }
-function publicFailure(error: unknown) { return normalizePublicAiSummary(aiErrorMessage(error)) || "服务请求失败。"; }
+function publicFailure(error: unknown) { return normalizePublicAiSummaryV3(aiErrorMessageV3(error)) || "服务请求失败。"; }
 function cookies(request: IncomingMessage) {
   return Object.fromEntries((request.headers.cookie || "").split(";").map((item) => item.trim().split(/=(.*)/s, 2)).filter(([key]) => key).map(([key, value]) => [key, decodeURIComponent(value || "")]));
 }
@@ -120,14 +131,14 @@ async function api(request: IncomingMessage, response: ServerResponse) {
       lanEnabled: Boolean(config.passwordHash),
       port: config.port,
       codex: { connected: codex.running },
-      settings: { ai: config.ai, ui: config.ui },
+      settings: { ai: { ...config.ai, reasoningEffort: "auto" }, ui: config.ui },
       user: signedIn ? { id: "owner", username: config.username || "旅行者" } : null,
-      runtime: { schemaVersion: 2, database: "travel-v2.sqlite3" },
+      runtime: { schemaVersion: 3, database: "travel-v2.sqlite3", migration: "none" },
     });
   }
   if (method === "POST" && url.pathname === "/api/auth/setup") {
     if (config.passwordHash || !hostClient(request)) return failure(response, 403, "只能在首次本机访问时设置旅行空间。");
-    const input = await readJsonBody(request);
+    const input = await readJsonBodyV3(request);
     const username = String(input.username || "").trim();
     if (!/^[A-Za-z0-9_-]{3,32}$/.test(username)) return failure(response, 400, "用户名应为 3–32 位字母、数字、下划线或连字符。");
     const password = await hashPassword(String(input.password || ""));
@@ -142,7 +153,7 @@ async function api(request: IncomingMessage, response: ServerResponse) {
     const key = request.socket.remoteAddress || "unknown";
     const allowed = limiter.canAttempt(key);
     if (!allowed.allowed) return failure(response, 429, `尝试过多，请在 ${allowed.retryAfterSeconds} 秒后重试。`);
-    const input = await readJsonBody(request);
+    const input = await readJsonBodyV3(request);
     if (String(input.username || "") !== config.username || !(await verifyPassword(String(input.password || ""), config))) {
       limiter.failure(key); return failure(response, 401, "用户名或密码错误。");
     }
@@ -165,7 +176,7 @@ async function api(request: IncomingMessage, response: ServerResponse) {
     return;
   }
   if (method === "PUT" && url.pathname === "/api/auth/password") {
-    const input = await readJsonBody(request);
+    const input = await readJsonBodyV3(request);
     if (typeof input.newPassword !== "string") return failure(response, 400, "新密码必须是字符串。");
     const password = await hashPassword(input.newPassword);
     await mutateConfig((current) => ({ ...current, ...password, ...(current.sessionKey ? {} : { sessionKey: current.passwordHash }) }));
@@ -193,18 +204,18 @@ async function api(request: IncomingMessage, response: ServerResponse) {
   }
   if (method === "POST" && url.pathname === "/api/codex/logout") { await ensureCodex(); await codex.call("account/logout"); return json(response, 200, { ok: true }); }
   if (method === "PUT" && url.pathname === "/api/settings/ui") {
-    const input = await readJsonBody(request); const colors = input.mapCategoryColors;
+    const input = await readJsonBodyV3(request); const colors = input.mapCategoryColors;
     if (colors !== undefined && (!colors || typeof colors !== "object" || Array.isArray(colors) || Object.entries(colors).some(([key, value]) => !(key in mapCategoryColorDefaults) || typeof value !== "string" || !/^#[0-9a-f]{6}$/i.test(value)))) return failure(response, 400, "地图分类颜色必须是已知类别的 #RRGGBB 值。");
     const next = await mutateConfig((current) => ({ ...current, ui: { ...current.ui, ...(typeof input.workspaceSplitRatio === "number" ? { workspaceSplitRatio: Math.max(.34, Math.min(.66, input.workspaceSplitRatio)) } : {}), ...(input.theme === "light" || input.theme === "dark" ? { theme: input.theme } : {}), ...(typeof input.sidebarOpen === "boolean" ? { sidebarOpen: input.sidebarOpen } : {}), ...(colors ? { mapCategoryColors: { ...current.ui.mapCategoryColors, ...colors as Record<string, string> } } : {}) } }));
-    return json(response, 200, { settings: { ai: next.ai, ui: next.ui } });
+    return json(response, 200, { settings: { ai: { ...next.ai, reasoningEffort: "auto" }, ui: next.ui } });
   }
   if (method === "PUT" && url.pathname === "/api/settings/ai-model") {
-    const input = await readJsonBody(request);
-    const next = await mutateConfig((current) => ({ ...current, ai: { model: String(input.model || "").slice(0, 120), reasoningEffort: String(input.reasoningEffort || "medium").slice(0, 32) } }));
+    const input = await readJsonBodyV3(request);
+    const next = await mutateConfig((current) => ({ ...current, ai: { model: String(input.model || "").slice(0, 120), reasoningEffort: "auto" } }));
     return json(response, 200, { settings: { ai: next.ai, ui: next.ui } });
   }
 
-  if (await handleTravelApiV2(request, response, { store, runtime })) return;
+  if (await handleTravelApiV3(request, response, { store, runtime })) return;
   return failure(response, 404, "接口不存在。");
 }
 
@@ -239,7 +250,7 @@ const server = http.createServer((request, response) => {
       else if (viteDev) viteDev.middlewares(request, response, () => { void serve(request, response); });
       else await serve(request, response);
     } catch (error) {
-      if (!response.headersSent) failure(response, errorStatus(error), publicFailure(error), aiErrorMessage(error));
+      if (!response.headersSent) failure(response, errorStatus(error), publicFailure(error), aiErrorMessageV3(error));
       else response.end();
     }
   })();
@@ -254,7 +265,7 @@ server.on("upgrade", (request, socket, head) => {
 let listenHost = config.passwordHash ? "0.0.0.0" : "127.0.0.1";
 function listen(host: string) {
   listenHost = host;
-  server.listen(config.port, host, () => console.log(`AI Travel Planner v3 已启动：http://127.0.0.1:${config.port}`));
+  server.listen(config.port, host, () => console.log(`AI Travel Planner staged v3 已启动：http://127.0.0.1:${config.port}`));
 }
 async function rebindForLan() {
   if (listenHost === "0.0.0.0") return;

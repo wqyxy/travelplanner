@@ -1,9 +1,13 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { CandidatePreferenceSchema, PlaceResolutionRetryInputSchema, ProposalScopeSchema } from "./contracts-v2.js";
-import type { TravelPlannerRuntimeV2 } from "./planner-runtime-v2.js";
-import type { TravelStoreV2 } from "./travel-store-v2.js";
+import {
+  CandidatePreferenceSchema,
+  PlaceResolutionRetryInputSchema,
+} from "./contracts-v2.js";
+import { AiActionTypeSchema, ConversationStageSchema, WorkspaceSelectionV3Schema } from "./ai-stage-contracts-v3.js";
+import type { TravelPlannerRuntimeV3 } from "./planner-runtime-v3.js";
+import type { TravelStoreV3 } from "./travel-store-v3.js";
 
-export async function readJsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+export async function readJsonBodyV3(request: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   for await (const chunk of request) chunks.push(Buffer.from(chunk));
   if (!chunks.length) return {};
@@ -13,17 +17,16 @@ export async function readJsonBody(request: IncomingMessage): Promise<Record<str
 }
 
 function decode(value: string) { return decodeURIComponent(value); }
+export type TravelApiV3Response = { status: number; data?: unknown; error?: { message: string; code?: string } };
+export type TravelApiV3Deps = { store: TravelStoreV3; runtime: TravelPlannerRuntimeV3 };
 
-export type TravelApiResponse = { status: number; data?: unknown; error?: { message: string; code?: string } };
-export type TravelApiDeps = { store: TravelStoreV2; runtime: TravelPlannerRuntimeV2 };
-
-export async function dispatchTravelApiV2(
+export async function dispatchTravelApiV3(
   method: string,
   pathname: string,
   searchParams: URLSearchParams,
   body: Record<string, unknown>,
-  deps: TravelApiDeps,
-): Promise<TravelApiResponse | null> {
+  deps: TravelApiV3Deps,
+): Promise<TravelApiV3Response | null> {
   if (method === "GET" && pathname === "/api/trips") return { status: 200, data: { trips: deps.store.listTrips(searchParams.get("view") === "trash" ? "trashed" : "active") } };
   if (method === "POST" && pathname === "/api/trips") return { status: 200, data: { trip: deps.store.createTrip() } };
 
@@ -40,10 +43,7 @@ export async function dispatchTravelApiV2(
       }
       return { status: 200, data: { trip } };
     }
-    if (method === "DELETE") {
-      deps.store.setState(tripId, "trashed");
-      return { status: 200, data: { ok: true } };
-    }
+    if (method === "DELETE") { deps.store.setState(tripId, "trashed"); return { status: 200, data: { ok: true } }; }
   }
 
   match = /^\/api\/trips\/([^/]+)\/workspace$/.exec(pathname);
@@ -54,57 +54,56 @@ export async function dispatchTravelApiV2(
   match = /^\/api\/trips\/([^/]+)\/restore$/.exec(pathname);
   if (method === "POST" && match) return { status: 200, data: { trip: deps.store.setState(decode(match[1]), "active") } };
   match = /^\/api\/trips\/([^/]+)\/permanent$/.exec(pathname);
-  if (method === "DELETE" && match) {
-    deps.store.permanentDelete(decode(match[1]));
-    return { status: 200, data: { ok: true } };
+  if (method === "DELETE" && match) { deps.store.permanentDelete(decode(match[1])); return { status: 200, data: { ok: true } }; }
+
+  match = /^\/api\/trips\/([^/]+)\/stages\/([^/]+)\/messages$/.exec(pathname);
+  if (method === "GET" && match) {
+    const stage = ConversationStageSchema.parse(decode(match[2]));
+    return { status: 200, data: { messages: deps.store.listMessages(decode(match[1]), stage), actions: deps.store.listActions(decode(match[1]), stage) } };
   }
-
-  match = /^\/api\/trips\/([^/]+)\/messages$/.exec(pathname);
-  if (method === "GET" && match) return { status: 200, data: { messages: deps.store.listMessages(decode(match[1])) } };
-  match = /^\/api\/trips\/([^/]+)\/turns$/.exec(pathname);
-  if (method === "POST" && match) return { status: 202, data: deps.runtime.startConversation(decode(match[1]), String(body.message ?? "")) };
-
-  match = /^\/api\/trips\/([^/]+)\/candidates\/discover$/.exec(pathname);
+  match = /^\/api\/trips\/([^/]+)\/stages\/([^/]+)\/turns$/.exec(pathname);
   if (method === "POST" && match) {
-    if (body.mode !== "macro" && body.mode !== "micro") throw new Error("候选地点发现 mode 必须是 macro 或 micro。");
-    const planningAreaCandidateIds = Array.isArray(body.planningAreaCandidateIds) ? body.planningAreaCandidateIds.map(String) : [];
-    return { status: 202, data: deps.runtime.startCandidateDiscovery(decode(match[1]), body.mode, planningAreaCandidateIds, typeof body.message === "string" ? body.message : null) };
+    const tripId = decode(match[1]);
+    const stage = ConversationStageSchema.parse(decode(match[2]));
+    return {
+      status: 202,
+      data: deps.runtime.startConversation(tripId, stage, {
+        message: body.message,
+        selection: WorkspaceSelectionV3Schema.parse(body.selection ?? { type: "trip", id: null }),
+      }),
+    };
   }
+
+  match = /^\/api\/trips\/([^/]+)\/actions\/cta$/.exec(pathname);
+  if (method === "POST" && match) {
+    const stage = ConversationStageSchema.parse(body.stage);
+    const actionType = AiActionTypeSchema.parse(body.actionType);
+    const requestKey = String(body.requestKey ?? "").trim();
+    if (!requestKey || requestKey.length > 160) throw new Error("CTA requestKey 必须是 1–160 字符的稳定请求键。");
+    const parameters = body.parameters && typeof body.parameters === "object" && !Array.isArray(body.parameters) ? body.parameters as Record<string, unknown> : {};
+    const targetIds = Array.isArray(body.targetIds) ? body.targetIds.map(String).slice(0, 200) : [];
+    return { status: 202, data: deps.runtime.createCtaAction({ tripId: decode(match[1]), stage, actionType, parameters, targetIds, requestKey }) };
+  }
+
+  match = /^\/api\/trips\/([^/]+)\/actions\/([^/]+)\/confirm$/.exec(pathname);
+  if (method === "POST" && match) return { status: 202, data: deps.runtime.confirmAction(decode(match[1]), decode(match[2]), body) };
+  match = /^\/api\/trips\/([^/]+)\/actions\/([^/]+)\/cancel$/.exec(pathname);
+  if (method === "POST" && match) return { status: 200, data: deps.runtime.cancelAction(decode(match[1]), decode(match[2]), body) };
+
   match = /^\/api\/trips\/([^/]+)\/candidates\/batch$/.exec(pathname);
   if (method === "POST" && match) {
     const preference = CandidatePreferenceSchema.parse(body.preference);
     const candidateIds = Array.isArray(body.candidateIds) ? body.candidateIds.map(String) : [];
-    return {
-      status: 200,
-      data: await deps.runtime.applyCommands(decode(match[1]), {
-        expectedGeneration: body.expectedGeneration,
-        commands: [{ type: "bulk_set_candidate_preference", candidateIds, preference }],
-      }),
-    };
+    return { status: 200, data: deps.runtime.applyCommands(decode(match[1]), { expectedGeneration: body.expectedGeneration, commands: [{ type: "bulk_set_candidate_preference", candidateIds, preference }] }) };
   }
   match = /^\/api\/trips\/([^/]+)\/candidates\/([^/]+)$/.exec(pathname);
   if (method === "PATCH" && match) {
-    const tripId = decode(match[1]);
-    const candidateId = decode(match[2]);
     const preference = CandidatePreferenceSchema.parse(body.preference);
-    return {
-      status: 200,
-      data: await deps.runtime.applyCommands(tripId, {
-        expectedGeneration: body.expectedGeneration,
-        commands: [{ type: "set_candidate_preference", candidateId, preference }],
-      }),
-    };
+    return { status: 200, data: deps.runtime.applyCommands(decode(match[1]), { expectedGeneration: body.expectedGeneration, commands: [{ type: "set_candidate_preference", candidateId: decode(match[2]), preference }] }) };
   }
 
-  match = /^\/api\/trips\/([^/]+)\/plan\/generate$/.exec(pathname);
-  if (method === "POST" && match) return { status: 202, data: deps.runtime.startPlanGeneration(decode(match[1])) };
-  match = /^\/api\/trips\/([^/]+)\/refinement\/next$/.exec(pathname);
-  if (method === "POST" && match) {
-    const dayIds = Array.isArray(body.dayIds) ? body.dayIds.map(String) : null;
-    return { status: 202, data: deps.runtime.startRefinement(decode(match[1]), dayIds) };
-  }
   match = /^\/api\/trips\/([^/]+)\/commands$/.exec(pathname);
-  if (method === "POST" && match) return { status: 200, data: await deps.runtime.applyCommands(decode(match[1]), body) };
+  if (method === "POST" && match) return { status: 200, data: deps.runtime.applyCommands(decode(match[1]), body) };
 
   match = /^\/api\/trips\/([^/]+)\/resolutions\/retry$/.exec(pathname);
   if (method === "POST" && match) {
@@ -131,11 +130,6 @@ export async function dispatchTravelApiV2(
     return { status: 200, data: { route: await deps.runtime.recalculateRoute(decode(match[1]), decode(match[2]), expectedGeneration) } };
   }
 
-  match = /^\/api\/trips\/([^/]+)\/proposals$/.exec(pathname);
-  if (method === "POST" && match) {
-    const scope = ProposalScopeSchema.parse(body.scope);
-    return { status: 202, data: deps.runtime.startProposal(decode(match[1]), scope, String(body.message ?? "")) };
-  }
   match = /^\/api\/trips\/([^/]+)\/proposals\/([^/]+)\/apply$/.exec(pathname);
   if (method === "POST" && match) return { status: 200, data: await deps.runtime.applyProposal(decode(match[1]), decode(match[2])) };
   match = /^\/api\/trips\/([^/]+)\/proposals\/([^/]+)\/reject$/.exec(pathname);
@@ -148,7 +142,7 @@ export async function dispatchTravelApiV2(
   match = /^\/api\/trips\/([^/]+)\/revisions\/(\d+)$/.exec(pathname);
   if (method === "GET" && match) return { status: 200, data: { revision: deps.store.getRevision(decode(match[1]), Number(match[2])) } };
   match = /^\/api\/trips\/([^/]+)\/revisions\/(\d+)\/restore$/.exec(pathname);
-  if (method === "POST" && match) return { status: 200, data: deps.runtime.restoreRevision(decode(match[1]), Number(match[2])) };
+  if (method === "POST" && match) return { status: 200, data: deps.store.restoreRevision(decode(match[1]), Number(match[2])) };
 
   match = /^\/api\/trips\/([^/]+)\/ai-tasks$/.exec(pathname);
   if (method === "GET" && match) return { status: 200, data: { tasks: deps.store.listAiTasks(decode(match[1])) } };
@@ -158,10 +152,10 @@ export async function dispatchTravelApiV2(
   return null;
 }
 
-export async function handleTravelApiV2(request: IncomingMessage, response: ServerResponse, deps: TravelApiDeps) {
+export async function handleTravelApiV3(request: IncomingMessage, response: ServerResponse, deps: TravelApiV3Deps) {
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
-  const body = request.method === "GET" || request.method === "HEAD" ? {} : await readJsonBody(request);
-  const result = await dispatchTravelApiV2(request.method ?? "GET", url.pathname, url.searchParams, body, deps);
+  const body = request.method === "GET" || request.method === "HEAD" ? {} : await readJsonBodyV3(request);
+  const result = await dispatchTravelApiV3(request.method ?? "GET", url.pathname, url.searchParams, body, deps);
   if (!result) return false;
   response.writeHead(result.status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
   response.end(JSON.stringify(result.error ? { error: result.error } : { data: result.data }));

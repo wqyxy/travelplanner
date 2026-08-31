@@ -11,11 +11,11 @@ if errorlevel 1 (
 
 if exist runtime\node.exe (
   echo [travelplanner] Starting portable server on http://127.0.0.1:6688/
-  runtime\node.exe dist\server\index.js
+  runtime\node.exe dist\server\index-cutover-v3.js
 ) else if exist node_modules\.bin\tsx.cmd (
   echo [travelplanner] Starting development server on http://127.0.0.1:6688/
   call npm run dev
 ) else (
   echo [travelplanner] Starting built server on http://127.0.0.1:6688/
-  node dist\server\index.js
+  node dist\server\index-cutover-v3.js
 )

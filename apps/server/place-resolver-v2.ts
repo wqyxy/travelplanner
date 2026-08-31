@@ -14,6 +14,9 @@ import type { TravelStoreV2 } from "./travel-store-v2.js";
 
 export const PLACE_RESOLUTION_VERSION = "v2";
 export const PLACE_RESOLUTION_PROVIDER_SEARCH_LIMIT = 4;
+// MapService still serializes/rate-limits Provider HTTP requests. This only lets
+// several Places advance cooperatively so one ambiguous Place cannot block all others.
+export const PLACE_RESOLUTION_BATCH_CONCURRENCY = 3;
 
 export type RankedProviderCandidate = { candidate: ProviderPlaceCandidate; score: number };
 export type PlaceResolutionAssist = (input: {
@@ -23,6 +26,13 @@ export type PlaceResolutionAssist = (input: {
   signal?: AbortSignal;
 }) => Promise<MapResolutionAssistOutput | null>;
 export type PlaceResolutionResult = { resolution: PlaceResolution; candidates: RankedProviderCandidate[] };
+export type PlaceResolutionBatchProgress = {
+  placeId: string;
+  status: PlaceResolution["status"];
+  completed: number;
+  total: number;
+  resolution: PlaceResolution;
+};
 export type PlaceResolutionPreview = {
   geoFingerprint: string;
   selected: RankedProviderCandidate | null;
@@ -50,6 +60,9 @@ function abortError(signal?: AbortSignal) {
   return new Error("AI 任务已停止。");
 }
 function throwIfAborted(signal?: AbortSignal) { if (signal?.aborted) throw abortError(signal); }
+function notifyResolution(callback: ((resolution: PlaceResolution) => void) | undefined, resolution: PlaceResolution) {
+  try { callback?.(resolution); } catch { /* Progress observers must never break resolution. */ }
+}
 
 export function placeGeoFingerprint(place: Place) {
   const value = [PLACE_RESOLUTION_VERSION, normalize(primaryName(place)), place.kind, normalize(place.city), normalize(place.region), normalize(place.countryCode ?? place.country), place.approximate ? "approximate" : "exact"].join("|");
@@ -330,32 +343,83 @@ export class PlaceResolverV2 {
     return resolution;
   }
 
-  async resolve(tripId: string, placeId: string, expectedGeneration: number, signal?: AbortSignal): Promise<PlaceResolutionResult> {
+  async resolve(tripId: string, placeId: string, expectedGeneration: number, signal?: AbortSignal, onStatus?: (resolution: PlaceResolution) => void): Promise<PlaceResolutionResult> {
     const place = this.place(tripId, placeId, expectedGeneration);
     const existing = this.options.store.listPlaceResolutions(tripId).find((item) => item.placeId === placeId);
-    if (existing?.status === "resolved" && resolutionIsCurrent(place, existing)) return { resolution: existing, candidates: [] };
+    if (existing?.status === "resolved" && resolutionIsCurrent(place, existing)) {
+      notifyResolution(onStatus, existing);
+      return { resolution: existing, candidates: [] };
+    }
     throwIfAborted(signal);
-    this.options.store.upsertPlaceResolution(tripId, {
+    const resolving: PlaceResolution = {
       tripId, placeId, geoFingerprint: placeGeoFingerprint(place), status: "resolving", method: "provider_match",
       provider: null, providerPlaceId: null, latitude: null, longitude: null, address: null, confidence: null, resolvedAt: null, errorMessage: null,
-    }, expectedGeneration);
+    };
+    this.options.store.upsertPlaceResolution(tripId, resolving, expectedGeneration);
+    notifyResolution(onStatus, resolving);
     try {
       const matched = await this.matchPlace(place, signal, () => { this.currentTrip(tripId, expectedGeneration); });
       throwIfAborted(signal);
       const resolution = matched.selected ? resolutionFromProvider(tripId, place, matched.selected, matched.method) : unresolved(tripId, place, matched.reason ?? "地图实体仍待确认。", matched.method);
       this.options.store.upsertPlaceResolution(tripId, resolution, expectedGeneration);
+      notifyResolution(onStatus, resolution);
       return { resolution, candidates: matched.candidates };
     } catch (error) {
-      if (signal?.aborted) throw abortError(signal);
+      if (signal?.aborted) {
+        try {
+          this.currentTrip(tripId, expectedGeneration);
+          const resolution = unresolved(tripId, place, "定位已停止。");
+          this.options.store.upsertPlaceResolution(tripId, resolution, expectedGeneration);
+          notifyResolution(onStatus, resolution);
+        } catch { /* A generation change already invalidated this resolution attempt. */ }
+        throw abortError(signal);
+      }
       this.currentTrip(tripId, expectedGeneration);
       const resolution = unresolved(tripId, place, error instanceof Error ? error.message : "地点解析失败。");
       this.options.store.upsertPlaceResolution(tripId, resolution, expectedGeneration);
+      notifyResolution(onStatus, resolution);
       return { resolution, candidates: [] };
     }
   }
-  async resolveMany(tripId: string, placeIds: string[], expectedGeneration: number, signal?: AbortSignal) {
-    const values: PlaceResolutionResult[] = [];
-    for (const placeId of [...new Set(placeIds)]) values.push(await this.resolve(tripId, placeId, expectedGeneration, signal));
+  async resolveMany(
+    tripId: string,
+    placeIds: string[],
+    expectedGeneration: number,
+    signal?: AbortSignal,
+    onProgress?: (progress: PlaceResolutionBatchProgress) => void,
+  ) {
+    const ids = [...new Set(placeIds)];
+    if (!ids.length) return [];
+    const values = new Array<PlaceResolutionResult>(ids.length);
+    const finished = new Set<string>();
+    let cursor = 0;
+    let completed = 0;
+    let fatal = false;
+    const report = (placeId: string, resolution: PlaceResolution) => {
+      if (resolution.status !== "resolving" && !finished.has(placeId)) {
+        finished.add(placeId);
+        completed += 1;
+      }
+      try { onProgress?.({ placeId, status: resolution.status, completed, total: ids.length, resolution }); }
+      catch { /* Progress observers must never break resolution. */ }
+    };
+    const worker = async () => {
+      while (!fatal) {
+        throwIfAborted(signal);
+        const index = cursor;
+        cursor += 1;
+        if (index >= ids.length) return;
+        const placeId = ids[index];
+        try {
+          values[index] = await this.resolve(tripId, placeId, expectedGeneration, signal, (resolution) => report(placeId, resolution));
+        } catch (error) {
+          fatal = true;
+          throw error;
+        }
+      }
+    };
+    const workerCount = Math.min(PLACE_RESOLUTION_BATCH_CONCURRENCY, ids.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
     return values;
   }
 
