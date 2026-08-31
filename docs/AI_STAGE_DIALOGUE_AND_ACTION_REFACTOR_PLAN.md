@@ -30,7 +30,7 @@
 - AI 动作按复杂度使用 `low / medium / high` reasoning；
 - AI 生成的修改类结果必须生成可预览 Proposal，用户 Apply 后才写入正式计划；
 - 明确的主 CTA 本身视为用户确认：点击后直接创建并执行对应 Action，不再额外弹一次“确认生成”卡；
-- 由自然语言识别出的动作先展示 Action Card，用户确认后才执行；
+- 由自然语言识别出的动作先展示 Action Card，用户确认后才执行；需求阶段的 `requirements.update / requirements.clear` 是例外，识别并通过受控参数校验后直接执行确定性 Action；
 - 目的地阶段在 UI 上可以表达“城市 / 区域 / 岛屿 / 独立停留地”，但本次不扩展 `PlaceKind`；后台 Macro 目的地仍统一使用现有 `kind=city` 表达；
 - 行程阶段只能使用 canonical 中已经存在且允许参与规划的地点，不允许行程 Agent 偷偷创建 `newPlaces` 或 `newCandidates`；需要新地点时必须返回兴趣点阶段；
 - 本次数据库升级采用破坏性 cutover：**不实现 v2 → v3 数据迁移，不保留现有本地旅行、对话、线程、任务或 Proposal 数据**；
@@ -89,7 +89,8 @@ type ConversationStage =
           │
           └─ action
                  │
-                 ├─ 对话来源 → 待确认 Action Card
+                 ├─ 需求对话确定性 Action → 直接执行
+                 ├─ 其他对话来源 → 待确认 Action Card
                  └─ 主 CTA → 点击本身即确认
                               │
                               ▼
@@ -138,7 +139,7 @@ type ConversationStage =
 
 ### 4.2 动作确认规则
 
-**自然语言识别出的动作**先显示 Action Card：
+除需求阶段的受控确定性更新外，**自然语言识别出的动作**先显示 Action Card：
 
 ```text
 动作：替换目的地
@@ -151,12 +152,14 @@ type ConversationStage =
 
 规则：
 
-- 用户确认前不启动执行器；
+- `requirements.update / requirements.clear` 在对话识别、参数 Schema 和 generation 校验通过后直接启动确定性执行器，不显示二次确认卡；
+- 其他对话 Action 在用户确认前不启动执行器；
 - AI 发现、推荐和首次生成类动作，确认后可在服务端校验通过时保存结果；
 - AI 删除替代方案、重新规划、优化、修复、细化等修改类输出只能生成 Proposal；
 - Proposal 必须显示 diff，用户再次 Apply 后才修改 canonical plan；
 - 确定性动作在用户已经明确表达目标并完成确认后直接执行受控命令，不再调用第二个 AI；
 - 页面主 CTA（例如“生成目的地建议”“生成行程”）的点击行为本身就是确认，不再额外弹重复确认卡；
+- 旅行需求仍为空时，“生成目的地建议”保持禁用，服务端也拒绝创建对应 Action；
 - 页面卡片中的 preference、拖拽、地图选择、明确删除等现有精确交互继续走确定性代码。
 
 ## 5. 提示词目录与注册表

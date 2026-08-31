@@ -129,6 +129,7 @@ describe("TravelPlannerRuntimeV3 AI action regressions", () => {
 
   it("resolves every generated Macro mapping best-effort before destination generation completes", async () => {
     const store = db(); const created = store.createTrip(); const resolvedIds: string[] = [];
+    store.writePlan(created.id, { ...created.plan, trip: { ...created.plan.trip, preferences: ["自然风景"] } }, 0, { source: "test", summary: "requirements fixture" });
     const resolver = {
       resolve: async () => ({ resolution: null, candidates: [] }),
       resolveMany: async (tripId: string, placeIds: string[], generation: number, _signal?: AbortSignal, onProgress?: (event: any) => void) => {
@@ -150,7 +151,7 @@ describe("TravelPlannerRuntimeV3 AI action regressions", () => {
     } as unknown as PlaceResolverV2;
     const rt = runtime(store, async () => run({
       schemaVersion: 1,
-      baseGeneration: 0,
+      baseGeneration: 1,
       assistantMessage: "生成目的地",
       places: [
         { id: "tmp-place-1", nameZh: "目的地一", nameLocal: null, nameEn: "Macro One", kind: "city", city: "Macro One", region: null, country: "Test", countryCode: "TT", approximate: false },

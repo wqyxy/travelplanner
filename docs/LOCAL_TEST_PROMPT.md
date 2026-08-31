@@ -114,7 +114,7 @@
 - 不存在旧“对话 / 调整”双模式；
 - 切换 stage 不修改 canonical TripStage；
 - 主 CTA 点击本身即确认，不再弹重复确认卡；
-- 聊天识别出的 Action 显示在对应消息下，必须用户确认才执行；
+- 聊天识别出的 Action 显示在对应消息下；需求更新/清除直接确定性执行，其他阶段仍必须用户确认；
 - CTA Action 显示在当前阶段任务区；
 - Proposal 显示 diff，可 Apply / Reject；已 Apply 且无后续写入时可 Undo。
 
@@ -125,8 +125,7 @@
 
 验证：
 - 普通 Dialogue 本身不直接修改 TripFacts；
-- 如果识别为 requirements.update，先产生 pending_confirmation Action Card；
-- 确认后才由 deterministic executor 更新 canonical；
+- 如果识别为 requirements.update，直接由 deterministic executor 更新 canonical，不产生 pending_confirmation Action Card；
 - deterministic executor 不启动 AI Action Task；
 - 成功后 Action 状态为 applied；
 - 重复 confirm 不再次增加 generation；
@@ -135,6 +134,7 @@
 # G. Destination 阶段
 
 点击“生成目的地建议”：
+- 旅行需求完全为空时按钮禁用，服务端也拒绝创建 destination.generate Action；
 - 点击本身就是确认；
 - destination.generate 使用 AI Action、medium reasoning、required web；
 - 输出只生成 Macro Candidate，后台全部 kind=city；

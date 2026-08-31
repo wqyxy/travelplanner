@@ -126,7 +126,19 @@ Runtime 对每个变化广播：
 
 ## Verification Status
 
-本轮代码和回归测试已经写入，但**尚未运行测试**。
+地点定位调度改造对应的完整建议验收仍未运行；本轮浏览器反馈相关的 targeted Runtime / Web helper 测试已经通过。
+
+最新浏览器反馈另补充了两项 requirements 阶段约束：
+
+- 对话识别出的 `requirements.update / requirements.clear` 通过受控参数校验后直接执行确定性 Action，不再显示二次确认卡；
+- 空白旅行需求下禁用“生成目的地建议”，服务端同时拒绝创建空需求的 `destination.generate` CTA Action。
+
+已执行：
+
+- `planner-runtime-v3.test.ts`；
+- `planner-runtime-v3-ai-actions.test.ts`；
+- `requirements-readiness-v3.test.ts`；
+- 共 3 个测试文件、15 个用例，全部 PASS。
 
 下一轮需要由 Codex 执行：
 

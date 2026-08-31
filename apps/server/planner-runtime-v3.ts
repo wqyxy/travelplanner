@@ -80,6 +80,10 @@ function now() { return new Date().toISOString(); }
 function same(left: unknown, right: unknown) { return JSON.stringify(left) === JSON.stringify(right); }
 function stringifySize(value: unknown) { return Buffer.byteLength(JSON.stringify(value), "utf8"); }
 
+function hasTravelRequirements(plan: TravelPlanDocument) {
+  return !same(plan.trip, emptyTravelPlan().trip);
+}
+
 function actionScope(actionType: AiActionType, targetIds: string[], parameters: Record<string, unknown>): ProposalScope {
   if (actionType.startsWith("requirements.")) return { type: "trip", id: null };
   if (actionType.startsWith("destination.") || actionType.startsWith("interest.")) return { type: "candidate_pool", id: null };
@@ -436,7 +440,8 @@ export class TravelPlannerRuntimeV3 {
           });
           const stored = this.options.store.createAction(action).action;
           this.options.store.createAssistantMessage(tripId, stage, output.result.assistantMessage, { type: "action", actionId: stored.id, impactSummary: output.result.impactSummary });
-          this.emit("travel.action.changed", { tripId, actionId: stored.id });
+          if (stored.actionType === "requirements.update" || stored.actionType === "requirements.clear") this.confirmClaimedAction(stored.id, baseGeneration);
+          else this.emit("travel.action.changed", { tripId, actionId: stored.id });
         } else {
           this.options.store.createAssistantMessage(tripId, stage, output.result.assistantMessage, { type: output.result.type });
         }
@@ -465,6 +470,7 @@ export class TravelPlannerRuntimeV3 {
     const registration = actionRegistration(input.actionType);
     if (registration.stage !== input.stage) throw new Error(`CTA Action 与阶段不匹配：${input.actionType}`);
     const trip = this.options.store.requireTrip(input.tripId);
+    if (input.actionType === "destination.generate" && !hasTravelRequirements(trip.plan)) throw new Error("请先填写旅行需求，再生成目的地建议。");
     const rawParameters = input.parameters ?? {};
     const normalizedParameters = parseActionParametersV3(input.actionType, registration.inputContract, "cta", rawParameters);
     const targetIds = input.targetIds ?? [];

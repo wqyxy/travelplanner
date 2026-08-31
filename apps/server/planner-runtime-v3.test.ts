@@ -73,18 +73,24 @@ function runtime(input: {
 }
 
 describe("TravelPlannerRuntimeV3", () => {
-  it("dialogue-detected action stays pending and does not mutate canonical until confirm", async () => {
+  it("applies a requirements dialogue action without a second confirmation", async () => {
     const db = store();
     const trip = db.createTrip();
     const rt = runtime({ store: db, dialogue: () => handle({ schemaVersion: 1, result: { type: "action", assistantMessage: "可以把节奏改轻松。", actionType: "requirements.update", parameters: dialogueParameters({ pace: "轻松" }), targetIds: [], impactSummary: "更新旅行节奏" } }) });
     rt.startConversation(trip.id, "requirements", { message: "节奏轻松一点", selection: { type: "trip", id: null } });
-    await waitFor(() => db.listMessages(trip.id, "requirements").some((message) => message.role === "assistant"));
+    await waitFor(() => db.listActions(trip.id, "requirements")[0]?.status === "applied");
     const action = db.listActions(trip.id, "requirements")[0];
-    expect(action.status).toBe("pending_confirmation");
-    expect(db.requireTrip(trip.id).plan.trip.pace).toBeNull();
-    rt.confirmAction(trip.id, action.id, { expectedGeneration: 0 });
-    await waitFor(() => db.getAction(action.id)?.status === "applied");
+    expect(action.status).toBe("applied");
     expect(db.requireTrip(trip.id).plan.trip.pace).toBe("轻松");
+    db.close();
+  });
+
+  it("rejects destination generation while travel requirements are empty", () => {
+    const db = store();
+    const trip = db.createTrip();
+    const rt = runtime({ store: db, dialogue: () => handle({ schemaVersion: 1, result: { type: "reply", assistantMessage: "ok" } }) });
+    expect(() => rt.createCtaAction({ tripId: trip.id, stage: "destinations", actionType: "destination.generate", parameters: {}, targetIds: [], requestKey: "empty-requirements" })).toThrow("请先填写旅行需求");
+    expect(db.listActions(trip.id, "destinations")).toHaveLength(0);
     db.close();
   });
 
