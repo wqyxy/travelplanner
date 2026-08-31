@@ -14,6 +14,7 @@ import type { TravelStoreV2 } from "./travel-store-v2.js";
 
 export const PLACE_RESOLUTION_VERSION = "v2";
 export const PLACE_RESOLUTION_PROVIDER_SEARCH_LIMIT = 4;
+export const PLACE_RESOLUTION_BASE_SEARCH_LIMIT = 2;
 // MapService still serializes/rate-limits Provider HTTP requests. This only lets
 // several Places advance cooperatively so one ambiguous Place cannot block all others.
 export const PLACE_RESOLUTION_BATCH_CONCURRENCY = 3;
@@ -82,13 +83,23 @@ export function buildPlaceSearchQueries(place: Place, _compatibilityHints: strin
     const query = parts.filter((part): part is string => Boolean(part?.trim())).join(", ").trim();
     if (query && !values.some((item) => normalize(item) === normalize(query))) values.push(query);
   };
-  add(first, place.city, country);
-  if (second) add(second, place.city, country); else add(first, place.region, country);
-  add(first, place.region, country);
-  add(first, country);
-  return values.slice(0, PLACE_RESOLUTION_PROVIDER_SEARCH_LIMIT);
+  if (place.kind === "city") {
+    // A city is its own locality. Repeating it as "Picton, Picton" makes
+    // Nominatim favor same-named facilities such as stations and bus stops.
+    add(first, place.region, country);
+    add(first, country);
+  } else {
+    add(first, place.city, country);
+    if (second) add(second, place.city, country); else add(first, place.region, country);
+  }
+  return values.slice(0, PLACE_RESOLUTION_BASE_SEARCH_LIMIT);
 }
-function hintQuery(place: Place, hint: string) { return [hint.trim(), place.city, place.country ?? place.countryCode].filter(Boolean).join(", "); }
+function hintQuery(place: Place, hint: string) {
+  const context = [place.city, place.region, place.country ?? place.countryCode]
+    .filter((value): value is string => Boolean(value?.trim()));
+  const normalizedHint = normalize(hint);
+  return [hint.trim(), ...context.filter((value) => !normalizedHint.includes(normalize(value)))].join(", ");
+}
 
 function providerCandidate(candidate: MapCandidate): ProviderPlaceCandidate {
   return {
@@ -196,23 +207,6 @@ export function rankProviderCandidates(place: Place, candidates: MapCandidate[])
   for (const item of scored) if (!physical.has(physicalKey(item.candidate))) physical.set(physicalKey(item.candidate), item);
   return [...physical.values()].sort((left, right) => right.score - left.score || left.candidate.providerPlaceId.localeCompare(right.candidate.providerPlaceId));
 }
-function rankedFacts(place: Place, ranked: RankedProviderCandidate) { return matchFacts(place, { ...ranked.candidate, timezone: null }); }
-function automaticCandidateEligible(place: Place, ranked: RankedProviderCandidate) {
-  if (!place.countryCode || !ranked.candidate.countryCode || normalize(place.countryCode) !== normalize(ranked.candidate.countryCode)) return false;
-  const facts = rankedFacts(place, ranked);
-  if (facts.nameScore === 60 && ranked.score >= 80) return true;
-  return facts.nameScore >= 25 && (facts.cityMatch || facts.regionMatch) && ranked.score >= 75;
-}
-export function chooseProviderAutomatically(place: Place, ranked: RankedProviderCandidate[]) {
-  const eligible = ranked.filter((item) => automaticCandidateEligible(place, item));
-  if (!eligible.length) return null;
-  if (eligible.length === 1) return eligible[0];
-  return eligible[0].score - eligible[1].score >= 10 ? eligible[0] : null;
-}
-function reasonableCandidates(place: Place, ranked: RankedProviderCandidate[]) {
-  return ranked.filter((item) => { const facts = rankedFacts(place, item); return facts.nameScore >= 25 && item.score >= 60; });
-}
-
 function resolutionFromProvider(tripId: string, place: Place, selected: RankedProviderCandidate, method: "provider_match" | "provider_choice"): PlaceResolution {
   return {
     tripId, placeId: place.id, geoFingerprint: placeGeoFingerprint(place), status: "resolved", method,
@@ -266,7 +260,7 @@ export class PlaceResolverV2 {
   }
 
   private async askAi(place: Place, candidates: RankedProviderCandidate[], round: 1 | 2, signal: AbortSignal | undefined, assertCurrent: () => void) {
-    if (!this.options.assist || !candidates.length) return { decision: null as MapResolutionAssistOutput | null, selected: null as RankedProviderCandidate | null };
+    if (!this.options.assist) return { decision: null as MapResolutionAssistOutput | null, selected: null as RankedProviderCandidate | null };
     throwIfAborted(signal);
     const raw = await this.options.assist({ place, candidates: candidates.map((item) => item.candidate), round, signal });
     throwIfAborted(signal); assertCurrent();
@@ -276,7 +270,7 @@ export class PlaceResolverV2 {
   }
 
   private async resolveAmbiguity(place: Place, state: SearchState, signal: AbortSignal | undefined, assertCurrent: () => void): Promise<PlaceResolutionPreview> {
-    const first = await this.askAi(place, reasonableCandidates(place, state.ranked), 1, signal, assertCurrent);
+    const first = await this.askAi(place, state.ranked, 1, signal, assertCurrent);
     if (first.selected) return { geoFingerprint: placeGeoFingerprint(place), selected: first.selected, candidates: state.ranked, method: "provider_choice", reason: first.decision?.reason ?? null };
     if (!first.decision) return { geoFingerprint: placeGeoFingerprint(place), selected: null, candidates: state.ranked, method: "provider_choice", reason: "地图消歧 Agent 暂时无法判断目标实体。" };
     if (first.decision.action === "unresolved") return { geoFingerprint: placeGeoFingerprint(place), selected: null, candidates: state.ranked, method: "provider_choice", reason: first.decision.reason };
@@ -287,33 +281,17 @@ export class PlaceResolverV2 {
       const searched = await this.runSearch(place, hintQuery(place, hint), state, signal, assertCurrent);
       if (!searched) continue;
       supplemented = true;
-      const automatic = chooseProviderAutomatically(place, state.ranked);
-      if (automatic) return { geoFingerprint: placeGeoFingerprint(place), selected: automatic, candidates: state.ranked, method: "provider_match", reason: null };
     }
-    const finalCandidates = reasonableCandidates(place, state.ranked);
-    if (!finalCandidates.length) return { geoFingerprint: placeGeoFingerprint(place), selected: null, candidates: state.ranked, method: "provider_choice", reason: "补充搜索后仍没有合理候选。" };
     if (!supplemented) return { geoFingerprint: placeGeoFingerprint(place), selected: null, candidates: state.ranked, method: "provider_choice", reason: first.decision.reason || "搜索预算已用尽，仍无法确认目标实体。" };
-    const second = await this.askAi(place, finalCandidates, 2, signal, assertCurrent);
+    const second = await this.askAi(place, state.ranked, 2, signal, assertCurrent);
     if (second.selected) return { geoFingerprint: placeGeoFingerprint(place), selected: second.selected, candidates: state.ranked, method: "provider_choice", reason: second.decision?.reason ?? null };
     return { geoFingerprint: placeGeoFingerprint(place), selected: null, candidates: state.ranked, method: "provider_choice", reason: second.decision?.reason ?? first.decision.reason ?? "最终地图消歧仍无法确认目标实体。" };
   }
 
   private async matchPlace(place: Place, signal?: AbortSignal, assertCurrent: () => void = () => undefined): Promise<PlaceResolutionPreview> {
     const state: SearchState = { raw: [], ranked: [], searchCount: 0, queries: new Set() };
-    for (const query of buildPlaceSearchQueries(place)) {
-      await this.runSearch(place, query, state, signal, assertCurrent);
-      const automatic = chooseProviderAutomatically(place, state.ranked);
-      if (automatic) return { geoFingerprint: placeGeoFingerprint(place), selected: automatic, candidates: state.ranked, method: "provider_match", reason: null };
-      const ambiguous = reasonableCandidates(place, state.ranked);
-      if (state.searchCount >= 2 && ambiguous.length && state.searchCount < PLACE_RESOLUTION_PROVIDER_SEARCH_LIMIT && this.options.assist) {
-        return this.resolveAmbiguity(place, state, signal, assertCurrent);
-      }
-    }
-    const ambiguous = reasonableCandidates(place, state.ranked);
-    if (!ambiguous.length) {
-      return { geoFingerprint: placeGeoFingerprint(place), selected: null, candidates: state.ranked, method: "provider_match", reason: state.ranked.length ? "地图候选与目标地点的名称或地区证据不足。" : "地图服务未找到合理候选。" };
-    }
-    if (!this.options.assist) return { geoFingerprint: placeGeoFingerprint(place), selected: null, candidates: state.ranked, method: "provider_match", reason: "存在合理候选，但缺少地图消歧能力。" };
+    for (const query of buildPlaceSearchQueries(place)) await this.runSearch(place, query, state, signal, assertCurrent);
+    if (!this.options.assist) return { geoFingerprint: placeGeoFingerprint(place), selected: null, candidates: state.ranked, method: "provider_choice", reason: "地图消歧 Agent 暂时无法判断目标实体。" };
     return this.resolveAmbiguity(place, state, signal, assertCurrent);
   }
 

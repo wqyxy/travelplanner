@@ -2,13 +2,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { emptyTravelPlan, type MapResolutionAssistOutput } from "./contracts-v2.js";
+import { emptyTravelPlan, type MapResolutionAssistOutput, type Place } from "./contracts-v2.js";
 import type { MapCandidate } from "./map-service.js";
 import {
+  PLACE_RESOLUTION_BASE_SEARCH_LIMIT,
   PLACE_RESOLUTION_PROVIDER_SEARCH_LIMIT,
   PlaceResolverV2,
   buildPlaceSearchQueries,
-  chooseProviderAutomatically,
   placeGeoFingerprint,
   rankProviderCandidates,
   resolutionIsCurrent,
@@ -20,63 +20,64 @@ afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, f
 function databasePath() { const root = mkdtempSync(path.join(tmpdir(), "place-resolver-v2-")); roots.push(root); return path.join(root, "travel.sqlite3"); }
 
 const place = { id: "p-1", nameZh: "清水寺", nameLocal: "清水寺", nameEn: "Kiyomizu-dera", kind: "attraction" as const, city: "京都", region: "京都府", country: "日本", countryCode: "JP", approximate: false };
+const picton = { id: "picton", nameZh: "皮克顿", nameLocal: "Picton", nameEn: "Picton", kind: "city" as const, city: "Picton", region: "Marlborough", country: "New Zealand", countryCode: "NZ", approximate: true };
 const candidate = (overrides: Partial<MapCandidate> = {}): MapCandidate => ({ providerPlaceId: "provider-1", name: "Kiyomizu-dera", displayName: "Kiyomizu-dera, Kyoto, Japan", latitude: 34.9948, longitude: 135.785, category: "tourism", placeType: "attraction", countryCode: "jp", region: "京都府", city: "京都", timezone: null, ...overrides });
+const choose = (providerPlaceId: string, reason = "候选与目标实体一致。"): MapResolutionAssistOutput => ({ schemaVersion: 1, action: "choose_candidate", providerPlaceId, searchHints: [], reason });
 
-function seededStore() {
+function seededStore(seedPlace: Place = place) {
   const store = new TravelStoreV2(databasePath());
   const created = store.createTrip();
   const plan = emptyTravelPlan();
-  plan.places.push(place);
-  plan.candidates.push({ id: "c-1", placeId: "p-1", planningAreaCandidateId: null, preference: "optional", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: 90, tags: [] });
+  plan.places.push(seedPlace);
+  plan.candidates.push({ id: "c-1", placeId: seedPlace.id, planningAreaCandidateId: null, preference: "optional", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: 90, tags: [] });
   const written = store.writePlan(created.id, plan, 0, { source: "test", summary: "seed place" });
   return { store, tripId: created.id, generation: written.generation };
 }
 
 describe("deterministic provider candidate handling", () => {
-  it("builds at most four prioritized localized queries without duplicates", () => {
+  it("uses two baseline searches and reserves the remaining Provider budget for AI hints", () => {
     const queries = buildPlaceSearchQueries(place);
     expect(queries).toEqual([
       "清水寺, 京都, 日本",
       "Kiyomizu-dera, 京都, 日本",
-      "清水寺, 京都府, 日本",
-      "清水寺, 日本",
     ]);
     expect(new Set(queries).size).toBe(queries.length);
-    expect(queries.length).toBeLessThanOrEqual(PLACE_RESOLUTION_PROVIDER_SEARCH_LIMIT);
+    expect(queries.length).toBe(PLACE_RESOLUTION_BASE_SEARCH_LIMIT);
+    expect(queries.length).toBeLessThan(PLACE_RESOLUTION_PROVIDER_SEARCH_LIMIT);
   });
 
-  it("filters a conflicting country and selects a high-confidence exact candidate", () => {
+  it("uses a region-first query for a city instead of repeating the city name", () => {
+    expect(buildPlaceSearchQueries(picton)).toEqual([
+      "Picton, Marlborough, New Zealand",
+      "Picton, New Zealand",
+    ]);
+  });
+
+  it("keeps Provider candidates ranked but leaves their semantic choice to AI", () => {
     const ranked = rankProviderCandidates(place, [candidate(), candidate({ providerPlaceId: "wrong", countryCode: "us", displayName: "Kiyomizu, USA" })]);
     expect(ranked).toHaveLength(1);
     expect(ranked[0].score).toBeGreaterThanOrEqual(80);
-    expect(chooseProviderAutomatically(place, ranked)?.candidate.providerPlaceId).toBe("provider-1");
-  });
-
-  it("does not auto-select low confidence or country-unknown targets", () => {
-    const weak = rankProviderCandidates(place, [candidate({ name: "Temple", displayName: "Temple, Kyoto, Japan", city: null, region: null, category: "tourism", placeType: "attraction" })]);
-    expect(chooseProviderAutomatically(place, weak)).toBeNull();
-    expect(chooseProviderAutomatically({ ...place, countryCode: null }, rankProviderCandidates({ ...place, countryCode: null }, [candidate()]))).toBeNull();
   });
 });
 
 describe("PlaceResolverV2", () => {
-  it("stops after the first clear Provider match and never calls AI", async () => {
+  it("asks AI to confirm even a single exact Provider candidate", async () => {
     const { store, tripId, generation } = seededStore();
     let searches = 0;
     let assists = 0;
     const resolver = new PlaceResolverV2({
       store,
       maps: { search: async () => { searches += 1; return [candidate()]; }, reverse: async () => null },
-      assist: async () => { assists += 1; return null; },
+      assist: async () => { assists += 1; return { schemaVersion: 1, action: "choose_candidate", providerPlaceId: "provider-1", searchHints: [], reason: "名称和地点一致。" }; },
     });
     const result = await resolver.resolve(tripId, "p-1", generation);
-    expect(searches).toBe(1);
-    expect(assists).toBe(0);
-    expect(result.resolution).toMatchObject({ status: "resolved", method: "provider_match", providerPlaceId: "provider-1" });
+    expect(searches).toBe(PLACE_RESOLUTION_BASE_SEARCH_LIMIT);
+    expect(assists).toBe(1);
+    expect(result.resolution).toMatchObject({ status: "resolved", method: "provider_choice", providerPlaceId: "provider-1" });
     store.close();
   });
 
-  it("continues past weak candidates but never exceeds four Provider searches", async () => {
+  it("keeps the Provider request budget bounded when AI declines weak candidates", async () => {
     const { store, tripId, generation } = seededStore();
     let searches = 0;
     let assists = 0;
@@ -84,11 +85,11 @@ describe("PlaceResolverV2", () => {
     const resolver = new PlaceResolverV2({
       store,
       maps: { search: async () => { searches += 1; return [weak]; }, reverse: async () => null },
-      assist: async () => { assists += 1; return null; },
+      assist: async () => { assists += 1; return { schemaVersion: 1, action: "unresolved", providerPlaceId: null, searchHints: [], reason: "证据不足。" }; },
     });
     const result = await resolver.resolve(tripId, "p-1", generation);
-    expect(searches).toBe(PLACE_RESOLUTION_PROVIDER_SEARCH_LIMIT);
-    expect(assists).toBe(0);
+    expect(searches).toBe(PLACE_RESOLUTION_BASE_SEARCH_LIMIT);
+    expect(assists).toBe(1);
     expect(result.resolution.status).toBe("unresolved");
     store.close();
   });
@@ -110,16 +111,18 @@ describe("PlaceResolverV2", () => {
         },
         reverse: async () => null,
       },
-      assist: async () => {
+      assist: async ({ round }) => {
         assists += 1;
-        return { schemaVersion: 1, action: "retry_with_hints", providerPlaceId: null, searchHints: ["Kiyomizu-dera official Higashiyama"], reason: "需要正式名称确认。" };
+        return round === 1
+          ? { schemaVersion: 1, action: "retry_with_hints", providerPlaceId: null, searchHints: ["Kiyomizu-dera official Higashiyama"], reason: "需要正式名称确认。" }
+          : { schemaVersion: 1, action: "choose_candidate", providerPlaceId: "provider-1", searchHints: [], reason: "补充搜索给出了正式地点。" };
       },
     });
     const result = await resolver.resolve(tripId, "p-1", generation);
-    expect(assists).toBe(1);
+    expect(assists).toBe(2);
     expect(queries.some((query) => query.includes("official Higashiyama"))).toBe(true);
     expect(queries.length).toBeLessThanOrEqual(PLACE_RESOLUTION_PROVIDER_SEARCH_LIMIT);
-    expect(result.resolution).toMatchObject({ status: "resolved", method: "provider_match", providerPlaceId: "provider-1" });
+    expect(result.resolution).toMatchObject({ status: "resolved", method: "provider_choice", providerPlaceId: "provider-1" });
     store.close();
   });
 
@@ -141,26 +144,66 @@ describe("PlaceResolverV2", () => {
     store.close();
   });
 
-  it("does not call AI when four searches produce no reasonable candidate", async () => {
+  it("gives AI both the same-named Picton station and town, then preserves the town choice", async () => {
+    const { store, tripId, generation } = seededStore(picton);
+    const station = candidate({ providerPlaceId: "picton-station", name: "Picton", displayName: "Picton Station, Picton, Marlborough, New Zealand", latitude: -41.28837, longitude: 174.00486, category: "railway", placeType: "station", countryCode: "nz", region: "Marlborough", city: "Picton" });
+    const town = candidate({ providerPlaceId: "picton-town", name: "Picton", displayName: "Picton, Marlborough District, Marlborough, New Zealand", latitude: -41.290916, longitude: 174.006908, category: "place", placeType: "town", countryCode: "nz", region: "Marlborough", city: "Picton" });
+    const queries: string[] = [];
+    let seenCandidates: string[] = [];
+    const resolver = new PlaceResolverV2({
+      store,
+      maps: { search: async (query) => { queries.push(query); return [station, town]; }, reverse: async () => null },
+      assist: async ({ candidates }) => { seenCandidates = candidates.map((item) => item.providerPlaceId); return choose("picton-town", "town 是目的地语义匹配项。"); },
+    });
+    const result = await resolver.resolve(tripId, picton.id, generation);
+    expect(queries).toEqual(["Picton, Marlborough, New Zealand", "Picton, New Zealand"]);
+    expect(seenCandidates).toEqual(["picton-town", "picton-station"]);
+    expect(result.resolution).toMatchObject({ status: "resolved", method: "provider_choice", providerPlaceId: "picton-town" });
+    store.close();
+  });
+
+  it("does not auto-select a same-named station and avoids duplicating AI hint context", async () => {
+    const { store, tripId, generation } = seededStore(picton);
+    const station = candidate({ providerPlaceId: "picton-station", name: "Picton", displayName: "Picton Station, Picton, Marlborough, New Zealand", latitude: -41.28837, longitude: 174.00486, category: "railway", placeType: "station", countryCode: "nz", region: "Marlborough", city: "Picton" });
+    const queries: string[] = [];
+    const resolver = new PlaceResolverV2({
+      store,
+      maps: { search: async (query) => { queries.push(query); return [station]; }, reverse: async () => null },
+      assist: async ({ round }) => round === 1
+        ? { schemaVersion: 1, action: "retry_with_hints", providerPlaceId: null, searchHints: ["Picton town centre, Marlborough, New Zealand"], reason: "需要城镇候选。" }
+        : { schemaVersion: 1, action: "unresolved", providerPlaceId: null, searchHints: [], reason: "仍只有车站候选。" },
+    });
+    const result = await resolver.resolve(tripId, picton.id, generation);
+    expect(queries).toContain("Picton town centre, Marlborough, New Zealand");
+    expect(queries).not.toContain("Picton town centre, Marlborough, New Zealand, Picton, New Zealand");
+    expect(result.resolution).toMatchObject({ status: "unresolved", providerPlaceId: null, latitude: null, longitude: null });
+    store.close();
+  });
+
+  it("lets AI request a supplemental search when the baseline searches return nothing", async () => {
     const { store, tripId, generation } = seededStore();
     let searches = 0;
     let assists = 0;
     const resolver = new PlaceResolverV2({
       store,
-      maps: { search: async () => { searches += 1; return []; }, reverse: async () => null },
-      assist: async () => { assists += 1; return null; },
+      maps: { search: async (query) => { searches += 1; return query.includes("official") ? [candidate()] : []; }, reverse: async () => null },
+      assist: async ({ round }) => {
+        assists += 1;
+        return round === 1
+          ? { schemaVersion: 1, action: "retry_with_hints", providerPlaceId: null, searchHints: ["Kiyomizu-dera official"], reason: "需要更精确的名称。" }
+          : { schemaVersion: 1, action: "choose_candidate", providerPlaceId: "provider-1", searchHints: [], reason: "补充候选匹配。" };
+      },
     });
     const result = await resolver.resolve(tripId, "p-1", generation);
-    expect(searches).toBe(PLACE_RESOLUTION_PROVIDER_SEARCH_LIMIT);
-    expect(assists).toBe(0);
-    expect(result.resolution).toMatchObject({ status: "unresolved", latitude: null, longitude: null });
-    expect(result.resolution.errorMessage).toMatch(/地图服务未找到/);
+    expect(searches).toBe(PLACE_RESOLUTION_BASE_SEARCH_LIMIT + 1);
+    expect(assists).toBe(2);
+    expect(result.resolution).toMatchObject({ status: "resolved", method: "provider_choice", providerPlaceId: "provider-1" });
     store.close();
   });
 
   it("previews without writes, commits across unrelated generations, and drops stale semantic previews", async () => {
     const { store, tripId, generation } = seededStore();
-    const resolver = new PlaceResolverV2({ store, maps: { search: async () => [candidate()], reverse: async () => null } });
+    const resolver = new PlaceResolverV2({ store, maps: { search: async () => [candidate()], reverse: async () => null }, assist: async () => choose("provider-1") });
     const preview = await resolver.preview(place);
     expect(store.listPlaceResolutions(tripId)).toEqual([]);
 
@@ -168,7 +211,7 @@ describe("PlaceResolverV2", () => {
     unrelated.trip.title = "京都旅行（已更新标题）";
     const unrelatedWrite = store.writePlan(tripId, unrelated, generation, { source: "test", summary: "unrelated edit" });
     const committed = resolver.commitPreviewLatest(tripId, "p-1", preview);
-    expect(committed).toMatchObject({ status: "resolved", method: "provider_match" });
+    expect(committed).toMatchObject({ status: "resolved", method: "provider_choice" });
     expect(store.getPlaceResolution(tripId, "p-1")).toEqual(committed);
 
     const stalePreview = await resolver.preview(unrelated.places[0]);
@@ -200,7 +243,7 @@ describe("PlaceResolverV2", () => {
 
   it("rejects stale strict generations and detects semantic fingerprint changes", async () => {
     const { store, tripId, generation } = seededStore();
-    const resolver = new PlaceResolverV2({ store, maps: { search: async () => [candidate()], reverse: async () => candidate() } });
+    const resolver = new PlaceResolverV2({ store, maps: { search: async () => [candidate()], reverse: async () => candidate() }, assist: async () => choose("provider-1") });
     const resolved = await resolver.resolve(tripId, "p-1", generation);
     expect(resolutionIsCurrent(place, resolved.resolution)).toBe(true);
     const trip = store.requireTrip(tripId);
