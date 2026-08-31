@@ -244,10 +244,10 @@
 .workspace-primary-cta-v3 { margin-top: auto; width: 100%; justify-content: center; }
 .candidate-footer-flow-v3 { align-items: center; justify-content: space-between; gap: 10px; }
 .candidate-footer-flow-v3 > div { display: flex; gap: 8px; flex-wrap: wrap; }
-.candidate-edit-actions { opacity: .82; }
-.candidate-edit-actions button.danger,
+.candidate-edit-action { opacity: .82; }
+.candidate-edit-action.danger,
 .candidate-dialog .button.danger { color: var(--danger, #b42318); }
-.candidate-edit-actions button.danger:hover { color: var(--danger, #b42318); border-color: var(--danger, #b42318); }
+.candidate-edit-action.danger:hover { color: var(--danger, #b42318); border-color: var(--danger, #b42318); }
 .candidate-generation-warning { max-width: 220px; color: var(--danger, #b36e1d); font-size: 10px; line-height: 1.4; }
 .delete-impact-list { display: grid; gap: 0; }
 .delete-impact-list p { display: block; margin: 0; line-height: 1.6; }
