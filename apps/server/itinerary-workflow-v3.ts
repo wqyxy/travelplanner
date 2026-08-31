@@ -230,7 +230,8 @@ export function deriveItineraryUpdateStateV3(plan: TravelPlanDocument) {
   const macros = macroCandidates(plan);
   const macroPlaceIds = new Set(macros.map((candidate) => candidate.placeId));
   const represented = new Set(plan.days.map((day) => day.endAnchor.placeId).filter((id): id is string => Boolean(id) && macroPlaceIds.has(id)));
-  const macroNeedsUpdate = Boolean(plan.days.length) && (represented.size !== macroPlaceIds.size || [...macroPlaceIds].some((id) => !represented.has(id)));
+  const hasInvalidMacroDay = plan.days.some((day) => !day.endAnchor.placeId || !macroPlaceIds.has(day.endAnchor.placeId));
+  const macroNeedsUpdate = Boolean(plan.days.length) && (hasInvalidMacroDay || represented.size !== macroPlaceIds.size || [...macroPlaceIds].some((id) => !represented.has(id)));
 
   const places = new Map(plan.places.map((place) => [place.id, place]));
   const scheduled = new Set(plan.days.flatMap((day) => day.stops.map((stop) => stop.candidateId).filter((id): id is string => Boolean(id))));
