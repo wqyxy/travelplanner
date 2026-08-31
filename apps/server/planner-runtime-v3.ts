@@ -750,15 +750,19 @@ export class TravelPlannerRuntimeV3 {
     };
   }
 
-  private async resolveChangedPlaces(tripId: string, placeIds: string[], expectedGeneration: number, taskId?: string) {
+  private async resolveChangedPlaces(tripId: string, placeIds: string[], expectedGeneration: number, taskId?: string, signal?: AbortSignal) {
+    if (signal?.aborted) throw new Error("AI 任务已停止。");
     const current = this.options.store.requireTrip(tripId);
     if (current.contentGeneration !== expectedGeneration) return [];
     const existing = new Set(current.plan.places.map((place) => place.id));
     const ids = [...new Set(placeIds)].filter((placeId) => existing.has(placeId));
     if (!ids.length) return [];
     try {
-      return await this.options.resolver.resolveMany(tripId, ids, expectedGeneration, undefined, this.resolutionProgress(tripId, taskId));
+      const result = await this.options.resolver.resolveMany(tripId, ids, expectedGeneration, signal, this.resolutionProgress(tripId, taskId));
+      if (signal?.aborted) throw new Error("AI 任务已停止。");
+      return result;
     } catch (error) {
+      if (signal?.aborted || aiErrorMessageV3(error) === "AI 任务已停止。") throw new Error("AI 任务已停止。");
       if (aiErrorMessageV3(error) === "CONTENT_GENERATION_SUPERSEDED") return [];
       return [];
     }
@@ -815,6 +819,7 @@ export class TravelPlannerRuntimeV3 {
     const failedAreas: InterestFailure[] = [];
     const resolutionPlaceIds = new Set<string>();
     const activeRuns = new Set<{ interrupt: () => Promise<void> }>();
+    const resolutionAbortController = new AbortController();
 
     const publishProgress = () => {
       if (!taskId) return;
@@ -824,6 +829,11 @@ export class TravelPlannerRuntimeV3 {
       const runs = [...activeRuns];
       await Promise.allSettled(runs.map((run) => run.interrupt()));
     };
+    const throwIfHalted = () => {
+      if (cancelRequested) throw new Error("AI 任务已停止。");
+      if (fatalError) throw fatalError;
+      if (haltRequested) throw new Error("兴趣点研究已停止。");
+    };
     if (taskId) {
       this.rememberActive(taskId, {
         tripId: action.tripId,
@@ -831,6 +841,7 @@ export class TravelPlannerRuntimeV3 {
         interrupt: async () => {
           cancelRequested = true;
           haltRequested = true;
+          resolutionAbortController.abort();
           await interruptAll();
         },
       });
@@ -851,7 +862,7 @@ export class TravelPlannerRuntimeV3 {
     };
 
     const processTarget = async (targetId: string) => {
-      if (cancelRequested || haltRequested) return;
+      throwIfHalted();
       const snapshot = this.options.store.requireTrip(action.tripId);
       const target = snapshot.plan.candidates.find((candidate) => candidate.id === targetId);
       const targetPlace = target ? snapshot.plan.places.find((place) => place.id === target.placeId) : null;
@@ -876,11 +887,15 @@ export class TravelPlannerRuntimeV3 {
       peakConcurrency = Math.max(peakConcurrency, activeRuns.size);
       publishProgress();
       try {
+        if (cancelRequested || haltRequested) {
+          await run.interrupt().catch(() => undefined);
+          throwIfHalted();
+        }
         const output = await run.result;
-        if (cancelRequested) throw new Error("AI 任务已停止。");
+        throwIfHalted();
         aiSuggestedCount += output.candidates.length;
         await withCommit(async () => {
-          if (cancelRequested) throw new Error("AI 任务已停止。");
+          throwIfHalted();
           const current = this.options.store.requireTrip(action.tripId);
           if (current.contentGeneration !== expectedGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
           const normalized = normalizeCandidateDiscoveryOutput(output, "micro");
@@ -892,11 +907,13 @@ export class TravelPlannerRuntimeV3 {
             if (placeId) resolutionPlaceIds.add(placeId);
           }
           if (!same(applied.plan, current.plan)) {
+            throwIfHalted();
             const written = this.options.store.writePlan(action.tripId, applied.plan, expectedGeneration, { source: `action:${action.actionType}`, summary: `AI 发现兴趣点 · ${targetPlace.nameZh}` }, { keepActionId: action.id });
             expectedGeneration = written.generation;
             this.emit("travel.document.changed", { tripId: action.tripId, generation: written.generation, changedDayIds: [] });
           }
         });
+        throwIfHalted();
         successfulAreaIds.push(targetId);
       } finally {
         activeRuns.delete(run);
@@ -911,15 +928,23 @@ export class TravelPlannerRuntimeV3 {
         try {
           await processTarget(targetId);
         } catch (error) {
-          if (cancelRequested || aiErrorMessageV3(error) === "AI 任务已停止。") {
+          const message = aiErrorMessageV3(error);
+          if (cancelRequested) {
+            haltRequested = true;
+            resolutionAbortController.abort();
+          } else if (fatalError || haltRequested) {
+            // Another worker already requested a global halt. Do not turn its interrupt into a user Stop.
+          } else if (message === "AI 任务已停止。") {
             cancelRequested = true;
             haltRequested = true;
+            resolutionAbortController.abort();
           } else if (isGlobalFailure(error)) {
-            fatalError = error instanceof Error ? error : new Error(aiErrorMessageV3(error));
+            fatalError = error instanceof Error ? error : new Error(message);
             haltRequested = true;
+            resolutionAbortController.abort();
             await interruptAll();
           } else {
-            failedAreas.push({ targetId, errorSummary: normalizePublicAiSummaryV3(aiErrorMessageV3(error)).slice(0, 500) });
+            failedAreas.push({ targetId, errorSummary: normalizePublicAiSummaryV3(message).slice(0, 500) });
           }
         } finally {
           completedAreas += 1;
@@ -932,15 +957,15 @@ export class TravelPlannerRuntimeV3 {
     await Promise.all(Array.from({ length: workerCount }, () => worker()));
     await commitGate;
 
-    if (cancelRequested) throw new Error("AI 任务已停止。");
-    if (fatalError) throw fatalError;
+    throwIfHalted();
     if (this.options.store.requireTrip(action.tripId).contentGeneration !== expectedGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
     if (!successfulAreaIds.length) {
       const details = failedAreas.slice(0, 3).map((item) => `${item.targetId}: ${item.errorSummary}`).join("；");
       throw new Error(details ? `所有兴趣点研究区域均失败：${details}` : "所有兴趣点研究区域均失败。");
     }
 
-    await this.resolveChangedPlaces(action.tripId, [...resolutionPlaceIds], expectedGeneration, taskId ?? undefined);
+    await this.resolveChangedPlaces(action.tripId, [...resolutionPlaceIds], expectedGeneration, taskId ?? undefined, resolutionAbortController.signal);
+    throwIfHalted();
     const current = this.options.store.requireTrip(action.tripId);
     if (current.contentGeneration !== expectedGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
     const currentResolutions = currentPlaceResolutions(current, this.options.store.listPlaceResolutions(action.tripId));
@@ -952,6 +977,7 @@ export class TravelPlannerRuntimeV3 {
       else unresolvedCount += 1;
     }
 
+    throwIfHalted();
     const interestDiscovery = {
       totalAreas: targets.length,
       concurrency: INTEREST_DISCOVERY_CONCURRENCY,
@@ -967,6 +993,7 @@ export class TravelPlannerRuntimeV3 {
     };
     if (taskId) this.options.tasks.metadata(taskId, { ...(this.options.store.getAiTask(taskId)?.metadata ?? {}), interestDiscovery });
     const resultRef = `interest:v1;areas=${successfulAreaIds.length}/${targets.length};failed=${failedAreas.length};suggested=${aiSuggestedCount};added=${actualAddedCount};merged=${mergedDuplicateCount};resolved=${resolvedCount};pending=${unresolvedCount}`;
+    throwIfHalted();
     this.options.store.completeAction(action.id, resultRef);
   }
 
