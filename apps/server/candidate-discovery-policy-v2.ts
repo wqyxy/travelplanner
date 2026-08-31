@@ -6,6 +6,19 @@ import type {
 export const CANDIDATE_DISCOVERY_BATCH_LIMIT = 9;
 export const MICRO_DISCOVERY_AREA_BATCH_SIZE = 1;
 
+const MARKDOWN_LINK_PATTERN = /!?\[[^\]\r\n]*\]\(\s*[^)\r\n]+\s*\)/iu;
+const URL_SCHEME_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^\s\"'<>]+/iu;
+const WEB_DOMAIN_PATTERN = /\b(?:www\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}(?::\d{2,5})?(?:[/?#][^\s\"'<>)]*)?/iu;
+const SOURCE_LIST_PATTERN = /(?:来源|参考(?:资料|链接)?|sources|references)\s*[:：]/iu;
+
+export function containsForbiddenResearchLink(value: unknown) {
+  const text = JSON.stringify(value);
+  return MARKDOWN_LINK_PATTERN.test(text)
+    || URL_SCHEME_PATTERN.test(text)
+    || WEB_DOMAIN_PATTERN.test(text)
+    || SOURCE_LIST_PATTERN.test(text);
+}
+
 /** Compatibility name retained for callers. targetCount is now a per-request maximum. */
 export type FixedAreaTargetV2 = { planningAreaCandidateId: string; targetCount: number };
 export type RejectedDiscoveryCandidateV2 = { planningAreaCandidateId: string | null; name: string; reason: string };
@@ -33,7 +46,7 @@ export function validateMacroCandidateDiscovery(output: MacroCandidateDiscoveryO
 }
 
 export function validateMicroCandidateDiscovery(output: MicroCandidateDiscoveryOutput, targetIds: string[], areaRequests: FixedAreaTargetV2[]) {
-  if (/https?:\/\//iu.test(JSON.stringify(output))) throw new Error("兴趣点研究来源链接不得写入结构化输出或持久化数据。");
+  if (containsForbiddenResearchLink(output)) throw new Error("兴趣点研究来源链接或引用列表不得写入结构化输出或持久化数据。");
   if (targetIds.length !== MICRO_DISCOVERY_AREA_BATCH_SIZE) throw new Error("每次兴趣点研究必须且只能处理 1 个目的地。");
   const expectedIds = new Set(targetIds);
   const requests = new Map(areaRequests.map((request) => [request.planningAreaCandidateId, request.targetCount]));
