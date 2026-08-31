@@ -1,5 +1,6 @@
 import { ArrowRight, RefreshCw, Sparkles, TriangleAlert } from "lucide-react";
 import type { WorkspaceV3 } from "./v3-types";
+import "./macro-detail-v3.css";
 
 function placeName(workspace: WorkspaceV3, placeId: string | null) {
   if (!placeId) return "未设置";
