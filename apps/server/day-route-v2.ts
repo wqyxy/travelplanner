@@ -14,6 +14,8 @@ import type { TravelStoreV2 } from "./travel-store-v2.js";
 type Maps = Pick<MapService, "route">;
 type RouteNode = { id: string; placeId: string; modeFromPrevious: TransportMode };
 
+const macroRouteId = (dayId: string) => `macro:${dayId}`;
+
 function hash(value: unknown) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
@@ -22,8 +24,27 @@ function nodes(day: Day): RouteNode[] {
   const values: RouteNode[] = [];
   if (day.startAnchor.placeId) values.push({ id: day.startAnchor.id, placeId: day.startAnchor.placeId, modeFromPrevious: "none" });
   for (const stop of day.stops) values.push({ id: stop.id, placeId: stop.placeId, modeFromPrevious: stop.transportFromPrevious?.mode ?? "walk" });
-  if (day.endAnchor.placeId) values.push({ id: day.endAnchor.id, placeId: day.endAnchor.placeId, modeFromPrevious: "walk" });
+  if (day.endAnchor.placeId) {
+    values.push({
+      id: day.endAnchor.id,
+      placeId: day.endAnchor.placeId,
+      modeFromPrevious: day.stops.length ? "walk" : day.transferMode,
+    });
+  }
   return values;
+}
+
+function macroDay(day: Day): Day {
+  return {
+    ...structuredClone(day),
+    stops: [],
+    detailLevel: "planned",
+    detailStatus: null,
+  };
+}
+
+function macroRouteRequired(day: Day) {
+  return Boolean(day.startAnchor.placeId && day.endAnchor.placeId && day.startAnchor.placeId !== day.endAnchor.placeId);
 }
 
 function currentResolution(placeId: string, planPlaces: Map<string, any>, resolutions: Map<string, PlaceResolution>) {
@@ -82,11 +103,43 @@ export class DayRouteServiceV2 {
     }));
   }
 
+  workspaceMacroRouteState(tripId: string) {
+    const workspace = this.options.store.getWorkspace(tripId);
+    const places = new Map(workspace.trip.plan.places.map((place) => [place.id, place]));
+    const routes = new Map(workspace.routes.map((route) => [route.dayId, route]));
+    return workspace.trip.plan.days.map((day) => {
+      const routeDay = macroDay(day);
+      const route = routes.get(macroRouteId(day.id)) ?? null;
+      const required = macroRouteRequired(day);
+      return {
+        dayId: day.id,
+        routeId: macroRouteId(day.id),
+        required,
+        dirty: required ? routeIsDirty(routeDay, route, places, workspace.resolutions) : false,
+        route,
+      };
+    });
+  }
+
   async recalculate(tripId: string, dayId: string, expectedGeneration: number) {
     const trip = this.options.store.requireTrip(tripId);
     if (trip.contentGeneration !== expectedGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
     const day = trip.plan.days.find((item) => item.id === dayId);
     if (!day) throw new Error(`未知 Day：${dayId}`);
+    return this.calculate(tripId, day, day.id, expectedGeneration);
+  }
+
+  async recalculateMacro(tripId: string, dayId: string, expectedGeneration: number) {
+    const trip = this.options.store.requireTrip(tripId);
+    if (trip.contentGeneration !== expectedGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
+    const day = trip.plan.days.find((item) => item.id === dayId);
+    if (!day) throw new Error(`未知 Day：${dayId}`);
+    if (!macroRouteRequired(day)) return null;
+    return this.calculate(tripId, macroDay(day), macroRouteId(day.id), expectedGeneration);
+  }
+
+  private async calculate(tripId: string, day: Day, persistedDayId: string, expectedGeneration: number) {
+    const trip = this.options.store.requireTrip(tripId);
     const placeMap = new Map(trip.plan.places.map((place) => [place.id, place]));
     const resolutionMap = new Map(this.options.store.listPlaceResolutions(tripId).map((resolution) => [resolution.placeId, resolution]));
     const routeNodes = nodes(day);
@@ -132,12 +185,12 @@ export class DayRouteServiceV2 {
       });
     }
 
-    const previous = this.options.store.getDayRoute(tripId, dayId);
+    const previous = this.options.store.getDayRoute(tripId, persistedDayId);
     const distanceValues = legs.map((leg) => leg.distanceKm).filter((value): value is number => value !== null);
     const durationValues = legs.map((leg) => leg.durationMinutes).filter((value): value is number => value !== null);
     const route = DayRouteSchema.parse({
       tripId,
-      dayId,
+      dayId: persistedDayId,
       version: previous ? previous.version + 1 : 1,
       inputFingerprint: dayRouteInputFingerprint(day, placeMap, [...resolutionMap.values()]),
       status: warnings.length ? "attention" : "ready",
@@ -156,6 +209,16 @@ export class DayRouteServiceV2 {
     const trip = this.options.store.requireTrip(tripId);
     const routes: DayRoute[] = [];
     for (const day of trip.plan.days) routes.push(await this.recalculate(tripId, day.id, expectedGeneration));
+    return routes;
+  }
+
+  async recalculateAllMacro(tripId: string, expectedGeneration: number) {
+    const trip = this.options.store.requireTrip(tripId);
+    const routes: DayRoute[] = [];
+    for (const day of trip.plan.days) {
+      const route = await this.recalculateMacro(tripId, day.id, expectedGeneration);
+      if (route) routes.push(route);
+    }
     return routes;
   }
 }
