@@ -67,13 +67,15 @@ describe("candidate discovery resource policy", () => {
     expect(() => validateMicroCandidateDiscovery(mismatched, ["area-a"], [{ planningAreaCandidateId: "area-a", targetCount: 9 }])).toThrow(/targetCount/);
   });
 
-  it("rejects source URLs, Markdown links, bare domains and explicit reference lists", () => {
+  it("rejects source URLs, Markdown links, bare domains and explicit reference lists without rejecting normal dotted place names", () => {
     const variants = [
       "来源：https://example.com/guide",
       "[官网](www.example.com)",
       "[来源](//example.com/path)",
+      "参考 //example.com/path",
       "参考 www.example.com",
       "参考 example.com/reference",
+      "Source: official tourism board",
       "Sources: official tourism board",
       "参考资料：官方旅游局、旅行指南",
     ];
@@ -85,6 +87,7 @@ describe("candidate discovery resource policy", () => {
     }
     const clean = structuredClone(microOutput());
     clean.assistantMessage = "已综合实时网页研究核验地点价值，但最终结构化结果不携带来源或链接。";
+    clean.places[0].nameEn = "Mt.Cook Track";
     expect(containsForbiddenResearchLink(clean)).toBe(false);
   });
 
