@@ -15,7 +15,7 @@ async function setup() {
   const plan = structuredClone(created.plan);
   plan.stage = "itinerary_planning";
   plan.places = [place("p1"), place("p2")];
-  plan.days = [{ id: "d1", dayNumber: 1, date: null, title: "Day", detailLevel: "planned", detailStatus: null, startAnchor: { id: "a1", placeId: "p1", label: null, notes: null }, stops: [{ id: "s1", candidateId: null, placeId: "p2", activity: "visit", period: null, startTime: null, endTime: null, durationMinutes: null, transportFromPrevious: null, scheduleVerification: null, costNote: null, costVerification: null, notes: null }], endAnchor: { id: "a2", placeId: null, label: null, notes: null } }];
+  plan.days = [{ id: "d1", dayNumber: 1, date: null, title: "Day", detailLevel: "planned", detailStatus: null, startAnchor: { id: "a1", placeId: "p1", label: null, notes: null }, stops: [{ id: "s1", candidateId: null, placeId: "p2", activity: "visit", period: null, startTime: null, endTime: null, durationMinutes: null, transportFromPrevious: { mode: "drive", durationMinutes: null, note: null, verification: { status: "estimated", checkedAt: null } }, scheduleVerification: null, costNote: null, costVerification: null, notes: null }], endAnchor: { id: "a2", placeId: null, label: null, notes: null } }];
   const written = store.writePlan(created.id, plan, 0);
   for (const item of [resolution(created.id, "p1", 1, 2), resolution(created.id, "p2", 3, 4)]) {
     const current = plan.places.find((p) => p.id === item.placeId)!;
@@ -36,7 +36,7 @@ describe("DayRouteServiceV2", () => {
     const state = service.workspaceRouteState(trip.id)[0];
     expect(state.dirty).toBe(false);
     const changed = structuredClone(trip.plan.days[0]);
-    changed.stops[0].transportFromPrevious = { mode: "drive", durationMinutes: null, note: null, verification: { status: "unverified", checkedAt: null } };
+    changed.stops[0].transportFromPrevious = { mode: "bike", durationMinutes: null, note: null, verification: { status: "unverified", checkedAt: null } };
     expect(routeIsDirty(changed, route, new Map(trip.plan.places.map((p) => [p.id, p])), store.listPlaceResolutions(trip.id))).toBe(true);
     store.close();
   });

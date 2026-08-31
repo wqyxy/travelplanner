@@ -24,6 +24,8 @@ export type ActionRegistrationV3 = {
   reasoning?: Extract<ReasoningEffort, "low" | "medium" | "high">;
   reasoningSummary?: Extract<ReasoningSummary, "none" | "auto" | "detailed">;
   web?: PromptWebPolicyV3;
+  /** Optional Action-wide timeout. Structured repair attempts remain within this budget. */
+  timeoutMs?: number;
   inputContract: InputContractIdV3;
   outputContract: OutputContractIdV3;
   scopePolicy: ScopePolicyIdV3;
@@ -70,7 +72,7 @@ export const ACTION_REGISTRY_V3: readonly ActionRegistrationV3[] = [
   { id: "interest.replace", stage: "interests", executor: A, promptId: "action.interest.replace", reasoning: "medium", reasoningSummary: "none", web: "allowed", inputContract: "interest.action.input", outputContract: "interest.replace.output", scopePolicy: "micro-candidate", resultPolicy: "proposal_required" },
   { id: "interest.edit", stage: "interests", executor: D, inputContract: "interest.action.input", outputContract: "deterministic.result", scopePolicy: "micro-candidate", resultPolicy: "deterministic_apply" },
   { id: "interest.preference", stage: "interests", executor: D, inputContract: "interest.action.input", outputContract: "deterministic.result", scopePolicy: "micro-candidate", resultPolicy: "deterministic_apply" },
-  { id: "itinerary.generate", stage: "itinerary", executor: A, promptId: "action.itinerary.generate", reasoning: "high", reasoningSummary: "none", web: "disabled", inputContract: "itinerary.action.input", outputContract: "itinerary.generate.output", scopePolicy: "itinerary", resultPolicy: "save_result" },
+  { id: "itinerary.generate", stage: "itinerary", executor: A, promptId: "action.itinerary.generate", reasoning: "high", reasoningSummary: "none", web: "disabled", timeoutMs: 240_000, inputContract: "itinerary.action.input", outputContract: "itinerary.generate.output", scopePolicy: "itinerary", resultPolicy: "save_result" },
   { id: "itinerary.replan", stage: "itinerary", executor: A, promptId: "action.itinerary.replan", reasoning: "high", reasoningSummary: "none", web: "disabled", inputContract: "itinerary.action.input", outputContract: "itinerary.replan.output", scopePolicy: "itinerary", resultPolicy: "proposal_required" },
   { id: "itinerary.stop.add", stage: "itinerary", executor: D, inputContract: "itinerary.action.input", outputContract: "deterministic.result", scopePolicy: "itinerary", resultPolicy: "deterministic_apply" },
   { id: "itinerary.stop.remove", stage: "itinerary", executor: D, inputContract: "itinerary.action.input", outputContract: "deterministic.result", scopePolicy: "itinerary", resultPolicy: "deterministic_apply" },

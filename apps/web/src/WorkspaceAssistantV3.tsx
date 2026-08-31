@@ -69,7 +69,7 @@ function ProposalCard({ proposal, currentGeneration, busy, onAction }: { proposa
   </section>;
 }
 
-function ActionCard({ action, proposal, currentGeneration, busy, onConfirm, onCancel, onProposalAction }: {
+function ActionCard({ action, proposal, currentGeneration, busy, onConfirm, onCancel, onProposalAction, canRetryGenerate, onRetryGenerate }: {
   action: AiAction;
   proposal: AiProposal | null;
   currentGeneration: number;
@@ -77,6 +77,8 @@ function ActionCard({ action, proposal, currentGeneration, busy, onConfirm, onCa
   onConfirm: (action: AiAction) => Promise<void>;
   onCancel: (action: AiAction) => Promise<void>;
   onProposalAction: (proposalId: string, action: "apply" | "reject" | "undo") => Promise<void>;
+  canRetryGenerate?: boolean;
+  onRetryGenerate?: () => Promise<void>;
 }) {
   const pending = action.status === "pending_confirmation";
   const interestResult = interestResultLines(action);
@@ -94,12 +96,13 @@ function ActionCard({ action, proposal, currentGeneration, busy, onConfirm, onCa
     {action.status === "rejected" && <small>方案已拒绝，正式计划未修改。</small>}
     {action.status === "cancelled" && <small>动作已取消。</small>}
     {action.status === "failed" && <small>动作执行失败。</small>}
+    {action.status === "failed" && canRetryGenerate && <footer><button className="button primary" disabled={busy} onClick={() => void onRetryGenerate?.()}>重新生成</button></footer>}
     {action.status === "superseded" && <small>计划已变化，此动作已失效。</small>}
     {proposal && <ProposalCard proposal={proposal} currentGeneration={currentGeneration} busy={busy} onAction={onProposalAction}/>} 
   </section>;
 }
 
-export function WorkspaceAssistantV3({ stage, workspace, selection, busy, error, onSend, onConfirmAction, onCancelAction, onProposalAction, onStopTask }: {
+export function WorkspaceAssistantV3({ stage, workspace, selection, busy, error, onSend, onConfirmAction, onCancelAction, onProposalAction, onStopTask, onRetryGenerate }: {
   stage: ConversationStage;
   workspace: WorkspaceV3;
   selection: WorkspaceSelectionV3;
@@ -110,6 +113,7 @@ export function WorkspaceAssistantV3({ stage, workspace, selection, busy, error,
   onCancelAction: (action: AiAction) => Promise<void>;
   onProposalAction: (proposalId: string, action: "apply" | "reject" | "undo") => Promise<void>;
   onStopTask: (taskId: string) => Promise<void>;
+  onRetryGenerate: () => Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(true);
   const [drafts, setDrafts] = useState<Record<ConversationStage, string>>({ requirements: "", destinations: "", interests: "", itinerary: "" });
@@ -155,10 +159,10 @@ export function WorkspaceAssistantV3({ stage, workspace, selection, busy, error,
         return <article className={`message ${message.role}`} key={message.id}>
           {message.role === "assistant" ? <ReactMarkdown>{message.content}</ReactMarkdown> : <p>{message.content}</p>}
           {message.turn && <div className={`turn-status ${message.turn.status}`}><small>{message.turn.progressMessage || message.turn.errorMessage || message.turn.status}</small></div>}
-          {action && <ActionCard action={action} proposal={proposal} currentGeneration={workspace.trip.contentGeneration} busy={busy} onConfirm={onConfirmAction} onCancel={onCancelAction} onProposalAction={onProposalAction}/>} 
+          {action && <ActionCard action={action} proposal={proposal} currentGeneration={workspace.trip.contentGeneration} busy={busy} onConfirm={onConfirmAction} onCancel={onCancelAction} onProposalAction={onProposalAction} canRetryGenerate={action.actionType === "itinerary.generate" && action.baseGeneration === workspace.trip.contentGeneration && workspace.trip.plan.days.length === 0 && workspace.tasks.find((task) => task.id === action.taskId)?.metadata?.retryable === true} onRetryGenerate={onRetryGenerate}/>} 
         </article>;
       })}
-      {ctaActions.length > 0 && <div className="stage-task-area-v3"><small className="stage-task-area-label-v3">当前阶段任务</small>{ctaActions.map((action) => <ActionCard key={action.id} action={action} proposal={action.proposalId ? proposals.get(action.proposalId) ?? null : null} currentGeneration={workspace.trip.contentGeneration} busy={busy} onConfirm={onConfirmAction} onCancel={onCancelAction} onProposalAction={onProposalAction}/>)}</div>}
+      {ctaActions.length > 0 && <div className="stage-task-area-v3"><small className="stage-task-area-label-v3">当前阶段任务</small>{ctaActions.map((action) => <ActionCard key={action.id} action={action} proposal={action.proposalId ? proposals.get(action.proposalId) ?? null : null} currentGeneration={workspace.trip.contentGeneration} busy={busy} onConfirm={onConfirmAction} onCancel={onCancelAction} onProposalAction={onProposalAction} canRetryGenerate={action.actionType === "itinerary.generate" && action.status === "failed" && action.baseGeneration === workspace.trip.contentGeneration && workspace.trip.plan.days.length === 0 && workspace.tasks.find((task) => task.id === action.taskId)?.metadata?.retryable === true} onRetryGenerate={onRetryGenerate}/>)}</div>}
       {error && <p className="inline-error">{error}</p>}
       <div ref={end}/>
     </div>

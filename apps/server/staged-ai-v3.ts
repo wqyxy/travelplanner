@@ -221,7 +221,7 @@ export class StagedTravelAiV3 {
       webSearch,
       effort: registration.reasoning,
       reasoningSummary: registration.reasoningSummary,
-      timeoutMs: registration.web === "required" ? 300_000 : 180_000,
+      timeoutMs: registration.timeoutMs ?? (registration.web === "required" ? 300_000 : 180_000),
       validateResult: input.validateResult,
       onProgress: input.onProgress,
     });

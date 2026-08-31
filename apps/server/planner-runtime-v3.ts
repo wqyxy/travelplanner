@@ -36,13 +36,14 @@ import type {
   ItineraryReplanOutput,
   ItineraryVerifyOutput,
 } from "./ai-action-contracts-v3.js";
+import { ItineraryGenerateOutputSchema } from "./ai-action-contracts-v3.js";
 import { actionRegistration } from "./ai-registries-v3.js";
 import { parseActionParametersV3 } from "./ai-action-input-contracts-v3.js";
 import { AiTaskMonitorV3, aiErrorMessageV3, normalizePublicAiSummaryV3 } from "./ai-task-monitor-v3.js";
 import { applyCandidateDiscovery } from "./candidate-workflow-v2.js";
 import { CANDIDATE_DISCOVERY_BATCH_LIMIT, validateMicroCandidateDiscovery } from "./candidate-discovery-policy-v2.js";
 import { classifyCodexFailure } from "./codex-client.js";
-import type { DayRouteServiceV2 } from "./day-route-v2.js";
+import { ROUTE_DAY_BATCH_CONCURRENCY, type DayRouteServiceV2 } from "./day-route-v2.js";
 import { applyPlanCommands } from "./plan-commands-v2.js";
 import { buildPlanningCoverage } from "./planning-areas-v2.js";
 import type { PlaceResolutionBatchProgress, PlaceResolverV2 } from "./place-resolver-v2.js";
@@ -52,6 +53,7 @@ import type { LoadedPromptRegistryV3 } from "./prompt-registry-v3.js";
 import { buildStageContext, validateSelectionForStage } from "./stage-context-v3.js";
 import type { StagedAiHandle } from "./staged-ai-v3.js";
 import { StagedTravelAiV3 } from "./staged-ai-v3.js";
+import { buildOpenAiStructuredOutputSchema } from "./structured-ai-v2.js";
 import { STAGE_THREAD_MAX_TURNS, TravelStoreV3, type TripDetailV3 } from "./travel-store-v3.js";
 
 export type RuntimeEventV3 =
@@ -76,6 +78,7 @@ const REPLACEMENT_COMMAND_LIMIT = 100;
 const INTEREST_DISCOVERY_CONCURRENCY = 4;
 
 type ActiveRun = { tripId: string; interrupt: () => Promise<void>; actionId?: string; messageId?: string; stage?: ConversationStage };
+type RouteBatch = { tripId: string; expectedGeneration: number; controller: AbortController };
 type ActionOutput = Record<string, any>;
 type InterestFailure = { targetId: string; errorSummary: string };
 
@@ -182,34 +185,72 @@ function validateItineraryReferences(trip: TripDetailV3, sourceDays: Day[], reso
   }
 }
 
-function formalizeGeneratedDays(trip: TripDetailV3, sourceDays: Day[], resolutions: PlaceResolution[]) {
-  const count = expectedDayCount(trip.plan);
-  if (count !== null && sourceDays.length !== count) throw new Error(`AI 返回 ${sourceDays.length} 天，但旅行要求为 ${count} 天。`);
-  validateItineraryReferences(trip, sourceDays, resolutions);
+type GenerateStateContext = { state: Record<string, unknown>; optionalOmitted: Array<{ candidateId: string; reason: string }>; unresolved: Array<{ candidateId: string; reason: string }>; candidateCounts: Record<string, number>; expectedDayCount: number };
+
+function compactPlace(place: any) { return { id: place.id, nameZh: place.nameZh, nameLocal: place.nameLocal, nameEn: place.nameEn, kind: place.kind, city: place.city, region: place.region, country: place.country }; }
+
+function buildCompactGenerateState(trip: TripDetailV3, resolutions: PlaceResolution[]): GenerateStateContext {
+  const dayCount = expectedDayCount(trip.plan);
+  if (!dayCount) throw new Error("GENERATE_REQUIRES_REQUIREMENTS");
   const places = new Map(trip.plan.places.map((place) => [place.id, place]));
-  const scheduled = new Set<string>();
-  const start = trip.plan.trip.dates.start;
-  const days = sourceDays.map((source, index): Day => {
-    const stops = source.stops.map((stop) => {
-      if (stop.candidateId) scheduled.add(stop.candidateId);
-      return { ...structuredClone(stop), id: randomUUID() };
-    });
-    return {
-      ...structuredClone(source),
-      id: randomUUID(),
-      dayNumber: index + 1,
-      date: start ? new Date(Date.parse(`${start}T00:00:00Z`) + index * 86_400_000).toISOString().slice(0, 10) : source.date,
-      detailLevel: "planned",
-      detailStatus: null,
-      startAnchor: { ...structuredClone(source.startAnchor), id: randomUUID() },
-      stops,
-      endAnchor: { ...structuredClone(source.endAnchor), id: randomUUID() },
-    };
+  const current = new Map(currentResolvedPlaces(trip, resolutions).map((resolution) => [resolution.placeId, resolution]));
+  const unresolved: Array<{ candidateId: string; reason: string }> = [];
+  const eligible = trip.plan.candidates.filter((candidate) => {
+    const place = places.get(candidate.placeId);
+    if (!place || candidate.preference === "excluded" || place.kind === "city") return false;
+    if (!current.has(place.id)) { unresolved.push({ candidateId: candidate.id, reason: "地点尚未完成定位" }); return false; }
+    return true;
   });
   for (const candidate of trip.plan.candidates) {
     const place = places.get(candidate.placeId);
-    if (candidate.preference === "must_go" && place?.kind !== "city" && !scheduled.has(candidate.id)) throw new Error(`必去地点未排入行程：${place?.nameZh ?? candidate.id}`);
+    if (candidate.preference === "must_go" && place?.kind !== "city" && !current.has(candidate.placeId)) throw new Error("GENERATE_REQUIRES_INTERESTS");
   }
+  const requiredAreas = trip.plan.candidates.filter((candidate) => candidate.planningAreaCandidateId === null && candidate.preference !== "excluded" && candidate.preference !== "optional");
+  for (const area of requiredAreas) if (!eligible.some((candidate) => candidate.planningAreaCandidateId === area.id)) throw new Error("GENERATE_REQUIRES_INTERESTS");
+  const makeCandidate = (candidate: any) => {
+    const place = places.get(candidate.placeId)!; const resolution = current.get(candidate.placeId)!;
+    return { id: candidate.id, planningAreaCandidateId: candidate.planningAreaCandidateId, preference: candidate.preference, aiScore: candidate.aiScore, suggestedDurationMinutes: candidate.suggestedDurationMinutes, tags: candidate.tags, place: compactPlace(place), resolution: { latitude: resolution.latitude, longitude: resolution.longitude } };
+  };
+  const required = eligible.filter((candidate) => candidate.preference === "must_go" || candidate.preference === "want_to_go").sort((a, b) => (a.preference === b.preference ? a.id.localeCompare(b.id) : a.preference === "must_go" ? -1 : 1));
+  const optional = eligible.filter((candidate) => candidate.preference === "optional");
+  const anchorOptions = trip.plan.places.filter((place) => current.has(place.id) && (place.id === trip.plan.trip.originPlaceId || ["city", "lodging", "airport", "station", "port"].includes(place.kind))).map((place) => {
+    const resolution = current.get(place.id)!; return { placeId: place.id, name: place.nameZh || place.nameLocal || place.nameEn || place.id, kind: place.kind, city: place.city, region: place.region, latitude: resolution.latitude, longitude: resolution.longitude };
+  }).sort((a, b) => a.placeId.localeCompare(b.placeId));
+  const base = { actionType: "itinerary.generate", baseGeneration: trip.contentGeneration, planLanguage: trip.planLanguage, tripFacts: trip.plan.trip, expectedDayCount: dayCount, anchorOptions, candidates: required.map(makeCandidate) };
+  if (stringifySize(base) > 64 * 1024) throw new Error("GENERATE_INPUT_BUDGET_EXCEEDED");
+  const selected = [...required]; const areaCounts = new Map<string, number>();
+  for (const candidate of selected) areaCounts.set(candidate.planningAreaCandidateId ?? "", (areaCounts.get(candidate.planningAreaCandidateId ?? "") ?? 0) + 1);
+  const remaining = [...optional];
+  while (remaining.length) {
+    remaining.sort((a, b) => (areaCounts.get(a.planningAreaCandidateId ?? "") ?? 0) - (areaCounts.get(b.planningAreaCandidateId ?? "") ?? 0) || (b.aiScore ?? -1) - (a.aiScore ?? -1) || (a.suggestedDurationMinutes ?? 0) - (b.suggestedDurationMinutes ?? 0) || a.id.localeCompare(b.id));
+    const candidate = remaining.shift()!; const trial = { ...base, candidates: [...selected, candidate].map(makeCandidate) };
+    // 48 KiB is the operating target; 64 KiB remains the non-negotiable hard cap
+    // for required inputs that cannot be reduced.
+    if (stringifySize(trial) > 48 * 1024) { remaining.unshift(candidate); break; }
+    selected.push(candidate); areaCounts.set(candidate.planningAreaCandidateId ?? "", (areaCounts.get(candidate.planningAreaCandidateId ?? "") ?? 0) + 1);
+  }
+  const omitted = remaining.map((candidate) => ({ candidateId: candidate.id, reason: "因本轮输入预算未发送给 AI" }));
+  const state = { ...base, candidates: selected.map(makeCandidate) };
+  return { state, optionalOmitted: omitted, unresolved, candidateCounts: { mustGo: required.filter((item) => item.preference === "must_go").length, wantToGo: required.filter((item) => item.preference === "want_to_go").length, optionalIncluded: selected.filter((item) => item.preference === "optional").length, optionalOmitted: omitted.length, unresolved: unresolved.length }, expectedDayCount: dayCount };
+}
+
+function formalizeCompactGeneratedDays(trip: TripDetailV3, output: Extract<ItineraryGenerateOutput["result"], { type: "success" }>, resolutions: PlaceResolution[], context: GenerateStateContext, materialize = true) {
+  if (output.days.length !== context.expectedDayCount || output.days.some((day, index) => day.dayNumber !== index + 1)) throw new Error("AI 返回的 Day 数量或 dayNumber 不连续。");
+  const places = new Map(trip.plan.places.map((place) => [place.id, place])); const candidates = new Map(trip.plan.candidates.map((candidate) => [candidate.id, candidate]));
+  const resolved = new Set(currentResolvedPlaces(trip, resolutions).map((resolution) => resolution.placeId)); const anchorIds = new Set((context.state.anchorOptions as Array<{ placeId: string }>).map((item) => item.placeId));
+  const scheduled = new Set<string>();
+  const days: Day[] = output.days.map((source, index) => {
+    for (const anchorId of [source.startAnchorPlaceId, source.endAnchorPlaceId]) if (anchorId !== null && (!anchorIds.has(anchorId) || !resolved.has(anchorId))) throw new Error("AI 返回了非法或未定位的 Anchor。");
+    const stops: DayStop[] = source.stops.map((stop, stopIndex) => {
+      const candidate = candidates.get(stop.candidateId); const place = candidate ? places.get(candidate.placeId) : null;
+      if (!candidate || !place || candidate.preference === "excluded" || place.kind === "city" || !resolved.has(place.id) || scheduled.has(candidate.id)) throw new Error("AI 返回了重复、未知、排除、城市或未定位 Candidate。");
+      scheduled.add(candidate.id);
+      return { id: materialize ? randomUUID() : `draft-stop-${source.dayNumber}-${stopIndex}`, candidateId: candidate.id, placeId: place.id, activity: stop.activity, period: null, startTime: null, endTime: null, durationMinutes: candidate.suggestedDurationMinutes, transportFromPrevious: stop.transportModeFromPrevious ? { mode: stop.transportModeFromPrevious, durationMinutes: null, note: null, verification: { status: "estimated", checkedAt: null } } : null, scheduleVerification: null, costNote: null, costVerification: null, notes: null };
+    });
+    const date = trip.plan.trip.dates.start ? new Date(Date.parse(`${trip.plan.trip.dates.start}T00:00:00Z`) + index * 86_400_000).toISOString().slice(0, 10) : null;
+    return { id: materialize ? randomUUID() : `draft-day-${source.dayNumber}`, dayNumber: source.dayNumber, date, title: source.title, detailLevel: "planned", detailStatus: null, startAnchor: { id: materialize ? randomUUID() : `draft-start-${source.dayNumber}`, placeId: source.startAnchorPlaceId, label: null, notes: null }, stops, endAnchor: { id: materialize ? randomUUID() : `draft-end-${source.dayNumber}`, placeId: source.endAnchorPlaceId, label: null, notes: null } };
+  });
+  for (const candidate of trip.plan.candidates) { const place = places.get(candidate.placeId); if (candidate.preference === "must_go" && place?.kind !== "city" && !scheduled.has(candidate.id)) throw new Error(`必去地点未排入行程：${place?.nameZh ?? candidate.id}`); }
   return TravelPlanDocumentSchema.parse({ ...trip.plan, stage: "itinerary_planning", days }).days;
 }
 
@@ -325,6 +366,7 @@ function refinementCommands(current: TravelPlanDocument, output: ItineraryRefine
 
 export class TravelPlannerRuntimeV3 {
   private readonly active = new Map<string, ActiveRun>();
+  private readonly routeBatches = new Map<string, RouteBatch>();
   private readonly aiExecutingTrips = new Set<string>();
 
   constructor(private readonly options: {
@@ -377,8 +419,12 @@ export class TravelPlannerRuntimeV3 {
 
   stopTask(tripId: string, taskId: string) {
     const active = this.active.get(taskId);
-    if (!active || active.tripId !== tripId) throw new Error("当前任务已经结束。");
-    void active.interrupt().catch(() => undefined);
+    if (active?.tripId === tripId) void active.interrupt().catch(() => undefined);
+    else {
+      const batch = this.routeBatches.get(taskId);
+      if (!batch || batch.tripId !== tripId) throw new Error("当前任务已经结束。");
+      batch.controller.abort();
+    }
     return { ok: true };
   }
 
@@ -552,25 +598,43 @@ export class TravelPlannerRuntimeV3 {
       }
       if (!taskId) throw new Error("AI Action 缺少 taskId。");
       const registration = actionRegistration(action.actionType);
-      const state = this.buildActionState(action);
-      this.options.tasks.start({ id: taskId, tripId: action.tripId, agent: "action", label: action.actionType, summary: `准备执行 ${action.actionType}`, metadata: { actionType: action.actionType, executor: "ai", reasoning: registration.reasoning, webPolicy: registration.web, inputBytes: stringifySize(state) } });
+      let generateContext: GenerateStateContext | null = null;
+      let state: any;
+      try {
+        generateContext = action.actionType === "itinerary.generate" ? buildCompactGenerateState(this.options.store.requireTrip(action.tripId), this.options.store.listPlaceResolutions(action.tripId)) : null;
+        state = generateContext?.state ?? this.buildActionState(action);
+      } catch (error) {
+        const code = aiErrorMessageV3(error);
+        if (code === "GENERATE_REQUIRES_INTERESTS" || code === "GENERATE_REQUIRES_REQUIREMENTS") {
+          this.options.store.completeAction(action.id, `requiresStage:${code === "GENERATE_REQUIRES_INTERESTS" ? "interests" : "requirements"}`);
+          this.options.tasks.start({ id: taskId, tripId: action.tripId, agent: "action", label: action.actionType, summary: "行程生成前置条件未满足", metadata: { actionType: action.actionType, retryable: false, failureReasonCode: code } });
+          this.options.tasks.update(taskId, "completed", code === "GENERATE_REQUIRES_INTERESTS" ? "需要先完成兴趣点定位" : "需要先完善旅行天数", "task:completed");
+          return;
+        }
+        throw error;
+      }
+      const stateBytes = stringifySize(state);
+      const generateDiagnostics = generateContext ? { stateBytes, promptBytes: Buffer.byteLength(this.options.prompts.compose("action.itinerary.generate").content, "utf8"), schemaBytes: stringifySize(buildOpenAiStructuredOutputSchema(ItineraryGenerateOutputSchema)), candidateCounts: generateContext.candidateCounts, expectedDayCount: generateContext.expectedDayCount } : {};
+      this.options.tasks.start({ id: taskId, tripId: action.tripId, agent: "action", label: action.actionType, summary: `准备执行 ${action.actionType}`, metadata: { actionType: action.actionType, executor: "ai", reasoning: registration.reasoning, webPolicy: registration.web, inputBytes: stateBytes, ...generateDiagnostics } });
 
+      let receivedOutputBytes: number | null = null;
       if (action.actionType === "interest.discover" || action.actionType === "interest.supplement") {
         this.options.tasks.update(taskId, "running", `正在执行 ${action.actionType}`, "action:running");
         await this.persistInterestDiscovery(action, taskId);
       } else {
-        const run = await this.options.ai.startAction<ActionOutput>({ actionType: action.actionType, state, allowWeb: action.parameters.allowWeb !== false, onProgress: this.progress(taskId) });
+        const run = await this.options.ai.startAction<ActionOutput>({ actionType: action.actionType, state, allowWeb: action.parameters.allowWeb !== false, validateResult: generateContext ? (value) => { const generated = value as ItineraryGenerateOutput; if (generated.result.type === "success") formalizeCompactGeneratedDays(this.options.store.requireTrip(action.tripId), generated.result, this.options.store.listPlaceResolutions(action.tripId), generateContext!, false); return value; } : undefined, onProgress: this.progress(taskId) });
         this.rememberActive(taskId, { tripId: action.tripId, actionId: action.id, interrupt: run.interrupt });
         this.options.tasks.update(taskId, "running", `正在执行 ${action.actionType}`, "action:running");
         const output = await run.result;
+        receivedOutputBytes = stringifySize(output);
         if (Number(output?.baseGeneration) !== action.baseGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
         if (this.options.store.requireTrip(action.tripId).contentGeneration !== action.baseGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
-        await this.persistAiActionOutput(action, output, taskId);
+        await this.persistAiActionOutput(action, output, taskId, generateContext ?? undefined);
       }
 
       const final = this.options.store.getAction(action.id);
       const existingMetadata = this.options.store.getAiTask(taskId)?.metadata ?? {};
-      this.options.tasks.metadata(taskId, { ...existingMetadata, actionType: action.actionType, executor: "ai", reasoning: registration.reasoning, webPolicy: registration.web, inputBytes: stringifySize(state), timing: { totalMs: Date.now() - started } });
+      this.options.tasks.metadata(taskId, { ...existingMetadata, actionType: action.actionType, executor: "ai", reasoning: registration.reasoning, webPolicy: registration.web, inputBytes: stringifySize(state), ...(action.actionType === "itinerary.generate" ? { receivedOutputBytes, retryable: false } : {}), timing: { totalMs: Date.now() - started } });
       const interestSummary = interestCompletionSummary(final?.resultRef);
       this.options.tasks.update(taskId, "completed", interestSummary ?? (final?.status === "awaiting_apply" ? "方案已生成，等待 Apply" : "Action 已完成"), "task:completed");
       this.emit("travel.action.changed", { tripId: action.tripId, actionId: action.id });
@@ -580,7 +644,8 @@ export class TravelPlannerRuntimeV3 {
       else this.options.store.failAction(action.id, message);
       if (taskId) {
         const existingMetadata = this.options.store.getAiTask(taskId)?.metadata ?? {};
-        this.options.tasks.metadata(taskId, { ...existingMetadata, actionType: action.actionType, timing: { totalMs: Date.now() - started, failedPhase: "generation" } });
+        const deterministic = ["GENERATE_INPUT_BUDGET_EXCEEDED", "GENERATE_REQUIRES_INTERESTS", "GENERATE_REQUIRES_REQUIREMENTS", "CONTENT_GENERATION_SUPERSEDED"].includes(message);
+        this.options.tasks.metadata(taskId, { ...existingMetadata, actionType: action.actionType, retryable: action.actionType === "itinerary.generate" ? !deterministic : undefined, failureReasonCode: action.actionType === "itinerary.generate" ? message : undefined, timing: { totalMs: Date.now() - started, failedPhase: "generation" } });
         this.options.tasks.update(taskId, message === "CONTENT_GENERATION_SUPERSEDED" ? "cancelled_by_generation" : message === "AI 任务已停止。" ? "stopped" : "failed", message, "task:failed");
       }
       this.emit("travel.action.changed", { tripId: action.tripId, actionId: action.id });
@@ -768,10 +833,10 @@ export class TravelPlannerRuntimeV3 {
     }
   }
 
-  private async persistAiActionOutput(action: AiActionRecord, output: ActionOutput, taskId: string | null = null) {
+  private async persistAiActionOutput(action: AiActionRecord, output: ActionOutput, taskId: string | null = null, generateContext?: GenerateStateContext) {
     if (action.actionType === "destination.generate") return this.persistDestinationGenerate(action, output as DestinationGenerateOutput, taskId);
     if (action.actionType === "destination.add" || action.actionType === "destination.replace" || action.actionType === "interest.add" || action.actionType === "interest.replace") return this.persistCandidateProposal(action, output as any);
-    if (action.actionType === "itinerary.generate") return this.persistItineraryGenerate(action, output as ItineraryGenerateOutput);
+    if (action.actionType === "itinerary.generate") return this.persistItineraryGenerate(action, output as ItineraryGenerateOutput, taskId, generateContext);
     if (action.actionType === "itinerary.replan") return this.persistItineraryReplacement(action, output as ItineraryReplanOutput);
     if (action.actionType === "itinerary.repair") return this.persistItineraryRepair(action, output as ItineraryRepairOutput);
     if (action.actionType === "itinerary.day.optimize") return this.persistDayOptimize(action, output as ItineraryDayOptimizeOutput);
@@ -1006,7 +1071,7 @@ export class TravelPlannerRuntimeV3 {
     return this.createProposalForAction(action, output.title, output.explanation, commands, { type: "candidate_pool", id: null });
   }
 
-  private persistItineraryGenerate(action: AiActionRecord, output: ItineraryGenerateOutput) {
+  private persistItineraryGenerate(action: AiActionRecord, output: ItineraryGenerateOutput, _taskId: string | null, context?: GenerateStateContext) {
     const result = output.result;
     if (result.type === "requires_stage") {
       this.options.store.completeAction(action.id, `requiresStage:${result.requiresStage}`);
@@ -1014,12 +1079,20 @@ export class TravelPlannerRuntimeV3 {
     }
     const trip = this.options.store.requireTrip(action.tripId);
     if (trip.plan.days.length) throw new Error("首次生成行程只能在尚未存在 Day 时执行；已有行程请使用重新规划。");
-    const days = formalizeGeneratedDays(trip, result.days, this.options.store.listPlaceResolutions(action.tripId));
+    if (!context) throw new Error("行程生成缺少受控输入上下文。");
+    const validationStarted = Date.now();
+    const days = formalizeCompactGeneratedDays(trip, result, this.options.store.listPlaceResolutions(action.tripId), context);
     const plan = TravelPlanDocumentSchema.parse({ ...trip.plan, stage: "itinerary_planning", days });
     const written = this.options.store.writePlan(action.tripId, plan, action.baseGeneration, { source: "action:itinerary.generate", summary: "AI 生成按天行程" }, { keepActionId: action.id });
-    this.options.store.completeAction(action.id, `generation:${written.generation}`);
+    const unscheduled = [
+      ...result.unscheduledCandidates.map((item) => ({ candidateId: item.candidateId, reasonCode: "ai_unscheduled", reason: item.reason })),
+      ...context.unresolved.map((item) => ({ candidateId: item.candidateId, reasonCode: "unresolved", reason: item.reason })),
+      ...context.optionalOmitted.map((item) => ({ candidateId: item.candidateId, reasonCode: "input_budget_omitted", reason: item.reason })),
+    ];
+    this.options.store.completeAction(action.id, `generation:${written.generation};unscheduled:${unscheduled.length}`);
+    if (_taskId) this.options.tasks.metadata(_taskId, { ...(this.options.store.getAiTask(_taskId)?.metadata ?? {}), unscheduledCandidates: unscheduled, timing: { validationMs: Date.now() - validationStarted } });
     this.emit("travel.document.changed", { tripId: action.tripId, generation: written.generation, changedDayIds: days.map((day) => day.id) });
-    void this.recalculateAllRoutes(action.tripId, written.generation);
+    this.startRouteBatch(action.tripId, written.generation, days.map((day) => day.id));
   }
 
   private persistItineraryReplacement(action: AiActionRecord, output: ItineraryReplanOutput) {
@@ -1154,17 +1227,47 @@ export class TravelPlannerRuntimeV3 {
   searchResolutionCandidates(tripId: string, placeId: string, expectedGeneration: number) { return this.options.resolver.searchCandidates(tripId, placeId, expectedGeneration); }
   selectResolution(tripId: string, placeId: string, input: unknown) { return (this.options.resolver as any).selectCandidate(tripId, placeId, input); }
   setDirectResolution(tripId: string, placeId: string, input: unknown) { return (this.options.resolver as any).setDirect(tripId, placeId, input); }
-  recalculateRoute(tripId: string, dayId: string, expectedGeneration: number) { return this.options.routes.recalculate(tripId, dayId, expectedGeneration); }
+  async recalculateRoute(tripId: string, dayId: string, expectedGeneration: number) {
+    const route = await this.options.routes.recalculate(tripId, dayId, expectedGeneration);
+    this.emit("travel.route.changed", { tripId, dayId }); return route;
+  }
   async recalculateDirtyRoutes(tripId: string, input: any) {
-    const expectedGeneration = Number(input.expectedGeneration); const states = this.options.routes.workspaceRouteState(tripId); const routes = [];
-    for (const state of states) if (state.dirty) { const route = await this.options.routes.recalculate(tripId, state.dayId, expectedGeneration); routes.push(route); this.emit("travel.route.changed", { tripId, dayId: state.dayId }); }
+    const expectedGeneration = Number(input.expectedGeneration); const states = this.options.routes.workspaceRouteState(tripId); const ids = states.filter((state) => state.dirty).map((state) => state.dayId);
+    const routes = await Promise.all(ids.map((dayId) => this.recalculateRoute(tripId, dayId, expectedGeneration)));
     return { routes };
   }
-  private async recalculateAllRoutes(tripId: string, expectedGeneration: number) {
-    const trip = this.options.store.requireTrip(tripId);
-    for (const day of trip.plan.days) {
-      try { await this.options.routes.recalculate(tripId, day.id, expectedGeneration); this.emit("travel.route.changed", { tripId, dayId: day.id }); }
-      catch (error) { if (aiErrorMessageV3(error) === "CONTENT_GENERATION_SUPERSEDED") return; }
-    }
+  private startRouteBatch(tripId: string, expectedGeneration: number, dayIds: string[]) {
+    const taskId = `route:${randomUUID()}`; const controller = new AbortController();
+    this.routeBatches.set(taskId, { tripId, expectedGeneration, controller });
+    this.options.tasks.start({ id: taskId, tripId, agent: "map", label: "计算每日路线", summary: `正在计算每日路线 0/${dayIds.length}`, canStop: true, metadata: { totalDays: dayIds.length, completedDays: 0, readyDays: 0, attentionDays: 0, peakDayConcurrency: ROUTE_DAY_BATCH_CONCURRENCY } });
+    void (async () => {
+      let completed = 0; let ready = 0; let attention = 0;
+      const calculate = async (dayId: string) => {
+        try {
+          const route = await this.options.routes.recalculate(tripId, dayId, expectedGeneration, controller.signal);
+          completed += 1; if (route.status === "ready") ready += 1; else attention += 1;
+          this.emit("travel.route.changed", { tripId, dayId });
+          const summary = `正在计算每日路线 ${completed}/${dayIds.length} · ready ${ready} · attention ${attention}`;
+          this.options.tasks.metadata(taskId, { totalDays: dayIds.length, completedDays: completed, readyDays: ready, attentionDays: attention, peakDayConcurrency: ROUTE_DAY_BATCH_CONCURRENCY });
+          this.options.tasks.update(taskId, "running", summary, "route:day-completed");
+        } catch (error) {
+          const message = aiErrorMessageV3(error);
+          if (message === "CONTENT_GENERATION_SUPERSEDED") throw error;
+          if (controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError")) return;
+          completed += 1; attention += 1;
+          this.options.tasks.update(taskId, "running", `正在计算每日路线 ${completed}/${dayIds.length} · ready ${ready} · attention ${attention}`, "route:day-failed");
+        }
+      };
+      try {
+        await Promise.all(dayIds.map(calculate));
+        const status = controller.signal.aborted ? "stopped" : "completed";
+        this.options.tasks.update(taskId, status, controller.signal.aborted ? "每日路线计算已停止" : `每日路线计算完成 · ready ${ready} · attention ${attention}`, "task:completed");
+      } catch (error) {
+        const superseded = aiErrorMessageV3(error) === "CONTENT_GENERATION_SUPERSEDED";
+        controller.abort();
+        this.options.tasks.update(taskId, superseded ? "cancelled_by_generation" : "failed", superseded ? "计划已变化，停止旧路线计算" : "每日路线计算失败", "task:failed");
+      } finally { this.routeBatches.delete(taskId); }
+    })();
+    return taskId;
   }
 }

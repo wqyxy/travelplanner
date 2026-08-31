@@ -39,12 +39,13 @@ function run(value: unknown, interrupt: () => Promise<void> = async () => undefi
 function macroPlan(base: TravelPlanDocument) {
   return TravelPlanDocumentSchema.parse({
     ...base,
+    trip: { ...base.trip, dates: { ...base.trip.dates, requestedDurationDays: 1 } },
     places: [
       { id: "place-m1", nameZh: "目的地一", nameLocal: null, nameEn: "Macro One", kind: "city", city: "Macro One", region: null, country: "Test", countryCode: "TT", approximate: false },
       { id: "place-m2", nameZh: "目的地二", nameLocal: null, nameEn: "Macro Two", kind: "city", city: "Macro Two", region: null, country: "Test", countryCode: "TT", approximate: false },
     ],
     candidates: [
-      { id: "macro-1", placeId: "place-m1", planningAreaCandidateId: null, preference: "optional", source: "ai", aiReason: null, aiScore: 80, suggestedDurationMinutes: 1440, tags: [] },
+      { id: "macro-1", placeId: "place-m1", planningAreaCandidateId: null, preference: "must_go", source: "ai", aiReason: null, aiScore: 80, suggestedDurationMinutes: 1440, tags: [] },
       { id: "macro-2", placeId: "place-m2", planningAreaCandidateId: null, preference: "optional", source: "ai", aiReason: null, aiScore: 80, suggestedDurationMinutes: 1440, tags: [] },
     ],
   });
@@ -184,27 +185,13 @@ describe("TravelPlannerRuntimeV3 AI action regressions", () => {
     store.close();
   });
 
-  it("rejects an unresolved Macro city in itinerary anchors just like any other Place", async () => {
+  it("requires interests when a planning area has no concrete resolved Stop", async () => {
     const store = db(); const created = store.createTrip(); store.writePlan(created.id, macroPlan(created.plan), 0, { source: "test", summary: "macro itinerary fixture" });
-    const rt = runtime(store, async () => run({
-      schemaVersion: 1,
-      baseGeneration: 1,
-      result: {
-        type: "success",
-        assistantMessage: "生成一天",
-        days: [{
-          id: "ai-day-1", dayNumber: 1, date: null, title: "Day 1", detailLevel: "planned", detailStatus: null,
-          startAnchor: { id: "ai-start-1", placeId: "place-m1", label: "目的地一", notes: null },
-          stops: [],
-          endAnchor: { id: "ai-end-1", placeId: "place-m1", label: "目的地一", notes: null },
-        }],
-        unscheduledCandidates: [],
-      },
-    }));
+    const rt = runtime(store, async () => run({}));
     const started = rt.createCtaAction({ tripId: created.id, stage: "itinerary", actionType: "itinerary.generate", parameters: {}, targetIds: [], requestKey: "generate-unresolved-macro" });
-    await waitFor(() => store.getAction(started.action.id)?.status === "failed");
+    await waitFor(() => store.getAction(started.action.id)?.status === "completed");
     expect(store.requireTrip(created.id).plan.days).toHaveLength(0);
-    expect(store.getAction(started.action.id)?.errorSummary).toMatch(/未定位地点不得进入行程/);
+    expect(store.getAction(started.action.id)?.resultRef).toBe("requiresStage:interests");
     store.close();
   });
 

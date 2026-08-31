@@ -109,14 +109,31 @@ const RequiresInterestsSchema = z.object({
   reason: TextSchema.max(2000),
 }).strict();
 
+const ItineraryGenerateRequiresStageSchema = z.object({
+  type: z.literal("requires_stage"),
+  requiresStage: z.enum(["requirements", "interests"]),
+  assistantMessage: TextSchema.max(12000),
+  reason: TextSchema.max(2000),
+}).strict();
+
 const ItineraryGenerationSuccessSchema = z.object({
   type: z.literal("success"),
   assistantMessage: TextSchema.max(12000),
-  days: z.array(DaySchema).min(1).max(90),
+  days: z.array(z.object({
+    dayNumber: z.number().int().min(1).max(365),
+    title: TextSchema.max(300),
+    startAnchorPlaceId: IdSchema.nullable(),
+    stops: z.array(z.object({
+      candidateId: IdSchema,
+      activity: TextSchema.max(2000),
+      transportModeFromPrevious: z.enum(["walk", "drive", "bike", "transit", "rail", "flight", "ferry", "none"]).nullable(),
+    }).strict()).max(80),
+    endAnchorPlaceId: IdSchema.nullable(),
+  }).strict()).min(1).max(90),
   unscheduledCandidates: z.array(z.object({ candidateId: IdSchema, reason: TextSchema.max(1000) }).strict()).max(1800),
 }).strict();
 
-export const ItineraryGenerateOutputSchema = z.object({ schemaVersion: z.literal(1), baseGeneration: z.number().int().min(0), result: z.discriminatedUnion("type", [ItineraryGenerationSuccessSchema, RequiresInterestsSchema]) }).strict();
+export const ItineraryGenerateOutputSchema = z.object({ schemaVersion: z.literal(2), baseGeneration: z.number().int().min(0), result: z.discriminatedUnion("type", [ItineraryGenerationSuccessSchema, ItineraryGenerateRequiresStageSchema]) }).strict();
 export type ItineraryGenerateOutput = z.infer<typeof ItineraryGenerateOutputSchema>;
 
 const ItineraryReplacementSuccessSchema = z.object({

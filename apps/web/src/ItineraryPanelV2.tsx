@@ -200,7 +200,7 @@ export function ItineraryPanelV2({
 
   return <section className="itinerary-v2-panel">
     <header className="itinerary-v2-head">
-      <div><p className="eyebrow">PLAN & ROUTE</p><h2>按天行程</h2><small>{plan.days.length} 天 · 拖动或使用按钮调整，路线不会自动重算</small></div>
+      <div><p className="eyebrow">PLAN & ROUTE</p><h2>按天行程</h2><small>{plan.days.length} 天 · 首次生成后路线会在后台逐日计算；编辑后的路线可按需更新</small></div>
       <div className="itinerary-head-actions">
         {dirtyStates.length > 0 && <button className="button small" disabled={busy} onClick={() => void onRecalculateDirty()}><RefreshCw size={13}/>更新全部变更路线 {dirtyStates.length}</button>}
         <button className="button small" disabled={busy || !pendingDetailDays.length} onClick={() => void onRefine()}><CalendarDays size={13}/>{pendingDetailDays.length ? `细化下一批（剩余 ${pendingDetailDays.length} 天）` : "细化已完成"}</button>

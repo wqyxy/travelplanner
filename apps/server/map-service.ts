@@ -160,14 +160,15 @@ export class MapService {
     return candidate;
   }
 
-  async route(mode: "walk" | "drive" | "bike", from: [number, number], to: [number, number], routeKey: string): Promise<MapRouteResult> {
+  async route(mode: "walk" | "drive" | "bike", from: [number, number], to: [number, number], routeKey: string, signal?: AbortSignal): Promise<MapRouteResult> {
+    throwIfAborted(signal);
     const cached = this.cached<MapRouteResult>("route_cache", routeKey);
     if (cached) return cached;
     const host = mode === "walk" ? "https://routing.openstreetmap.de/routed-foot/route/v1/driving" : mode === "bike" ? "https://routing.openstreetmap.de/routed-bike/route/v1/driving" : "https://routing.openstreetmap.de/routed-car/route/v1/driving";
     try {
       const url = new URL(`${host}/${from[0]},${from[1]};${to[0]},${to[1]}`);
       url.searchParams.set("overview", "full"); url.searchParams.set("geometries", "geojson");
-      const response = await this.fetcher(url, { headers: { "User-Agent": "AI-Travel-Planner/0.1 (personal local travel planner)", Accept: "application/json" } });
+      const response = await this.fetcher(url, { signal, headers: { "User-Agent": "AI-Travel-Planner/0.1 (personal local travel planner)", Accept: "application/json" } });
       if (!response.ok) {
         const result: MapRouteResult = { geometry: null, distanceKm: null, durationMinutes: null, warning: "路线服务暂时不可用。" };
         this.save("route_cache", routeKey, result, ROUTE_FAILURE_CACHE_TTL_MS);
@@ -180,7 +181,8 @@ export class MapService {
         : { geometry: null, distanceKm: null, durationMinutes: null, warning: "未能找到该路段的路线。" };
       this.save("route_cache", routeKey, result, ROUTE_SUCCESS_CACHE_TTL_MS);
       return result;
-    } catch {
+    } catch (error) {
+      if (signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) throw error;
       const result: MapRouteResult = { geometry: null, distanceKm: null, durationMinutes: null, warning: "路线服务暂时不可用。" };
       this.save("route_cache", routeKey, result, ROUTE_FAILURE_CACHE_TTL_MS);
       return result;

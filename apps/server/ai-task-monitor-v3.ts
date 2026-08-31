@@ -31,9 +31,9 @@ export class AiTaskMonitorV3 {
   private readonly buffers = new Map<string, Map<string, string>>();
   constructor(private readonly store: TravelStoreV3, private readonly emit: (snapshot: AiTaskSnapshotV3) => void) {}
 
-  start(input: { id: string; tripId: string; agent: AiTaskAgentV3; label: string; summary: string; metadata?: Record<string, unknown> }) {
+  start(input: { id: string; tripId: string; agent: AiTaskAgentV3; label: string; summary: string; metadata?: Record<string, unknown>; canStop?: boolean }) {
     const summary = normalizePublicAiSummaryV3(input.summary);
-    const snapshot = this.store.upsertAiTask({ ...input, status: "starting", summary, canStop: false, resetStartedAt: true });
+    const snapshot = this.store.upsertAiTask({ ...input, status: "starting", summary, canStop: input.canStop ?? false, resetStartedAt: true });
     this.store.appendAiProgress(input.id, "starting", "task:started", summary);
     this.buffers.delete(input.id);
     this.emit(this.store.getAiTask(input.id)!);

@@ -13,6 +13,23 @@ import type { TravelStoreV2 } from "./travel-store-v2.js";
 
 type Maps = Pick<MapService, "route">;
 type RouteNode = { id: string; placeId: string; modeFromPrevious: TransportMode };
+export const ROUTE_DAY_BATCH_CONCURRENCY = 3;
+
+type QueuedJob<T> = { run: () => Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void };
+class GlobalRouteDayPool {
+  private active = 0;
+  private readonly queued: QueuedJob<any>[] = [];
+  enqueue<T>(run: () => Promise<T>) {
+    return new Promise<T>((resolve, reject) => { this.queued.push({ run, resolve, reject }); this.drain(); });
+  }
+  private drain() {
+    while (this.active < ROUTE_DAY_BATCH_CONCURRENCY && this.queued.length) {
+      const job = this.queued.shift()!; this.active += 1;
+      void job.run().then(job.resolve, job.reject).finally(() => { this.active -= 1; this.drain(); });
+    }
+  }
+}
+const routeDayPool = new GlobalRouteDayPool();
 
 function hash(value: unknown) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -21,8 +38,10 @@ function hash(value: unknown) {
 function nodes(day: Day): RouteNode[] {
   const values: RouteNode[] = [];
   if (day.startAnchor.placeId) values.push({ id: day.startAnchor.id, placeId: day.startAnchor.placeId, modeFromPrevious: "none" });
-  for (const stop of day.stops) values.push({ id: stop.id, placeId: stop.placeId, modeFromPrevious: stop.transportFromPrevious?.mode ?? "walk" });
-  if (day.endAnchor.placeId) values.push({ id: day.endAnchor.id, placeId: day.endAnchor.placeId, modeFromPrevious: "walk" });
+  for (const stop of day.stops) values.push({ id: stop.id, placeId: stop.placeId, modeFromPrevious: stop.transportFromPrevious?.mode ?? "none" });
+  // DayAnchor has no transport field. Reuse only an explicit last-stop mode;
+  // without one this deliberately becomes attention rather than an implicit walk.
+  if (day.endAnchor.placeId) values.push({ id: day.endAnchor.id, placeId: day.endAnchor.placeId, modeFromPrevious: day.stops.at(-1)?.transportFromPrevious?.mode ?? "none" });
   return values;
 }
 
@@ -69,6 +88,7 @@ function featureCollection(legs: RouteLeg[]) {
 }
 
 export class DayRouteServiceV2 {
+  private readonly inFlight = new Map<string, Promise<DayRoute>>();
   constructor(private readonly options: { store: TravelStoreV2; maps: Maps }) {}
 
   workspaceRouteState(tripId: string) {
@@ -82,7 +102,17 @@ export class DayRouteServiceV2 {
     }));
   }
 
-  async recalculate(tripId: string, dayId: string, expectedGeneration: number) {
+  recalculate(tripId: string, dayId: string, expectedGeneration: number, signal?: AbortSignal) {
+    const key = `${tripId}:${expectedGeneration}:${dayId}`;
+    const existing = this.inFlight.get(key); if (existing) return existing;
+    const job = routeDayPool.enqueue(() => this.calculateDay(tripId, dayId, expectedGeneration, signal));
+    this.inFlight.set(key, job);
+    void job.finally(() => this.inFlight.delete(key)).catch(() => undefined);
+    return job;
+  }
+
+  private async calculateDay(tripId: string, dayId: string, expectedGeneration: number, signal?: AbortSignal) {
+    if (signal?.aborted) throw new DOMException("任务已停止。", "AbortError");
     const trip = this.options.store.requireTrip(tripId);
     if (trip.contentGeneration !== expectedGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
     const day = trip.plan.days.find((item) => item.id === dayId);
@@ -94,6 +124,8 @@ export class DayRouteServiceV2 {
     const warnings: string[] = [];
 
     for (let index = 1; index < routeNodes.length; index += 1) {
+      if (signal?.aborted) throw new DOMException("任务已停止。", "AbortError");
+      if (this.options.store.requireTrip(tripId).contentGeneration !== expectedGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
       const from = routeNodes[index - 1];
       const to = routeNodes[index];
       const fromResolution = currentResolution(from.placeId, placeMap, resolutionMap);
@@ -119,7 +151,9 @@ export class DayRouteServiceV2 {
         [fromResolution.longitude!, fromResolution.latitude!],
         [toResolution.longitude!, toResolution.latitude!],
         routeKey,
+        signal,
       );
+      if (signal?.aborted) throw new DOMException("任务已停止。", "AbortError");
       if (this.options.store.requireTrip(tripId).contentGeneration !== expectedGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
       if (result.warning) warnings.push(result.warning);
       legs.push({
@@ -152,10 +186,10 @@ export class DayRouteServiceV2 {
     return route;
   }
 
-  async recalculateAll(tripId: string, expectedGeneration: number) {
+  async recalculateAll(tripId: string, expectedGeneration: number, signal?: AbortSignal) {
     const trip = this.options.store.requireTrip(tripId);
     const routes: DayRoute[] = [];
-    for (const day of trip.plan.days) routes.push(await this.recalculate(tripId, day.id, expectedGeneration));
+    for (const day of trip.plan.days) routes.push(await this.recalculate(tripId, day.id, expectedGeneration, signal));
     return routes;
   }
 }

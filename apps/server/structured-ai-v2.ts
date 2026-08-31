@@ -45,6 +45,7 @@ type ActiveRun<T = unknown> = {
   effort?: ReasoningEffort;
   reasoningSummary: ReasoningSummary;
   repairAttempts: number;
+  terminal: boolean;
   settle: (value: T) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
@@ -223,7 +224,7 @@ export class StructuredAiRunnerV2 {
 
   private async repair(threadId: string, error: Error) {
     const run = this.active.get(threadId);
-    if (!run) return;
+    if (!run || run.terminal) return;
     run.repairAttempts += 1;
     run.content = "";
     run.onProgress?.({ kind: "turn:repair", text: `AI 结果校验失败，正在自动修正（${run.repairAttempts}/${MAX_STRUCTURED_REPAIRS}）` });
@@ -236,6 +237,7 @@ export class StructuredAiRunnerV2 {
         ...(run.effort ? { effort: run.effort } : {}),
       }, run.reasoningSummary), 120_000);
       run.turnId = String(turn?.turn?.id ?? run.turnId ?? "") || null;
+      if (run.terminal && run.turnId) void this.client.call("turn/interrupt", { threadId, turnId: run.turnId }).catch(() => undefined);
     } catch (repairError) {
       this.finish(threadId, safeError(repairError));
     }
@@ -244,6 +246,7 @@ export class StructuredAiRunnerV2 {
   private finish<T>(threadId: string, error: Error | null, value?: T) {
     const run = this.active.get(threadId) as ActiveRun<T> | undefined;
     if (!run) return;
+    run.terminal = true;
     this.active.delete(threadId);
     clearTimeout(run.timer);
     if (error) run.reject(error);
@@ -289,6 +292,7 @@ export class StructuredAiRunnerV2 {
     const result = new Promise<T>((resolve, rejectValue) => { settle = resolve; reject = rejectValue; });
     const timer = setTimeout(() => {
       const run = this.active.get(threadId);
+      if (run) run.terminal = true;
       if (run?.turnId) void this.client.call("turn/interrupt", { threadId, turnId: run.turnId }).catch(() => undefined);
       this.finish(threadId, new Error("AI 结构化请求超时。"));
     }, options.timeoutMs ?? 180_000);
@@ -304,6 +308,7 @@ export class StructuredAiRunnerV2 {
       effort: options.effort,
       reasoningSummary: options.reasoningSummary ?? "detailed",
       repairAttempts: 0,
+      terminal: false,
       settle,
       reject,
       timer,
@@ -320,6 +325,9 @@ export class StructuredAiRunnerV2 {
         ...(options.effort ? { effort: options.effort } : {}),
       }, run.reasoningSummary), 120_000);
       run.turnId = String(turn?.turn?.id ?? run.turnId ?? "") || null;
+      // The timeout may win while turn/start is in flight.  A late turn must be
+      // interrupted and can never reactivate the already-settled run.
+      if (run.terminal && run.turnId) void this.client.call("turn/interrupt", { threadId, turnId: run.turnId }).catch(() => undefined);
     } catch (error) {
       this.finish(threadId, safeError(error));
     }
