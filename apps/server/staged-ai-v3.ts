@@ -91,6 +91,7 @@ export class StagedTravelAiV3 {
     effort: ReasoningEffort;
     reasoningSummary: ReasoningSummary;
     timeoutMs?: number;
+    validateResult?: (value: T) => T;
     onProgress?: (progress: StructuredAiProgress) => void;
   }) {
     const prompt = this.options.prompts.compose(input.promptId);
@@ -109,6 +110,7 @@ export class StagedTravelAiV3 {
       effort: input.effort,
       reasoningSummary: input.reasoningSummary,
       timeoutMs: input.timeoutMs,
+      validateResult: input.validateResult,
       onProgress: input.onProgress,
     });
   }
@@ -197,6 +199,7 @@ export class StagedTravelAiV3 {
     actionType: AiActionType;
     state: unknown;
     allowWeb?: boolean;
+    validateResult?: (value: T) => T;
     onProgress?: (progress: StructuredAiProgress) => void;
   }): Promise<StructuredAiRun<T>> {
     const registration = actionRegistration(input.actionType);
@@ -219,6 +222,7 @@ export class StagedTravelAiV3 {
       effort: registration.reasoning,
       reasoningSummary: registration.reasoningSummary,
       timeoutMs: registration.web === "required" ? 300_000 : 180_000,
+      validateResult: input.validateResult,
       onProgress: input.onProgress,
     });
   }
