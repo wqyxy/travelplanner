@@ -41,6 +41,7 @@ import { parseActionParametersV3 } from "./ai-action-input-contracts-v3.js";
 import { AiTaskMonitorV3, aiErrorMessageV3, normalizePublicAiSummaryV3 } from "./ai-task-monitor-v3.js";
 import { applyCandidateDiscovery } from "./candidate-workflow-v2.js";
 import { CANDIDATE_DISCOVERY_BATCH_LIMIT, validateMicroCandidateDiscovery } from "./candidate-discovery-policy-v2.js";
+import { classifyCodexFailure } from "./codex-client.js";
 import type { DayRouteServiceV2 } from "./day-route-v2.js";
 import { applyPlanCommands } from "./plan-commands-v2.js";
 import { buildPlanningCoverage } from "./planning-areas-v2.js";
@@ -72,9 +73,11 @@ const STOP_FIELDS = ["activity", "period", "startTime", "endTime", "durationMinu
 const VERIFY_STOP_FIELDS = new Set(["startTime", "endTime", "durationMinutes", "transportFromPrevious", "scheduleVerification", "costNote", "costVerification", "notes"]);
 const REQUIREMENT_FIELDS = ["title", "dates", "travelers", "budget", "pace", "themes", "preferences", "constraints", "assumptions"] as const;
 const REPLACEMENT_COMMAND_LIMIT = 100;
+const INTEREST_DISCOVERY_CONCURRENCY = 4;
 
 type ActiveRun = { tripId: string; interrupt: () => Promise<void>; actionId?: string; messageId?: string; stage?: ConversationStage };
 type ActionOutput = Record<string, any>;
+type InterestFailure = { targetId: string; errorSummary: string };
 
 function now() { return new Date().toISOString(); }
 function same(left: unknown, right: unknown) { return JSON.stringify(left) === JSON.stringify(right); }
@@ -82,6 +85,24 @@ function stringifySize(value: unknown) { return Buffer.byteLength(JSON.stringify
 
 function hasTravelRequirements(plan: TravelPlanDocument) {
   return !same(plan.trip, emptyTravelPlan().trip);
+}
+
+function interestCompletionSummary(resultRef: string | null | undefined) {
+  if (!resultRef?.startsWith("interest:v1;")) return null;
+  const values = new Map(resultRef.split(";").slice(1).map((part) => {
+    const index = part.indexOf("=");
+    return index > 0 ? [part.slice(0, index), part.slice(index + 1)] : [part, ""];
+  }));
+  const [successfulText, totalText] = String(values.get("areas") ?? "0/0").split("/");
+  const successful = Number(successfulText) || 0;
+  const total = Number(totalText) || 0;
+  const failed = Number(values.get("failed")) || 0;
+  const added = Number(values.get("added")) || 0;
+  const resolved = Number(values.get("resolved")) || 0;
+  const pending = Number(values.get("pending")) || 0;
+  if (successful === total && added === 0) return `兴趣点研究完成 · ${successful}/${total} · 本轮没有发现值得新增的兴趣点`;
+  const failure = failed > 0 ? `，${failed} 个区域失败` : "";
+  return `兴趣点研究完成 · ${successful}/${total}${failure} · 新增 ${added} · 已定位 ${resolved}/${resolved + pending}`;
 }
 
 function actionScope(actionType: AiActionType, targetIds: string[], parameters: Record<string, unknown>): ProposalScope {
@@ -536,7 +557,7 @@ export class TravelPlannerRuntimeV3 {
 
       if (action.actionType === "interest.discover" || action.actionType === "interest.supplement") {
         this.options.tasks.update(taskId, "running", `正在执行 ${action.actionType}`, "action:running");
-        await this.persistInterestDiscovery(action, null, taskId);
+        await this.persistInterestDiscovery(action, taskId);
       } else {
         const run = await this.options.ai.startAction<ActionOutput>({ actionType: action.actionType, state, allowWeb: action.parameters.allowWeb !== false, onProgress: this.progress(taskId) });
         this.rememberActive(taskId, { tripId: action.tripId, actionId: action.id, interrupt: run.interrupt });
@@ -548,15 +569,18 @@ export class TravelPlannerRuntimeV3 {
       }
 
       const final = this.options.store.getAction(action.id);
-      this.options.tasks.metadata(taskId, { actionType: action.actionType, executor: "ai", reasoning: registration.reasoning, webPolicy: registration.web, inputBytes: stringifySize(state), timing: { totalMs: Date.now() - started } });
-      this.options.tasks.update(taskId, "completed", final?.status === "awaiting_apply" ? "方案已生成，等待 Apply" : "Action 已完成", "task:completed");
+      const existingMetadata = this.options.store.getAiTask(taskId)?.metadata ?? {};
+      this.options.tasks.metadata(taskId, { ...existingMetadata, actionType: action.actionType, executor: "ai", reasoning: registration.reasoning, webPolicy: registration.web, inputBytes: stringifySize(state), timing: { totalMs: Date.now() - started } });
+      const interestSummary = interestCompletionSummary(final?.resultRef);
+      this.options.tasks.update(taskId, "completed", interestSummary ?? (final?.status === "awaiting_apply" ? "方案已生成，等待 Apply" : "Action 已完成"), "task:completed");
       this.emit("travel.action.changed", { tripId: action.tripId, actionId: action.id });
     } catch (error) {
       const message = normalizePublicAiSummaryV3(aiErrorMessageV3(error)) || "Action 执行失败";
       if (message === "CONTENT_GENERATION_SUPERSEDED") this.options.store.supersedeAction(action.id, "计划已发生变化，Action 已失效。");
       else this.options.store.failAction(action.id, message);
       if (taskId) {
-        this.options.tasks.metadata(taskId, { actionType: action.actionType, timing: { totalMs: Date.now() - started, failedPhase: "generation" } });
+        const existingMetadata = this.options.store.getAiTask(taskId)?.metadata ?? {};
+        this.options.tasks.metadata(taskId, { ...existingMetadata, actionType: action.actionType, timing: { totalMs: Date.now() - started, failedPhase: "generation" } });
         this.options.tasks.update(taskId, message === "CONTENT_GENERATION_SUPERSEDED" ? "cancelled_by_generation" : message === "AI 任务已停止。" ? "stopped" : "failed", message, "task:failed");
       }
       this.emit("travel.action.changed", { tripId: action.tripId, actionId: action.id });
@@ -764,58 +788,186 @@ export class TravelPlannerRuntimeV3 {
     this.options.store.completeAction(action.id, `generation:${written.generation};resolved:${resolved}/${resolutionPlaceIds.length}`);
   }
 
-  private async persistInterestDiscovery(action: AiActionRecord, firstOutput: any | null, taskId: string | null = null) {
+  private async persistInterestDiscovery(action: AiActionRecord, taskId: string | null = null) {
     const original = this.options.store.requireTrip(action.tripId);
     const places = new Map(original.plan.places.map((place) => [place.id, place]));
-    const targets = action.targetIds.length ? action.targetIds : original.plan.candidates.filter((candidate) => candidate.preference !== "excluded" && places.get(candidate.placeId)?.kind === "city").map((candidate) => candidate.id);
+    const targets = [...new Set(action.targetIds.length ? action.targetIds : original.plan.candidates.filter((candidate) => candidate.preference !== "excluded" && places.get(candidate.placeId)?.kind === "city").map((candidate) => candidate.id))];
     if (!targets.length) throw new Error("请先生成并保留至少一个目的地。");
-    let plan = structuredClone(original.plan);
-    const addedPlaceIds = new Set<string>();
-    const resolutionPlaceIds = new Set<string>();
-    for (let index = 0; index < targets.length; index += 1) {
-      const targetId = targets[index];
-      const target = plan.candidates.find((candidate) => candidate.id === targetId);
-      const targetPlace = target ? plan.places.find((place) => place.id === target.placeId) : null;
+
+    for (const targetId of targets) {
+      const target = original.plan.candidates.find((candidate) => candidate.id === targetId);
+      const targetPlace = target ? original.plan.places.find((place) => place.id === target.placeId) : null;
       if (!target || target.preference === "excluded" || targetPlace?.kind !== "city") throw new Error(`兴趣点研究目标不是有效 Macro Candidate：${targetId}`);
-      let output = index === 0 ? firstOutput : null;
-      if (!output) {
-        const run = await this.options.ai.startAction<any>({
+    }
+
+    let expectedGeneration = action.baseGeneration;
+    let nextIndex = 0;
+    let completedAreas = 0;
+    let aiSuggestedCount = 0;
+    let actualAddedCount = 0;
+    let mergedDuplicateCount = 0;
+    let peakConcurrency = 0;
+    let cancelRequested = false;
+    let haltRequested = false;
+    let fatalError: Error | null = null;
+    let commitGate: Promise<void> = Promise.resolve();
+    const successfulAreaIds: string[] = [];
+    const failedAreas: InterestFailure[] = [];
+    const resolutionPlaceIds = new Set<string>();
+    const activeRuns = new Set<{ interrupt: () => Promise<void> }>();
+
+    const publishProgress = () => {
+      if (!taskId) return;
+      this.options.tasks.update(taskId, "running", `正在研究兴趣点 · ${completedAreas}/${targets.length} 已完成 · ${successfulAreaIds.length} 成功 · ${failedAreas.length} 失败 · ${activeRuns.size} 个区域并行处理中`, "interest:progress");
+    };
+    const interruptAll = async () => {
+      const runs = [...activeRuns];
+      await Promise.allSettled(runs.map((run) => run.interrupt()));
+    };
+    if (taskId) {
+      this.rememberActive(taskId, {
+        tripId: action.tripId,
+        actionId: action.id,
+        interrupt: async () => {
+          cancelRequested = true;
+          haltRequested = true;
+          await interruptAll();
+        },
+      });
+    }
+
+    const withCommit = <T>(operation: () => Promise<T> | T): Promise<T> => {
+      const result = commitGate.then(operation, operation);
+      commitGate = result.then(() => undefined, () => undefined);
+      return result;
+    };
+
+    const isGlobalFailure = (error: unknown) => {
+      const message = aiErrorMessageV3(error);
+      if (message === "CONTENT_GENERATION_SUPERSEDED" || message === "AI 任务已停止。") return true;
+      const kind = classifyCodexFailure(error);
+      if (kind === "authentication" || kind === "model" || kind === "protocol") return true;
+      return /app-server|transport error|broken pipe|econn|connection.+(?:closed|reset)|尚未运行/iu.test(message);
+    };
+
+    const processTarget = async (targetId: string) => {
+      if (cancelRequested || haltRequested) return;
+      const snapshot = this.options.store.requireTrip(action.tripId);
+      const target = snapshot.plan.candidates.find((candidate) => candidate.id === targetId);
+      const targetPlace = target ? snapshot.plan.places.find((place) => place.id === target.placeId) : null;
+      if (!target || target.preference === "excluded" || targetPlace?.kind !== "city") throw new Error(`兴趣点研究目标不是有效 Macro Candidate：${targetId}`);
+      const run = await this.options.ai.startAction<any>({
+        actionType: action.actionType,
+        state: {
           actionType: action.actionType,
-          state: {
-            actionType: action.actionType,
-            baseGeneration: action.baseGeneration,
-            tripFacts: original.plan.trip,
-            targetMacroCandidate: { ...target, place: targetPlace },
-            existingPlaces: plan.candidates.filter((candidate) => candidate.planningAreaCandidateId === targetId).map((candidate) => ({ ...candidate, place: plan.places.find((place) => place.id === candidate.placeId) ?? null })),
-            areaRequest: { planningAreaCandidateId: targetId, maxNewCandidates: CANDIDATE_DISCOVERY_BATCH_LIMIT },
-          },
-          onProgress: taskId ? this.progress(taskId) : undefined,
+          baseGeneration: action.baseGeneration,
+          tripFacts: original.plan.trip,
+          targetMacroCandidate: { ...target, place: targetPlace },
+          existingPlaces: snapshot.plan.candidates.filter((candidate) => candidate.planningAreaCandidateId === targetId).map((candidate) => ({ ...candidate, place: snapshot.plan.places.find((place) => place.id === candidate.placeId) ?? null })),
+          areaRequest: { planningAreaCandidateId: targetId, maxNewCandidates: CANDIDATE_DISCOVERY_BATCH_LIMIT },
+        },
+        validateResult: (value) => {
+          if (Number(value?.baseGeneration) !== action.baseGeneration) throw new Error(`兴趣点输出 baseGeneration 必须保持为 ${action.baseGeneration}。`);
+          return validateMicroCandidateDiscovery(value, [targetId], [{ planningAreaCandidateId: targetId, targetCount: CANDIDATE_DISCOVERY_BATCH_LIMIT }]);
+        },
+        onProgress: taskId ? this.progress(taskId) : undefined,
+      });
+      activeRuns.add(run);
+      peakConcurrency = Math.max(peakConcurrency, activeRuns.size);
+      publishProgress();
+      try {
+        const output = await run.result;
+        if (cancelRequested) throw new Error("AI 任务已停止。");
+        aiSuggestedCount += output.candidates.length;
+        await withCommit(async () => {
+          if (cancelRequested) throw new Error("AI 任务已停止。");
+          const current = this.options.store.requireTrip(action.tripId);
+          if (current.contentGeneration !== expectedGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
+          const normalized = normalizeCandidateDiscoveryOutput(output, "micro");
+          const applied = applyCandidateDiscovery(current.plan, normalized);
+          actualAddedCount += applied.addedCandidateIds.length;
+          mergedDuplicateCount += applied.mergedDuplicateCount;
+          for (const candidate of normalized.candidates) {
+            const placeId = applied.idMappings[candidate.placeTemporaryId];
+            if (placeId) resolutionPlaceIds.add(placeId);
+          }
+          if (!same(applied.plan, current.plan)) {
+            const written = this.options.store.writePlan(action.tripId, applied.plan, expectedGeneration, { source: `action:${action.actionType}`, summary: `AI 发现兴趣点 · ${targetPlace.nameZh}` }, { keepActionId: action.id });
+            expectedGeneration = written.generation;
+            this.emit("travel.document.changed", { tripId: action.tripId, generation: written.generation, changedDayIds: [] });
+          }
         });
-        if (taskId) this.rememberActive(taskId, { tripId: action.tripId, actionId: action.id, interrupt: run.interrupt });
-        output = await run.result;
+        successfulAreaIds.push(targetId);
+      } finally {
+        activeRuns.delete(run);
       }
-      if (output.baseGeneration !== action.baseGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
-      if (this.options.store.requireTrip(action.tripId).contentGeneration !== action.baseGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
-      validateMicroCandidateDiscovery(output, [targetId], [{ planningAreaCandidateId: targetId, targetCount: CANDIDATE_DISCOVERY_BATCH_LIMIT }]);
-      if (!output.candidates.length) continue;
-      const normalized = normalizeCandidateDiscoveryOutput(output, "micro");
-      const applied = applyCandidateDiscovery(plan, normalized);
-      plan = applied.plan;
-      for (const id of applied.addedPlaceIds) addedPlaceIds.add(id);
-      for (const candidate of normalized.candidates) {
-        const placeId = applied.idMappings[candidate.placeTemporaryId];
-        if (placeId) resolutionPlaceIds.add(placeId);
+    };
+
+    const worker = async () => {
+      while (!cancelRequested && !haltRequested) {
+        const index = nextIndex++;
+        if (index >= targets.length) return;
+        const targetId = targets[index];
+        try {
+          await processTarget(targetId);
+        } catch (error) {
+          if (cancelRequested || aiErrorMessageV3(error) === "AI 任务已停止。") {
+            cancelRequested = true;
+            haltRequested = true;
+          } else if (isGlobalFailure(error)) {
+            fatalError = error instanceof Error ? error : new Error(aiErrorMessageV3(error));
+            haltRequested = true;
+            await interruptAll();
+          } else {
+            failedAreas.push({ targetId, errorSummary: normalizePublicAiSummaryV3(aiErrorMessageV3(error)).slice(0, 500) });
+          }
+        } finally {
+          completedAreas += 1;
+          publishProgress();
+        }
       }
+    };
+
+    const workerCount = Math.min(INTEREST_DISCOVERY_CONCURRENCY, targets.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    await commitGate;
+
+    if (cancelRequested) throw new Error("AI 任务已停止。");
+    if (fatalError) throw fatalError;
+    if (this.options.store.requireTrip(action.tripId).contentGeneration !== expectedGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
+    if (!successfulAreaIds.length) {
+      const details = failedAreas.slice(0, 3).map((item) => `${item.targetId}: ${item.errorSummary}`).join("；");
+      throw new Error(details ? `所有兴趣点研究区域均失败：${details}` : "所有兴趣点研究区域均失败。");
     }
-    if (same(plan, original.plan)) {
-      this.options.store.completeAction(action.id, "no-new-candidates");
-      return;
+
+    await this.resolveChangedPlaces(action.tripId, [...resolutionPlaceIds], expectedGeneration, taskId ?? undefined);
+    const current = this.options.store.requireTrip(action.tripId);
+    if (current.contentGeneration !== expectedGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
+    const currentResolutions = currentPlaceResolutions(current, this.options.store.listPlaceResolutions(action.tripId));
+    const resolutionByPlace = new Map(currentResolutions.map((resolution) => [resolution.placeId, resolution]));
+    let resolvedCount = 0;
+    let unresolvedCount = 0;
+    for (const placeId of resolutionPlaceIds) {
+      if (resolutionByPlace.get(placeId)?.status === "resolved") resolvedCount += 1;
+      else unresolvedCount += 1;
     }
-    const written = this.options.store.writePlan(action.tripId, plan, action.baseGeneration, { source: `action:${action.actionType}`, summary: "AI 发现兴趣点" }, { keepActionId: action.id });
-    this.emit("travel.document.changed", { tripId: action.tripId, generation: written.generation, changedDayIds: [] });
-    await this.resolveChangedPlaces(action.tripId, [...resolutionPlaceIds], written.generation, taskId ?? undefined);
-    const resolved = currentResolvedPlaces(this.options.store.requireTrip(action.tripId), this.options.store.listPlaceResolutions(action.tripId)).filter((item) => resolutionPlaceIds.has(item.placeId)).length;
-    this.options.store.completeAction(action.id, `added:${addedPlaceIds.size};resolved:${resolved}/${resolutionPlaceIds.size}`);
+
+    const interestDiscovery = {
+      totalAreas: targets.length,
+      concurrency: INTEREST_DISCOVERY_CONCURRENCY,
+      successfulAreaIds,
+      failedAreas,
+      aiSuggestedCount,
+      actualAddedCount,
+      mergedDuplicateCount,
+      resolutionRequestedCount: resolutionPlaceIds.size,
+      resolvedCount,
+      unresolvedCount,
+      peakConcurrency,
+    };
+    if (taskId) this.options.tasks.metadata(taskId, { ...(this.options.store.getAiTask(taskId)?.metadata ?? {}), interestDiscovery });
+    const resultRef = `interest:v1;areas=${successfulAreaIds.length}/${targets.length};failed=${failedAreas.length};suggested=${aiSuggestedCount};added=${actualAddedCount};merged=${mergedDuplicateCount};resolved=${resolvedCount};pending=${unresolvedCount}`;
+    this.options.store.completeAction(action.id, resultRef);
   }
 
   private persistCandidateProposal(action: AiActionRecord, output: DestinationAddOutput | DestinationReplaceOutput | InterestAddOutput | InterestReplaceOutput) {
