@@ -8,6 +8,7 @@ import {
   PlaceSchema,
   TextSchema,
   TimeSchema,
+  TransportModeSchema,
   TransportSchema,
   VerificationSchema,
 } from "./contracts-v2.js";
@@ -109,12 +110,21 @@ const RequiresInterestsSchema = z.object({
   reason: TextSchema.max(2000),
 }).strict();
 
+export const ItineraryMacroVisitSchema = z.object({
+  destinationCandidateId: IdSchema,
+  stayDays: z.number().int().min(1).max(90),
+  transferMode: TransportModeSchema,
+}).strict();
+export type ItineraryMacroVisit = z.infer<typeof ItineraryMacroVisitSchema>;
+
 const ItineraryGenerationSuccessSchema = z.object({
   type: z.literal("success"),
   assistantMessage: TextSchema.max(12000),
-  days: z.array(DaySchema).min(1).max(90),
-  unscheduledCandidates: z.array(z.object({ candidateId: IdSchema, reason: TextSchema.max(1000) }).strict()).max(1800),
-}).strict();
+  destinations: z.array(ItineraryMacroVisitSchema).min(1).max(30),
+}).strict().superRefine((value, context) => {
+  const ids = value.destinations.map((item) => item.destinationCandidateId);
+  if (new Set(ids).size !== ids.length) context.addIssue({ code: "custom", path: ["destinations"], message: "Macro 行程中同一目的地只能出现一次。" });
+});
 
 export const ItineraryGenerateOutputSchema = z.object({ schemaVersion: z.literal(1), baseGeneration: z.number().int().min(0), result: z.discriminatedUnion("type", [ItineraryGenerationSuccessSchema, RequiresInterestsSchema]) }).strict();
 export type ItineraryGenerateOutput = z.infer<typeof ItineraryGenerateOutputSchema>;
@@ -124,8 +134,11 @@ const ItineraryReplacementSuccessSchema = z.object({
   assistantMessage: TextSchema.max(12000),
   title: TextSchema.max(300),
   explanation: TextSchema.max(4000),
-  days: z.array(DaySchema).min(1).max(90),
-}).strict();
+  destinations: z.array(ItineraryMacroVisitSchema).min(1).max(30),
+}).strict().superRefine((value, context) => {
+  const ids = value.destinations.map((item) => item.destinationCandidateId);
+  if (new Set(ids).size !== ids.length) context.addIssue({ code: "custom", path: ["destinations"], message: "Macro 行程中同一目的地只能出现一次。" });
+});
 
 export const ItineraryReplanOutputSchema = z.object({ schemaVersion: z.literal(1), baseGeneration: z.number().int().min(0), result: z.discriminatedUnion("type", [ItineraryReplacementSuccessSchema, RequiresInterestsSchema]) }).strict();
 export type ItineraryReplanOutput = z.infer<typeof ItineraryReplanOutputSchema>;
@@ -148,13 +161,14 @@ const DetailedStopDraftSchema = z.object({
   if (minutes(value.endTime) - minutes(value.startTime) !== value.durationMinutes) context.addIssue({ code: "custom", path: ["durationMinutes"], message: "停留时长必须等于开始和结束时间之差。" });
 });
 
-const DetailedDayUpdateSchema = z.object({
+export const DetailedDayUpdateSchema = z.object({
   dayId: IdSchema,
   stops: z.array(DetailedStopDraftSchema).max(80),
 }).strict().superRefine((value, context) => {
   const candidateIds = value.stops.map((stop) => stop.candidateId);
   if (new Set(candidateIds).size !== candidateIds.length) context.addIssue({ code: "custom", path: ["stops"], message: "同一天不得重复安排同一个 Candidate。" });
 });
+export type DetailedDayUpdate = z.infer<typeof DetailedDayUpdateSchema>;
 
 const DetailGenerateSuccessSchema = z.object({
   type: z.literal("success"),
