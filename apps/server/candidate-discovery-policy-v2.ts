@@ -8,14 +8,18 @@ export const MICRO_DISCOVERY_AREA_BATCH_SIZE = 1;
 
 const MARKDOWN_LINK_PATTERN = /!?\[[^\]\r\n]*\]\(\s*[^)\r\n]+\s*\)/iu;
 const URL_SCHEME_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^\s\"'<>]+/iu;
-const WEB_DOMAIN_PATTERN = /\b(?:www\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}(?::\d{2,5})?(?:[/?#][^\s\"'<>)]*)?/iu;
-const SOURCE_LIST_PATTERN = /(?:来源|参考(?:资料|链接)?|sources|references)\s*[:：]/iu;
+const PROTOCOL_RELATIVE_URL_PATTERN = /(?:^|[\s(\"'])\/\/(?:www\.)?[a-z0-9][a-z0-9.-]*\.[a-z]{2,63}(?::\d{2,5})?(?:[/?#][^\s\"'<>)]*)?/iu;
+const WWW_DOMAIN_PATTERN = /\bwww\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}(?::\d{2,5})?(?:[/?#][^\s\"'<>)]*)?/iu;
+const BARE_DOMAIN_PATTERN = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|org|net|edu|gov|mil|int|io|ai|co|me|tv|info|biz|app|dev|tech|travel|museum|cloud|shop|store|news|online|site|xyz|guide|hotel|blog|pro|name|mobi|aero|jobs|cat|asia|[a-z]{2})(?::\d{2,5})?(?:[/?#][^\s\"'<>)]*)?\b/iu;
+const SOURCE_LIST_PATTERN = /(?:来源|引用|参考(?:资料|链接)?|source(?:s)?|reference(?:s)?)\s*[:：]/iu;
 
 export function containsForbiddenResearchLink(value: unknown) {
   const text = JSON.stringify(value);
   return MARKDOWN_LINK_PATTERN.test(text)
     || URL_SCHEME_PATTERN.test(text)
-    || WEB_DOMAIN_PATTERN.test(text)
+    || PROTOCOL_RELATIVE_URL_PATTERN.test(text)
+    || WWW_DOMAIN_PATTERN.test(text)
+    || BARE_DOMAIN_PATTERN.test(text)
     || SOURCE_LIST_PATTERN.test(text);
 }
 
