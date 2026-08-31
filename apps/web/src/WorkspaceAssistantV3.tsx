@@ -39,6 +39,25 @@ function actionLabel(action: AiAction) {
   return labels[action.actionType] ?? action.actionType;
 }
 
+function interestResultLines(action: AiAction) {
+  if (!(action.actionType === "interest.discover" || action.actionType === "interest.supplement") || !action.resultRef?.startsWith("interest:v1;")) return null;
+  const values = new Map(action.resultRef.split(";").slice(1).map((part) => {
+    const index = part.indexOf("=");
+    return index > 0 ? [part.slice(0, index), part.slice(index + 1)] : [part, ""];
+  }));
+  const areas = String(values.get("areas") ?? "0/0");
+  const [successfulText, totalText] = areas.split("/");
+  const successful = Number(successfulText) || 0;
+  const total = Number(totalText) || 0;
+  const failed = Number(values.get("failed")) || 0;
+  const added = Number(values.get("added")) || 0;
+  const resolved = Number(values.get("resolved")) || 0;
+  const pending = Number(values.get("pending")) || 0;
+  const first = failed > 0 ? `完成 ${successful}/${total}，${failed} 个区域失败` : `完成 ${successful}/${total}`;
+  const second = added === 0 ? "本轮没有发现值得新增的兴趣点" : `新增 ${added} · 已定位 ${resolved}/${resolved + pending}`;
+  return [first, second];
+}
+
 function ProposalCard({ proposal, currentGeneration, busy, onAction }: { proposal: AiProposal; currentGeneration: number; busy: boolean; onAction: (proposalId: string, action: "apply" | "reject" | "undo") => Promise<void> }) {
   const current = proposal.baseGeneration === currentGeneration;
   return <section className={`stage-proposal-card-v3 ${proposal.status}`}>
@@ -60,6 +79,7 @@ function ActionCard({ action, proposal, currentGeneration, busy, onConfirm, onCa
   onProposalAction: (proposalId: string, action: "apply" | "reject" | "undo") => Promise<void>;
 }) {
   const pending = action.status === "pending_confirmation";
+  const interestResult = interestResultLines(action);
   return <section className={`stage-action-card-v3 ${action.status}`}>
     <header><strong>{actionLabel(action)}</strong><span>{action.executor === "ai" ? "AI" : "确定性"}</span></header>
     <small>范围：{action.stage} · 基于 generation {action.baseGeneration}</small>
@@ -68,7 +88,8 @@ function ActionCard({ action, proposal, currentGeneration, busy, onConfirm, onCa
     {pending && <footer><button className="button" disabled={busy} onClick={() => void onCancel(action)}>取消</button><button className="button primary" disabled={busy || action.baseGeneration !== currentGeneration} onClick={() => void onConfirm(action)}>{action.executor === "ai" ? "确认并生成方案" : "确认执行"}</button></footer>}
     {action.status === "executing" && <div className="stage-action-running-v3"><LoaderCircle className="spin" size={14}/><span>正在执行…</span></div>}
     {action.status === "awaiting_apply" && <small>方案已生成，等待你检查并 Apply。</small>}
-    {action.status === "completed" && <small>已完成{action.resultRef?.startsWith("requiresStage:") ? " · 需要返回兴趣点阶段" : ""}</small>}
+    {action.status === "completed" && interestResult && <div className="stage-action-result-v3"><small>{interestResult[0]}</small><small>{interestResult[1]}</small></div>}
+    {action.status === "completed" && !interestResult && <small>已完成{action.resultRef?.startsWith("requiresStage:") ? " · 需要返回兴趣点阶段" : ""}</small>}
     {action.status === "applied" && <small>已执行并应用到当前旅行。</small>}
     {action.status === "rejected" && <small>方案已拒绝，正式计划未修改。</small>}
     {action.status === "cancelled" && <small>动作已取消。</small>}
