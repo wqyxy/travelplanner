@@ -9,6 +9,7 @@ import { installRuntimeInvariantsV3 } from "./runtime-invariants-v3.js";
 import type { StagedAiHandle, StagedTravelAiV3 } from "./staged-ai-v3.js";
 import { TravelStoreV3 } from "./travel-store-v3.js";
 import type { PlaceResolverV2 } from "./place-resolver-v2.js";
+import { placeGeoFingerprint } from "./place-resolver-v2.js";
 import type { DayRouteServiceV2 } from "./day-route-v2.js";
 import { TravelPlanDocumentSchema } from "./contracts-v2.js";
 
@@ -142,7 +143,24 @@ describe("TravelPlannerRuntimeV3", () => {
         { id: "stop-b", candidateId: "candidate-b", placeId: "place-b", activity: "B", period: null, startTime: null, endTime: null, durationMinutes: 60, transportFromPrevious: null, scheduleVerification: null, costNote: null, costVerification: null, notes: null },
       ], endAnchor: { id: "end-1", placeId: null, label: null, notes: null } }],
     });
-    db.writePlan(created.id, plan, 0, { source: "test", summary: "fixture" });
+    const written = db.writePlan(created.id, plan, 0, { source: "test", summary: "fixture" });
+    for (const [index, place] of written.trip.plan.places.entries()) {
+      db.upsertPlaceResolution(created.id, {
+        tripId: created.id,
+        placeId: place.id,
+        geoFingerprint: placeGeoFingerprint(place),
+        status: "resolved",
+        method: "manual_coordinates",
+        provider: null,
+        providerPlaceId: null,
+        latitude: 35 + index,
+        longitude: 135 + index,
+        address: null,
+        confidence: null,
+        resolvedAt: new Date().toISOString(),
+        errorMessage: null,
+      }, written.generation);
+    }
     const rt = runtime({ store: db, dialogue: () => handle({ schemaVersion: 1, result: { type: "reply", assistantMessage: "ok" } }) });
     const action = rt.createCtaAction({ tripId: created.id, stage: "itinerary", actionType: "itinerary.stop.add", parameters: { dayId: "day-1", candidateId: "candidate-c", index: null }, targetIds: [], requestKey: "append-stop" });
     await waitFor(() => db.getAction(action.action.id)?.status === "applied");
