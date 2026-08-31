@@ -208,6 +208,44 @@ describe("interest discovery v3 orchestration", () => {
     store.close();
   });
 
+  it("preserves a saved first area while stopping the remaining active workers before any later area can persist", async () => {
+    const store = db();
+    const created = store.createTrip();
+    store.writePlan(created.id, macroPlan(created.plan, 6), 0, { source: "test", summary: "macro fixture" });
+
+    const gates = new Map<string, ReturnType<typeof deferred<any>>>();
+    const calls: string[] = [];
+    const rt = runtime(store, async (input) => {
+      const targetId = String(input.state.targetMacroCandidate.id);
+      calls.push(targetId);
+      const gate = deferred<any>();
+      gates.set(targetId, gate);
+      return {
+        threadId: `thread-${targetId}`,
+        result: gate.promise.then((value) => input.validateResult ? input.validateResult(value) : value),
+        turnId: () => `turn-${targetId}`,
+        interrupt: async () => gate.reject(new Error("AI 任务已停止。")),
+      };
+    });
+
+    const started = rt.createCtaAction({ tripId: created.id, stage: "interests", actionType: "interest.discover", parameters: {}, targetIds: Array.from({ length: 6 }, (_, index) => `macro-${index + 1}`), requestKey: "stop-after-first-save-combined" });
+    await waitFor(() => calls.length === 4);
+    gates.get("macro-1")!.resolve(output("macro-1", 1));
+    await waitFor(() => store.requireTrip(created.id).contentGeneration === 2);
+    await waitFor(() => calls.length === 5);
+
+    rt.stopTask(created.id, started.taskId!);
+    await waitFor(() => store.getAiTask(started.taskId!)?.status === "stopped");
+
+    const trip = store.requireTrip(created.id);
+    expect(trip.contentGeneration).toBe(2);
+    expect(trip.plan.candidates.some((candidate) => candidate.planningAreaCandidateId === "macro-1" && candidate.id !== "macro-1")).toBe(true);
+    expect(trip.plan.candidates.filter((candidate) => candidate.planningAreaCandidateId && candidate.planningAreaCandidateId !== "macro-1")).toHaveLength(0);
+    expect(calls).toHaveLength(5);
+    expect(calls).not.toContain("macro-6");
+    store.close();
+  });
+
   it("interrupts a child that finishes startAction only after Stop was requested", async () => {
     const store = db();
     const created = store.createTrip();
@@ -269,6 +307,21 @@ describe("interest discovery v3 orchestration", () => {
     expect(store.requireTrip(created.id).contentGeneration).toBe(2);
     expect(store.requireTrip(created.id).plan.candidates.some((candidate) => candidate.id === savedCandidate!.id)).toBe(true);
     expect(store.getAction(started.action.id)?.status).not.toBe("completed");
+    store.close();
+  });
+
+  it("keeps resolver stop-like failures best-effort when no user AbortSignal was triggered", async () => {
+    const store = db();
+    const created = store.createTrip();
+    const resolver = {
+      resolve: async () => ({ resolution: null, candidates: [] }),
+      resolveMany: async () => { throw new Error("AI 任务已停止。"); },
+      searchCandidates: async () => [],
+    } as unknown as PlaceResolverV2;
+    const rt = runtime(store, async () => { throw new Error("AI not expected"); }, resolver);
+
+    const result = await (rt as any).resolveChangedPlaces(created.id, [], created.contentGeneration);
+    expect(result).toEqual([]);
     store.close();
   });
 
