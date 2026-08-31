@@ -1,10 +1,88 @@
 import { describe, expect, it } from "vitest";
-import { ItineraryGenerateOutputSchema, ItineraryRefineOutputSchema, ItineraryVerifyOutputSchema } from "./ai-action-contracts-v3.js";
+import {
+  ItineraryDetailGenerateOutputSchema,
+  ItineraryDetailUpdateOutputSchema,
+  ItineraryGenerateOutputSchema,
+  ItineraryRefineOutputSchema,
+  ItineraryVerifyOutputSchema,
+} from "./ai-action-contracts-v3.js";
 
 describe("V3 itinerary action contracts", () => {
-  it("keeps itinerary generation candidate-first without newPlaces/newCandidates", () => {
-    const result = ItineraryGenerateOutputSchema.safeParse({ schemaVersion: 1, baseGeneration: 0, result: { type: "requires_stage", requiresStage: "interests", assistantMessage: "需要先补地点", reason: "缺少具体地点" }, newPlaces: [], newCandidates: [] });
-    expect(result.success).toBe(false);
+  it("keeps step four macro-only", () => {
+    expect(ItineraryGenerateOutputSchema.safeParse({
+      schemaVersion: 1,
+      baseGeneration: 0,
+      result: {
+        type: "success",
+        assistantMessage: "骨架完成",
+        destinations: [
+          { destinationCandidateId: "macro-a", stayDays: 2, transferMode: "none" },
+          { destinationCandidateId: "macro-b", stayDays: 3, transferMode: "drive" },
+        ],
+      },
+    }).success).toBe(true);
+
+    expect(ItineraryGenerateOutputSchema.safeParse({
+      schemaVersion: 1,
+      baseGeneration: 0,
+      result: {
+        type: "success",
+        assistantMessage: "越界安排兴趣点",
+        destinations: [{ destinationCandidateId: "macro-a", stayDays: 5, transferMode: "none", stops: [{ candidateId: "micro-a" }] }],
+      },
+    }).success).toBe(false);
+  });
+
+  it("keeps step five on stable day ids and forbids anchor rewrites", () => {
+    const stop = {
+      candidateId: "micro-a",
+      activity: "参观博物馆",
+      period: "morning" as const,
+      startTime: "09:00",
+      endTime: "10:00",
+      durationMinutes: 60,
+      transportFromPrevious: null,
+      scheduleVerification: { status: "estimated" as const, checkedAt: null },
+      costNote: null,
+      costVerification: null,
+      notes: null,
+    };
+    expect(ItineraryDetailGenerateOutputSchema.safeParse({
+      schemaVersion: 1,
+      baseGeneration: 2,
+      result: { type: "success", assistantMessage: "详细行程完成", dayUpdates: [{ dayId: "day-1", stops: [stop] }], unscheduledCandidates: [] },
+    }).success).toBe(true);
+    expect(ItineraryDetailGenerateOutputSchema.safeParse({
+      schemaVersion: 1,
+      baseGeneration: 2,
+      result: { type: "success", assistantMessage: "越界", dayUpdates: [{ dayId: "day-1", startAnchor: { placeId: "other" }, stops: [stop] }], unscheduledCandidates: [] },
+    }).success).toBe(false);
+  });
+
+  it("requires detail patch output to exactly match affected day ids", () => {
+    const stop = {
+      candidateId: "micro-a",
+      activity: "参观",
+      period: null,
+      startTime: "09:00",
+      endTime: "10:00",
+      durationMinutes: 60,
+      transportFromPrevious: null,
+      scheduleVerification: { status: "estimated" as const, checkedAt: null },
+      costNote: null,
+      costVerification: null,
+      notes: null,
+    };
+    expect(ItineraryDetailUpdateOutputSchema.safeParse({
+      schemaVersion: 1,
+      baseGeneration: 4,
+      result: { type: "success", assistantMessage: "局部更新", title: "更新两天", explanation: "只更新受影响日期", affectedDayIds: ["day-2", "day-4"], dayUpdates: [{ dayId: "day-2", stops: [stop] }, { dayId: "day-4", stops: [] }] },
+    }).success).toBe(true);
+    expect(ItineraryDetailUpdateOutputSchema.safeParse({
+      schemaVersion: 1,
+      baseGeneration: 4,
+      result: { type: "success", assistantMessage: "越界", title: "越界", explanation: "返回了未授权日期", affectedDayIds: ["day-2"], dayUpdates: [{ dayId: "day-2", stops: [stop] }, { dayId: "day-3", stops: [] }] },
+    }).success).toBe(false);
   });
 
   it("allows verification to update dynamic Stop facts only", () => {
