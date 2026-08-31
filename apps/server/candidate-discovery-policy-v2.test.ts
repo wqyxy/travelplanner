@@ -3,6 +3,7 @@ import { emptyTravelPlan, type MicroCandidateDiscoveryOutput, type TravelPlanDoc
 import {
   CANDIDATE_DISCOVERY_BATCH_LIMIT,
   buildFixedMicroDiscoveryTargets,
+  containsForbiddenResearchLink,
   discoveryShortfalls,
   microTourismPlaceRejection,
   microTourismProviderRejection,
@@ -64,9 +65,27 @@ describe("candidate discovery resource policy", () => {
     const mismatched = structuredClone(output);
     mismatched.areaTargets[0].targetCount = 2;
     expect(() => validateMicroCandidateDiscovery(mismatched, ["area-a"], [{ planningAreaCandidateId: "area-a", targetCount: 9 }])).toThrow(/targetCount/);
-    const leakedSource = structuredClone(output);
-    leakedSource.assistantMessage = "来源：https://example.com/guide";
-    expect(() => validateMicroCandidateDiscovery(leakedSource, ["area-a"], [{ planningAreaCandidateId: "area-a", targetCount: 9 }])).toThrow(/来源链接不得写入/);
+  });
+
+  it("rejects source URLs, Markdown links, bare domains and explicit reference lists", () => {
+    const variants = [
+      "来源：https://example.com/guide",
+      "[官网](www.example.com)",
+      "[来源](//example.com/path)",
+      "参考 www.example.com",
+      "参考 example.com/reference",
+      "Sources: official tourism board",
+      "参考资料：官方旅游局、旅行指南",
+    ];
+    for (const text of variants) {
+      const leaked = structuredClone(microOutput());
+      leaked.assistantMessage = text;
+      expect(containsForbiddenResearchLink(leaked), text).toBe(true);
+      expect(() => validateMicroCandidateDiscovery(leaked, ["area-a"], [{ planningAreaCandidateId: "area-a", targetCount: 9 }]), text).toThrow(/来源链接或引用列表不得写入/);
+    }
+    const clean = structuredClone(microOutput());
+    clean.assistantMessage = "已综合实时网页研究核验地点价值，但最终结构化结果不携带来源或链接。";
+    expect(containsForbiddenResearchLink(clean)).toBe(false);
   });
 
   it("splits every Macro into an independent request and never creates map replenishment shortfalls", () => {
