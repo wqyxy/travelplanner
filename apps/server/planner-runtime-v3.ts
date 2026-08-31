@@ -888,6 +888,7 @@ export class TravelPlannerRuntimeV3 {
       publishProgress();
       try {
         if (cancelRequested || haltRequested) {
+          void run.result.catch(() => undefined);
           await run.interrupt().catch(() => undefined);
           throwIfHalted();
         }
