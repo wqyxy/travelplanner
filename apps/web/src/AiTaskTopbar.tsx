@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Bot, ChevronDown, CircleStop, MapPinned, Route } from "lucide-react";
-import type { AiTask } from "./v2-types";
+import type { AiTaskV3 } from "./v3-types";
 
 const ACTIVE = new Set(["starting", "running", "waiting", "reconnecting"]);
 const TASK_LIMIT = 12;
 const labels: Record<string, string> = { starting: "启动中", running: "进行中", waiting: "后台解析", reconnecting: "重连中", completed: "已完成", failed: "失败", stopped: "已停止", cancelled_by_generation: "已被新版本取代" };
 const elapsed = (startedAt: string, updatedAt: string, active: boolean) => { const end = active ? Date.now() : new Date(updatedAt).getTime(); const seconds = Math.max(0, Math.floor((end - new Date(startedAt).getTime()) / 1000)); if (seconds < 60) return `${seconds} 秒`; return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`; };
 
-export function getAiTaskTopbarState(tasks: AiTask[]) {
+export function getAiTaskTopbarState(tasks: AiTaskV3[]) {
   const sorted = [...tasks].sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
   const activeTasks = sorted.filter((task) => ACTIVE.has(task.status));
   const historyTasks = sorted.filter((task) => !ACTIVE.has(task.status));
@@ -15,7 +15,7 @@ export function getAiTaskTopbarState(tasks: AiTask[]) {
   return { visible, selected: activeTasks[0] ?? historyTasks[0] ?? null, activeCount: activeTasks.length };
 }
 
-export function AiTaskTopbar({ tasks, onStop }: { tasks: AiTask[]; onStop: (taskId: string) => Promise<void> }) {
+export function AiTaskTopbar({ tasks, onStop }: { tasks: AiTaskV3[]; onStop: (taskId: string) => Promise<void> }) {
   const [open, setOpen] = useState(false); const [, tick] = useState(0);
   const { visible, selected, activeCount } = useMemo(() => getAiTaskTopbarState(tasks), [tasks]);
   useEffect(() => { const timer = window.setInterval(() => tick((value) => value + 1), 1000); return () => window.clearInterval(timer); }, []);

@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   CandidatePreferenceSchema,
   PlaceResolutionRetryInputSchema,
+  ProviderPlaceCandidateSchema,
 } from "./contracts-v2.js";
 import { AiActionTypeSchema, ConversationStageSchema, WorkspaceSelectionV3Schema } from "./ai-stage-contracts-v3.js";
 import type { TravelPlannerRuntimeV3 } from "./planner-runtime-v3.js";
@@ -114,7 +115,9 @@ export async function dispatchTravelApiV3(
   if (method === "GET" && match) {
     const expectedGeneration = Number(searchParams.get("expectedGeneration"));
     if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 0) throw new Error("expectedGeneration 无效。");
-    return { status: 200, data: { candidates: await deps.runtime.searchResolutionCandidates(decode(match[1]), decode(match[2]), expectedGeneration) } };
+    const ranked = await deps.runtime.searchResolutionCandidates(decode(match[1]), decode(match[2]), expectedGeneration);
+    const candidates = ProviderPlaceCandidateSchema.array().parse(ranked.map((item) => item.candidate));
+    return { status: 200, data: { candidates } };
   }
   match = /^\/api\/trips\/([^/]+)\/resolutions\/([^/]+)\/select$/.exec(pathname);
   if (method === "POST" && match) return { status: 200, data: await deps.runtime.selectResolution(decode(match[1]), decode(match[2]), body) };

@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { getAiTaskTopbarState } from "./AiTaskTopbar";
-import type { AiTask } from "./v2-types";
+import type { AiTaskV3 } from "./v3-types";
 
-const task = (id: string, status: AiTask["status"], updatedAt: string): AiTask => ({
+const task = (id: string, status: AiTaskV3["status"], updatedAt: string): AiTaskV3 => ({
   id,
   tripId: "trip-1",
-  agent: "planner",
+  agent: "action",
   label: id,
   status,
   summary: id,

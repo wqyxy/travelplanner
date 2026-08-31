@@ -1,14 +1,9 @@
-.candidate-head-actions,
 .itinerary-head-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
   flex-wrap: wrap;
-}
-
-.candidate-toolbar > .button.ghost {
-  flex: 0 0 auto;
 }
 
 .candidate-empty > div {
@@ -165,7 +160,6 @@
 }
 
 @media (max-width: 900px) {
-  .candidate-head-actions,
   .itinerary-head-actions {
     justify-content: flex-start;
   }
@@ -229,19 +223,6 @@
   color: var(--accent, #2563eb);
 }
 .workspace-flow-nav-v3 button:disabled { opacity: .42; cursor: not-allowed; }
-.workspace-flow-tools-v3 {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 0 14px 10px;
-  color: var(--muted, #6b7280);
-}
-.workspace-flow-tools-v3 small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.workspace-flow-tools-v3 select { flex: 0 0 auto; }
-.workspace-task-strip-v3 { flex: 0 0 auto; padding: 8px 12px 0; }
-.workspace-task-strip-v3 .ai-task-topbar { width: 100%; }
-.workspace-task-strip-v3 .ai-task-trigger { width: 100%; }
 .workspace-step-content-v3 {
   flex: 1 1 auto;
   min-height: 0;
@@ -295,6 +276,5 @@
   .workspace-flow-nav-v3 { gap: 2px; padding-inline: 8px; }
   .workspace-flow-nav-v3 button { font-size: 12px; }
   .workspace-flow-nav-v3 button span { display: none; }
-  .workspace-flow-tools-v3 small { display: none; }
   .workspace-side-v3 > .assistant-drawer-v2 { height: min(360px, 45vh) !important; }
 }

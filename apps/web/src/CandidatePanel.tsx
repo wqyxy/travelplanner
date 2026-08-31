@@ -312,11 +312,6 @@ export function CandidatePanel({
   };
 
   return <section className="candidate-panel" aria-label="候选地点">
-    <header className="candidate-panel-head">
-      <div><p className="eyebrow">{isMacro ? "DESTINATIONS" : "INTERESTS"}</p><h2>{isMacro ? "目的地" : "详细兴趣点"}</h2><small>{isMacro ? "先决定这趟旅行去哪些城市或区域；这里不安排每天路线。" : "这里只生成实际可访问的观光点；住宿和交通节点由后续行程流程处理。"}</small></div>
-      <div className="candidate-head-actions"><button className="button small" type="button" disabled={busy} onClick={() => setNewCandidate(emptyCandidateForm(isMacro ? "city" : "attraction"))}><Plus size={15}/>手动添加{isMacro ? "目的地" : "兴趣点"}</button></div>
-    </header>
-
     <div className="candidate-summary">
       <strong>{counts.selected}<span> / {counts.all}</span></strong><span>参与规划</span>
       <div><i className="resolved-dot"/>已定位 {rows.filter((row) => resolutionStatus(row) === "resolved").length}<i className="unresolved-dot"/>未定位 {counts.unresolved}</div>
@@ -327,7 +322,10 @@ export function CandidatePanel({
         {(Object.keys(filterLabels) as CandidateFilter[]).map((value) => <button type="button" role="tab" aria-selected={filter === value} className={filter === value ? "active" : ""} key={value} onClick={() => setFilter(value)}>{filterLabels[value]}<span>{counts[value]}</span></button>)}
       </div>
       <label className="candidate-search"><Search size={15}/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索地点、城市或标签"/></label>
-      {visible.length > 0 && <button className="button small ghost" type="button" onClick={toggleVisible}>{allVisibleChecked ? "取消全选" : `全选当前 ${visible.length} 个`}</button>}
+      <div className="candidate-compact-actions">
+        {visible.length > 0 && <button className="button small ghost" type="button" onClick={toggleVisible}>{allVisibleChecked ? "取消全选" : `全选当前 ${visible.length} 个`}</button>}
+        <button className="button small" type="button" disabled={busy} onClick={() => setNewCandidate(emptyCandidateForm(isMacro ? "city" : "attraction"))}><Plus size={15}/>手动添加{isMacro ? "目的地" : "兴趣点"}</button>
+      </div>
     </div>
 
     {checked.size > 0 && <div className="candidate-bulk-bar"><span>已选择 {checked.size} 个</span><button onClick={() => void setBulk("must_go")}>★ 必去</button><button onClick={() => void setBulk("want_to_go")}>✓ 想去</button><button onClick={() => void setBulk("optional")}>○ 可选</button><button onClick={() => void setBulk("excluded")}>× 不去</button><button aria-label="清除批量选择" onClick={() => setChecked(new Set())}><X size={14}/></button></div>}

@@ -128,6 +128,18 @@ Runtime 对每个变化广播：
 
 地点定位调度改造对应的完整建议验收仍未运行；本轮浏览器反馈相关的 targeted Runtime / Web helper 测试已经通过。
 
+## Destination / Interest Compact UI
+
+最新目的地页面反馈已同步到目的地与兴趣点共享布局：
+
+- 阶段顶部只保留四阶段导航，移除说明工具行和独立任务进度条；
+- 目的地 / 兴趣点 Candidate Panel 移除重复标题与说明；筛选、搜索、全选和手动添加在桌面合并为同一紧凑工具行，空间不足时最多换为两行；
+- 地点名称语言移动到全局顶部 AI 模型选择左侧，四阶段持续可用；
+- AI 公开任务进度移动到底部阶段 AI Dock，折叠态和展开态均与助手标题同一行；
+- 服务端 API、canonical 数据结构、Action 合同和私人数据路径均未改变。
+
+验证状态：`npm run typecheck:web` 与 `git diff --check` 已通过。浏览器已实测目的地 / 兴趣点在 1495×1039 使用单行工具栏，850px 降级为两行且无页面横向溢出；筛选数量、取消全选及无结果状态正确。`ai-task-topbar.test.ts` 仍被当前执行环境的 esbuild 目录访问限制阻断，待环境允许后补跑。
+
 最新浏览器反馈另补充了两项 requirements 阶段约束：
 
 - 对话识别出的 `requirements.update / requirements.clear` 通过受控参数校验后直接执行确定性 Action，不再显示二次确认卡；

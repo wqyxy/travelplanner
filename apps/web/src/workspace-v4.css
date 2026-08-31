@@ -3,6 +3,10 @@
   padding-bottom: 18px;
 }
 
+.model-status .plan-language-select-v3 {
+  max-width: 96px;
+}
+
 .workspace-side-v3 {
   position: relative;
   display: flex;
@@ -13,7 +17,6 @@
 }
 
 .workspace-flow-head-v3,
-.workspace-task-strip-v3,
 .assistant-dock-v4,
 .assistant-dock-collapsed-v4 {
   flex: 0 0 auto;
@@ -22,16 +25,6 @@
 .workspace-flow-head-v3 {
   position: relative;
   z-index: 3;
-}
-
-.workspace-task-strip-v3 {
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--surface) 94%, var(--surface-subtle));
-}
-
-.workspace-task-strip-v3 .ai-task-topbar {
-  max-width: none;
 }
 
 .workspace-step-content-v3 {
@@ -50,17 +43,89 @@
   min-height: 0;
 }
 
+.candidate-panel {
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+}
+
+.candidate-summary {
+  margin-top: 10px;
+}
+
+.candidate-toolbar {
+  display: grid;
+  grid-template-columns: minmax(245px, 1fr) minmax(82px, .4fr) auto;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 8px;
+}
+
+.candidate-filters {
+  min-width: 0;
+  gap: 2px;
+  scrollbar-width: none;
+}
+
+.candidate-filters::-webkit-scrollbar {
+  display: none;
+}
+
+.candidate-filters button {
+  gap: 2px;
+  padding: 4px 3px;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.candidate-filters button span {
+  min-width: 12px;
+  height: 14px;
+  font-size: 8px;
+}
+
+.candidate-search {
+  min-width: 0;
+  gap: 5px;
+  padding: 6px 7px;
+}
+
+.candidate-search svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+}
+
+.candidate-search input {
+  width: 100%;
+  text-overflow: ellipsis;
+}
+
+.candidate-compact-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.candidate-compact-actions > .button {
+  flex: 0 0 auto;
+  min-height: 30px;
+  gap: 4px;
+  padding-inline: 7px;
+  font-size: 10px;
+}
+
 /* Keep the optional bulk-action row reserved so the list cannot displace the footer. */
 .candidate-panel > .candidate-bulk-bar {
-  grid-row: 4;
+  grid-row: 3;
 }
 
 .candidate-panel > .candidate-list {
-  grid-row: 5;
+  grid-row: 4;
 }
 
 .candidate-panel > .candidate-footer {
-  grid-row: 6;
+  grid-row: 5;
 }
 
 /* The assistant is a real flex child. It never overlays the map or step content. */
@@ -73,7 +138,7 @@
   min-height: 250px;
   max-height: 44%;
   flex-direction: column;
-  overflow: hidden;
+  overflow: visible;
   border: 0;
   border-top: 1px solid var(--border-strong);
   color: var(--text);
@@ -86,21 +151,57 @@
   display: grid;
   width: 100%;
   min-height: 54px;
-  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: 9px;
-  padding: 7px 12px;
+  padding: 6px 9px;
   border: 0;
   border-top: 1px solid var(--border-strong);
   color: var(--text);
   background: var(--surface);
   box-shadow: 0 -7px 22px rgba(24, 34, 30, .05);
-  text-align: left;
   transform: none !important;
 }
 
-.assistant-dock-collapsed-v4:hover {
+.assistant-dock-collapsed-v4.has-tasks {
+  grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr);
+}
+
+.assistant-dock-toggle-v4 {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 0 3px;
+  border: 0;
+  border-radius: 10px;
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+}
+
+.assistant-dock-toggle-v4:hover {
   background: color-mix(in srgb, var(--primary-soft) 34%, var(--surface));
+}
+
+.assistant-task-slot-v4 {
+  min-width: 0;
+}
+
+.assistant-task-slot-v4 .ai-task-topbar,
+.assistant-task-slot-v4 .ai-task-trigger {
+  width: 100%;
+  max-width: none;
+}
+
+.assistant-dock-collapsed-v4 .ai-task-popover {
+  top: auto;
+  right: 0;
+  bottom: 48px;
+  left: auto;
 }
 
 .assistant-dock-mark-v4 {
@@ -144,12 +245,22 @@
 .assistant-dock-head-v4 {
   display: grid;
   min-height: 54px;
-  grid-template-columns: minmax(150px, 1fr) auto auto;
+  grid-template-columns: minmax(150px, 1fr) auto;
   align-items: center;
   gap: 10px;
   padding: 7px 9px 7px 12px;
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface) 96%, var(--surface-subtle));
+}
+
+.assistant-dock-head-v4.has-tasks {
+  grid-template-columns: minmax(120px, .8fr) minmax(180px, 1.2fr) auto;
+}
+
+.assistant-dock-head-v4 .ai-task-popover {
+  top: 44px;
+  right: 0;
+  left: auto;
 }
 
 .assistant-dock-identity-v4 {
@@ -352,8 +463,16 @@
 }
 
 @media (max-width: 1100px) and (min-width: 901px) {
-  .assistant-dock-head-v4 {
-    grid-template-columns: minmax(120px, 1fr) auto auto;
+  .candidate-toolbar {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .candidate-filters {
+    grid-column: 1 / -1;
+  }
+
+  .assistant-dock-head-v4.has-tasks {
+    grid-template-columns: minmax(100px, .7fr) minmax(160px, 1.3fr) auto;
   }
 
   .assistant-dock-identity-v4 small {
@@ -370,6 +489,12 @@
     padding-bottom: 12px !important;
   }
 
+  .model-status .plan-language-select-v3,
+  .model-status .ai-model-select-v3 {
+    display: block !important;
+    max-width: 78px;
+  }
+
   .workspace-side-v3 {
     min-height: 540px;
   }
@@ -380,8 +505,16 @@
     max-height: none;
   }
 
-  .assistant-dock-head-v4 {
-    grid-template-columns: minmax(0, 1fr) auto auto;
+  .candidate-toolbar {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .candidate-filters {
+    grid-column: 1 / -1;
+  }
+
+  .assistant-dock-head-v4.has-tasks {
+    grid-template-columns: minmax(0, .7fr) minmax(0, 1.3fr) auto;
   }
 
   .assistant-dock-identity-v4 small,
@@ -402,11 +535,25 @@
     display: none;
   }
 
-  .assistant-dock-collapsed-v4 {
-    grid-template-columns: auto minmax(0, 1fr) auto auto;
+  .assistant-dock-collapsed-v4.has-tasks {
+    grid-template-columns: minmax(0, .7fr) minmax(0, 1.3fr);
   }
 
-  .assistant-dock-collapsed-v4 .assistant-proposal-badge {
-    display: none;
+  .assistant-dock-collapsed-v4 .ai-task-popover {
+    position: fixed;
+    top: auto;
+    right: auto;
+    bottom: 66px;
+    left: 10px;
+    width: calc(100vw - 20px);
+  }
+
+  .assistant-dock-head-v4 .ai-task-popover {
+    position: fixed;
+    top: 70px;
+    right: auto;
+    bottom: auto;
+    left: 10px;
+    width: calc(100vw - 20px);
   }
 }

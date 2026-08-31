@@ -1,6 +1,7 @@
 import { ChevronDown, ChevronUp, LoaderCircle, Sparkles } from "lucide-react";
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { AiTaskTopbar } from "./AiTaskTopbar";
 import type { AiProposal } from "./v2-types";
 import type { AiAction, ConversationStage, WorkspaceV3, WorkspaceSelectionV3 } from "./v3-types";
 
@@ -77,7 +78,7 @@ function ActionCard({ action, proposal, currentGeneration, busy, onConfirm, onCa
   </section>;
 }
 
-export function WorkspaceAssistantV3({ stage, workspace, selection, busy, error, onSend, onConfirmAction, onCancelAction, onProposalAction, onStop }: {
+export function WorkspaceAssistantV3({ stage, workspace, selection, busy, error, onSend, onConfirmAction, onCancelAction, onProposalAction, onStopTask }: {
   stage: ConversationStage;
   workspace: WorkspaceV3;
   selection: WorkspaceSelectionV3;
@@ -87,7 +88,7 @@ export function WorkspaceAssistantV3({ stage, workspace, selection, busy, error,
   onConfirmAction: (action: AiAction) => Promise<void>;
   onCancelAction: (action: AiAction) => Promise<void>;
   onProposalAction: (proposalId: string, action: "apply" | "reject" | "undo") => Promise<void>;
-  onStop: () => Promise<void>;
+  onStopTask: (taskId: string) => Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(true);
   const [drafts, setDrafts] = useState<Record<ConversationStage, string>>({ requirements: "", destinations: "", interests: "", itinerary: "" });
@@ -113,11 +114,15 @@ export function WorkspaceAssistantV3({ stage, workspace, selection, busy, error,
     void onSend(stage, message, selection);
   };
 
-  if (!expanded) return <button className="assistant-dock-collapsed-v4" type="button" onClick={() => setExpanded(true)}><span className="assistant-dock-mark-v4"><Sparkles size={16}/></span><span className="assistant-dock-collapsed-copy-v4"><strong>{copy.title}</strong><small>{copy.boundary}</small></span>{activeTask && <LoaderCircle className="spin" size={16}/>}<ChevronUp size={18}/></button>;
+  if (!expanded) return <div className={`assistant-dock-collapsed-v4 ${workspace.tasks.length ? "has-tasks" : ""}`}>
+    <button className="assistant-dock-toggle-v4" type="button" onClick={() => setExpanded(true)} aria-label={`展开${copy.title}`}><span className="assistant-dock-mark-v4"><Sparkles size={16}/></span><span className="assistant-dock-collapsed-copy-v4"><strong>{copy.title}</strong><small>{copy.boundary}</small></span><ChevronUp size={18}/></button>
+    {workspace.tasks.length > 0 && <div className="assistant-task-slot-v4"><AiTaskTopbar tasks={workspace.tasks} onStop={onStopTask}/></div>}
+  </div>;
 
   return <section className="assistant-dock-v4 stage-assistant-v3" aria-label={copy.title}>
-    <header className="assistant-dock-head-v4">
+    <header className={`assistant-dock-head-v4 ${workspace.tasks.length ? "has-tasks" : ""}`}>
       <div className="assistant-dock-identity-v4"><span className="assistant-dock-mark-v4"><Sparkles size={16}/></span><span><strong>{copy.title}</strong><small>{copy.boundary}</small></span></div>
+      {workspace.tasks.length > 0 && <div className="assistant-task-slot-v4"><AiTaskTopbar tasks={workspace.tasks} onStop={onStopTask}/></div>}
       <button className="icon-button assistant-dock-collapse-v4" type="button" aria-label="收起阶段 AI" onClick={() => setExpanded(false)}><ChevronDown size={18}/></button>
     </header>
     <div className="assistant-dock-body-v4">
@@ -137,7 +142,7 @@ export function WorkspaceAssistantV3({ stage, workspace, selection, busy, error,
       <div ref={end}/>
     </div>
     <div className="assistant-compose-zone-v4">
-      {activeTask && <button type="button" className="button small stage-stop-button-v3" onClick={() => void onStop()}><LoaderCircle className="spin" size={13}/>停止当前 AI</button>}
+      {activeTask && <button type="button" className="button small stage-stop-button-v3" onClick={() => void onStopTask(activeTask.id)}><LoaderCircle className="spin" size={13}/>停止当前 AI</button>}
       <form className="assistant-composer-v4" onSubmit={submit}>
         <textarea rows={1} maxLength={4000} value={drafts[stage]} onChange={(event) => setDrafts((current) => ({ ...current, [stage]: event.target.value }))} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder={copy.placeholder} disabled={busy}/>
         <button className="button primary" disabled={busy || !drafts[stage].trim()}>发送</button>

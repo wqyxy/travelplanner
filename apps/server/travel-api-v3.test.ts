@@ -4,6 +4,10 @@ import type { TravelPlannerRuntimeV3 } from "./planner-runtime-v3.js";
 import type { TravelStoreV3 } from "./travel-store-v3.js";
 
 function deps() {
+  const providerCandidate = {
+    provider: "nominatim", providerPlaceId: "place-1", name: "Picton", displayName: "Picton, Marlborough, New Zealand",
+    latitude: -41.2907, longitude: 174.006, category: "place", placeType: "town", countryCode: "nz", region: "Marlborough", city: "Picton",
+  };
   const store = {
     listTrips: () => [],
     createTrip: () => ({ id: "trip-1" }),
@@ -14,8 +18,9 @@ function deps() {
   const runtime = {
     startConversation: (_tripId: string, stage: string, input: any) => ({ taskId: `dialogue:${stage}`, messageId: input.message }),
     createCtaAction: (input: any) => ({ action: { id: "action-1", actionType: input.actionType }, taskId: "action-task-1" }),
+    searchResolutionCandidates: () => [{ candidate: providerCandidate, score: 95 }],
   } as unknown as TravelPlannerRuntimeV3;
-  return { store, runtime };
+  return { store, runtime, providerCandidate };
 }
 
 describe("travel API v3", () => {
@@ -34,5 +39,11 @@ describe("travel API v3", () => {
   it("does not expose the old direct plan-generation endpoint", async () => {
     const result = await dispatchTravelApiV3("POST", "/api/trips/trip-1/plan/generate", new URLSearchParams(), {}, deps());
     expect(result).toBeNull();
+  });
+
+  it("returns flat provider candidates for the map selection dialog", async () => {
+    const dependencies = deps();
+    const result = await dispatchTravelApiV3("GET", "/api/trips/trip-1/resolutions/place-1/candidates", new URLSearchParams({ expectedGeneration: "1" }), {}, dependencies);
+    expect(result).toEqual({ status: 200, data: { candidates: [dependencies.providerCandidate] } });
   });
 });
