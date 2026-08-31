@@ -762,7 +762,7 @@ export class TravelPlannerRuntimeV3 {
       if (signal?.aborted) throw new Error("AI 任务已停止。");
       return result;
     } catch (error) {
-      if (signal?.aborted || aiErrorMessageV3(error) === "AI 任务已停止。") throw new Error("AI 任务已停止。");
+      if (signal?.aborted) throw new Error("AI 任务已停止。");
       if (aiErrorMessageV3(error) === "CONTENT_GENERATION_SUPERSEDED") return [];
       return [];
     }
