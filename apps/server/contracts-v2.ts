@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { buildPlanningAreaContext, fulfilledMacroCityCandidateIds } from "./planning-areas-v2.js";
+import { buildPlanningAreaContext } from "./planning-areas-v2.js";
 
 const datePattern = /^\d{4}-\d{2}-\d{2}$/;
 const timePattern = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -169,6 +169,7 @@ const DayObjectSchema = z.object({
   dayNumber: z.number().int().min(1).max(90),
   date: DateSchema.nullable(),
   title: TextSchema.max(300),
+  transferMode: TransportModeSchema.default("none"),
   detailLevel: z.enum(["planned", "detailed"]),
   detailStatus: z.enum(["ready", "needs_review"]).nullable(),
   startAnchor: DayAnchorSchema,
@@ -274,7 +275,6 @@ function addDocumentIssues(value: {
   }
 
   const areaContext = buildPlanningAreaContext({ places: value.places, candidates: value.candidates });
-  const fulfilledMacroCities = fulfilledMacroCityCandidateIds(areaContext, scheduledCandidateIds);
 
   if (value.stage !== "place_selection" && !value.days.length) {
     context.addIssue({ code: "custom", path: ["days"], message: "行程规划和细化阶段必须有 Day。" });
@@ -283,9 +283,6 @@ function addDocumentIssues(value: {
     for (const [index, candidate] of value.candidates.entries()) {
       if (areaContext.suppressedCandidateIds.has(candidate.id) && scheduledCandidateIds.has(candidate.id)) {
         context.addIssue({ code: "custom", path: ["candidates", index], message: "所属城市已标记为不去，该 Candidate 不得排入行程。" });
-      }
-      if (candidate.preference === "must_go" && !scheduledCandidateIds.has(candidate.id) && !fulfilledMacroCities.has(candidate.id)) {
-        context.addIssue({ code: "custom", path: ["candidates", index], message: "must_go Candidate 必须排入行程；城市级 Candidate 可以由该城市内具体地点满足。" });
       }
     }
   }
@@ -479,6 +476,7 @@ const DayStopChangesSchema = z.object({
 const DayChangesSchema = z.object({
   title: TextSchema.max(300).optional(),
   date: DateSchema.nullable().optional(),
+  transferMode: TransportModeSchema.optional(),
 }).strict().refine((value) => Object.keys(value).length > 0, "至少修改一个 Day 字段。");
 
 export const PlanCommandSchema = z.discriminatedUnion("type", [
