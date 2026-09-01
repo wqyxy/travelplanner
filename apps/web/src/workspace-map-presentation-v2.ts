@@ -1,4 +1,5 @@
 import type { CandidatePreference, PlaceResolution, TransportMode, Workspace } from "./v2-types";
+import { placeNamePresentation } from "./place-name-presentation";
 import { candidateRows } from "./workspace-v2";
 
 export type WorkspaceMapView = "candidates" | "itinerary";
@@ -13,6 +14,7 @@ export type WorkspaceMapPointFeature = {
     stopId: string;
     placeId: string;
     dayId: string;
+    label: string;
     name: string;
     secondary: string;
     preference: CandidatePreference | "anchor";
@@ -105,6 +107,7 @@ export function candidatePointFeatures(workspace: Workspace): WorkspaceMapPointF
   return candidateRows(workspace).flatMap((row) => {
     const location = coordinate(row.resolution ?? undefined);
     if (!location) return [];
+    const displayName = placeNamePresentation(row.place, workspace.trip.planLanguage);
     return [{
       type: "Feature" as const,
       id: row.candidate.id,
@@ -115,8 +118,9 @@ export function candidatePointFeatures(workspace: Workspace): WorkspaceMapPointF
         stopId: "",
         placeId: row.place.id,
         dayId: "",
-        name: row.place.nameZh,
-        secondary: row.place.nameLocal || row.place.nameEn || "",
+        label: displayName.combined,
+        name: displayName.primary,
+        secondary: displayName.secondary || "",
         preference: row.candidate.preference,
         mark: preferenceMarks[row.candidate.preference],
         score: row.candidate.aiScore ?? "",
@@ -153,6 +157,7 @@ export function itineraryPointFeatures(workspace: Workspace, selectedDayId: stri
       if (!location) return;
       const place = places.get(placeId);
       const candidate = input.candidateId ? candidates.get(input.candidateId) : candidateByPlace.get(placeId);
+      const displayName = placeNamePresentation(place, workspace.trip.planLanguage, input.nameFallback);
       features.push({
         type: "Feature",
         id: `${day.id}:${input.id}`,
@@ -163,8 +168,9 @@ export function itineraryPointFeatures(workspace: Workspace, selectedDayId: stri
           stopId: input.stopId || "",
           placeId,
           dayId: day.id,
-          name: place?.nameZh || input.nameFallback,
-          secondary: place?.nameLocal || place?.nameEn || "",
+          label: displayName.combined,
+          name: displayName.primary,
+          secondary: displayName.secondary || "",
           preference: candidate?.preference || "anchor",
           mark: allDays ? `D${day.dayNumber}·${input.mark}` : input.mark,
           score: candidate?.aiScore ?? "",

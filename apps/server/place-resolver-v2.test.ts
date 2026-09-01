@@ -22,6 +22,8 @@ function databasePath() { const root = mkdtempSync(path.join(tmpdir(), "place-re
 const place = { id: "p-1", nameZh: "清水寺", nameLocal: "清水寺", nameEn: "Kiyomizu-dera", kind: "attraction" as const, city: "京都", region: "京都府", country: "日本", countryCode: "JP", approximate: false };
 const picton = { id: "picton", nameZh: "皮克顿", nameLocal: "Picton", nameEn: "Picton", kind: "city" as const, city: "Picton", region: "Marlborough", country: "New Zealand", countryCode: "NZ", approximate: true };
 const coastalTrack = { id: "coastal-track", nameZh: "海岸步道", nameLocal: "Coastal Track", nameEn: "Coastal Walking Track", kind: "attraction" as const, city: "Harbour Town", region: "Coastal Region", country: "New Zealand", countryCode: "NZ", approximate: true };
+const milfordSound = { id: "milford-sound", nameZh: "米尔福德峡湾", nameLocal: "Piopiotahi", nameEn: "Milford Sound", kind: "attraction" as const, city: "Milford Sound", region: "南地", country: "新西兰", countryCode: "NZ", approximate: true };
+const doubtfulSound = { id: "doubtful-sound", nameZh: "神奇峡湾", nameLocal: "Patea", nameEn: "Doubtful Sound", kind: "attraction" as const, city: "Manapouri", region: "南地", country: "新西兰", countryCode: "NZ", approximate: true };
 const candidate = (overrides: Partial<MapCandidate> = {}): MapCandidate => ({ providerPlaceId: "provider-1", name: "Kiyomizu-dera", displayName: "Kiyomizu-dera, Kyoto, Japan", latitude: 34.9948, longitude: 135.785, category: "tourism", placeType: "attraction", countryCode: "jp", region: "京都府", city: "京都", timezone: null, ...overrides });
 const choose = (providerPlaceId: string, reason = "候选与目标实体一致。"): MapResolutionAssistOutput => ({ schemaVersion: 1, action: "choose_candidate", providerPlaceId, searchHints: [], reason });
 
@@ -39,8 +41,8 @@ describe("deterministic provider candidate handling", () => {
   it("uses two baseline searches and reserves the remaining Provider budget for AI hints", () => {
     const queries = buildPlaceSearchQueries(place);
     expect(queries).toEqual([
-      "清水寺, 京都, 日本",
-      "Kiyomizu-dera, 京都, 日本",
+      "Kiyomizu-dera, 京都, JP",
+      "清水寺, 京都, JP",
     ]);
     expect(new Set(queries).size).toBe(queries.length);
     expect(queries.length).toBe(PLACE_RESOLUTION_BASE_SEARCH_LIMIT);
@@ -49,23 +51,21 @@ describe("deterministic provider candidate handling", () => {
 
   it("uses a region-first query for a city instead of repeating the city name", () => {
     expect(buildPlaceSearchQueries(picton)).toEqual([
-      "Picton, Marlborough, New Zealand",
-      "Picton, New Zealand",
+      "Picton, Marlborough, NZ",
+      "Picton, NZ",
     ]);
   });
 
-  it("broadens the second search for an approximate non-city place to its region", () => {
+  it("searches approximate non-city Places by English and local aliases without a gateway city", () => {
     expect(buildPlaceSearchQueries(coastalTrack)).toEqual([
-      "Coastal Track, Harbour Town, New Zealand",
-      "Coastal Walking Track, Coastal Region, New Zealand",
+      "Coastal Walking Track, NZ",
+      "Coastal Track, NZ",
     ]);
   });
 
-  it("falls back to country scope when an approximate non-city place has no broader region", () => {
-    expect(buildPlaceSearchQueries({ ...coastalTrack, region: null })).toEqual([
-      "Coastal Track, Harbour Town, New Zealand",
-      "Coastal Walking Track, New Zealand",
-    ]);
+  it("builds provider-friendly searches for official dual-name fiords with localized administrative fields", () => {
+    expect(buildPlaceSearchQueries(milfordSound)).toEqual(["Milford Sound, NZ", "Piopiotahi, NZ"]);
+    expect(buildPlaceSearchQueries(doubtfulSound)).toEqual(["Doubtful Sound, NZ", "Patea, NZ"]);
   });
 
   it("keeps Provider candidates ranked but leaves their semantic choice to AI", () => {
@@ -76,6 +76,38 @@ describe("deterministic provider candidate handling", () => {
 });
 
 describe("PlaceResolverV2", () => {
+  it("can resolve an approximate dual-name fiord from its English country-scoped query", async () => {
+    const { store, tripId, generation } = seededStore(doubtfulSound);
+    const queries: string[] = [];
+    const fiord = candidate({
+      providerPlaceId: "doubtful-sound",
+      name: "Doubtful Sound / Patea",
+      displayName: "Doubtful Sound / Patea, Southland, New Zealand",
+      latitude: -45.333,
+      longitude: 167.0,
+      category: "natural",
+      placeType: "fjord",
+      countryCode: "nz",
+      region: "Southland",
+      city: null,
+    });
+    const resolver = new PlaceResolverV2({
+      store,
+      maps: {
+        search: async (query) => {
+          queries.push(query);
+          return query === "Doubtful Sound, NZ" ? [fiord] : [];
+        },
+        reverse: async () => null,
+      },
+      assist: async () => choose("doubtful-sound"),
+    });
+    const result = await resolver.resolve(tripId, doubtfulSound.id, generation);
+    expect(queries).toEqual(["Doubtful Sound, NZ", "Patea, NZ"]);
+    expect(result.resolution).toMatchObject({ status: "resolved", providerPlaceId: "doubtful-sound" });
+    store.close();
+  });
+
   it("asks AI to confirm even a single exact Provider candidate", async () => {
     const { store, tripId, generation } = seededStore();
     let searches = 0;
@@ -171,7 +203,7 @@ describe("PlaceResolverV2", () => {
       assist: async ({ candidates }) => { seenCandidates = candidates.map((item) => item.providerPlaceId); return choose("picton-town", "town 是目的地语义匹配项。"); },
     });
     const result = await resolver.resolve(tripId, picton.id, generation);
-    expect(queries).toEqual(["Picton, Marlborough, New Zealand", "Picton, New Zealand"]);
+    expect(queries).toEqual(["Picton, Marlborough, NZ", "Picton, NZ"]);
     expect(seenCandidates).toEqual(["picton-town", "picton-station"]);
     expect(result.resolution).toMatchObject({ status: "resolved", method: "provider_choice", providerPlaceId: "picton-town" });
     store.close();

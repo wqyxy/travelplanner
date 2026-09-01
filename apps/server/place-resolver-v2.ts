@@ -52,8 +52,11 @@ type SearchState = { raw: MapCandidate[]; ranked: RankedProviderCandidate[]; sea
 const normalize = (value: string | null | undefined) => (value ?? "").normalize("NFKC").toLocaleLowerCase().trim();
 const compact = (value: string | null | undefined) => normalize(value).replace(/[\p{P}\p{S}\s]+/gu, "");
 const now = () => new Date().toISOString();
+// Keep the legacy fingerprint primary name stable so existing resolved rows remain current.
 const primaryName = (place: Place) => place.nameLocal ?? place.nameEn ?? place.nameZh;
-const targetNames = (place: Place) => [...new Set([place.nameLocal, place.nameEn, place.nameZh].filter((value): value is string => Boolean(value?.trim())).map((value) => value.trim()))];
+// Nominatim responses are requested in English, so prefer the common English name for
+// search while retaining local and Chinese aliases for scoring and fallback queries.
+const targetNames = (place: Place) => [...new Set([place.nameEn, place.nameLocal, place.nameZh].filter((value): value is string => Boolean(value?.trim())).map((value) => value.trim()))];
 const physicalKey = (candidate: { latitude: number; longitude: number }) => `${candidate.latitude.toFixed(6)}|${candidate.longitude.toFixed(6)}`;
 
 function abortError(signal?: AbortSignal) {
@@ -75,7 +78,7 @@ export function resolutionIsCurrent(place: Place, resolution: PlaceResolution | 
 
 export function buildPlaceSearchQueries(place: Place, _compatibilityHints: string[] = []) {
   const values: string[] = [];
-  const country = place.country ?? place.countryCode;
+  const countryScope = place.countryCode?.toUpperCase() ?? place.country;
   const names = targetNames(place);
   const first = names[0] ?? place.nameZh;
   const second = names.find((name) => normalize(name) !== normalize(first)) ?? null;
@@ -86,25 +89,22 @@ export function buildPlaceSearchQueries(place: Place, _compatibilityHints: strin
   if (place.kind === "city") {
     // A city is its own locality. Repeating it as "Picton, Picton" makes
     // Nominatim favor same-named facilities such as stations and bus stops.
-    add(first, place.region, country);
-    add(first, country);
+    add(first, place.region, countryScope);
+    add(second ?? first, countryScope);
+  } else if (place.approximate) {
+    // Approximate natural/linear Places often use a gateway city that is not their
+    // physical locality. Search the provider-friendly aliases at country scope.
+    add(first, countryScope);
+    if (second) add(second, countryScope);
+    else add(first, place.region, countryScope);
   } else {
-    add(first, place.city, country);
-    if (place.approximate) {
-      const broaderName = second ?? first;
-      if (place.region && normalize(place.region) !== normalize(place.city)) add(broaderName, place.region, country);
-      else add(broaderName, country);
-    } else if (second) add(second, place.city, country);
-    else add(first, place.region, country);
+    add(first, place.city, countryScope);
+    if (second) add(second, place.city, countryScope);
+    else add(first, place.region, countryScope);
   }
   return values.slice(0, PLACE_RESOLUTION_BASE_SEARCH_LIMIT);
 }
-function hintQuery(place: Place, hint: string) {
-  const context = [place.city, place.region, place.country ?? place.countryCode]
-    .filter((value): value is string => Boolean(value?.trim()));
-  const normalizedHint = normalize(hint);
-  return [hint.trim(), ...context.filter((value) => !normalizedHint.includes(normalize(value)))].join(", ");
-}
+function hintQuery(hint: string) { return hint.trim(); }
 
 function providerCandidate(candidate: MapCandidate): ProviderPlaceCandidate {
   return {
@@ -283,7 +283,7 @@ export class PlaceResolverV2 {
     let supplemented = false;
     for (const hint of first.decision.searchHints) {
       if (state.searchCount >= PLACE_RESOLUTION_PROVIDER_SEARCH_LIMIT) break;
-      const searched = await this.runSearch(place, hintQuery(place, hint), state, signal, assertCurrent);
+      const searched = await this.runSearch(place, hintQuery(hint), state, signal, assertCurrent);
       if (!searched) continue;
       supplemented = true;
     }

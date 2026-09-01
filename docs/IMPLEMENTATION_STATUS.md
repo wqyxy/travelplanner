@@ -189,6 +189,18 @@ Runtime 对每个变化广播：
 
 正常启动仍要求内部 `PRAGMA user_version=3`，旧 v2 / unknown / corrupt DB 在 HTTP listen 前 fail closed，不自动迁移或删除。
 
+## Place Name Display And Resolver Query Hardening
+
+针对新西兰官方双名地点出现“毛利名遮住英文名”并导致地图搜索失败的问题，已完成以下代码改造：
+
+- 地点卡、地图节点、Macro 概览与每日行程统一遵守旅行级 `planLanguage`；中英对照显示中文主名与 `nameEn`，只有英文名缺失时才回退 `nameLocal`；
+- Resolver 搜索别名改为 `nameEn -> nameLocal -> nameZh`，但保留旧 fingerprint 主名逻辑，避免历史 resolved 结果失效；
+- `approximate` 自然地点不再把接驳城市拼进基础查询，优先生成 `英文名/当地名 + countryCode`；普通精确地点仍保留城市上下文；
+- AI 补充搜索提示按完整查询原样使用，不再重复追加中英文混合的行政区；四次 Provider 预算、两轮 AI 消歧和 Nominatim 全局限速不变；
+- Place Schema 描述与共享 Prompt 明确 `nameZh/nameEn/nameLocal/city` 语义，不改变字段或数据库结构。
+
+当前私人旅行数据库、已有 Resolution 和公共缓存均未修改；现有 unresolved 地点继续由用户手动点击“重新识别”。本改造的 targeted tests、typecheck、build 与 Browser 验收尚未执行，需按验证规则取得确认后运行。
+
 ## Do Not Do
 
 - 不取消 MapService / Nominatim 全局限速；

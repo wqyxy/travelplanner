@@ -35,6 +35,7 @@ import {
   buildMoveStopToDayCommand,
 } from "./editor-actions-v2";
 import { formatDistance, formatRouteDuration, routeStateForDay } from "./workspace-v2";
+import { placeNamePresentation } from "./place-name-presentation";
 
 const modeLabels: Record<TransportMode, string> = {
   walk: "步行",
@@ -49,11 +50,7 @@ const modeLabels: Record<TransportMode, string> = {
 const periodLabels = { morning: "上午", afternoon: "下午", evening: "傍晚", night: "晚上", all_day: "全天" } as const;
 
 function placeName(place: Place | undefined, language: ItineraryLanguage) {
-  if (!place) return "地点待定";
-  if (language === "zh") return place.nameZh;
-  if (language === "en") return place.nameEn || place.nameLocal || place.nameZh;
-  const secondary = place.nameLocal || place.nameEn;
-  return secondary && secondary !== place.nameZh ? `${place.nameZh} · ${secondary}` : place.nameZh;
+  return placeNamePresentation(place, language).combined;
 }
 
 function anchorName(anchor: DayAnchor, places: Map<string, Place>, language: ItineraryLanguage) {

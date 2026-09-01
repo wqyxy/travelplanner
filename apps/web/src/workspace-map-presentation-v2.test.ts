@@ -48,6 +48,23 @@ describe("workspace map presentation", () => {
     expect(itineraryPointFeatures(workspace, "day-2").map((feature) => feature.properties.mark)).toEqual(["起", "1", "终"]);
   });
 
+  it("uses the common English name instead of hiding it behind a local name", () => {
+    const workspace = workspaceFixture();
+    workspace.trip.planLanguage = "bilingual";
+    workspace.trip.plan.places[0] = {
+      ...workspace.trip.plan.places[0],
+      nameZh: "米尔福德峡湾",
+      nameLocal: "Piopiotahi",
+      nameEn: "Milford Sound",
+    };
+    const point = candidatePointFeatures(workspace).find((feature) => feature.properties.placeId === "p1");
+    expect(point?.properties).toMatchObject({
+      label: "米尔福德峡湾 / Milford Sound",
+      name: "米尔福德峡湾",
+      secondary: "Milford Sound",
+    });
+  });
+
   it("shows every provider leg in all view and scopes a day without changing provider metrics", () => {
     const workspace = workspaceFixture();
     const routes = routeGeometryFeatures(workspace, null);

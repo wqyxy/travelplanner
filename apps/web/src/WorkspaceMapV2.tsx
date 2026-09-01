@@ -1,6 +1,7 @@
 import { Crosshair, MapPinned, Maximize2, Minimize2, Route } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Workspace } from "./v2-types";
+import { placeNamePresentation } from "./place-name-presentation";
 import {
   candidatePointFeatures,
   dayRouteColors,
@@ -115,7 +116,7 @@ export function WorkspaceMapV2({
           type: "symbol",
           source: "v3-workspace-points",
           layout: {
-            "text-field": ["concat", ["get", "mark"], " ", ["get", "name"]],
+            "text-field": ["concat", ["get", "mark"], " ", ["get", "label"]],
             "text-size": 12,
             "text-offset": [0, 1.4],
             "text-anchor": "top",
@@ -257,12 +258,13 @@ export function WorkspaceMapV2({
 
   const selectedDay = selectedDayId ? workspace.trip.plan.days.find((day) => day.id === selectedDayId) : null;
   const selectedPlace = mapPickPlaceId ? workspace.trip.plan.places.find((place) => place.id === mapPickPlaceId) : null;
+  const selectedPlaceName = placeNamePresentation(selectedPlace, workspace.trip.planLanguage, "目标地点").combined;
   const legendDays = selectedDay ? [selectedDay] : workspace.trip.plan.days;
   const mapTitle = view === "candidates" ? "旅行地图" : selectedDay ? `Day ${selectedDay.dayNumber} 地图` : "行程全览地图";
   const pointSummary = view === "candidates" ? `已定位地点 ${points.length}` : selectedDay ? `当天已定位节点 ${points.length}` : `全程已定位节点 ${points.length}`;
   return <section className="workspace-map-v2">
     <header><div><p className="eyebrow">MAP WORKSPACE</p><h2>{mapTitle}</h2><small><MapPinned size={13}/>{pointSummary}<Route size={13}/>当前路线 {currentRoutes.length}{dirtyRoutes.length ? ` · 旧路线 ${dirtyRoutes.length}` : ""}</small></div><button className="icon-button panel-fullscreen" type="button" aria-label={fullscreen ? "退出地图全屏" : "地图全屏"} onClick={onToggleFullscreen}>{fullscreen ? <Minimize2 size={17}/> : <Maximize2 size={17}/>}</button></header>
-    <div className="workspace-map-canvas"><div className="workspace-map-element" ref={element}/>{mapPickPlaceId && <div className="map-pick-banner"><Crosshair size={18}/><span>在地图上点击 <strong>{selectedPlace?.nameZh || "目标地点"}</strong> 的正确位置</span></div>}{!points.length && <div className="map-empty-overlay"><MapPinned size={34}/><strong>{view === "itinerary" ? "行程节点尚未可靠定位" : "地点会在这里出现"}</strong><span>{view === "itinerary" ? "返回地点页处理未定位地点或设置 Anchor" : "先让 AI 生成 Candidate Pool，或手动添加地点"}</span></div>}{error && <div className="map-error-overlay">{error}</div>}</div>
+    <div className="workspace-map-canvas"><div className="workspace-map-element" ref={element}/>{mapPickPlaceId && <div className="map-pick-banner"><Crosshair size={18}/><span>在地图上点击 <strong>{selectedPlaceName}</strong> 的正确位置</span></div>}{!points.length && <div className="map-empty-overlay"><MapPinned size={34}/><strong>{view === "itinerary" ? "行程节点尚未可靠定位" : "地点会在这里出现"}</strong><span>{view === "itinerary" ? "返回地点页处理未定位地点或设置 Anchor" : "先让 AI 生成 Candidate Pool，或手动添加地点"}</span></div>}{error && <div className="map-error-overlay">{error}</div>}</div>
     <footer>{view === "itinerary" ? <>{legendDays.map((day) => <span key={day.id}><i style={{ background: routeColors.get(day.dayNumber) }}/>Day {day.dayNumber}</span>)}{dirtyRoutes.length > 0 && <span className="muted">虚线为旧路线，仅供参考</span>}</> : <><span><i style={{ background: preferenceColors.must_go }}/>必去</span><span><i style={{ background: preferenceColors.want_to_go }}/>想去</span><span><i style={{ background: preferenceColors.optional }}/>可选</span><span className="muted"><i style={{ background: preferenceColors.excluded }}/>不去</span></>}</footer>
   </section>;
 }
