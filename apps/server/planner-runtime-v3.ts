@@ -85,7 +85,7 @@ const dialoguePromptIds: Record<ConversationStage, "dialogue.requirements" | "di
 };
 const STOP_FIELDS = ["activity", "period", "startTime", "endTime", "durationMinutes", "transportFromPrevious", "scheduleVerification", "costNote", "costVerification", "notes"] as const;
 const VERIFY_STOP_FIELDS = new Set(["startTime", "endTime", "durationMinutes", "transportFromPrevious", "scheduleVerification", "costNote", "costVerification", "notes"]);
-const REQUIREMENT_FIELDS = ["title", "dates", "travelers", "budget", "pace", "themes", "preferences", "constraints", "assumptions"] as const;
+const REQUIREMENT_FIELDS = ["title", "brief", "dates", "travelers", "budget", "pace", "themes", "preferences", "constraints", "assumptions"] as const;
 const REPLACEMENT_COMMAND_LIMIT = 100;
 const INTEREST_DISCOVERY_CONCURRENCY = 4;
 
@@ -99,7 +99,28 @@ function same(left: unknown, right: unknown) { return JSON.stringify(left) === J
 function stringifySize(value: unknown) { return Buffer.byteLength(JSON.stringify(value), "utf8"); }
 
 function hasTravelRequirements(plan: TravelPlanDocument) {
-  return !same(plan.trip, emptyTravelPlan().trip);
+  return plan.trip.brief.destination.trim().length > 0;
+}
+
+const destinationCountryAliases: Record<string, readonly string[]> = {
+  GB: ["英国", "uk", "united kingdom", "great britain", "英格兰", "苏格兰", "威尔士", "北爱尔兰"],
+  FR: ["法国", "france"], JP: ["日本", "japan"], US: ["美国", "united states", "usa"],
+  NZ: ["新西兰", "new zealand"], AU: ["澳大利亚", "australia"], IT: ["意大利", "italy"],
+  ES: ["西班牙", "spain"], DE: ["德国", "germany"], CA: ["加拿大", "canada"], CN: ["中国", "china"],
+};
+
+function requiredDestinationCountryCodes(destination: string) {
+  const normalized = destination.trim().toLocaleLowerCase();
+  return Object.entries(destinationCountryAliases).filter(([, aliases]) => aliases.some((alias) => normalized.includes(alias))).map(([code]) => code);
+}
+
+function assertDestinationOutputWithinBrief(plan: TravelPlanDocument, output: DestinationGenerateOutput) {
+  const destination = plan.trip.brief.destination.trim();
+  if (!destination) throw new Error("请先填写目的地，再生成目的地建议。");
+  const allowedCountryCodes = requiredDestinationCountryCodes(destination);
+  if (!allowedCountryCodes.length) return;
+  const invalid = output.places.filter((place) => !place.countryCode || !allowedCountryCodes.includes(place.countryCode));
+  if (invalid.length) throw new Error(`目的地范围为“${destination}”，AI 返回了范围外地点：${invalid.map((place) => place.nameZh).join("、")}。`);
 }
 
 function interestCompletionSummary(resultRef: string | null | undefined) {
@@ -692,7 +713,11 @@ export class TravelPlannerRuntimeV3 {
       if (action.actionType === "requirements.update") {
         const raw = action.parameters.changes && typeof action.parameters.changes === "object" && !Array.isArray(action.parameters.changes) ? action.parameters.changes as Record<string, unknown> : {};
         if (!Object.keys(raw).length) throw new Error("requirements.update 没有可执行字段。");
-        for (const key of REQUIREMENT_FIELDS) if (key in raw) (next.trip as any)[key] = structuredClone(raw[key]);
+        for (const key of REQUIREMENT_FIELDS) {
+          if (!(key in raw)) continue;
+          if (key === "brief") next.trip.brief = { ...next.trip.brief, ...(raw.brief as Record<string, string>) };
+          else (next.trip as any)[key] = structuredClone(raw[key]);
+        }
       } else {
         const fields = Array.isArray(action.parameters.fields) ? action.parameters.fields.map(String) : [];
         if (!fields.length) throw new Error("requirements.clear 没有指定字段。");
@@ -817,6 +842,7 @@ export class TravelPlannerRuntimeV3 {
 
   private async persistDestinationGenerate(action: AiActionRecord, output: DestinationGenerateOutput, taskId: string | null = null) {
     const trip = this.options.store.requireTrip(action.tripId);
+    assertDestinationOutputWithinBrief(trip.plan, output);
     const normalized = normalizeCandidateDiscoveryOutput(output, "macro");
     const applied = applyCandidateDiscovery(trip.plan, normalized);
     const plan = markImpact(trip.plan, applied.plan);

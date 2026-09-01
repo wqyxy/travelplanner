@@ -157,7 +157,7 @@ describe("TravelPlannerRuntimeV3 AI action regressions", () => {
 
   it("resolves every generated Macro mapping best-effort before destination generation completes", async () => {
     const store = db(); const created = store.createTrip(); const resolvedIds: string[] = [];
-    store.writePlan(created.id, { ...created.plan, trip: { ...created.plan.trip, preferences: ["自然风景"] } }, 0, { source: "test", summary: "requirements fixture" });
+    store.writePlan(created.id, { ...created.plan, trip: { ...created.plan.trip, brief: { ...created.plan.trip.brief, destination: "Test" }, preferences: ["自然风景"] } }, 0, { source: "test", summary: "requirements fixture" });
     const resolver = {
       resolve: async () => ({ resolution: null, candidates: [] }),
       resolveMany: async (tripId: string, placeIds: string[], generation: number, _signal?: AbortSignal, onProgress?: (event: any) => void) => {
@@ -195,6 +195,17 @@ describe("TravelPlannerRuntimeV3 AI action regressions", () => {
     expect(resolvedIds).toHaveLength(2);
     expect(store.listPlaceResolutions(created.id).filter((item) => item.status === "resolved")).toHaveLength(2);
     expect(store.getAction(started.action.id)?.resultRef).toMatch(/resolved:2\/2/);
+    store.close();
+  });
+
+  it("rejects generated destinations outside the saved United Kingdom scope", async () => {
+    const store = db(); const created = store.createTrip();
+    store.writePlan(created.id, { ...created.plan, trip: { ...created.plan.trip, brief: { ...created.plan.trip.brief, destination: "英国" } } }, 0, { source: "test", summary: "United Kingdom scope" });
+    const rt = runtime(store, async () => run({ schemaVersion: 1, baseGeneration: 1, assistantMessage: "错误结果", places: [{ id: "tmp-place-fr", nameZh: "巴黎", nameLocal: null, nameEn: "Paris", kind: "city", city: "Paris", region: null, country: "France", countryCode: "FR", approximate: false }], candidates: [{ temporaryId: "tmp-candidate-fr", placeTemporaryId: "tmp-place-fr", planningAreaCandidateId: null, aiReason: "错误", aiScore: 50, suggestedDurationMinutes: 1440, tags: [], defaultPreference: "optional" }] }));
+    const started = rt.createCtaAction({ tripId: created.id, stage: "destinations", actionType: "destination.generate", parameters: {}, targetIds: [], requestKey: "reject-outside-uk" });
+    await waitFor(() => store.getAction(started.action.id)?.status === "failed");
+    expect(store.getAction(started.action.id)?.errorSummary).toMatch(/范围外地点/);
+    expect(store.requireTrip(created.id).plan.candidates).toEqual([]);
     store.close();
   });
 

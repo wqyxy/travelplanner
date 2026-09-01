@@ -17,6 +17,7 @@ export type Place = {
 };
 export type TripFacts = {
   title: string;
+  brief: { destination: string; origin: string; departureTime: string; duration: string; travelers: string; transport: string };
   originPlaceId: string | null;
   destinationPlaceIds: string[];
   dates: { start: string | null; end: string | null; requestedDurationDays: number | null };

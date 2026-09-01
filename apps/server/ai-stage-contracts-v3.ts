@@ -79,6 +79,7 @@ export type WorkspaceSelectionV3 = z.infer<typeof WorkspaceSelectionV3Schema>;
 
 const RequirementFieldSchema = z.enum([
   "title",
+  "brief",
   "dates",
   "travelers",
   "budget",
@@ -97,6 +98,14 @@ const AssumptionInputSchema = z.object({
 
 const DialogueChangesSchema = z.object({
   title: z.string().trim().min(1).max(300).optional(),
+  brief: z.object({
+    destination: z.string().trim().max(500).optional(),
+    origin: z.string().trim().max(500).optional(),
+    departureTime: z.string().trim().max(500).optional(),
+    duration: z.string().trim().max(500).optional(),
+    travelers: z.string().trim().max(500).optional(),
+    transport: z.string().trim().max(500).optional(),
+  }).strict().optional(),
   date: z.string().trim().min(1).max(40).nullable().optional(),
   activity: z.string().trim().min(1).max(2000).optional(),
   period: z.enum(["morning", "afternoon", "evening", "night", "all_day"]).nullable().optional(),
@@ -170,7 +179,7 @@ export const DialogueActionParametersSchema = z.object({
   label: z.string().trim().min(1).max(300).nullable(),
   notes: z.string().max(2000).nullable(),
   activity: z.string().trim().min(1).max(2000).nullable(),
-  fields: z.array(RequirementFieldSchema).max(9),
+  fields: z.array(RequirementFieldSchema).max(10),
   changes: DialogueChangesSchema.nullable(),
   placeChanges: DialoguePlaceChangesSchema.nullable(),
   candidateChanges: DialogueCandidateChangesSchema.nullable(),

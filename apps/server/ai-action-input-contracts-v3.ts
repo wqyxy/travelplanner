@@ -9,10 +9,18 @@ import {
 const Id = z.string().trim().min(1).max(160);
 const Request = z.string().trim().min(1).max(4000);
 const Preference = z.enum(["must_go", "want_to_go", "optional", "excluded"]);
-const RequirementField = z.enum(["title", "dates", "travelers", "budget", "pace", "themes", "preferences", "constraints", "assumptions"]);
+const RequirementField = z.enum(["title", "brief", "dates", "travelers", "budget", "pace", "themes", "preferences", "constraints", "assumptions"]);
 const Assumption = z.object({ text: z.string().trim().min(1).max(500), source: z.enum(["user", "ai", "system"]), confidence: z.enum(["low", "medium", "high"]) }).strict();
 const RequirementsPatch = z.object({
   title: z.string().trim().min(1).max(300).optional(),
+  brief: z.object({
+    destination: z.string().trim().max(500).optional(),
+    origin: z.string().trim().max(500).optional(),
+    departureTime: z.string().trim().max(500).optional(),
+    duration: z.string().trim().max(500).optional(),
+    travelers: z.string().trim().max(500).optional(),
+    transport: z.string().trim().max(500).optional(),
+  }).strict().refine((value) => Object.keys(value).length > 0, "brief 至少需要一个字段。").optional(),
   dates: z.object({ start: z.string().trim().min(1).max(40).nullable(), end: z.string().trim().min(1).max(40).nullable(), requestedDurationDays: z.number().int().min(1).max(365).nullable() }).strict().optional(),
   travelers: z.object({ summary: z.string().max(1000), adults: z.number().int().min(0).max(100).nullable(), children: z.number().int().min(0).max(100).nullable() }).strict().optional(),
   budget: z.object({ amount: z.number().finite().nonnegative().nullable(), currency: z.string().trim().min(1).max(20).nullable(), note: z.string().max(1000).nullable() }).strict().optional(),

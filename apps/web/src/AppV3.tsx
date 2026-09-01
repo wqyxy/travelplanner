@@ -7,12 +7,12 @@ import { ItineraryPanelV2 } from "./ItineraryPanelV2";
 import { MacroItineraryPanelV3 } from "./MacroItineraryPanelV3";
 import { buildPlanCommandBatchRequest } from "./editor-actions-v2";
 import { proposalActionPath, type ProposalAction } from "./proposal-ui-v2";
-import { hasTravelRequirements } from "./requirements-readiness-v3";
+import { RequirementsPanelV3 } from "./RequirementsPanelV3";
 import { PasswordDrawer } from "./PasswordDrawer";
 import { VersionDrawerV2 } from "./VersionDrawerV2";
 import { WorkspaceAssistantV3 } from "./WorkspaceAssistantV3";
 import { WorkspaceMapV2 } from "./WorkspaceMapV2";
-import type { AppSettings, CandidatePreference, PlanCommand, ProviderPlaceCandidate, Trip, WorkspaceSelection } from "./v2-types";
+import type { AppSettings, CandidatePreference, PlanCommand, ProviderPlaceCandidate, Trip, TripFacts, WorkspaceSelection } from "./v2-types";
 import type { AiAction, AiActionType, ConversationStage, PlannerStepV3, WorkspaceV3 } from "./v3-types";
 
 type User = { id: string; username: string };
@@ -92,7 +92,6 @@ export default function AppV3() {
   const selectedDayId = selection.type === "day" ? selection.id : selectedStop?.day.id ?? null;
   const selectedCandidateId = selection.type === "candidate" ? selection.id : selectedStop?.stop.candidateId ?? (selectedStop && trip ? trip.plan.candidates.find((candidate) => candidate.placeId === selectedStop.stop.placeId)?.id ?? null : null);
   const selectedStopId = selectedStop?.stop.id ?? null;
-  const requirementsReady = trip ? hasTravelRequirements(trip.plan.trip) : false;
 
   const applySettings = (next: AppSettings) => { setSettings(next); setSidebar(next.ui.sidebarOpen); };
   const refreshTrips = async (showTrash = trash) => setTrips((await api<{ trips: Trip[] }>(`/api/trips?view=${showTrash ? "trash" : "active"}`)).trips);
@@ -197,6 +196,23 @@ export default function AppV3() {
     if (!trip) throw new Error("请先选择旅行。");
     return api<GoogleMapsPreview>(`/api/trips/${trip.id}/places/${encodeURIComponent(placeId)}/google-maps`, { method: "POST", body: JSON.stringify({ expectedGeneration: trip.contentGeneration, url }) });
   };
+  const saveBrief = async (changes: Partial<TripFacts["brief"]>) => {
+    if (!trip) return false;
+    let saved = false;
+    await runAction(async () => {
+      const started = await api<{ action: AiAction }>(`/api/trips/${trip.id}/actions/cta`, { method: "POST", body: JSON.stringify({ stage: "requirements", actionType: "requirements.update", parameters: { changes: { brief: changes } }, targetIds: [], requestKey: crypto.randomUUID() }) });
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const next = await api<WorkspaceV3>(`/api/trips/${trip.id}/workspace`);
+        setWorkspace(next);
+        const action = next.actions.find((item) => item.id === started.action.id);
+        if (action?.status === "applied") { saved = true; await refreshTrips(false); return; }
+        if (action?.status === "failed" || action?.status === "superseded") throw new Error(action.errorSummary || "保存旅行需求失败。");
+        await new Promise((resolve) => window.setTimeout(resolve, 25));
+      }
+      throw new Error("旅行需求保存超时，请重试。");
+    }, "无法保存旅行需求。");
+    return saved;
+  };
   const applyGoogleMapsLink = async (placeId: string, url: string, changes: PlaceEditChanges) => {
     if (!trip) return;
     await runAction(async () => { await api(`/api/trips/${trip.id}/places/${encodeURIComponent(placeId)}/google-maps`, { method: "PUT", body: JSON.stringify({ expectedGeneration: trip.contentGeneration, url, changes }) }); await loadTrip(trip.id, false); await refreshTrips(false); }, "无法通过 Google Maps 链接保存地点。");
@@ -269,9 +285,9 @@ export default function AppV3() {
             <button type="button" className={step === "detail" ? "active" : ""} disabled={!workspace.trip.plan.days.length} onClick={() => { setStep("detail"); if (workspace.trip.plan.days[0]) setSelection({ type: "day", id: workspace.trip.plan.days[0].id }); }}><span>5</span>行程{detailNeedsUpdate ? <em>需更新</em> : null}</button>
           </nav></header>
           <div className="workspace-step-content-v3">
-            {step === "requirements" ? <section className="workspace-requirements-v3"><div><p className="eyebrow">START HERE</p><h2>旅行需求</h2><p>先在下方和“旅行需求 AI”确认天数、同行者、节奏和偏好。需求更新会直接保存；点击主按钮就是确认生成，不会再弹第二次确认。</p></div><dl><div><dt>旅行</dt><dd>{trip?.plan.trip.title || "未命名旅行"}</dd></div><div><dt>日期 / 天数</dt><dd>{trip?.plan.trip.dates.start && trip.plan.trip.dates.end ? `${trip.plan.trip.dates.start} → ${trip.plan.trip.dates.end}` : trip?.plan.trip.dates.requestedDurationDays ? `${trip.plan.trip.dates.requestedDurationDays} 天` : "待补充"}</dd></div><div><dt>同行者</dt><dd>{trip?.plan.trip.travelers.summary || "待补充"}</dd></div><div><dt>节奏</dt><dd>{trip?.plan.trip.pace || "待补充"}</dd></div></dl><button className="button primary workspace-primary-cta-v3" type="button" disabled={working || !trip || !requirementsReady} title={requirementsReady ? undefined : "请先填写旅行需求"} onClick={() => void (async () => { setStep("destinations"); setSelection({ type: "candidate_pool", id: null }); await startCta("destinations", "destination.generate"); })()}><Sparkles size={15}/>生成目的地建议</button></section>
-            : step === "destinations" ? <CandidatePanel view="macro" workspace={legacyWorkspace} selectedCandidateId={selectedCandidateId} busy={working} onSelectCandidate={(candidateId) => setSelection({ type: "candidate", id: candidateId })} onSetPreference={setPreference} onDiscover={() => startCta("destinations", "destination.generate")} onAddCandidate={addCandidate} onUpdatePlace={updatePlace} onPreviewGoogleMapsLink={previewGoogleMapsLink} onApplyGoogleMapsLink={applyGoogleMapsLink} onRemoveCandidate={removeCandidate} onContinue={async () => { const places = new Map(workspace.trip.plan.places.map((place) => [place.id, place])); const macroIds = workspace.trip.plan.candidates.filter((candidate) => candidate.preference !== "excluded" && places.get(candidate.placeId)?.kind === "city").map((candidate) => candidate.id); setStep("interests"); setSelection({ type: "candidate_pool", id: null }); await startCta("interests", "interest.discover", {}, macroIds); }} onRetry={retryResolutions} onSearchCandidates={searchResolutionCandidates} onSelectResolution={selectResolution} onManualResolution={(placeId, latitude, longitude, address) => setManualResolution(placeId, latitude, longitude, address)} onBeginMapPick={(placeId) => { setMapPickPlaceId(placeId); setFocus("map"); }}/>
-            : step === "interests" ? <CandidatePanel view="micro" workspace={legacyWorkspace} selectedCandidateId={selectedCandidateId} busy={working} onSelectCandidate={(candidateId) => setSelection({ type: "candidate", id: candidateId })} onSetPreference={setPreference} onDiscover={() => { const places = new Map(workspace.trip.plan.places.map((place) => [place.id, place])); const macroIds = workspace.trip.plan.candidates.filter((candidate) => candidate.preference !== "excluded" && places.get(candidate.placeId)?.kind === "city").map((candidate) => candidate.id); return startCta("interests", "interest.supplement", {}, macroIds); }} onAddCandidate={addCandidate} onUpdatePlace={updatePlace} onPreviewGoogleMapsLink={previewGoogleMapsLink} onApplyGoogleMapsLink={applyGoogleMapsLink} onRemoveCandidate={removeCandidate} onContinue={async () => { setStep("itinerary"); setSelection({ type: "trip", id: null }); if (!workspace.trip.plan.days.length) await startCta("itinerary", "itinerary.generate"); }} onRetry={retryResolutions} onSearchCandidates={searchResolutionCandidates} onSelectResolution={selectResolution} onManualResolution={(placeId, latitude, longitude, address) => setManualResolution(placeId, latitude, longitude, address)} onBeginMapPick={(placeId) => { setMapPickPlaceId(placeId); setFocus("map"); }}/>
+            {step === "requirements" ? <RequirementsPanelV3 facts={workspace.trip.plan.trip} busy={working} onSave={saveBrief} onGenerate={async () => { setStep("destinations"); setSelection({ type: "candidate_pool", id: null }); await startCta("destinations", "destination.generate"); }}/>
+            : step === "destinations" ? <CandidatePanel view="macro" workspace={legacyWorkspace} selectedCandidateId={selectedCandidateId} busy={working} onSelectCandidate={(candidateId) => setSelection({ type: "candidate", id: candidateId })} onSetPreference={setPreference} onDiscover={() => startCta("destinations", "destination.generate")} onAddCandidate={addCandidate} onUpdatePlace={updatePlace} onPreviewGoogleMapsLink={previewGoogleMapsLink} onApplyGoogleMapsLink={applyGoogleMapsLink} onRemoveCandidate={removeCandidate} onContinue={async () => { const places = new Map(workspace.trip.plan.places.map((place) => [place.id, place])); const macroIds = workspace.trip.plan.candidates.filter((candidate) => candidate.preference !== "excluded" && places.get(candidate.placeId)?.kind === "city").map((candidate) => candidate.id); setStep("interests"); setSelection({ type: "candidate_pool", id: null }); await startCta("interests", "interest.discover", {}, macroIds); }} onRetry={retryResolutions} onSearchCandidates={searchResolutionCandidates} onSelectResolution={selectResolution} onBeginMapPick={(placeId) => { setMapPickPlaceId(placeId); setFocus("map"); }}/>
+            : step === "interests" ? <CandidatePanel view="micro" workspace={legacyWorkspace} selectedCandidateId={selectedCandidateId} busy={working} onSelectCandidate={(candidateId) => setSelection({ type: "candidate", id: candidateId })} onSetPreference={setPreference} onDiscover={() => { const places = new Map(workspace.trip.plan.places.map((place) => [place.id, place])); const macroIds = workspace.trip.plan.candidates.filter((candidate) => candidate.preference !== "excluded" && places.get(candidate.placeId)?.kind === "city").map((candidate) => candidate.id); return startCta("interests", "interest.supplement", {}, macroIds); }} onAddCandidate={addCandidate} onUpdatePlace={updatePlace} onPreviewGoogleMapsLink={previewGoogleMapsLink} onApplyGoogleMapsLink={applyGoogleMapsLink} onRemoveCandidate={removeCandidate} onContinue={async () => { setStep("itinerary"); setSelection({ type: "trip", id: null }); if (!workspace.trip.plan.days.length) await startCta("itinerary", "itinerary.generate"); }} onRetry={retryResolutions} onSearchCandidates={searchResolutionCandidates} onSelectResolution={selectResolution} onBeginMapPick={(placeId) => { setMapPickPlaceId(placeId); setFocus("map"); }}/>
             : step === "itinerary" ? <MacroItineraryPanelV3 workspace={workspace} selectedDayId={selectedDayId} busy={working} onSelectDay={(dayId) => setSelection({ type: "day", id: dayId })} onGenerate={() => startCta("itinerary", "itinerary.generate")} onUpdate={() => startCta("itinerary", "itinerary.replan")} onRecalculate={recalculateMacroRoute} onRecalculateDirty={recalculateDirtyMacroRoutes} onContinue={async () => { setStep("detail"); if (workspace.trip.plan.days[0]) setSelection({ type: "day", id: workspace.trip.plan.days[0].id }); if (!hasDetailedDays) await startCta("itinerary", "itinerary.detail.generate"); }}/>
             : <section className="workspace-detail-step-v3">
                 {detailNeedsUpdate && <div className="workspace-warning-v3"><TriangleAlert size={16}/><div><b>每日详细行程需更新</b><p>{detailAffectedDayIds.length} 天受到第二/三/四步修改影响。其他日期保持原样。</p><button className="button primary small" type="button" disabled={working} onClick={() => void startCta("itinerary", "itinerary.detail.update", { dayIds: detailAffectedDayIds }, detailAffectedDayIds)}><Sparkles size={14}/>只更新这 {detailAffectedDayIds.length} 天</button></div></div>}

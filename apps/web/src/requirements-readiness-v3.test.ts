@@ -5,6 +5,7 @@ import { hasTravelRequirements } from "./requirements-readiness-v3";
 function emptyFacts(): TripFacts {
   return {
     title: "未命名旅行",
+    brief: { destination: "", origin: "", departureTime: "", duration: "", travelers: "", transport: "" },
     originPlaceId: null,
     destinationPlaceIds: [],
     dates: { start: null, end: null, requestedDurationDays: null },
@@ -23,7 +24,8 @@ describe("requirements readiness", () => {
     expect(hasTravelRequirements(emptyFacts())).toBe(false);
   });
 
-  it("allows destination generation after any travel requirement is recorded", () => {
-    expect(hasTravelRequirements({ ...emptyFacts(), preferences: ["自然风景"] })).toBe(true);
+  it("requires a saved destination before destination generation is enabled", () => {
+    expect(hasTravelRequirements({ ...emptyFacts(), preferences: ["自然风景"] })).toBe(false);
+    expect(hasTravelRequirements({ ...emptyFacts(), brief: { ...emptyFacts().brief, destination: "英国" } })).toBe(true);
   });
 });

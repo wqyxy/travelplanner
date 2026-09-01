@@ -92,8 +92,20 @@ const AssumptionSchema = z.object({
   confidence: z.enum(["low", "medium", "high"]),
 }).strict();
 
+const TripBriefSchema = z.object({
+  destination: z.string().trim().max(500),
+  origin: z.string().trim().max(500),
+  departureTime: z.string().trim().max(500),
+  duration: z.string().trim().max(500),
+  travelers: z.string().trim().max(500),
+  transport: z.string().trim().max(500),
+}).strict();
+
 export const TripFactsSchema = z.object({
   title: TextSchema.max(200),
+  // Existing fresh-v3 documents remain readable; this default is only applied
+  // in memory and never triggers an automatic database rewrite.
+  brief: TripBriefSchema.default({ destination: "", origin: "", departureTime: "", duration: "", travelers: "", transport: "" }),
   originPlaceId: IdSchema.nullable(),
   destinationPlaceIds: z.array(IdSchema).max(30),
   dates: TripDatesSchema,
@@ -316,6 +328,7 @@ export const emptyTravelPlan = (): TravelPlanDocument => TravelPlanDocumentSchem
   stage: "place_selection",
   trip: {
     title: "未命名旅行",
+    brief: { destination: "", origin: "", departureTime: "", duration: "", travelers: "", transport: "" },
     originPlaceId: null,
     destinationPlaceIds: [],
     dates: { start: null, end: null, requestedDurationDays: null },

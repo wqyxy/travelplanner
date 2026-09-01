@@ -106,6 +106,16 @@ describe("TravelPlannerRuntimeV3", () => {
     db.close();
   });
 
+  it("persists free-form destination brief text through the deterministic requirements action", async () => {
+    const db = store();
+    const trip = db.createTrip();
+    const rt = runtime({ store: db, dialogue: () => handle({ schemaVersion: 1, result: { type: "reply", assistantMessage: "ok" } }) });
+    const started = rt.createCtaAction({ tripId: trip.id, stage: "requirements", actionType: "requirements.update", parameters: { changes: { brief: { destination: "英国", departureTime: "9 月", duration: "10 天", transport: "自驾" } } }, targetIds: [], requestKey: "brief-requirements" });
+    await waitFor(() => db.getAction(started.action.id)?.status === "applied");
+    expect(db.requireTrip(trip.id).plan.trip.brief).toMatchObject({ destination: "英国", departureTime: "9 月", duration: "10 天", transport: "自驾" });
+    db.close();
+  });
+
   it("discards a dialogue result when canonical generation changes while the model is running", async () => {
     const db = store();
     const trip = db.createTrip();
