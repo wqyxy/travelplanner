@@ -56,12 +56,6 @@ export function MacroItineraryPanelV3({
   </section>;
 
   return <section className="workspace-requirements-v3">
-    <div>
-      <p className="eyebrow">STEP 4 · MACRO</p>
-      <h2>行程骨架</h2>
-      <p>共 {plan.days.length} 天 · {itineraryVisits.length} 个目的地。转移日计入到达目的地。</p>
-    </div>
-
     {macroStatus === "needs_update" && <div className="workspace-warning-v3"><TriangleAlert size={16}/><div><b>行程骨架需更新</b><p>第二步目的地发生了会影响当前骨架的变化。未受影响的 Day 会保留，AI 只调整必要部分。</p></div></div>}
 
     <div className="macro-visits-v3">
@@ -86,9 +80,10 @@ export function MacroItineraryPanelV3({
     </div>
 
     <div className="workspace-primary-actions-v3">
-      {dirtyRouteCount > 0 && <button className="button" type="button" disabled={busy} onClick={() => void onRecalculateDirty()}><RefreshCw size={15}/>更新 Macro Route {dirtyRouteCount}</button>}
-      {macroStatus === "needs_update" ? <button className="button primary" type="button" disabled={busy} onClick={() => void onUpdate()}><Sparkles size={15}/>更新受影响骨架</button> : <button className="button" type="button" disabled={busy} onClick={() => void onUpdate()}><RefreshCw size={15}/>重新规划骨架</button>}
+      {dirtyRouteCount > 0 && <button className="button" type="button" disabled={busy} title="只重新计算地图路线，不改变目的地顺序或停留天数" onClick={() => void onRecalculateDirty()}><RefreshCw size={15}/>更新 {dirtyRouteCount} 条 Macro 路线</button>}
+      {macroStatus === "needs_update" ? <button className="button primary" type="button" disabled={busy} title="只让 AI 修补受目的地变化影响的 Day" onClick={() => void onUpdate()}><Sparkles size={15}/>更新受影响骨架</button> : <button className="button" type="button" disabled={busy} title="让 AI 重新决定整趟行程的目的地顺序和停留天数" onClick={() => void onUpdate()}><RefreshCw size={15}/>重新规划整个骨架</button>}
       <button className="button primary" type="button" disabled={busy || macroStatus === "needs_update"} onClick={() => void onContinue()}><ArrowRight size={15}/>进入第五步详细行程</button>
     </div>
+    <p className="macro-actions-hint-v3">更新路线只重算地图线路；更新受影响骨架只修补受影响 Day；重新规划整个骨架会重新决定目的地顺序和停留天数。</p>
   </section>;
 }

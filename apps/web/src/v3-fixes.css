@@ -194,18 +194,22 @@
 }
 .workspace-flow-nav-v3 {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 6px;
-  padding: 10px 12px 6px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 4px;
+  padding: 8px 10px;
 }
 .workspace-flow-nav-v3 button {
+  display: flex;
   min-width: 0;
+  align-items: center;
+  justify-content: center;
   border: 0;
   border-radius: 10px;
   background: transparent;
   color: var(--muted, #6b7280);
-  padding: 8px 4px;
+  padding: 7px 3px;
   font-weight: 650;
+  white-space: nowrap;
   cursor: pointer;
 }
 .workspace-flow-nav-v3 button span {

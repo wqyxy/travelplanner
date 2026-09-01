@@ -43,6 +43,11 @@
   min-height: 0;
 }
 
+.workspace-step-content-v3 > .workspace-requirements-v3 {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
 .candidate-panel {
   grid-template-rows: auto auto auto minmax(0, 1fr) auto;
 }

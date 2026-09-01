@@ -94,6 +94,13 @@
   margin-top: 14px;
 }
 
+.macro-actions-hint-v3 {
+  margin: 2px 0 0;
+  color: var(--muted, #6b7280);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .workspace-detail-step-v3 {
   display: grid;
   gap: 12px;
