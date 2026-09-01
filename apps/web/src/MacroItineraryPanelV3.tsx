@@ -11,6 +11,7 @@ export function MacroItineraryPanelV3({
   workspace,
   busy,
   selectedDayId,
+  onSelectAll,
   onSelectDay,
   onGenerate,
   onUpdate,
@@ -21,6 +22,7 @@ export function MacroItineraryPanelV3({
   workspace: WorkspaceV3;
   busy: boolean;
   selectedDayId: string | null;
+  onSelectAll: () => void;
   onSelectDay: (dayId: string) => void;
   onGenerate: () => void | Promise<void>;
   onUpdate: () => void | Promise<void>;
@@ -40,6 +42,11 @@ export function MacroItineraryPanelV3({
 
   return <section className="workspace-requirements-v3">
     {macroStatus === "needs_update" && <div className="workspace-warning-v3"><TriangleAlert size={16}/><div><b>行程骨架需更新</b><p>第二步目的地发生了会影响当前骨架的变化。未受影响的 Day 会保留，AI 只调整必要部分。</p></div></div>}
+
+    <nav className="itinerary-map-scope-v3" aria-label="概览地图范围">
+      <button type="button" className={selectedDayId === null ? "active" : ""} onClick={onSelectAll}>全览</button>
+      {plan.days.map((day) => <button type="button" className={selectedDayId === day.id ? "active" : ""} key={day.id} onClick={() => onSelectDay(day.id)}>Day {day.dayNumber}</button>)}
+    </nav>
 
     <div className="macro-days-v3">
       {plan.days.map((day) => {

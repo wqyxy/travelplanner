@@ -1,132 +1,22 @@
 import { Crosshair, MapPinned, Maximize2, Minimize2, Route } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CandidatePreference, PlaceResolution, Workspace } from "./v2-types";
-import { candidateRows } from "./workspace-v2";
-
-const preferenceColors: Record<CandidatePreference, string> = {
-  must_go: "#e05c45",
-  want_to_go: "#1b7f64",
-  optional: "#55758d",
-  excluded: "#9a9f9d",
-};
-const preferenceMarks: Record<CandidatePreference, string> = { must_go: "★", want_to_go: "✓", optional: "○", excluded: "×" };
-
-function routeGeometryFeatures(workspace: Workspace, selectedDayId: string | null) {
-  const dayNumbers = new Map(workspace.trip.plan.days.map((day) => [day.id, day.dayNumber]));
-  return workspace.routeStates.flatMap((state) => {
-    if (selectedDayId && state.dayId !== selectedDayId) return [];
-    return state.route?.legs.flatMap((leg, index) => leg.geometry ? [{
-      type: "Feature",
-      id: `${state.dayId}:${index}`,
-      geometry: leg.geometry,
-      properties: {
-        dayId: state.dayId,
-        dayNumber: dayNumbers.get(state.dayId) ?? 0,
-        mode: leg.mode,
-        status: leg.status,
-        dirty: state.dirty,
-      },
-    }] : []) ?? [];
-  });
-}
-
-function resolvedByPlace(workspace: Workspace) {
-  return new Map(workspace.resolutions
-    .filter((resolution) => resolution.status === "resolved" && resolution.latitude !== null && resolution.longitude !== null)
-    .map((resolution) => [resolution.placeId, resolution]));
-}
-
-function coordinate(resolution: PlaceResolution | undefined) {
-  return resolution?.latitude === null || resolution?.longitude === null || resolution?.latitude === undefined || resolution?.longitude === undefined
-    ? null
-    : [resolution.longitude, resolution.latitude];
-}
-
-function candidatePointFeatures(workspace: Workspace) {
-  return candidateRows(workspace).flatMap((row) => {
-    const location = coordinate(row.resolution ?? undefined);
-    if (!location) return [];
-    return [{
-      type: "Feature",
-      id: row.candidate.id,
-      geometry: { type: "Point", coordinates: location },
-      properties: {
-        entityType: "candidate",
-        candidateId: row.candidate.id,
-        stopId: "",
-        placeId: row.place.id,
-        dayId: "",
-        name: row.place.nameZh,
-        secondary: row.place.nameLocal || row.place.nameEn || "",
-        preference: row.candidate.preference,
-        mark: preferenceMarks[row.candidate.preference],
-        score: row.candidate.aiScore ?? "",
-        address: row.resolution?.address || "",
-        excluded: row.candidate.preference === "excluded",
-      },
-    }];
-  });
-}
-
-function dayPointFeatures(workspace: Workspace, selectedDayId: string) {
-  const day = workspace.trip.plan.days.find((item) => item.id === selectedDayId);
-  if (!day) return [];
-  const resolutions = resolvedByPlace(workspace);
-  const places = new Map(workspace.trip.plan.places.map((place) => [place.id, place]));
-  const candidates = new Map(workspace.trip.plan.candidates.map((candidate) => [candidate.id, candidate]));
-  const candidateByPlace = new Map(workspace.trip.plan.candidates.map((candidate) => [candidate.placeId, candidate]));
-  const features: any[] = [];
-  const add = (input: {
-    id: string;
-    entityType: "anchor" | "stop";
-    placeId: string | null;
-    stopId?: string;
-    candidateId?: string | null;
-    mark: string;
-    nameFallback: string;
-  }) => {
-    if (!input.placeId) return;
-    const resolution = resolutions.get(input.placeId);
-    const location = coordinate(resolution);
-    if (!location) return;
-    const place = places.get(input.placeId);
-    const candidate = input.candidateId ? candidates.get(input.candidateId) : candidateByPlace.get(input.placeId);
-    features.push({
-      type: "Feature",
-      id: input.id,
-      geometry: { type: "Point", coordinates: location },
-      properties: {
-        entityType: input.entityType,
-        candidateId: candidate?.id || "",
-        stopId: input.stopId || "",
-        placeId: input.placeId,
-        dayId: day.id,
-        name: place?.nameZh || input.nameFallback,
-        secondary: place?.nameLocal || place?.nameEn || "",
-        preference: candidate?.preference || "anchor",
-        mark: input.mark,
-        score: candidate?.aiScore ?? "",
-        address: resolution?.address || "",
-        excluded: false,
-      },
-    });
-  };
-  add({ id: day.startAnchor.id, entityType: "anchor", placeId: day.startAnchor.placeId, mark: "起", nameFallback: day.startAnchor.label || "出发 Anchor" });
-  day.stops.forEach((stop, index) => add({
-    id: stop.id,
-    entityType: "stop",
-    placeId: stop.placeId,
-    stopId: stop.id,
-    candidateId: stop.candidateId,
-    mark: String(index + 1),
-    nameFallback: stop.activity,
-  }));
-  add({ id: day.endAnchor.id, entityType: "anchor", placeId: day.endAnchor.placeId, mark: "终", nameFallback: day.endAnchor.label || "结束 Anchor" });
-  return features;
-}
+import type { Workspace } from "./v2-types";
+import {
+  candidatePointFeatures,
+  dayRouteColors,
+  formatProviderDistance,
+  formatProviderDuration,
+  itineraryPointFeatures,
+  preferenceColors,
+  routeGeometryFeatures,
+  transportModeLabels,
+  type WorkspaceMapRouteFeature,
+  type WorkspaceMapView,
+} from "./workspace-map-presentation-v2";
 
 export function WorkspaceMapV2({
   workspace,
+  view,
   selectedCandidateId,
   selectedDayId,
   selectedStopId,
@@ -138,6 +28,7 @@ export function WorkspaceMapV2({
   onToggleFullscreen,
 }: {
   workspace: Workspace;
+  view: WorkspaceMapView;
   selectedCandidateId: string | null;
   selectedDayId: string | null;
   selectedStopId: string | null;
@@ -151,6 +42,9 @@ export function WorkspaceMapV2({
   const element = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
   const popupRef = useRef<any>(null);
+  const routePopupRef = useRef<any>(null);
+  const hoveredRouteRef = useRef<string | null>(null);
+  const routeFeaturesRef = useRef(new Map<string, WorkspaceMapRouteFeature>());
   const pickRef = useRef(mapPickPlaceId);
   const selectCandidateRef = useRef(onSelectCandidate);
   const selectStopRef = useRef(onSelectStop);
@@ -164,11 +58,13 @@ export function WorkspaceMapV2({
   onMapPickRef.current = onMapPick;
 
   const allCandidatePoints = useMemo(() => candidatePointFeatures(workspace), [workspace]);
-  const dayPoints = useMemo(() => selectedDayId ? dayPointFeatures(workspace, selectedDayId) : [], [workspace, selectedDayId]);
-  const points = selectedDayId ? dayPoints : allCandidatePoints;
+  const itineraryPoints = useMemo(() => itineraryPointFeatures(workspace, selectedDayId), [workspace, selectedDayId]);
+  const points = view === "itinerary" ? itineraryPoints : allCandidatePoints;
   const allRoutes = useMemo(() => routeGeometryFeatures(workspace, selectedDayId), [workspace, selectedDayId]);
-  const currentRoutes = useMemo(() => allRoutes.filter((feature: any) => !feature.properties.dirty), [allRoutes]);
-  const dirtyRoutes = useMemo(() => allRoutes.filter((feature: any) => feature.properties.dirty), [allRoutes]);
+  const visibleRoutes = useMemo(() => view === "itinerary" ? allRoutes : [], [allRoutes, view]);
+  const currentRoutes = useMemo(() => visibleRoutes.filter((feature) => !feature.properties.dirty), [visibleRoutes]);
+  const dirtyRoutes = useMemo(() => visibleRoutes.filter((feature) => feature.properties.dirty), [visibleRoutes]);
+  const routeColors = useMemo(() => dayRouteColors(workspace.trip.plan.days), [workspace.trip.plan.days]);
   const selectedEntityId = selectedStopId || selectedCandidateId || "__none__";
 
   useEffect(() => {
@@ -189,11 +85,17 @@ export function WorkspaceMapV2({
       });
       map.addControl(new lib.NavigationControl({ showCompass: false }), "bottom-right");
       map.on("load", () => {
+        const empty = { type: "FeatureCollection", features: [] };
         map.addSource("v3-routes-current", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
         map.addLayer({ id: "v3-route-halo", type: "line", source: "v3-routes-current", paint: { "line-color": "#ffffff", "line-width": 8, "line-opacity": .82 } });
-        map.addLayer({ id: "v3-routes-current", type: "line", source: "v3-routes-current", paint: { "line-color": ["match", ["get", "dayNumber"], 1, "#316bc5", 2, "#dc654d", 3, "#3d9b69", 4, "#9a65bf", 5, "#d1962f", "#277f91"], "line-width": 4, "line-opacity": .9 } });
+        map.addLayer({ id: "v3-routes-current", type: "line", source: "v3-routes-current", paint: { "line-color": ["get", "color"], "line-width": 4, "line-opacity": .9 } });
+        map.addLayer({ id: "v3-routes-current-hit", type: "line", source: "v3-routes-current", paint: { "line-color": "#000000", "line-width": 18, "line-opacity": 0 } });
         map.addSource("v3-routes-dirty", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-        map.addLayer({ id: "v3-routes-dirty", type: "line", source: "v3-routes-dirty", paint: { "line-color": "#6f7780", "line-width": 3, "line-opacity": .3, "line-dasharray": [2, 2] } });
+        map.addLayer({ id: "v3-routes-dirty", type: "line", source: "v3-routes-dirty", paint: { "line-color": ["get", "color"], "line-width": 3, "line-opacity": .32, "line-dasharray": [2, 2] } });
+        map.addLayer({ id: "v3-routes-dirty-hit", type: "line", source: "v3-routes-dirty", paint: { "line-color": "#000000", "line-width": 18, "line-opacity": 0, "line-dasharray": [2, 2] } });
+        map.addSource("v3-route-hover", { type: "geojson", data: empty });
+        map.addLayer({ id: "v3-route-hover-halo", type: "line", source: "v3-route-hover", paint: { "line-color": "#ffffff", "line-width": 12, "line-opacity": .95 } });
+        map.addLayer({ id: "v3-route-hover", type: "line", source: "v3-route-hover", paint: { "line-color": ["get", "color"], "line-width": 7, "line-opacity": 1 } });
         map.addSource("v3-workspace-points", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
         map.addLayer({ id: "v3-point-halo", type: "circle", source: "v3-workspace-points", paint: { "circle-radius": 13, "circle-color": "#ffffff", "circle-opacity": .9 } });
         map.addLayer({
@@ -241,6 +143,51 @@ export function WorkspaceMapV2({
           popupRef.current?.remove();
           popupRef.current = new lib.Popup({ offset: 15 }).setLngLat(event.lngLat).setDOMContent(content).addTo(map);
         });
+        const clearRouteHover = () => {
+          if (!hoveredRouteRef.current) return;
+          map.getSource("v3-route-hover")?.setData(empty);
+          hoveredRouteRef.current = null;
+          routePopupRef.current?.remove();
+          routePopupRef.current = null;
+        };
+        map.on("mousemove", (event: any) => {
+          const rendered = map.queryRenderedFeatures(event.point, { layers: ["v3-routes-current-hit", "v3-routes-dirty-hit"] })[0];
+          const routeId = String(rendered?.properties?.id || rendered?.id || "");
+          const route = routeId ? routeFeaturesRef.current.get(routeId) : null;
+          if (!route) {
+            clearRouteHover();
+            map.getCanvas().style.cursor = pickRef.current ? "crosshair" : map.queryRenderedFeatures(event.point, { layers: ["v3-workspace-points"] }).length ? "pointer" : "";
+            return;
+          }
+          map.getCanvas().style.cursor = "pointer";
+          if (hoveredRouteRef.current !== routeId) {
+            map.getSource("v3-route-hover")?.setData({ type: "FeatureCollection", features: [route] });
+            hoveredRouteRef.current = routeId;
+          }
+          const content = document.createElement("div");
+          content.className = "v3-map-popup v3-route-popup";
+          const title = document.createElement("strong");
+          title.textContent = `Day ${route.properties.dayNumber} · ${transportModeLabels[route.properties.mode]}`;
+          const metrics = document.createElement("p");
+          metrics.textContent = `${formatProviderDistance(route.properties.distanceKm)} · ${formatProviderDuration(route.properties.durationMinutes)}`;
+          content.append(title, metrics);
+          if (route.properties.dirty) {
+            const stale = document.createElement("small");
+            stale.textContent = "旧路线，需更新";
+            content.append(stale);
+          }
+          if (route.properties.warning) {
+            const warning = document.createElement("small");
+            warning.textContent = route.properties.warning;
+            content.append(warning);
+          }
+          routePopupRef.current?.remove();
+          routePopupRef.current = new lib.Popup({ offset: 10, closeButton: false, closeOnClick: false }).setLngLat(event.lngLat).setDOMContent(content).addTo(map);
+        });
+        map.on("mouseout", () => {
+          map.getCanvas().style.cursor = pickRef.current ? "crosshair" : "";
+          clearRouteHover();
+        });
         map.on("click", (event: any) => {
           const placeId = pickRef.current;
           if (!placeId) return;
@@ -256,6 +203,7 @@ export function WorkspaceMapV2({
       cancelled = true;
       observer?.disconnect();
       popupRef.current?.remove();
+      routePopupRef.current?.remove();
       map?.remove();
       mapRef.current = null;
       setReady(false);
@@ -268,6 +216,11 @@ export function WorkspaceMapV2({
     map.getSource("v3-workspace-points")?.setData({ type: "FeatureCollection", features: points });
     map.getSource("v3-routes-current")?.setData({ type: "FeatureCollection", features: currentRoutes });
     map.getSource("v3-routes-dirty")?.setData({ type: "FeatureCollection", features: dirtyRoutes });
+    map.getSource("v3-route-hover")?.setData({ type: "FeatureCollection", features: [] });
+    hoveredRouteRef.current = null;
+    routePopupRef.current?.remove();
+    routePopupRef.current = null;
+    routeFeaturesRef.current = new Map(visibleRoutes.map((feature) => [feature.properties.id, feature]));
     map.setPaintProperty("v3-point-halo", "circle-radius", [
       "case",
       ["any", ["==", ["get", "stopId"], selectedEntityId], ["==", ["get", "candidateId"], selectedEntityId]],
@@ -280,7 +233,7 @@ export function WorkspaceMapV2({
       "#f3b646",
       "#ffffff",
     ]);
-    const key = `${workspace.trip.id}:${workspace.trip.contentGeneration}:${selectedDayId || "all"}:${points.map((point: any) => `${point.id}:${point.geometry.coordinates.join(",")}`).join("|")}`;
+    const key = `${workspace.trip.id}:${workspace.trip.contentGeneration}:${view}:${selectedDayId || "all"}:${points.map((point) => `${point.id}:${point.geometry.coordinates.join(",")}`).join("|")}`;
     if (points.length && fitted.current !== key) {
       void import("maplibre-gl").then((lib) => {
         if (mapRef.current !== map) return;
@@ -290,7 +243,7 @@ export function WorkspaceMapV2({
         fitted.current = key;
       });
     }
-  }, [ready, points, currentRoutes, dirtyRoutes, selectedEntityId, selectedDayId, workspace.trip.id, workspace.trip.contentGeneration]);
+  }, [ready, points, currentRoutes, dirtyRoutes, visibleRoutes, selectedEntityId, selectedDayId, view, workspace.trip.id, workspace.trip.contentGeneration]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -304,9 +257,12 @@ export function WorkspaceMapV2({
 
   const selectedDay = selectedDayId ? workspace.trip.plan.days.find((day) => day.id === selectedDayId) : null;
   const selectedPlace = mapPickPlaceId ? workspace.trip.plan.places.find((place) => place.id === mapPickPlaceId) : null;
+  const legendDays = selectedDay ? [selectedDay] : workspace.trip.plan.days;
+  const mapTitle = view === "candidates" ? "旅行地图" : selectedDay ? `Day ${selectedDay.dayNumber} 地图` : "行程全览地图";
+  const pointSummary = view === "candidates" ? `已定位地点 ${points.length}` : selectedDay ? `当天已定位节点 ${points.length}` : `全程已定位节点 ${points.length}`;
   return <section className="workspace-map-v2">
-    <header><div><p className="eyebrow">MAP WORKSPACE</p><h2>{selectedDay ? `Day ${selectedDay.dayNumber} 地图` : "旅行地图"}</h2><small><MapPinned size={13}/>{selectedDay ? `当天已定位节点 ${points.length}` : `已定位地点 ${allCandidatePoints.length}`}<Route size={13}/>当前路线 {currentRoutes.length}{dirtyRoutes.length ? ` · 旧路线 ${dirtyRoutes.length}` : ""}</small></div><button className="icon-button panel-fullscreen" type="button" aria-label={fullscreen ? "退出地图全屏" : "地图全屏"} onClick={onToggleFullscreen}>{fullscreen ? <Minimize2 size={17}/> : <Maximize2 size={17}/>}</button></header>
-    <div className="workspace-map-canvas"><div className="workspace-map-element" ref={element}/>{mapPickPlaceId && <div className="map-pick-banner"><Crosshair size={18}/><span>在地图上点击 <strong>{selectedPlace?.nameZh || "目标地点"}</strong> 的正确位置</span></div>}{!points.length && <div className="map-empty-overlay"><MapPinned size={34}/><strong>{selectedDay ? "当天节点尚未全部定位" : "地点会在这里出现"}</strong><span>{selectedDay ? "返回地点页处理未定位地点或设置 Anchor" : "先让 AI 生成 Candidate Pool，或手动添加地点"}</span></div>}{error && <div className="map-error-overlay">{error}</div>}</div>
-    <footer><span><i style={{ background: preferenceColors.must_go }}/>必去</span><span><i style={{ background: preferenceColors.want_to_go }}/>想去</span><span><i style={{ background: preferenceColors.optional }}/>可选</span><span className="muted"><i style={{ background: preferenceColors.excluded }}/>不去</span>{dirtyRoutes.length > 0 && <span className="muted">虚线为旧路线，仅供参考</span>}</footer>
+    <header><div><p className="eyebrow">MAP WORKSPACE</p><h2>{mapTitle}</h2><small><MapPinned size={13}/>{pointSummary}<Route size={13}/>当前路线 {currentRoutes.length}{dirtyRoutes.length ? ` · 旧路线 ${dirtyRoutes.length}` : ""}</small></div><button className="icon-button panel-fullscreen" type="button" aria-label={fullscreen ? "退出地图全屏" : "地图全屏"} onClick={onToggleFullscreen}>{fullscreen ? <Minimize2 size={17}/> : <Maximize2 size={17}/>}</button></header>
+    <div className="workspace-map-canvas"><div className="workspace-map-element" ref={element}/>{mapPickPlaceId && <div className="map-pick-banner"><Crosshair size={18}/><span>在地图上点击 <strong>{selectedPlace?.nameZh || "目标地点"}</strong> 的正确位置</span></div>}{!points.length && <div className="map-empty-overlay"><MapPinned size={34}/><strong>{view === "itinerary" ? "行程节点尚未可靠定位" : "地点会在这里出现"}</strong><span>{view === "itinerary" ? "返回地点页处理未定位地点或设置 Anchor" : "先让 AI 生成 Candidate Pool，或手动添加地点"}</span></div>}{error && <div className="map-error-overlay">{error}</div>}</div>
+    <footer>{view === "itinerary" ? <>{legendDays.map((day) => <span key={day.id}><i style={{ background: routeColors.get(day.dayNumber) }}/>Day {day.dayNumber}</span>)}{dirtyRoutes.length > 0 && <span className="muted">虚线为旧路线，仅供参考</span>}</> : <><span><i style={{ background: preferenceColors.must_go }}/>必去</span><span><i style={{ background: preferenceColors.want_to_go }}/>想去</span><span><i style={{ background: preferenceColors.optional }}/>可选</span><span className="muted"><i style={{ background: preferenceColors.excluded }}/>不去</span></>}</footer>
   </section>;
 }

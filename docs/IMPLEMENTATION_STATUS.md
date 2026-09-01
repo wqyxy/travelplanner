@@ -1,6 +1,6 @@
 # TravelPlanner Implementation Status
 
-更新时间：2026-08-31  
+更新时间：2026-09-02
 实施分支：`refactor/stage-dialogue-actions-v3`  
 目标文档：`docs/AI_STAGE_DIALOGUE_AND_ACTION_REFACTOR_PLAN.md`
 
@@ -164,6 +164,20 @@ Runtime 对每个变化广播：
 6. 上述全部 PASS 后再运行 isolated fresh-v3 real Browser E2E；
 7. 实际观察 9 个左右目的地生成后的自动定位触发、逐个状态出现、慢歧义地点不阻塞其他地点；
 8. 再继续 itinerary.generate → refine → Proposal → Apply 的最终闭环。
+
+## Itinerary Route Overview And Hover Metrics
+
+第 4 步“概览”和第 5 步“行程”的地图范围已拆分为显式 Candidate / itinerary view：
+
+- 两个行程阶段均增加“全览 / Day N”选择，进入阶段默认全览；
+- 概览全览使用全部 Macro route，详细行程全览使用全部 Day route，不混用；
+- 全览节点由所有 Day 的 Anchor / Stop 派生，单日仍保留原有起点、序号、终点标签；
+- 每个 Day 使用确定且互不相同的路线颜色，地图底部图例同步显示；
+- 每个可绘制 Route Leg 增加透明命中层、悬停高亮和 Popup，直接显示 Provider `distanceKm / durationMinutes`；
+- dirty route 保留按日颜色但使用弱化虚线，悬停明确标为“旧路线，需更新”；
+- 不增加 API、数据库字段、AI Prompt 或 Provider 调用，缺失指标保持待计算。
+
+已新增纯展示 helper 的 targeted Vitest 覆盖，但本轮尚未执行测试、typecheck 或 build；需按项目验证规则取得确认后统一运行。
 
 ## Data Safety
 

@@ -123,6 +123,7 @@ export function ItineraryPanelV2({
   selectedDayId,
   selectedStopId,
   busy,
+  onSelectAll,
   onSelectDay,
   onSelectStop,
   onRecalculate,
@@ -134,6 +135,7 @@ export function ItineraryPanelV2({
   selectedDayId: string | null;
   selectedStopId: string | null;
   busy: boolean;
+  onSelectAll: () => void;
   onSelectDay: (dayId: string) => void;
   onSelectStop: (stopId: string) => void;
   onRecalculate: (dayId: string) => Promise<void>;
@@ -174,6 +176,10 @@ export function ItineraryPanelV2({
         <button className="button small" disabled={busy || !pendingDetailDays.length} onClick={() => void onRefine()}><CalendarDays size={13}/>{pendingDetailDays.length ? `细化下一批（剩余 ${pendingDetailDays.length} 天）` : "细化已完成"}</button>
       </div>
     </header>
+    <nav className="itinerary-map-scope-v3 itinerary-map-scope-detail-v3" aria-label="行程地图范围">
+      <button type="button" className={selectedDayId === null ? "active" : ""} onClick={onSelectAll}>全览</button>
+      {plan.days.map((day) => <button type="button" className={selectedDayId === day.id ? "active" : ""} key={day.id} onClick={() => onSelectDay(day.id)}>Day {day.dayNumber}</button>)}
+    </nav>
     <div className="itinerary-v2-days">
       {plan.days.map((day) => {
         const state = routeStateForDay(workspace.routeStates, day.id);

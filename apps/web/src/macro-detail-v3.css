@@ -2,6 +2,50 @@
   opacity: .68;
 }
 
+.itinerary-map-scope-v3 {
+  display: flex;
+  gap: 6px;
+  margin: 8px 0 4px;
+  padding-bottom: 3px;
+  overflow-x: auto;
+}
+
+.itinerary-map-scope-v3 button {
+  min-width: max-content;
+  padding: 6px 10px;
+  border: 1px solid var(--border, rgba(127, 127, 127, .25));
+  border-radius: 999px;
+  color: var(--muted, #6b7280);
+  background: var(--control, transparent);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.itinerary-map-scope-v3 button:hover,
+.itinerary-map-scope-v3 button.active {
+  border-color: var(--primary, #2563eb);
+  color: #fff;
+  background: var(--primary, #2563eb);
+}
+
+.itinerary-map-scope-detail-v3 {
+  margin: 10px 12px 0;
+}
+
+.workspace-map-v2 > footer {
+  gap: 8px 15px;
+  overflow-x: auto;
+}
+
+.workspace-map-v2 > footer span {
+  flex: 0 0 auto;
+}
+
+.v3-route-popup small {
+  display: block;
+}
+
 .macro-days-v3 {
   display: grid;
   gap: 5px;
