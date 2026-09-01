@@ -410,6 +410,20 @@ export class TravelStoreV3 {
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
 
+  writePlanAndPlaceResolution(id: string, value: unknown, resolutionValue: unknown, expectedGeneration: number, revision: RevisionInput) {
+    const plan = TravelPlanDocumentSchema.parse(value);
+    const resolution = PlaceResolutionSchema.parse(resolutionValue);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = this.writePlanWithinTransaction(id, plan, expectedGeneration, revision);
+      if (resolution.tripId !== id || !plan.places.some((place) => place.id === resolution.placeId)) throw new Error("PlaceResolution 必须引用当前旅行中的 Place。");
+      this.db.prepare("INSERT INTO place_resolutions(trip_id,place_id,resolution_json,updated_at) VALUES(?,?,?,?) ON CONFLICT(trip_id,place_id) DO UPDATE SET resolution_json=excluded.resolution_json,updated_at=excluded.updated_at").run(id, resolution.placeId, stringify(resolution), now());
+      const trip = this.requireTrip(id);
+      this.db.exec("COMMIT");
+      return { trip, resolution, ...result };
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+
   rename(id: string, title: string) {
     const trip = this.requireTrip(id);
     const value = title.trim().slice(0, 200);

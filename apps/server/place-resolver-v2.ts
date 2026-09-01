@@ -90,7 +90,12 @@ export function buildPlaceSearchQueries(place: Place, _compatibilityHints: strin
     add(first, country);
   } else {
     add(first, place.city, country);
-    if (second) add(second, place.city, country); else add(first, place.region, country);
+    if (place.approximate) {
+      const broaderName = second ?? first;
+      if (place.region && normalize(place.region) !== normalize(place.city)) add(broaderName, place.region, country);
+      else add(broaderName, country);
+    } else if (second) add(second, place.city, country);
+    else add(first, place.region, country);
   }
   return values.slice(0, PLACE_RESOLUTION_BASE_SEARCH_LIMIT);
 }

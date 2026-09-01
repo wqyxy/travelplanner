@@ -160,6 +160,19 @@ describe("TravelStoreV3", () => {
     store.close();
   });
 
+  it("atomically writes a Google Maps place edit with its current resolution", () => {
+    const store = new TravelStoreV3(databasePath());
+    const created = store.createTrip();
+    const original = TravelPlanDocumentSchema.parse({ ...created.plan, places: [{ id: "place-1", nameZh: "旧地点", nameLocal: null, nameEn: null, kind: "attraction", city: null, region: null, country: null, countryCode: null, approximate: false }], candidates: [{ id: "candidate-1", placeId: "place-1", planningAreaCandidateId: null, preference: "optional", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: 60, tags: [] }] });
+    store.writePlan(created.id, original, 0, { source: "test", summary: "fixture" });
+    const changed = structuredClone(original); changed.places[0].nameZh = "新地点";
+    const saved = store.writePlanAndPlaceResolution(created.id, changed, { tripId: created.id, placeId: "place-1", geoFingerprint: "v2|新地点", status: "resolved", method: "google_maps_link", provider: null, providerPlaceId: null, latitude: 35, longitude: 135, address: "测试地址", confidence: null, resolvedAt: new Date().toISOString(), errorMessage: null }, 1, { source: "google_maps_link", summary: "测试导入" });
+    expect(saved.generation).toBe(2);
+    expect(store.requireTrip(created.id).plan.places[0].nameZh).toBe("新地点");
+    expect(store.getPlaceResolution(created.id, "place-1")).toMatchObject({ method: "google_maps_link", latitude: 35, longitude: 135 });
+    store.close();
+  });
+
   it("duplicates only canonical plan and leaves conversations, threads, tasks and actions behind", () => {
     const store = new TravelStoreV3(databasePath());
     const trip = store.createTrip();

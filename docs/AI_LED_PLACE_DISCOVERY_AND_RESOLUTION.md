@@ -78,7 +78,7 @@ AI 选择后服务端只验证 `providerPlaceId` 确实来自本轮候选，并�
 
 Provider 选择统一 `method=provider_choice`，`confidence=null`。
 
-用户地图点选/手工坐标只校验数值、范围和 generation；反向地理只作地址提示，不因国家/行政区不一致拒绝用户坐标；`confidence=null`。
+用户地图点选/手工坐标只校验数值、范围和 generation；反向地理只作地址提示，不因国家/行政区不一致拒绝用户坐标；`confidence=null`。地点编辑还可粘贴受限 Google Maps 分享链接：服务端只解析链接内的明确坐标（短链只允许 Google 域内跳转），预填后须由用户保存确认；链接名称仅作提示，绝不覆盖 Place 的中文名称；不抓取 Google 页面、不调用 Places API、不保存原链接。
 
 ## Macro / Micro 规划边界
 

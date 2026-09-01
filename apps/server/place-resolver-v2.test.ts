@@ -21,6 +21,7 @@ function databasePath() { const root = mkdtempSync(path.join(tmpdir(), "place-re
 
 const place = { id: "p-1", nameZh: "清水寺", nameLocal: "清水寺", nameEn: "Kiyomizu-dera", kind: "attraction" as const, city: "京都", region: "京都府", country: "日本", countryCode: "JP", approximate: false };
 const picton = { id: "picton", nameZh: "皮克顿", nameLocal: "Picton", nameEn: "Picton", kind: "city" as const, city: "Picton", region: "Marlborough", country: "New Zealand", countryCode: "NZ", approximate: true };
+const coastalTrack = { id: "coastal-track", nameZh: "海岸步道", nameLocal: "Coastal Track", nameEn: "Coastal Walking Track", kind: "attraction" as const, city: "Harbour Town", region: "Coastal Region", country: "New Zealand", countryCode: "NZ", approximate: true };
 const candidate = (overrides: Partial<MapCandidate> = {}): MapCandidate => ({ providerPlaceId: "provider-1", name: "Kiyomizu-dera", displayName: "Kiyomizu-dera, Kyoto, Japan", latitude: 34.9948, longitude: 135.785, category: "tourism", placeType: "attraction", countryCode: "jp", region: "京都府", city: "京都", timezone: null, ...overrides });
 const choose = (providerPlaceId: string, reason = "候选与目标实体一致。"): MapResolutionAssistOutput => ({ schemaVersion: 1, action: "choose_candidate", providerPlaceId, searchHints: [], reason });
 
@@ -50,6 +51,20 @@ describe("deterministic provider candidate handling", () => {
     expect(buildPlaceSearchQueries(picton)).toEqual([
       "Picton, Marlborough, New Zealand",
       "Picton, New Zealand",
+    ]);
+  });
+
+  it("broadens the second search for an approximate non-city place to its region", () => {
+    expect(buildPlaceSearchQueries(coastalTrack)).toEqual([
+      "Coastal Track, Harbour Town, New Zealand",
+      "Coastal Walking Track, Coastal Region, New Zealand",
+    ]);
+  });
+
+  it("falls back to country scope when an approximate non-city place has no broader region", () => {
+    expect(buildPlaceSearchQueries({ ...coastalTrack, region: null })).toEqual([
+      "Coastal Track, Harbour Town, New Zealand",
+      "Coastal Walking Track, New Zealand",
     ]);
   });
 
@@ -198,6 +213,42 @@ describe("PlaceResolverV2", () => {
     expect(searches).toBe(PLACE_RESOLUTION_BASE_SEARCH_LIMIT + 1);
     expect(assists).toBe(2);
     expect(result.resolution).toMatchObject({ status: "resolved", method: "provider_choice", providerPlaceId: "provider-1" });
+    store.close();
+  });
+
+  it("accepts a named whole route after a bounded supplemental search", async () => {
+    const { store, tripId, generation } = seededStore(coastalTrack);
+    const queries: string[] = [];
+    const wholeRoute = candidate({ providerPlaceId: "whole-route", name: "Coastal Walking Track", displayName: "Coastal Walking Track, Coastal Region, New Zealand", category: "route", placeType: "hiking", countryCode: "nz", region: "Coastal Region", city: null });
+    const resolver = new PlaceResolverV2({
+      store,
+      maps: {
+        search: async (query) => { queries.push(query); return query.includes("trailhead route") ? [wholeRoute] : []; },
+        reverse: async () => null,
+      },
+      assist: async ({ round }) => round === 1
+        ? { schemaVersion: 1, action: "retry_with_hints", providerPlaceId: null, searchHints: ["Coastal Walking Track trailhead route, Coastal Region, New Zealand"], reason: "需要搜索整体路线或入口。" }
+        : choose("whole-route", "候选是具名整体徒步路线。"),
+    });
+    const result = await resolver.resolve(tripId, coastalTrack.id, generation);
+    expect(queries).toHaveLength(PLACE_RESOLUTION_BASE_SEARCH_LIMIT + 1);
+    expect(queries.length).toBeLessThanOrEqual(PLACE_RESOLUTION_PROVIDER_SEARCH_LIMIT);
+    expect(result.resolution).toMatchObject({ status: "resolved", providerPlaceId: "whole-route" });
+    store.close();
+  });
+
+  it("keeps a linear place unresolved when only arbitrary path segments remain", async () => {
+    const { store, tripId, generation } = seededStore(coastalTrack);
+    const pathSegment = candidate({ providerPlaceId: "path-segment", name: "Coastal Walking Track", displayName: "Coastal Walking Track, Coastal Region, New Zealand", category: "highway", placeType: "path", countryCode: "nz", region: "Coastal Region", city: null });
+    let searches = 0;
+    const resolver = new PlaceResolverV2({
+      store,
+      maps: { search: async () => { searches += 1; return [pathSegment]; }, reverse: async () => null },
+      assist: async () => ({ schemaVersion: 1, action: "unresolved", providerPlaceId: null, searchHints: [], reason: "只有任意 path 分段，不能代表整条步道。" }),
+    });
+    const result = await resolver.resolve(tripId, coastalTrack.id, generation);
+    expect(searches).toBe(PLACE_RESOLUTION_BASE_SEARCH_LIMIT);
+    expect(result.resolution).toMatchObject({ status: "unresolved", providerPlaceId: null, latitude: null, longitude: null });
     store.close();
   });
 

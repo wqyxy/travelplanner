@@ -6,6 +6,7 @@ import { createSessionKey, hashPassword, LoginRateLimiter, PersistentSessionStor
 import { loadConfig, mapCategoryColorDefaults, projectPaths, saveConfig, type AppConfig } from "./config.js";
 import { CodexClient, type RpcEnvelope } from "./codex-client.js";
 import { MapService } from "./map-service.js";
+import { GoogleMapsLinkService } from "./google-maps-link.js";
 import { MapTileCache, TileFetchError } from "./map-tile-cache.js";
 import { AiTaskMonitorV3, aiErrorMessageV3, normalizePublicAiSummaryV3 } from "./ai-task-monitor-v3.js";
 import { DayRouteServiceV2 } from "./day-route-v2.js";
@@ -37,6 +38,7 @@ const limiter = new LoginRateLimiter();
 const clients = new Set<WebSocket>();
 const tiles = new MapTileCache(paths.cacheDb);
 const maps = new MapService(paths.cacheDb);
+const googleMapsLinks = new GoogleMapsLinkService(maps);
 const loginStates = new Map<string, { method: "browser" | "device"; phase: "pending" | "succeeded" | "failed" | "cancelled"; message?: string }>();
 
 function broadcast(kind: string, payload: unknown) {
@@ -63,6 +65,7 @@ const runtime = new TravelPlannerRuntimeV3({
   tasks,
   resolver: resolver as unknown as PlaceResolverV2,
   routes,
+  googleMapsLinks,
   emit: (event: RuntimeEventV3) => broadcast(event.kind, event.payload),
 });
 

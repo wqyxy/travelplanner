@@ -19,6 +19,8 @@ function deps() {
     startConversation: (_tripId: string, stage: string, input: any) => ({ taskId: `dialogue:${stage}`, messageId: input.message }),
     createCtaAction: (input: any) => ({ action: { id: "action-1", actionType: input.actionType }, taskId: "action-task-1" }),
     searchResolutionCandidates: () => [{ candidate: providerCandidate, score: 95 }],
+    previewGoogleMapsLink: (_tripId: string, _placeId: string, input: any) => ({ ...input, latitude: 35, longitude: 135 }),
+    applyGoogleMapsLink: (_tripId: string, _placeId: string, input: any) => ({ ...input, generation: 2 }),
     recalculateMacroRoute: (tripId: string, dayId: string, generation: number) => ({ tripId, dayId: `macro:${dayId}`, generation }),
     recalculateDirtyMacroRoutes: (tripId: string, input: any) => ({ tripId, expectedGeneration: input.expectedGeneration, routes: [] }),
   } as unknown as TravelPlannerRuntimeV3;
@@ -47,6 +49,13 @@ describe("travel API v3", () => {
     const dependencies = deps();
     const result = await dispatchTravelApiV3("GET", "/api/trips/trip-1/resolutions/place-1/candidates", new URLSearchParams({ expectedGeneration: "1" }), {}, dependencies);
     expect(result).toEqual({ status: 200, data: { candidates: [dependencies.providerCandidate] } });
+  });
+
+  it("keeps Google Maps preview and commit behind dedicated place endpoints", async () => {
+    const preview = await dispatchTravelApiV3("POST", "/api/trips/trip-1/places/place-1/google-maps", new URLSearchParams(), { expectedGeneration: 1, url: "https://www.google.com/maps/?q=35,135" }, deps());
+    expect(preview?.data).toMatchObject({ latitude: 35, longitude: 135 });
+    const commit = await dispatchTravelApiV3("PUT", "/api/trips/trip-1/places/place-1/google-maps", new URLSearchParams(), { expectedGeneration: 1, url: "https://www.google.com/maps/?q=35,135", changes: { nameZh: "测试地点" } }, deps());
+    expect(commit?.data).toMatchObject({ generation: 2 });
   });
 
   it("exposes separate Macro Route recalculation endpoints", async () => {

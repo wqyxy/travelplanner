@@ -8,6 +8,8 @@
 
 Phase 1–7 staged-v3、cutover、A–I hardening、Prompt Registry 修复以及 itinerary refine / Resolution 边界 hardening 已完成。
 
+地点编辑现已增加 Google Maps 分享链接导入：受控服务端解析 Google 长链及短链，预填行政区信息并显示链接地点名称作为提示，但绝不覆盖 Place 中文名称；用户保存确认后以同一 generation CAS 事务写入 Place 和链接坐标。该功能不接入 Google Places API、不抓取 Google 页面、不保存原始链接；短链只允许 Google 域内跳转。相关 targeted Vitest（链接解析、API、Store）已通过，完整 typecheck/build 仍待本轮统一验收。
+
 最近一次完整 Codex 验收在上一轮代码上确认：
 
 - strict Prompt Registry：PASS；

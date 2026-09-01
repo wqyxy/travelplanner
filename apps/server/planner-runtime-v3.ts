@@ -2,12 +2,15 @@ import { randomUUID } from "node:crypto";
 import {
   AiProposalSchema,
   CandidatePreferenceSchema,
+  GoogleMapsLinkCommitInputSchema,
+  GoogleMapsLinkPreviewInputSchema,
   PlanCommandSchema,
   ProposalScopeSchema,
   TravelPlanDocumentSchema,
   emptyTravelPlan,
   type Day,
   type DayStop,
+  type Place,
   type PlaceResolution,
   type PlanCommand,
   type ProposalDiff,
@@ -56,7 +59,8 @@ import {
 import { applyPlanCommands } from "./plan-commands-v2.js";
 import { buildPlanningCoverage } from "./planning-areas-v2.js";
 import type { PlaceResolutionBatchProgress, PlaceResolverV2 } from "./place-resolver-v2.js";
-import { resolutionIsCurrent } from "./place-resolver-v2.js";
+import { placeGeoFingerprint, resolutionIsCurrent } from "./place-resolver-v2.js";
+import { GoogleMapsLinkService } from "./google-maps-link.js";
 import { assertProposalCommandsWithinScope } from "./proposal-scope-policy-v2.js";
 import type { LoadedPromptRegistryV3 } from "./prompt-registry-v3.js";
 import { buildStageContext, validateSelectionForStage } from "./stage-context-v3.js";
@@ -320,6 +324,7 @@ export class TravelPlannerRuntimeV3 {
     tasks: AiTaskMonitorV3;
     resolver: PlaceResolverV2;
     routes: DayRouteServiceV2;
+    googleMapsLinks?: GoogleMapsLinkService;
     emit: (event: RuntimeEventV3) => void;
   }) {}
 
@@ -1225,6 +1230,40 @@ export class TravelPlannerRuntimeV3 {
   searchResolutionCandidates(tripId: string, placeId: string, expectedGeneration: number) { return this.options.resolver.searchCandidates(tripId, placeId, expectedGeneration); }
   selectResolution(tripId: string, placeId: string, input: unknown) { return (this.options.resolver as any).selectCandidate(tripId, placeId, input); }
   setDirectResolution(tripId: string, placeId: string, input: unknown) { return (this.options.resolver as any).setDirect(tripId, placeId, input); }
+  private googleMapsLinks() {
+    if (!this.options.googleMapsLinks) throw new Error("Google Maps 链接解析服务未配置。");
+    return this.options.googleMapsLinks;
+  }
+  async previewGoogleMapsLink(tripId: string, placeId: string, input: unknown) {
+    const parsed = GoogleMapsLinkPreviewInputSchema.parse(input);
+    const trip = this.options.store.requireTrip(tripId);
+    if (trip.contentGeneration !== parsed.expectedGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
+    if (!trip.plan.places.some((place) => place.id === placeId)) throw new Error("找不到目标 Place。");
+    return this.googleMapsLinks().preview(parsed.url);
+  }
+  async applyGoogleMapsLink(tripId: string, placeId: string, input: unknown) {
+    const parsed = GoogleMapsLinkCommitInputSchema.parse(input);
+    const trip = this.options.store.requireTrip(tripId);
+    if (trip.contentGeneration !== parsed.expectedGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
+    const currentPlace = trip.plan.places.find((place) => place.id === placeId);
+    if (!currentPlace) throw new Error("找不到目标 Place。");
+    const preview = await this.googleMapsLinks().preview(parsed.url);
+    const command = PlanCommandSchema.parse({ type: "update_place", placeId, changes: { ...parsed.changes, nameZh: currentPlace.nameZh } });
+    const applied = applyPlanCommands(trip.plan, [command]);
+    const plan = markImpact(trip.plan, applied.plan);
+    const place = plan.places.find((item) => item.id === placeId) as Place | undefined;
+    if (!place) throw new Error("找不到更新后的 Place。");
+    const generation = parsed.expectedGeneration + 1;
+    const resolution: PlaceResolution = {
+      tripId, placeId, geoFingerprint: placeGeoFingerprint(place), status: "resolved", method: "google_maps_link",
+      provider: null, providerPlaceId: null, latitude: preview.latitude, longitude: preview.longitude,
+      address: preview.address, confidence: null, resolvedAt: now(), errorMessage: null,
+    };
+    const written = this.options.store.writePlanAndPlaceResolution(tripId, plan, resolution, parsed.expectedGeneration, { source: "google_maps_link", summary: "通过 Google Maps 链接更新地点和坐标" });
+    this.emit("travel.document.changed", { tripId, generation: written.generation, changedDayIds: applied.effects.changedDayIds });
+    this.emit("travel.resolution.changed", { tripId, placeId });
+    return { trip: written.trip, resolution: written.resolution, generation: written.generation, version: written.version };
+  }
   async recalculateRoute(tripId: string, dayId: string, expectedGeneration: number) {
     const route = await this.options.routes.recalculate(tripId, dayId, expectedGeneration);
     this.emit("travel.route.changed", { tripId, dayId }); return route;

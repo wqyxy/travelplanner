@@ -126,7 +126,7 @@ export type PlaceResolution = {
   placeId: string;
   geoFingerprint: string;
   status: "resolving" | "resolved" | "unresolved";
-  method: "provider_match" | "provider_choice" | "map_pick" | "manual_coordinates";
+  method: "provider_match" | "provider_choice" | "map_pick" | "manual_coordinates" | "google_maps_link";
   provider: string | null;
   providerPlaceId: string | null;
   latitude: number | null;

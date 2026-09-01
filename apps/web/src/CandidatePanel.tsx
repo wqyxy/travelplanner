@@ -31,6 +31,8 @@ const kindLabels: Record<PlaceKind, string> = {
 type ManualDraft = { placeId: string; name: string; latitude: string; longitude: string; address: string };
 type ChoiceState = { placeId: string; loading: boolean; candidates: ProviderPlaceCandidate[]; error: string } | null;
 type EditDraft = Pick<Place, "id" | "nameZh" | "nameLocal" | "nameEn" | "kind" | "city" | "region" | "country" | "countryCode">;
+export type GoogleMapsPreview = { name: string | null; latitude: number; longitude: number; address: string | null; city: string | null; region: string | null; country: string | null; countryCode: string | null; warning: string | null };
+type GoogleLinkState = { url: string; loading: boolean; preview: GoogleMapsPreview | null; error: string };
 type DeleteState = { row: CandidateRow; descendantRows: CandidateRow[]; affectedDays: Array<{ id: string; dayNumber: number; title: string; nodeCount: number }> } | null;
 
 export type PlaceEditChanges = Pick<Place, "nameZh" | "nameLocal" | "nameEn" | "city" | "region" | "country" | "countryCode">;
@@ -87,6 +89,8 @@ export function CandidatePanel({
   onDiscover,
   onAddCandidate,
   onUpdatePlace,
+  onPreviewGoogleMapsLink,
+  onApplyGoogleMapsLink,
   onRemoveCandidate,
   onContinue,
   onRetry,
@@ -104,6 +108,8 @@ export function CandidatePanel({
   onDiscover: () => Promise<void>;
   onAddCandidate: (draft: NewCandidateDraft) => Promise<void>;
   onUpdatePlace: (placeId: string, changes: PlaceEditChanges) => Promise<void>;
+  onPreviewGoogleMapsLink: (placeId: string, url: string) => Promise<GoogleMapsPreview>;
+  onApplyGoogleMapsLink: (placeId: string, url: string, changes: PlaceEditChanges) => Promise<void>;
   onRemoveCandidate: (candidateId: string, cascade: boolean) => Promise<void>;
   onContinue: () => Promise<void>;
   onRetry: (placeIds: string[]) => Promise<void>;
@@ -128,6 +134,7 @@ export function CandidatePanel({
   const [newCandidateError, setNewCandidateError] = useState("");
   const [edit, setEdit] = useState<EditDraft | null>(null);
   const [editError, setEditError] = useState("");
+  const [googleLink, setGoogleLink] = useState<GoogleLinkState>({ url: "", loading: false, preview: null, error: "" });
   const [deleting, setDeleting] = useState<DeleteState>(null);
   const cards = useRef(new Map<string, HTMLElement>());
   const visible = useMemo(() => filterCandidateRows(rows, filter, query), [rows, filter, query]);
@@ -244,7 +251,7 @@ export function CandidatePanel({
     if (!nameZh) { setEditError("请输入地点中文名称。"); return; }
     if (countryCode && !/^[A-Z]{2}$/.test(countryCode)) { setEditError("国家代码应为两个英文字母，例如 NZ、JP。"); return; }
     try {
-      await onUpdatePlace(edit.id, {
+      const changes = {
         nameZh,
         nameLocal: edit.nameLocal?.trim() || null,
         nameEn: edit.nameEn?.trim() || null,
@@ -252,11 +259,29 @@ export function CandidatePanel({
         region: edit.region?.trim() || null,
         country: edit.country?.trim() || null,
         countryCode,
-      });
+      };
+      if (googleLink.preview && googleLink.url.trim()) await onApplyGoogleMapsLink(edit.id, googleLink.url, changes);
+      else await onUpdatePlace(edit.id, changes);
       setEdit(null);
     } catch (error) {
       setEditError(error instanceof Error ? error.message : "无法保存地点信息。");
     }
+  };
+  const previewGoogleLink = async (placeId: string, url: string) => {
+    const value = url.trim();
+    if (!value) { setGoogleLink({ url, loading: false, preview: null, error: "" }); return; }
+    setGoogleLink({ url, loading: true, preview: null, error: "" });
+    try {
+      const preview = await onPreviewGoogleMapsLink(placeId, value);
+      setEdit((current) => current ? {
+        ...current,
+        ...(preview.city ? { city: preview.city } : {}),
+        ...(preview.region ? { region: preview.region } : {}),
+        ...(preview.country ? { country: preview.country } : {}),
+        ...(preview.countryCode ? { countryCode: preview.countryCode } : {}),
+      } : current);
+      setGoogleLink({ url, loading: false, preview, error: "" });
+    } catch (error) { setGoogleLink({ url, loading: false, preview: null, error: error instanceof Error ? error.message : "无法解析 Google Maps 链接。" }); }
   };
 
   const beginDelete = (row: CandidateRow) => {
@@ -303,7 +328,7 @@ export function CandidatePanel({
         <p>{areaExcluded && !macroCity ? "所属目的地已标记为不去，生成时该地点不会参与规划。" : row.candidate.aiReason || "用户添加地点"}</p>
         <div className="candidate-meta"><span>{macroCity ? "目的地规划节点" : row.place.city || row.place.region || row.place.country || "区域待确认"}</span>{formatDuration(row.candidate.suggestedDurationMinutes) && <span>{formatDuration(row.candidate.suggestedDurationMinutes)}</span>}{row.candidate.tags.slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}</div>
         <div className={`resolution-line ${status}`}>{status === "resolved" ? <><Check size={14}/><span>{macroCity ? "目的地位置已定位" : "已定位"}</span><small>{row.resolution?.address || `${row.resolution?.latitude?.toFixed(5)}, ${row.resolution?.longitude?.toFixed(5)}`}</small></> : status === "resolving" ? <><RefreshCw className="spin" size={14}/><span>定位中</span></> : <><MapPin size={14}/><span>{macroCity ? "目的地位置未定位" : "未定位"}</span><small>{row.resolution?.errorMessage || "生成时会自动尝试定位"}</small></>}</div>
-        <div className="resolution-actions" onClick={(event) => event.stopPropagation()}>{status === "unresolved" && <><button disabled={busy} onClick={() => void onRetry([row.place.id])}><RefreshCw size={13}/>重新识别</button><button disabled={busy} onClick={() => void openChoices(row.place.id)}><LocateFixed size={13}/>选择候选</button><button disabled={busy} onClick={() => onBeginMapPick(row.place.id)}><MapPin size={13}/>地图点选</button><button disabled={busy} onClick={() => setManual({ placeId: row.place.id, name: row.place.nameZh, latitude: "", longitude: "", address: "" })}>手工坐标</button></>}<button className="candidate-edit-action" disabled={busy} onClick={() => { setEditError(""); setEdit({ id: row.place.id, nameZh: row.place.nameZh, nameLocal: row.place.nameLocal, nameEn: row.place.nameEn, kind: row.place.kind, city: row.place.city, region: row.place.region, country: row.place.country, countryCode: row.place.countryCode }); }}><Pencil size={13}/>编辑</button><button className="candidate-edit-action danger" disabled={busy} onClick={() => beginDelete(row)}><Trash2 size={13}/>删除</button></div>
+        <div className="resolution-actions" onClick={(event) => event.stopPropagation()}>{status === "unresolved" && <><button disabled={busy} onClick={() => void onRetry([row.place.id])}><RefreshCw size={13}/>重新识别</button><button disabled={busy} onClick={() => void openChoices(row.place.id)}><LocateFixed size={13}/>选择候选</button><button disabled={busy} onClick={() => onBeginMapPick(row.place.id)}><MapPin size={13}/>地图点选</button><button disabled={busy} onClick={() => setManual({ placeId: row.place.id, name: row.place.nameZh, latitude: "", longitude: "", address: "" })}>手工坐标</button></>}<button className="candidate-edit-action" disabled={busy} onClick={() => { setEditError(""); setGoogleLink({ url: "", loading: false, preview: null, error: "" }); setEdit({ id: row.place.id, nameZh: row.place.nameZh, nameLocal: row.place.nameLocal, nameEn: row.place.nameEn, kind: row.place.kind, city: row.place.city, region: row.place.region, country: row.place.country, countryCode: row.place.countryCode }); }}><Pencil size={13}/>编辑</button><button className="candidate-edit-action danger" disabled={busy} onClick={() => beginDelete(row)}><Trash2 size={13}/>删除</button></div>
       </div>
       <div className="candidate-preference" onClick={(event) => event.stopPropagation()}>{(Object.keys(preferenceLabels) as CandidatePreference[]).map((preference) => <button type="button" className={row.candidate.preference === preference ? "active" : ""} title={preferenceLabels[preference]} disabled={busy} key={preference} onClick={() => void onSetPreference([row.candidate.id], preference)}>{preferenceMarks[preference]}</button>)}</div>
       <ChevronRight className="candidate-chevron" size={16}/>
@@ -358,7 +383,11 @@ export function CandidatePanel({
 
     {choice && <div className="candidate-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setChoice(null); }}><section className="candidate-dialog"><header><div><strong>选择地图地点</strong><small>坐标只取自地图 Provider</small></div><button className="icon-button" onClick={() => setChoice(null)}><X size={18}/></button></header><div className="provider-candidate-list">{choice.loading && <p><RefreshCw className="spin" size={15}/>正在查询地图服务…</p>}{choice.error && <p className="inline-error">{choice.error}</p>}{choice.candidates.map((candidate) => <button type="button" key={candidate.providerPlaceId} disabled={busy} onClick={() => void onSelectResolution(choice.placeId, candidate.providerPlaceId).then(() => setChoice(null))}><MapPin size={16}/><span><strong>{candidate.name || candidate.displayName.split(",")[0]}</strong><small>{candidate.displayName}</small><em>{candidate.provider} · {candidate.placeType || candidate.category || "地点"}</em></span><ChevronRight size={16}/></button>)}</div></section></div>}
 
-    {edit && <div className="candidate-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setEdit(null); }}><section className="candidate-dialog manual-coordinate-dialog"><header><div><strong>编辑地点</strong><small>保存后旧定位会失效，并自动使用新名称重新定位</small></div><button className="icon-button" onClick={() => setEdit(null)}><X size={18}/></button></header><div className="manual-coordinate-form">
+    {edit && <div className="candidate-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setEdit(null); }}><section className="candidate-dialog manual-coordinate-dialog"><header><div><strong>编辑地点</strong><small>{googleLink.preview ? "已从 Google Maps 链接预填；保存后会使用该链接坐标" : "保存后旧定位会失效，并自动使用新名称重新定位"}</small></div><button className="icon-button" onClick={() => setEdit(null)}><X size={18}/></button></header><div className="manual-coordinate-form">
+      <label className="wide">Google Maps 链接（可选）<input type="url" value={googleLink.url} onChange={(event) => setGoogleLink({ url: event.target.value, loading: false, preview: null, error: "" })} onPaste={(event) => { const value = event.clipboardData.getData("text"); if (value) { event.preventDefault(); void previewGoogleLink(edit.id, value); } }} onBlur={() => void previewGoogleLink(edit.id, googleLink.url)} placeholder="粘贴单个地点的 Google Maps 分享链接"/></label>
+      {googleLink.loading && <p className="wide"><RefreshCw className="spin" size={14}/>正在解析 Google Maps 链接…</p>}
+      {googleLink.preview && <p className="wide">{googleLink.preview.name ? `Google 地点名称：${googleLink.preview.name} · ` : ""}已读取坐标：{googleLink.preview.latitude.toFixed(6)}, {googleLink.preview.longitude.toFixed(6)}{googleLink.preview.address ? ` · ${googleLink.preview.address}` : ""}{googleLink.preview.warning ? `（${googleLink.preview.warning}）` : ""}</p>}
+      {googleLink.error && <p className="inline-error wide">{googleLink.error}</p>}
       <label className="wide">中文名称（必填）<input value={edit.nameZh} onChange={(event) => setEdit({ ...edit, nameZh: event.target.value })}/></label>
       <label>本地名称<input value={edit.nameLocal ?? ""} onChange={(event) => setEdit({ ...edit, nameLocal: event.target.value || null })}/></label>
       <label>英文名称<input value={edit.nameEn ?? ""} onChange={(event) => setEdit({ ...edit, nameEn: event.target.value || null })}/></label>
@@ -368,7 +397,7 @@ export function CandidatePanel({
       <label>国家<input value={edit.country ?? ""} onChange={(event) => setEdit({ ...edit, country: event.target.value || null })}/></label>
       <label>国家代码<input maxLength={2} value={edit.countryCode ?? ""} onChange={(event) => setEdit({ ...edit, countryCode: event.target.value.toUpperCase() || null })}/></label>
       {editError && <p className="inline-error wide">{editError}</p>}
-    </div><footer><button className="button" onClick={() => setEdit(null)}>取消</button><button className="button primary" disabled={busy || !edit.nameZh.trim()} onClick={() => void submitEdit()}>保存并重新定位</button></footer></section></div>}
+    </div><footer><button className="button" onClick={() => setEdit(null)}>取消</button><button className="button primary" disabled={busy || googleLink.loading || !edit.nameZh.trim()} onClick={() => void submitEdit()}>{googleLink.preview ? "保存地点和坐标" : "保存并重新定位"}</button></footer></section></div>}
 
     {deleting && <div className="candidate-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setDeleting(null); }}><section className="candidate-dialog"><header><div><strong>删除“{deleting.row.place.nameZh}”</strong><small>此操作会写入一个可从版本历史恢复的新版本</small></div><button className="icon-button" onClick={() => setDeleting(null)}><X size={18}/></button></header><div className="provider-candidate-list delete-impact-list"><p>将删除该候选地点{deleting.descendantRows.length ? `及其下属 ${deleting.descendantRows.length} 个兴趣点` : ""}。</p>{deleting.descendantRows.length > 0 && <p><strong>下属地点：</strong>{deleting.descendantRows.map((row) => row.place.nameZh).join("、")}</p>}{deleting.affectedDays.length > 0 ? <p><strong>同时移除行程节点：</strong>{deleting.affectedDays.map((day) => `Day ${day.dayNumber} ${day.title}（${day.nodeCount} 个）`).join("、")}</p> : <p>当前按天行程不引用此地点。</p>}</div><footer><button className="button" onClick={() => setDeleting(null)}>取消</button><button className="button danger" disabled={busy} onClick={() => void confirmDelete()}><Trash2 size={14}/>确认删除</button></footer></section></div>}
 

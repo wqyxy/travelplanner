@@ -60,6 +60,7 @@ function runtime(input: {
   store: TravelStoreV3;
   dialogue: () => StagedAiHandle<any>;
   web?: () => StagedAiHandle<any>;
+  googleMapsLinks?: { preview(url: string): Promise<any> };
 }) {
   const tasks = new AiTaskMonitorV3(input.store, () => undefined);
   const ai = {
@@ -69,10 +70,21 @@ function runtime(input: {
   } as unknown as StagedTravelAiV3;
   const resolver = { resolve: async () => { throw new Error("not expected"); }, resolveMany: async () => [], searchCandidates: async () => [] } as unknown as PlaceResolverV2;
   const routes = { workspaceRouteState: () => [] } as unknown as DayRouteServiceV2;
-  return new TravelPlannerRuntimeV3({ store: input.store, ai, prompts: promptRegistry(), tasks, resolver, routes, emit: () => undefined });
+  return new TravelPlannerRuntimeV3({ store: input.store, ai, prompts: promptRegistry(), tasks, resolver, routes, googleMapsLinks: input.googleMapsLinks as any, emit: () => undefined });
 }
 
 describe("TravelPlannerRuntimeV3", () => {
+  it("keeps the Chinese place name when a Google Maps link is saved", async () => {
+    const db = store();
+    const trip = db.createTrip();
+    const plan = TravelPlanDocumentSchema.parse({ ...trip.plan, places: [{ id: "place-1", nameZh: "原中文名", nameLocal: null, nameEn: "Original", kind: "attraction", city: null, region: null, country: null, countryCode: null, approximate: false }], candidates: [{ id: "candidate-1", placeId: "place-1", planningAreaCandidateId: null, preference: "optional", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: 60, tags: [] }] });
+    db.writePlan(trip.id, plan, 0, { source: "test", summary: "fixture" });
+    const rt = runtime({ store: db, dialogue: () => handle({}), googleMapsLinks: { preview: async () => ({ name: "Google name", latitude: 35, longitude: 135, address: "京都", city: "京都", region: "京都府", country: "日本", countryCode: "JP", warning: null }) } });
+    await rt.applyGoogleMapsLink(trip.id, "place-1", { expectedGeneration: 1, url: "https://www.google.com/maps/?q=35,135", changes: { nameZh: "伪造覆盖", city: "京都" } });
+    expect(db.requireTrip(trip.id).plan.places[0]).toMatchObject({ nameZh: "原中文名", city: "京都" });
+    db.close();
+  });
+
   it("applies a requirements dialogue action without a second confirmation", async () => {
     const db = store();
     const trip = db.createTrip();

@@ -17,6 +17,7 @@ export type MapCandidate = {
   countryCode: string | null;
   region: string | null;
   city: string | null;
+  country?: string | null;
   timezone: string | null;
 };
 
@@ -85,6 +86,7 @@ function candidateFromNominatim(value: unknown): MapCandidate | null {
     category: typeof item.category === "string" ? item.category : null,
     placeType: typeof item.type === "string" ? item.type : null,
     countryCode,
+    country: typeof address.country === "string" ? address.country : null,
     region: typeof address.state === "string" ? address.state : typeof address.region === "string" ? address.region : null,
     city,
     timezone: null,

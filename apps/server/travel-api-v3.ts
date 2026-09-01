@@ -1,6 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   CandidatePreferenceSchema,
+  GoogleMapsLinkCommitInputSchema,
+  GoogleMapsLinkPreviewInputSchema,
   PlaceResolutionRetryInputSchema,
   ProviderPlaceCandidateSchema,
 } from "./contracts-v2.js";
@@ -105,6 +107,10 @@ export async function dispatchTravelApiV3(
 
   match = /^\/api\/trips\/([^/]+)\/commands$/.exec(pathname);
   if (method === "POST" && match) return { status: 200, data: deps.runtime.applyCommands(decode(match[1]), body) };
+
+  match = /^\/api\/trips\/([^/]+)\/places\/([^/]+)\/google-maps$/.exec(pathname);
+  if (match && method === "POST") return { status: 200, data: await deps.runtime.previewGoogleMapsLink(decode(match[1]), decode(match[2]), GoogleMapsLinkPreviewInputSchema.parse(body)) };
+  if (match && method === "PUT") return { status: 200, data: await deps.runtime.applyGoogleMapsLink(decode(match[1]), decode(match[2]), GoogleMapsLinkCommitInputSchema.parse(body)) };
 
   match = /^\/api\/trips\/([^/]+)\/resolutions\/retry$/.exec(pathname);
   if (method === "POST" && match) {

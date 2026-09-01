@@ -333,7 +333,7 @@ export const emptyTravelPlan = (): TravelPlanDocument => TravelPlanDocumentSchem
   warnings: [],
 });
 
-export const PlaceResolutionMethodSchema = z.enum(["provider_match", "provider_choice", "map_pick", "manual_coordinates"]);
+export const PlaceResolutionMethodSchema = z.enum(["provider_match", "provider_choice", "map_pick", "manual_coordinates", "google_maps_link"]);
 export const PlaceResolutionSchema = z.object({
   tripId: IdSchema,
   placeId: IdSchema,
@@ -439,7 +439,7 @@ export const ProposalScopeSchema = z.discriminatedUnion("type", [
 ]);
 export type ProposalScope = z.infer<typeof ProposalScopeSchema>;
 
-const PlaceSemanticChangesSchema = z.object({
+export const PlaceSemanticChangesSchema = z.object({
   nameZh: TextSchema.max(300).optional(),
   nameLocal: z.string().trim().min(1).max(300).nullable().optional(),
   nameEn: z.string().trim().min(1).max(300).nullable().optional(),
@@ -450,6 +450,18 @@ const PlaceSemanticChangesSchema = z.object({
   countryCode: z.string().regex(countryPattern).nullable().optional(),
   approximate: z.boolean().optional(),
 }).strict().refine((value) => Object.keys(value).length > 0, "至少修改一个 Place 字段。");
+export type PlaceSemanticChanges = z.infer<typeof PlaceSemanticChangesSchema>;
+
+export const GoogleMapsLinkPreviewInputSchema = z.object({
+  expectedGeneration: z.number().int().min(0),
+  url: z.string().trim().min(1).max(2048),
+}).strict();
+export type GoogleMapsLinkPreviewInput = z.infer<typeof GoogleMapsLinkPreviewInputSchema>;
+
+export const GoogleMapsLinkCommitInputSchema = GoogleMapsLinkPreviewInputSchema.extend({
+  changes: PlaceSemanticChangesSchema,
+}).strict();
+export type GoogleMapsLinkCommitInput = z.infer<typeof GoogleMapsLinkCommitInputSchema>;
 
 const CandidateChangesSchema = z.object({
   aiReason: z.string().trim().min(1).max(1000).nullable().optional(),
