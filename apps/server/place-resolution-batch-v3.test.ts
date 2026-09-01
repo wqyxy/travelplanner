@@ -82,6 +82,7 @@ describe("PlaceResolverV2 cooperative batches", () => {
         },
         reverse: async () => null,
       },
+      assist: async ({ candidates }) => ({ schemaVersion: 1, action: "choose_candidate", providerPlaceId: candidates[0].providerPlaceId, searchHints: [], reason: "确认唯一候选。" }),
     });
     const progress: Array<{ placeId: string; status: string; completed: number; total: number }> = [];
     const result = await resolver.resolveMany(tripId, ["place-1", "place-2", "place-3", "place-4"], generation, undefined, (event) => progress.push(event));
@@ -120,9 +121,11 @@ describe("PlaceResolverV2 cooperative batches", () => {
         },
         reverse: async () => null,
       },
-      assist: async ({ candidates }) => {
-        assistStarted();
-        await assistGate;
+      assist: async ({ place, candidates }) => {
+        if (place.id === "place-1") {
+          assistStarted();
+          await assistGate;
+        }
         return { schemaVersion: 1, action: "choose_candidate", providerPlaceId: candidates[0].providerPlaceId, searchHints: [], reason: "选择第一项。" };
       },
     });

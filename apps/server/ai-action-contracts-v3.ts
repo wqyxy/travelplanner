@@ -8,6 +8,7 @@ import {
   PlaceSchema,
   TextSchema,
   TimeSchema,
+  TransportModeSchema,
   TransportSchema,
   VerificationSchema,
 } from "./contracts-v2.js";
@@ -116,22 +117,21 @@ const ItineraryGenerateRequiresStageSchema = z.object({
   reason: TextSchema.max(2000),
 }).strict();
 
+export const ItineraryMacroVisitSchema = z.object({
+  destinationCandidateId: IdSchema,
+  stayDays: z.number().int().min(1).max(90),
+  transferMode: TransportModeSchema,
+}).strict();
+export type ItineraryMacroVisit = z.infer<typeof ItineraryMacroVisitSchema>;
+
 const ItineraryGenerationSuccessSchema = z.object({
   type: z.literal("success"),
   assistantMessage: TextSchema.max(12000),
-  days: z.array(z.object({
-    dayNumber: z.number().int().min(1).max(365),
-    title: TextSchema.max(300),
-    startAnchorPlaceId: IdSchema.nullable(),
-    stops: z.array(z.object({
-      candidateId: IdSchema,
-      activity: TextSchema.max(2000),
-      transportModeFromPrevious: z.enum(["walk", "drive", "bike", "transit", "rail", "flight", "ferry", "none"]).nullable(),
-    }).strict()).max(80),
-    endAnchorPlaceId: IdSchema.nullable(),
-  }).strict()).min(1).max(90),
-  unscheduledCandidates: z.array(z.object({ candidateId: IdSchema, reason: TextSchema.max(1000) }).strict()).max(1800),
-}).strict();
+  destinations: z.array(ItineraryMacroVisitSchema).min(1).max(30),
+}).strict().superRefine((value, context) => {
+  const ids = value.destinations.map((item) => item.destinationCandidateId);
+  if (new Set(ids).size !== ids.length) context.addIssue({ code: "custom", path: ["destinations"], message: "Macro 行程中同一目的地只能出现一次。" });
+});
 
 export const ItineraryGenerateOutputSchema = z.object({ schemaVersion: z.literal(2), baseGeneration: z.number().int().min(0), result: z.discriminatedUnion("type", [ItineraryGenerationSuccessSchema, ItineraryGenerateRequiresStageSchema]) }).strict();
 export type ItineraryGenerateOutput = z.infer<typeof ItineraryGenerateOutputSchema>;
@@ -141,11 +141,77 @@ const ItineraryReplacementSuccessSchema = z.object({
   assistantMessage: TextSchema.max(12000),
   title: TextSchema.max(300),
   explanation: TextSchema.max(4000),
-  days: z.array(DaySchema).min(1).max(90),
-}).strict();
+  destinations: z.array(ItineraryMacroVisitSchema).min(1).max(30),
+}).strict().superRefine((value, context) => {
+  const ids = value.destinations.map((item) => item.destinationCandidateId);
+  if (new Set(ids).size !== ids.length) context.addIssue({ code: "custom", path: ["destinations"], message: "Macro 行程中同一目的地只能出现一次。" });
+});
 
 export const ItineraryReplanOutputSchema = z.object({ schemaVersion: z.literal(1), baseGeneration: z.number().int().min(0), result: z.discriminatedUnion("type", [ItineraryReplacementSuccessSchema, RequiresInterestsSchema]) }).strict();
 export type ItineraryReplanOutput = z.infer<typeof ItineraryReplanOutputSchema>;
+
+const DetailedStopDraftSchema = z.object({
+  candidateId: IdSchema,
+  activity: TextSchema,
+  period: PeriodSchema.nullable(),
+  startTime: TimeSchema,
+  endTime: TimeSchema,
+  durationMinutes: z.number().int().min(0).max(1440),
+  transportFromPrevious: TransportSchema.nullable(),
+  scheduleVerification: VerificationSchema,
+  costNote: z.string().max(1000).nullable(),
+  costVerification: VerificationSchema.nullable(),
+  notes: z.string().max(2000).nullable(),
+}).strict().superRefine((value, context) => {
+  if (value.endTime <= value.startTime) context.addIssue({ code: "custom", path: ["endTime"], message: "结束时间必须晚于开始时间。" });
+  const minutes = (time: string) => Number(time.slice(0, 2)) * 60 + Number(time.slice(3));
+  if (minutes(value.endTime) - minutes(value.startTime) !== value.durationMinutes) context.addIssue({ code: "custom", path: ["durationMinutes"], message: "停留时长必须等于开始和结束时间之差。" });
+});
+
+export const DetailedDayUpdateSchema = z.object({
+  dayId: IdSchema,
+  stops: z.array(DetailedStopDraftSchema).max(80),
+}).strict().superRefine((value, context) => {
+  const candidateIds = value.stops.map((stop) => stop.candidateId);
+  if (new Set(candidateIds).size !== candidateIds.length) context.addIssue({ code: "custom", path: ["stops"], message: "同一天不得重复安排同一个 Candidate。" });
+});
+export type DetailedDayUpdate = z.infer<typeof DetailedDayUpdateSchema>;
+
+const DetailGenerateSuccessSchema = z.object({
+  type: z.literal("success"),
+  assistantMessage: TextSchema.max(12000),
+  dayUpdates: z.array(DetailedDayUpdateSchema).min(1).max(90),
+  unscheduledCandidates: z.array(z.object({ candidateId: IdSchema, reason: TextSchema.max(1000) }).strict()).max(1800),
+}).strict();
+
+export const ItineraryDetailGenerateOutputSchema = z.object({
+  schemaVersion: z.literal(1),
+  baseGeneration: z.number().int().min(0),
+  result: z.discriminatedUnion("type", [DetailGenerateSuccessSchema, RequiresInterestsSchema]),
+}).strict();
+export type ItineraryDetailGenerateOutput = z.infer<typeof ItineraryDetailGenerateOutputSchema>;
+
+const DetailUpdateSuccessSchema = z.object({
+  type: z.literal("success"),
+  assistantMessage: TextSchema.max(12000),
+  title: TextSchema.max(300),
+  explanation: TextSchema.max(4000),
+  affectedDayIds: z.array(IdSchema).min(1).max(90),
+  dayUpdates: z.array(DetailedDayUpdateSchema).min(1).max(90),
+}).strict().superRefine((value, context) => {
+  const requested = new Set(value.affectedDayIds);
+  const returned = new Set(value.dayUpdates.map((day) => day.dayId));
+  if (requested.size !== value.affectedDayIds.length || returned.size !== value.dayUpdates.length || requested.size !== returned.size || [...requested].some((id) => !returned.has(id))) {
+    context.addIssue({ code: "custom", path: ["dayUpdates"], message: "增量详细行程必须恰好返回 affectedDayIds。" });
+  }
+});
+
+export const ItineraryDetailUpdateOutputSchema = z.object({
+  schemaVersion: z.literal(1),
+  baseGeneration: z.number().int().min(0),
+  result: z.discriminatedUnion("type", [DetailUpdateSuccessSchema, RequiresInterestsSchema]),
+}).strict();
+export type ItineraryDetailUpdateOutput = z.infer<typeof ItineraryDetailUpdateOutputSchema>;
 
 export const ItineraryDayOptimizeOutputSchema = z.object({
   schemaVersion: z.literal(1),
@@ -256,6 +322,8 @@ export const OUTPUT_CONTRACT_SCHEMAS_V3 = {
   "interest.replace.output": InterestReplaceOutputSchema,
   "itinerary.generate.output": ItineraryGenerateOutputSchema,
   "itinerary.replan.output": ItineraryReplanOutputSchema,
+  "itinerary.detail.generate.output": ItineraryDetailGenerateOutputSchema,
+  "itinerary.detail.update.output": ItineraryDetailUpdateOutputSchema,
   "itinerary.day.optimize.output": ItineraryDayOptimizeOutputSchema,
   "itinerary.repair.output": ItineraryRepairOutputSchema,
   "itinerary.verify.output": ItineraryVerifyOutputSchema,

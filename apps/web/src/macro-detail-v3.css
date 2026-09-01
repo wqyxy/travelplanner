@@ -1,0 +1,125 @@
+.macro-visits-v3 {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.macro-visit-v3 {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, rgba(127, 127, 127, .22));
+  border-radius: 12px;
+  background: var(--surface, rgba(127, 127, 127, .05));
+}
+
+.macro-visit-v3 div {
+  display: grid;
+  gap: 3px;
+}
+
+.macro-visit-v3 small,
+.macro-day-v3 small {
+  opacity: .68;
+}
+
+.macro-days-v3 {
+  display: grid;
+  gap: 7px;
+  margin: 12px 0 16px;
+}
+
+.macro-day-v3 {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  text-align: left;
+  color: inherit;
+  border: 1px solid var(--border, rgba(127, 127, 127, .22));
+  border-radius: 12px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.macro-day-v3:hover,
+.macro-day-v3.active {
+  background: var(--surface, rgba(127, 127, 127, .07));
+  border-color: currentColor;
+}
+
+.macro-day-v3 > span {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+}
+
+.macro-day-v3 > b {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.macro-day-v3 > small {
+  grid-column: 2;
+  grid-row: 2;
+}
+
+.macro-day-v3 > .button {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+}
+
+.workspace-warning-v3 {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 11px 12px;
+  margin: 12px 0;
+  border: 1px solid rgba(185, 120, 24, .35);
+  border-radius: 12px;
+  background: rgba(185, 120, 24, .08);
+}
+
+.workspace-warning-v3 p {
+  margin: 4px 0 8px;
+}
+
+.workspace-primary-actions-v3 {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.workspace-detail-step-v3 {
+  display: grid;
+  gap: 12px;
+}
+
+.workspace-flow-nav-v3 button em {
+  margin-left: 5px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-style: normal;
+  background: rgba(185, 120, 24, .14);
+}
+
+@media (max-width: 760px) {
+  .macro-day-v3 {
+    grid-template-columns: 52px minmax(0, 1fr);
+  }
+
+  .macro-day-v3 small {
+    grid-column: 2;
+  }
+
+  .macro-day-v3 > .button {
+    grid-column: 2;
+    grid-row: 3;
+    justify-self: start;
+  }
+}

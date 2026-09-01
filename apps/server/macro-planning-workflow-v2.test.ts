@@ -41,6 +41,7 @@ function output(candidateId: string, placeId: string): PlanGenerationOutput {
       dayNumber: 1,
       date: null,
       title: "皇后镇",
+      transferMode: "none",
       detailLevel: "planned",
       detailStatus: null,
       startAnchor: { id: "tmp-start", placeId: null, label: null, notes: null },

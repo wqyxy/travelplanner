@@ -30,13 +30,13 @@ function plan(): TravelPlanDocument {
   );
   value.days.push(
     {
-      id: "d-1", dayNumber: 1, date: null, title: "京都", detailLevel: "planned", detailStatus: null,
+      id: "d-1", dayNumber: 1, date: null, title: "京都", transferMode: "none", detailLevel: "planned", detailStatus: null,
       startAnchor: { id: "a-1-start", placeId: "p-hotel", label: null, notes: null },
       stops: [{ id: "s-kyoto", candidateId: "c-kyoto", placeId: "p-kyoto", activity: "参观清水寺", period: "morning", startTime: null, endTime: null, durationMinutes: 90, transportFromPrevious: { mode: "transit", durationMinutes: null, note: null, verification: { status: "unverified", checkedAt: null } }, scheduleVerification: null, costNote: null, costVerification: null, notes: null }],
       endAnchor: { id: "a-1-end", placeId: "p-hotel", label: null, notes: null },
     },
     {
-      id: "d-2", dayNumber: 2, date: null, title: "大阪", detailLevel: "planned", detailStatus: null,
+      id: "d-2", dayNumber: 2, date: null, title: "大阪", transferMode: "none", detailLevel: "planned", detailStatus: null,
       startAnchor: { id: "a-2-start", placeId: null, label: "大阪住宿待定", notes: null },
       stops: [{ id: "s-osaka", candidateId: "c-osaka", placeId: "p-osaka", activity: "参观大阪城", period: "afternoon", startTime: null, endTime: null, durationMinutes: 90, transportFromPrevious: null, scheduleVerification: null, costNote: null, costVerification: null, notes: null }],
       endAnchor: { id: "a-2-end", placeId: null, label: "大阪住宿待定", notes: null },

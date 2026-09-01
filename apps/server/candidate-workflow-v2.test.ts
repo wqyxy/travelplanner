@@ -41,7 +41,7 @@ function generationOutput(plan: TravelPlanDocument, generation = 1): PlanGenerat
     assistantMessage: "已按区域生成一天行程。",
     newPlaces: [{ id: "tmp-hotel", nameZh: "京都住宿区域", nameLocal: null, nameEn: null, kind: "lodging", city: "京都", region: null, country: "日本", countryCode: "JP", approximate: true }],
     days: [{
-      id: "tmp-day-1", dayNumber: 1, date: null, title: "京都东山与伏见", detailLevel: "planned", detailStatus: null,
+      id: "tmp-day-1", dayNumber: 1, date: null, title: "京都东山与伏见", transferMode: "none", detailLevel: "planned", detailStatus: null,
       startAnchor: { id: "tmp-anchor-start", placeId: "tmp-hotel", label: "京都住宿区域", notes: null },
       stops: [
         { id: "tmp-stop-1", candidateId: first.id, placeId: first.placeId, activity: "参观清水寺", period: "morning", startTime: null, endTime: null, durationMinutes: 90, transportFromPrevious: null, scheduleVerification: null, costNote: null, costVerification: null, notes: null },

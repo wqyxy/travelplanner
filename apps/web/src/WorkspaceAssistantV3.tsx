@@ -9,7 +9,7 @@ const stageCopy: Record<ConversationStage, { title: string; boundary: string; pl
   requirements: { title: "旅行需求 AI", boundary: "只讨论旅行事实、偏好和约束", placeholder: "告诉 AI 这趟旅行的需求…", empty: "例如：新西兰 20 天自驾，两大一小，节奏不要太赶。" },
   destinations: { title: "目的地 AI", boundary: "只讨论城市、区域、岛屿和独立停留地", placeholder: "讨论目的地取舍或调整…", empty: "例如：南岛想少开车，哪些目的地值得保留？" },
   interests: { title: "兴趣点 AI", boundary: "只讨论现有目的地下的具体地点", placeholder: "讨论景点、体验或候选地点…", empty: "例如：皇后镇再补几个适合孩子的地点。" },
-  itinerary: { title: "行程 AI", boundary: "只讨论已有 Day、Stop、顺序、细化和动态核验", placeholder: "讨论这份行程如何调整…", empty: "例如：把 Day 5 排得轻松一点，但不要增加新地点。" },
+  itinerary: { title: "行程 AI", boundary: "区分行程骨架与每日细节；只使用现有目的地和兴趣点", placeholder: "讨论行程骨架或每日安排如何调整…", empty: "例如：骨架保持不变，只把受影响的 Day 5 排得轻松一点。" },
 };
 
 function actionLabel(action: AiAction) {

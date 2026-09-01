@@ -8,7 +8,8 @@
 需求
 → 目的地
 → 兴趣点
-→ 行程
+→ 行程骨架
+→ 每日详细行程
 ```
 
 右侧工作区是唯一 AI 交互入口。四个 `ConversationStage` 分别拥有独立对话、消息历史和 Codex Thread；它们只是 UI / Dialogue / Action 命名空间，不替换 canonical `TravelPlanDocument` 的三阶段 `TripStage`。

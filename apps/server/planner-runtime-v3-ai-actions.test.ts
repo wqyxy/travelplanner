@@ -29,7 +29,7 @@ function prompts(): LoadedPromptRegistryV3 {
 function runtime(store: TravelStoreV3, startAction: (input: any) => Promise<any>, resolverOverride?: PlaceResolverV2) {
   const ai = { startAction, startDialogue: async () => { throw new Error("dialogue not expected"); }, startWebDialogue: async () => { throw new Error("web dialogue not expected"); } } as unknown as StagedTravelAiV3;
   const resolver = resolverOverride ?? ({ resolve: async () => ({ resolution: null, candidates: [] }), resolveMany: async () => [], searchCandidates: async () => [] } as unknown as PlaceResolverV2);
-  const routes = { workspaceRouteState: () => [], recalculate: async () => { throw new Error("route not expected"); } } as unknown as DayRouteServiceV2;
+  const routes = { workspaceRouteState: () => [], workspaceMacroRouteState: () => [], recalculate: async () => null, recalculateMacro: async () => null } as unknown as DayRouteServiceV2;
   return new TravelPlannerRuntimeV3({ store, ai, prompts: prompts(), tasks: new AiTaskMonitorV3(store, () => undefined), resolver, routes, emit: () => undefined });
 }
 function run(value: unknown, interrupt: () => Promise<void> = async () => undefined) {
@@ -39,7 +39,7 @@ function run(value: unknown, interrupt: () => Promise<void> = async () => undefi
 function macroPlan(base: TravelPlanDocument) {
   return TravelPlanDocumentSchema.parse({
     ...base,
-    trip: { ...base.trip, dates: { ...base.trip.dates, requestedDurationDays: 1 } },
+    trip: { ...base.trip, dates: { ...base.trip.dates, requestedDurationDays: 2 } },
     places: [
       { id: "place-m1", nameZh: "目的地一", nameLocal: null, nameEn: "Macro One", kind: "city", city: "Macro One", region: null, country: "Test", countryCode: "TT", approximate: false },
       { id: "place-m2", nameZh: "目的地二", nameLocal: null, nameEn: "Macro Two", kind: "city", city: "Macro Two", region: null, country: "Test", countryCode: "TT", approximate: false },
@@ -63,6 +63,7 @@ function itineraryPlan(base: TravelPlanDocument, dayCount: number, includeThird 
     dayNumber: index + 1,
     date: null,
     title: `Day ${index + 1}`,
+    transferMode: "none",
     detailLevel: "planned",
     detailStatus: null,
     startAnchor: { id: `start-${index + 1}`, placeId: null, label: null, notes: null },
@@ -103,28 +104,54 @@ describe("TravelPlannerRuntimeV3 AI action regressions", () => {
     store.close();
   });
 
-  it("replans a 20-day two-stop itinerary without mechanically producing 120 commands", async () => {
+  it("updates only two affected Days in a 20-day Detailed Itinerary", async () => {
     const store = db(); const created = store.createTrip(); store.writePlan(created.id, itineraryPlan(created.plan, 20), 0, { source: "test", summary: "20-day fixture" }); resolveAB(store, created.id, 1);
-    const source = structuredClone(store.requireTrip(created.id).plan.days);
-    for (const day of source) day.stops.reverse();
-    const rt = runtime(store, async () => run({ schemaVersion: 1, baseGeneration: 1, result: { type: "success", assistantMessage: "已重新排序", title: "20 天重排", explanation: "复用现有地点", days: source } }));
-    const started = rt.createCtaAction({ tripId: created.id, stage: "itinerary", actionType: "itinerary.replan", parameters: {}, targetIds: [], requestKey: "replan-20" });
+    const affectedDayIds = ["day-1", "day-20"];
+    const dayUpdates = affectedDayIds.map((dayId) => ({ dayId, stops: [
+      { candidateId: "candidate-b", activity: "B", period: "morning", startTime: "09:00", endTime: "10:00", durationMinutes: 60, transportFromPrevious: null, scheduleVerification: { status: "estimated", checkedAt: null }, costNote: null, costVerification: null, notes: null },
+      { candidateId: "candidate-a", activity: "A", period: "morning", startTime: "10:30", endTime: "11:30", durationMinutes: 60, transportFromPrevious: { mode: "walk", durationMinutes: null, note: null, verification: { status: "estimated", checkedAt: null } }, scheduleVerification: { status: "estimated", checkedAt: null }, costNote: null, costVerification: null, notes: null },
+    ] }));
+    const rt = runtime(store, async () => run({ schemaVersion: 1, baseGeneration: 1, result: { type: "success", assistantMessage: "只更新两天", title: "局部更新", explanation: "其余日期保持不变", affectedDayIds, dayUpdates } }));
+    const started = rt.createCtaAction({ tripId: created.id, stage: "itinerary", actionType: "itinerary.detail.update", parameters: { dayIds: affectedDayIds }, targetIds: affectedDayIds, requestKey: "detail-update-2-of-20" });
     await waitFor(() => store.getAction(started.action.id)?.status === "awaiting_apply");
     const action = store.getAction(started.action.id)!; const proposal = store.getProposal(action.proposalId!)!;
-    expect(proposal.commands.length).toBe(20);
-    expect(proposal.commands.every((command) => command.type === "move_day_stop")).toBe(true);
+    expect(proposal.diff.affectedDayIds).toEqual(affectedDayIds);
+    expect(proposal.commands.length).toBeLessThan(20);
+    expect(proposal.commands.every((command) => !JSON.stringify(command).match(/day-(?:[2-9]|1[0-9])\b/) || JSON.stringify(command).includes("day-20"))).toBe(true);
     store.close();
   });
 
-  it("rejects a replan that introduces an unresolved concrete Place", async () => {
+  it("rejects Detailed generation that introduces an unresolved concrete Place", async () => {
     const store = db(); const created = store.createTrip(); store.writePlan(created.id, itineraryPlan(created.plan, 1, true), 0, { source: "test", summary: "resolution fixture" }); resolveAB(store, created.id, 1);
-    const source = structuredClone(store.requireTrip(created.id).plan.days);
-    source[0].stops.push({ id: "ai-stop-c", candidateId: "candidate-c", placeId: "place-c", activity: "C", period: null, startTime: null, endTime: null, durationMinutes: 60, transportFromPrevious: null, scheduleVerification: null, costNote: null, costVerification: null, notes: null });
-    const rt = runtime(store, async () => run({ schemaVersion: 1, baseGeneration: 1, result: { type: "success", assistantMessage: "加入 C", title: "加入 C", explanation: "测试未定位", days: source } }));
-    const started = rt.createCtaAction({ tripId: created.id, stage: "itinerary", actionType: "itinerary.replan", parameters: {}, targetIds: [], requestKey: "replan-unresolved" });
+    const rt = runtime(store, async () => run({ schemaVersion: 1, baseGeneration: 1, result: { type: "success", assistantMessage: "加入 C", dayUpdates: [{ dayId: "day-1", stops: [{ candidateId: "candidate-c", activity: "C", period: "morning", startTime: "09:00", endTime: "10:00", durationMinutes: 60, transportFromPrevious: null, scheduleVerification: { status: "estimated", checkedAt: null }, costNote: null, costVerification: null, notes: null }] }], unscheduledCandidates: [] } }));
+    const started = rt.createCtaAction({ tripId: created.id, stage: "itinerary", actionType: "itinerary.detail.generate", parameters: {}, targetIds: [], requestKey: "detail-unresolved" });
     await waitFor(() => store.getAction(started.action.id)?.status === "failed");
     expect(store.listProposals(created.id)).toHaveLength(0);
     expect(store.getAction(started.action.id)?.errorSummary).toMatch(/未定位地点不得进入行程/);
+    store.close();
+  });
+
+  it("clears needs_review when a scoped Detail update requires no content commands", async () => {
+    const store = db(); const created = store.createTrip();
+    const source = itineraryPlan(created.plan, 1);
+    source.days[0] = {
+      ...source.days[0], detailLevel: "detailed", detailStatus: "needs_review",
+      stops: source.days[0].stops.map((stop, index) => ({
+        ...stop, period: "morning", startTime: index ? "10:30" : "09:00", endTime: index ? "11:30" : "10:00", durationMinutes: 60,
+        transportFromPrevious: index ? { mode: "walk", durationMinutes: null, note: null, verification: { status: "estimated", checkedAt: null } } : null,
+        scheduleVerification: { status: "estimated", checkedAt: null },
+      })),
+    };
+    store.writePlan(created.id, source, 0, { source: "test", summary: "needs review fixture" }); resolveAB(store, created.id, 1);
+    const day = store.requireTrip(created.id).plan.days[0];
+    const rt = runtime(store, async () => run({ schemaVersion: 1, baseGeneration: 1, result: {
+      type: "success", assistantMessage: "无需调整", title: "确认本日", explanation: "现有内容仍然有效", affectedDayIds: [day.id],
+      dayUpdates: [{ dayId: day.id, stops: day.stops.map(({ candidateId, activity, period, startTime, endTime, durationMinutes, transportFromPrevious, scheduleVerification, costNote, costVerification, notes }) => ({ candidateId, activity, period, startTime, endTime, durationMinutes, transportFromPrevious, scheduleVerification, costNote, costVerification, notes })) }],
+    } }));
+    const started = rt.createCtaAction({ tripId: created.id, stage: "itinerary", actionType: "itinerary.detail.update", parameters: { dayIds: [day.id] }, targetIds: [day.id], requestKey: "detail-no-content-change" });
+    await waitFor(() => store.getAction(started.action.id)?.status === "completed");
+    expect(store.requireTrip(created.id).plan.days[0].detailStatus).toBe("ready");
+    expect(store.listProposals(created.id)).toEqual([]);
     store.close();
   });
 
@@ -185,13 +212,24 @@ describe("TravelPlannerRuntimeV3 AI action regressions", () => {
     store.close();
   });
 
-  it("requires interests when a planning area has no concrete resolved Stop", async () => {
+  it("allows unresolved Macro destinations while leaving their Route pending", async () => {
     const store = db(); const created = store.createTrip(); store.writePlan(created.id, macroPlan(created.plan), 0, { source: "test", summary: "macro itinerary fixture" });
-    const rt = runtime(store, async () => run({}));
+    const rt = runtime(store, async () => run({
+      schemaVersion: 2,
+      baseGeneration: 1,
+      result: {
+        type: "success",
+        assistantMessage: "生成两天骨架",
+        destinations: [
+          { destinationCandidateId: "macro-1", stayDays: 1, transferMode: "none" },
+          { destinationCandidateId: "macro-2", stayDays: 1, transferMode: "rail" },
+        ],
+      },
+    }));
     const started = rt.createCtaAction({ tripId: created.id, stage: "itinerary", actionType: "itinerary.generate", parameters: {}, targetIds: [], requestKey: "generate-unresolved-macro" });
     await waitFor(() => store.getAction(started.action.id)?.status === "completed");
-    expect(store.requireTrip(created.id).plan.days).toHaveLength(0);
-    expect(store.getAction(started.action.id)?.resultRef).toBe("requiresStage:interests");
+    expect(store.requireTrip(created.id).plan.days).toHaveLength(2);
+    expect(store.getAction(started.action.id)?.errorSummary).toBeNull();
     store.close();
   });
 

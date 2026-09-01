@@ -14,6 +14,7 @@
     "typecheck": "npm run typecheck:web && npm run typecheck:server",
     "typecheck:web": "tsc -p tsconfig.json --noEmit",
     "typecheck:server": "tsc -p tsconfig.server.json --noEmit",
+    "check:v3": "vitest run --config vitest.config.ts apps/server/ai-registries-v3.test.ts apps/server/prompt-registry-v3.test.ts apps/server/runtime-invariants-v3.test.ts apps/server/ai-action-contracts-v3.test.ts apps/server/itinerary-workflow-v3.test.ts apps/server/itinerary-impact-v3.test.ts",
     "test": "vitest run --config vitest.config.ts",
     "package:windows": "powershell -ExecutionPolicy Bypass -File scripts/build_portable_windows.ps1",
     "package:macos": "bash scripts/build_portable_macos.sh"

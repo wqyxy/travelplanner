@@ -32,6 +32,7 @@ function plannedDocument(): TravelPlanDocument {
     dayNumber: 1,
     date: null,
     title: "京都东山",
+    transferMode: "none",
     detailLevel: "planned",
     detailStatus: null,
     startAnchor: { id: "anchor-start-1", placeId: null, label: "住宿待定", notes: null },

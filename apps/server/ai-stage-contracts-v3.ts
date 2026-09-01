@@ -28,6 +28,8 @@ export const AiActionTypeSchema = z.enum([
   "interest.preference",
   "itinerary.generate",
   "itinerary.replan",
+  "itinerary.detail.generate",
+  "itinerary.detail.update",
   "itinerary.stop.add",
   "itinerary.stop.remove",
   "itinerary.stop.replace",
@@ -93,9 +95,6 @@ const AssumptionInputSchema = z.object({
   confidence: z.enum(["low", "medium", "high"]),
 }).strict();
 
-// `changes` is deliberately a closed, all-optional patch object. The structured
-// output transport converts all-optional objects to the internal __patch format,
-// so the model never receives an arbitrary additionalProperties schema.
 const DialogueChangesSchema = z.object({
   title: z.string().trim().min(1).max(300).optional(),
   date: z.string().trim().min(1).max(40).nullable().optional(),
@@ -155,9 +154,6 @@ const DialogueCandidateChangesSchema = z.object({
   tags: z.array(z.string().trim().min(1).max(120)).max(30).optional(),
 }).strict();
 
-// All top-level fields are required and use null/[] for "not used". This avoids
-// mixed required/optional objects in OpenAI strict JSON Schema while preserving
-// the runtime's existing action.parameters field names.
 export const DialogueActionParametersSchema = z.object({
   request: z.string().trim().min(1).max(4000).nullable(),
   candidateId: z.string().trim().min(1).max(160).nullable(),
@@ -293,6 +289,8 @@ export type PromptIdV3 =
   | "action.interest.replace"
   | "action.itinerary.generate"
   | "action.itinerary.replan"
+  | "action.itinerary.detail.generate"
+  | "action.itinerary.detail.update"
   | "action.itinerary.day.optimize"
   | "action.itinerary.repair"
   | "action.itinerary.verify"
@@ -319,6 +317,8 @@ export type OutputContractIdV3 =
   | "interest.replace.output"
   | "itinerary.generate.output"
   | "itinerary.replan.output"
+  | "itinerary.detail.generate.output"
+  | "itinerary.detail.update.output"
   | "itinerary.day.optimize.output"
   | "itinerary.repair.output"
   | "itinerary.verify.output"

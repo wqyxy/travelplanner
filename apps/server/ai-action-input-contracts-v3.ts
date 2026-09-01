@@ -60,6 +60,7 @@ const PreferenceInput = z.object({ candidateId: Id.optional(), candidateIds: z.a
 const CandidateEdit = z.object({ candidateId: Id.optional(), placeChanges: PlaceChanges.optional(), candidateChanges: CandidateChanges.optional() }).strict().refine((value) => Boolean(value.placeChanges || value.candidateChanges), "编辑动作至少需要 placeChanges 或 candidateChanges。");
 const DayOptimize = z.object({ dayId: Id.optional(), request: Request.optional() }).strict();
 const Refine = z.object({ dayIds: z.array(Id).max(2).optional(), request: Request.optional(), allowWeb: z.boolean().optional() }).strict();
+const DetailUpdate = z.object({ dayIds: z.array(Id).max(90).optional(), request: Request.optional(), allowWeb: z.boolean().optional() }).strict();
 
 const ACTION_INPUT_CONTRACTS: Record<AiActionType, InputContractIdV3> = {
   "requirements.update": "requirements.mutation.input",
@@ -79,6 +80,8 @@ const ACTION_INPUT_CONTRACTS: Record<AiActionType, InputContractIdV3> = {
   "interest.preference": "interest.action.input",
   "itinerary.generate": "itinerary.action.input",
   "itinerary.replan": "itinerary.action.input",
+  "itinerary.detail.generate": "itinerary.action.input",
+  "itinerary.detail.update": "itinerary.action.input",
   "itinerary.stop.add": "itinerary.action.input",
   "itinerary.stop.remove": "itinerary.action.input",
   "itinerary.stop.replace": "itinerary.action.input",
@@ -111,6 +114,8 @@ const CTA_SCHEMAS: Record<AiActionType, z.ZodType<Record<string, unknown>>> = {
   "interest.preference": PreferenceInput,
   "itinerary.generate": Intent,
   "itinerary.replan": Intent,
+  "itinerary.detail.generate": Intent,
+  "itinerary.detail.update": DetailUpdate,
   "itinerary.stop.add": z.object({ dayId: Id.optional(), candidateId: Id, index: z.number().int().min(0).max(100).nullable().optional(), activity: z.string().trim().min(1).max(2000).optional() }).strict(),
   "itinerary.stop.remove": z.object({ stopId: Id.optional() }).strict(),
   "itinerary.stop.replace": z.object({ stopId: Id.optional(), candidateId: Id, activity: z.string().trim().min(1).max(2000).optional() }).strict(),
@@ -131,7 +136,7 @@ function compactDialogue(actionType: AiActionType, value: unknown): Record<strin
   switch (actionType) {
     case "requirements.update": return CTA_SCHEMAS[actionType].parse({ changes: p.changes });
     case "requirements.clear": return CTA_SCHEMAS[actionType].parse({ fields: p.fields });
-    case "destination.generate": case "destination.add": case "interest.discover": case "interest.supplement": case "interest.add": case "itinerary.generate": case "itinerary.replan": case "itinerary.repair": case "itinerary.verify": return CTA_SCHEMAS[actionType].parse(intent());
+    case "destination.generate": case "destination.add": case "interest.discover": case "interest.supplement": case "interest.add": case "itinerary.generate": case "itinerary.replan": case "itinerary.detail.generate": case "itinerary.repair": case "itinerary.verify": return CTA_SCHEMAS[actionType].parse(intent());
     case "destination.remove": case "interest.remove": return CTA_SCHEMAS[actionType].parse({ ...(p.candidateId ? { candidateId: p.candidateId } : {}) });
     case "destination.replace": case "interest.replace": return CTA_SCHEMAS[actionType].parse({ ...(p.candidateId ? { candidateId: p.candidateId } : {}), ...intent() });
     case "destination.edit": case "interest.edit": return CTA_SCHEMAS[actionType].parse({ ...(p.candidateId ? { candidateId: p.candidateId } : {}), ...(p.placeChanges ? { placeChanges: p.placeChanges } : {}), ...(p.candidateChanges ? { candidateChanges: p.candidateChanges } : {}) });
@@ -145,6 +150,7 @@ function compactDialogue(actionType: AiActionType, value: unknown): Record<strin
     case "itinerary.anchor.set": return CTA_SCHEMAS[actionType].parse({ ...(p.dayId ? { dayId: p.dayId } : {}), ...(p.anchor ? { anchor: p.anchor } : {}), placeId: p.placeId, label: p.label, notes: p.notes });
     case "itinerary.day.optimize": return CTA_SCHEMAS[actionType].parse({ ...(p.dayId ? { dayId: p.dayId } : {}), ...(p.request ? { request: p.request } : {}) });
     case "itinerary.refine": return CTA_SCHEMAS[actionType].parse({ ...(p.dayIds.length ? { dayIds: p.dayIds } : {}), ...intent() });
+    case "itinerary.detail.update": return CTA_SCHEMAS[actionType].parse({ ...(p.dayIds.length ? { dayIds: p.dayIds } : {}), ...intent() });
     case "map.disambiguate": return {};
   }
 }

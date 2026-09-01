@@ -14,6 +14,7 @@ function largeTrip(): TripDetailV3 {
     dayNumber: dayIndex + 1,
     date: null,
     title: `Day ${dayIndex + 1}`,
+    transferMode: "none",
     detailLevel: "planned",
     detailStatus: null,
     startAnchor: { id: `start-${dayIndex + 1}`, placeId: null, label: null, notes: null },

@@ -353,7 +353,11 @@ export class TravelStoreV3 {
     const placeIds = new Set(plan.places.map((place) => place.id));
     for (const row of this.db.prepare("SELECT place_id FROM place_resolutions WHERE trip_id=?").all(tripId) as Row[]) if (!placeIds.has(String(row.place_id))) this.db.prepare("DELETE FROM place_resolutions WHERE trip_id=? AND place_id=?").run(tripId, String(row.place_id));
     const dayIds = new Set(plan.days.map((day) => day.id));
-    for (const row of this.db.prepare("SELECT day_id FROM day_routes WHERE trip_id=?").all(tripId) as Row[]) if (!dayIds.has(String(row.day_id))) this.db.prepare("DELETE FROM day_routes WHERE trip_id=? AND day_id=?").run(tripId, String(row.day_id));
+    for (const row of this.db.prepare("SELECT day_id FROM day_routes WHERE trip_id=?").all(tripId) as Row[]) {
+      const routeDayId = String(row.day_id);
+      const canonicalDayId = routeDayId.startsWith("macro:") ? routeDayId.slice("macro:".length) : routeDayId;
+      if (!dayIds.has(canonicalDayId)) this.db.prepare("DELETE FROM day_routes WHERE trip_id=? AND day_id=?").run(tripId, routeDayId);
+    }
   }
 
   private reconcilePendingState(tripId: string, before: TravelPlanDocument, after: TravelPlanDocument, oldGeneration: number, newGeneration: number, options: WriteOptions) {
@@ -671,7 +675,8 @@ export class TravelStoreV3 {
   setDayRoute(tripId: string, value: unknown, expectedGeneration: number) {
     const route = DayRouteSchema.parse(value); const trip = this.requireTrip(tripId);
     if (trip.contentGeneration !== expectedGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
-    if (route.tripId !== tripId || !trip.plan.days.some((day) => day.id === route.dayId)) throw new Error("DayRoute 必须引用当前旅行中的 Day。");
+    const canonicalDayId = route.dayId.startsWith("macro:") ? route.dayId.slice("macro:".length) : route.dayId;
+    if (route.tripId !== tripId || !trip.plan.days.some((day) => day.id === canonicalDayId)) throw new Error("DayRoute 必须引用当前旅行中的 Day。");
     const prior = this.getDayRoute(tripId, route.dayId); const expectedVersion = prior ? prior.version + 1 : 1;
     if (route.version !== expectedVersion) throw new Error(`DayRoute version 必须为 ${expectedVersion}。`);
     this.db.prepare("INSERT INTO day_routes(trip_id,day_id,version,route_json,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(trip_id,day_id) DO UPDATE SET version=excluded.version,route_json=excluded.route_json,updated_at=excluded.updated_at").run(tripId, route.dayId, route.version, stringify(route), now());
