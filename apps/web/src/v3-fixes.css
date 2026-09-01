@@ -195,8 +195,8 @@
 .workspace-flow-nav-v3 {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 4px;
-  padding: 8px 10px;
+  gap: 3px;
+  padding: 4px 8px;
 }
 .workspace-flow-nav-v3 button {
   display: flex;
@@ -204,10 +204,12 @@
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 10px;
+  border-radius: 8px;
   background: transparent;
   color: var(--muted, #6b7280);
-  padding: 7px 3px;
+  padding: 5px 2px;
+  font-size: 13px;
+  line-height: 1.2;
   font-weight: 650;
   white-space: nowrap;
   cursor: pointer;
@@ -215,12 +217,12 @@
 .workspace-flow-nav-v3 button span {
   display: inline-grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
-  margin-right: 5px;
+  width: 18px;
+  height: 18px;
+  margin-right: 3px;
   border-radius: 999px;
   border: 1px solid currentColor;
-  font-size: 11px;
+  font-size: 10px;
 }
 .workspace-flow-nav-v3 button.active {
   background: var(--soft-accent, rgba(37,99,235,.10));

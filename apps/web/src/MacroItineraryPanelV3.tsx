@@ -7,22 +7,6 @@ function placeName(workspace: WorkspaceV3, placeId: string | null) {
   return workspace.trip.plan.places.find((place) => place.id === placeId)?.nameZh ?? placeId;
 }
 
-function visits(workspace: WorkspaceV3) {
-  const result: Array<{ placeId: string; name: string; startDay: number; endDay: number; stayDays: number }> = [];
-  for (const day of workspace.trip.plan.days) {
-    const placeId = day.endAnchor.placeId;
-    if (!placeId) continue;
-    const last = result[result.length - 1];
-    if (last?.placeId === placeId) {
-      last.endDay = day.dayNumber;
-      last.stayDays += 1;
-    } else {
-      result.push({ placeId, name: placeName(workspace, placeId), startDay: day.dayNumber, endDay: day.dayNumber, stayDays: 1 });
-    }
-  }
-  return result;
-}
-
 export function MacroItineraryPanelV3({
   workspace,
   busy,
@@ -47,7 +31,6 @@ export function MacroItineraryPanelV3({
   const plan = workspace.trip.plan;
   const macroStatus = workspace.itineraryUpdateState.macro.status;
   const routeStates = workspace.macroRouteStates;
-  const itineraryVisits = visits(workspace);
   const dirtyRouteCount = routeStates.filter((state) => state.required && state.dirty).length;
 
   if (!plan.days.length) return <section className="workspace-requirements-v3">
@@ -57,13 +40,6 @@ export function MacroItineraryPanelV3({
 
   return <section className="workspace-requirements-v3">
     {macroStatus === "needs_update" && <div className="workspace-warning-v3"><TriangleAlert size={16}/><div><b>行程骨架需更新</b><p>第二步目的地发生了会影响当前骨架的变化。未受影响的 Day 会保留，AI 只调整必要部分。</p></div></div>}
-
-    <div className="macro-visits-v3">
-      {itineraryVisits.map((visit, index) => <div className="macro-visit-v3" key={`${visit.placeId}:${visit.startDay}`}>
-        <div><strong>{visit.name}</strong><small>Day {visit.startDay}{visit.endDay !== visit.startDay ? `–${visit.endDay}` : ""} · {visit.stayDays} 天</small></div>
-        {index < itineraryVisits.length - 1 && <ArrowRight size={16}/>}
-      </div>)}
-    </div>
 
     <div className="macro-days-v3">
       {plan.days.map((day) => {
