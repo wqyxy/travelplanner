@@ -1,63 +1,97 @@
-import test from "node:test";
-import assert from "node:assert/strict";
+import { describe, expect, it } from "vitest";
 import { emptyTravelPlan, TravelPlanDocumentSchema, type TravelPlanDocument } from "./contracts-v2.js";
 import { analyzeItineraryImpactV3 } from "./itinerary-impact-v3.js";
 
-function basePlan(): TravelPlanDocument {
+const place = (id: string, nameZh: string, kind: "city" | "attraction") => ({
+  id, nameZh, nameLocal: null, nameEn: null, kind, city: kind === "city" ? null : "甲城", region: null, country: "测试国", countryCode: "NZ", approximate: false,
+});
+
+const candidate = (id: string, placeId: string, preference: "must_go" | "want_to_go" | "optional" | "excluded", planningAreaCandidateId: string | null) => ({
+  id, placeId, planningAreaCandidateId, preference, source: "user" as const, aiReason: null, aiScore: null, suggestedDurationMinutes: planningAreaCandidateId ? 120 : null, tags: [],
+});
+
+function basePlan(detailed = true): TravelPlanDocument {
   return TravelPlanDocumentSchema.parse({
     ...emptyTravelPlan(),
-    places: [
-      { id: "city-a", nameZh: "甲城", nameLocal: null, nameEn: null, kind: "city", city: null, region: null, country: "测试国", countryCode: "NZ", approximate: false },
-      { id: "poi-a", nameZh: "甲景点", nameLocal: null, nameEn: null, kind: "attraction", city: "甲城", region: null, country: "测试国", countryCode: "NZ", approximate: false },
-    ],
-    candidates: [
-      { id: "macro-a", placeId: "city-a", planningAreaCandidateId: null, preference: "must_go", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: null, tags: [] },
-      { id: "micro-a", placeId: "poi-a", planningAreaCandidateId: "macro-a", preference: "optional", source: "ai", aiReason: "候选", aiScore: 80, suggestedDurationMinutes: 120, tags: [] },
-    ],
-    days: [
-      {
-        id: "day-1", dayNumber: 1, date: null, title: "甲城", detailLevel: "planned", detailStatus: null,
-        startAnchor: { id: "start-1", placeId: "city-a", label: null, notes: null },
-        stops: [],
-        endAnchor: { id: "end-1", placeId: "city-a", label: null, notes: null },
-      },
-    ],
+    stage: detailed ? "itinerary_refinement" : "itinerary_planning",
+    places: [place("city-a", "甲城", "city"), place("poi-a", "甲景点", "attraction")],
+    candidates: [candidate("macro-a", "city-a", "must_go", null), candidate("micro-a", "poi-a", "optional", "macro-a")],
+    days: [{
+      id: "day-1", dayNumber: 1, date: null, title: "甲城", transferMode: "none", detailLevel: detailed ? "detailed" : "planned", detailStatus: detailed ? "ready" : null,
+      startAnchor: { id: "start-1", placeId: "city-a", label: null, notes: null },
+      stops: detailed ? [{ id: "stop-a", candidateId: "micro-a", placeId: "poi-a", activity: "参观", period: "morning", startTime: "09:00", endTime: "11:00", durationMinutes: 120, transportFromPrevious: null, scheduleVerification: { status: "estimated", checkedAt: null }, costNote: null, costVerification: null, notes: null }] : [],
+      endAnchor: { id: "end-1", placeId: "city-a", label: null, notes: null },
+    }],
   });
 }
 
-test("ordinary new POI is a new option, not needs_update", () => {
-  const before = basePlan();
-  const after = TravelPlanDocumentSchema.parse({
-    ...before,
-    places: [...before.places, { id: "poi-b", nameZh: "乙景点", nameLocal: null, nameEn: null, kind: "attraction", city: "甲城", region: null, country: "测试国", countryCode: "NZ", approximate: false }],
-    candidates: [...before.candidates, { id: "micro-b", placeId: "poi-b", planningAreaCandidateId: "macro-a", preference: "optional", source: "ai", aiReason: "新候选", aiScore: 70, suggestedDurationMinutes: 90, tags: [] }],
+describe("incremental itinerary impact", () => {
+  it("keeps Macro and Detail ready for an ordinary new optional POI", () => {
+    const before = basePlan();
+    const after = TravelPlanDocumentSchema.parse({ ...before, places: [...before.places, place("poi-b", "乙景点", "attraction")], candidates: [...before.candidates, candidate("micro-b", "poi-b", "optional", "macro-a")] });
+    const impact = analyzeItineraryImpactV3(before, after);
+    expect(impact.macro.status).toBe("ready");
+    expect(impact.detail.status).toBe("ready");
+    expect(impact.detail.newOptionCandidateIds).toEqual(["micro-b"]);
   });
-  const impact = analyzeItineraryImpactV3(before, after);
-  assert.equal(impact.macro.status, "ready");
-  assert.equal(impact.detail.status, "ready");
-  assert.deepEqual(impact.detail.newOptionCandidateIds, ["micro-b"]);
-});
 
-test("new must-go POI marks only destination days for update", () => {
-  const before = basePlan();
-  const after = TravelPlanDocumentSchema.parse({
-    ...before,
-    places: [...before.places, { id: "poi-b", nameZh: "乙景点", nameLocal: null, nameEn: null, kind: "attraction", city: "甲城", region: null, country: "测试国", countryCode: "NZ", approximate: false }],
-    candidates: [...before.candidates, { id: "micro-b", placeId: "poi-b", planningAreaCandidateId: "macro-a", preference: "must_go", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: 90, tags: [] }],
+  it("marks only destination days for a new must-go POI", () => {
+    const before = basePlan();
+    const after = TravelPlanDocumentSchema.parse({ ...before, places: [...before.places, place("poi-b", "乙景点", "attraction")], candidates: [...before.candidates, candidate("micro-b", "poi-b", "must_go", "macro-a")] });
+    const impact = analyzeItineraryImpactV3(before, after);
+    expect(impact.macro.status).toBe("ready");
+    expect(impact.detail.status).toBe("needs_update");
+    expect(impact.detail.affectedDayIds).toEqual(["day-1"]);
   });
-  const impact = analyzeItineraryImpactV3(before, after);
-  assert.equal(impact.detail.status, "needs_update");
-  assert.deepEqual(impact.detail.affectedDayIds, ["day-1"]);
-});
 
-test("destination addition marks macro and downstream detail update", () => {
-  const before = basePlan();
-  const after = TravelPlanDocumentSchema.parse({
-    ...before,
-    places: [...before.places, { id: "city-b", nameZh: "乙城", nameLocal: null, nameEn: null, kind: "city", city: null, region: null, country: "测试国", countryCode: "NZ", approximate: false }],
-    candidates: [...before.candidates, { id: "macro-b", placeId: "city-b", planningAreaCandidateId: null, preference: "want_to_go", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: null, tags: [] }],
+  it("does not invalidate Detail when an unused POI is deleted", () => {
+    const before = basePlan();
+    const extra = TravelPlanDocumentSchema.parse({ ...before, places: [...before.places, place("poi-unused", "未使用", "attraction")], candidates: [...before.candidates, candidate("micro-unused", "poi-unused", "optional", "macro-a")] });
+    const impact = analyzeItineraryImpactV3(extra, before);
+    expect(impact.macro.status).toBe("ready");
+    expect(impact.detail.status).toBe("ready");
+    expect(impact.detail.affectedDayIds).toEqual([]);
   });
-  const impact = analyzeItineraryImpactV3(before, after);
-  assert.equal(impact.macro.status, "needs_update");
-  assert.equal(impact.detail.status, "needs_update");
+
+  it("limits exclusion of a scheduled POI to the Day that used it", () => {
+    const before = basePlan();
+    const after = TravelPlanDocumentSchema.parse({
+      ...before,
+      candidates: before.candidates.map((item) => item.id === "micro-a" ? { ...item, preference: "excluded" as const } : item),
+      days: before.days.map((day) => ({ ...day, stops: [], detailStatus: "needs_review" as const })),
+    });
+    const impact = analyzeItineraryImpactV3(before, after);
+    expect(impact.macro.status).toBe("ready");
+    expect(impact.detail.status).toBe("needs_update");
+    expect(impact.detail.affectedDayIds).toEqual(["day-1"]);
+    expect(after.days[0].stops).toEqual([]);
+  });
+
+  it("defers Detail invalidation until a destination change is applied to Macro Days", () => {
+    const before = basePlan();
+    const after = TravelPlanDocumentSchema.parse({ ...before, places: [...before.places, place("city-b", "乙城", "city")], candidates: [...before.candidates, candidate("macro-b", "city-b", "want_to_go", null)] });
+    const impact = analyzeItineraryImpactV3(before, after);
+    expect(impact.macro.status).toBe("needs_update");
+    expect(impact.detail.status).toBe("ready");
+    expect(impact.detail.affectedDayIds).toEqual([]);
+  });
+
+  it("marks Macro needs_update when a removed destination leaves an invalid Day", () => {
+    const before = basePlan(false);
+    const after = TravelPlanDocumentSchema.parse({
+      ...before,
+      candidates: before.candidates.filter((item) => item.id !== "macro-a" && item.planningAreaCandidateId !== "macro-a"),
+      places: [],
+      days: before.days.map((day) => ({ ...day, startAnchor: { ...day.startAnchor, placeId: null }, endAnchor: { ...day.endAnchor, placeId: null } })),
+    });
+    expect(analyzeItineraryImpactV3(before, after).macro.status).toBe("needs_update");
+  });
+
+  it("does not replan Macro for a display-name-only Place change", () => {
+    const before = basePlan();
+    const after = TravelPlanDocumentSchema.parse({ ...before, places: before.places.map((item) => item.id === "city-a" ? { ...item, nameZh: "皇后镇" } : item) });
+    const impact = analyzeItineraryImpactV3(before, after);
+    expect(impact.macro.status).toBe("ready");
+    expect(impact.detail.status).toBe("ready");
+  });
 });

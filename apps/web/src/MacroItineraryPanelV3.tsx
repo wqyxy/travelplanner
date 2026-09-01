@@ -30,6 +30,8 @@ export function MacroItineraryPanelV3({
   onSelectDay,
   onGenerate,
   onUpdate,
+  onRecalculate,
+  onRecalculateDirty,
   onContinue,
 }: {
   workspace: WorkspaceV3;
@@ -38,12 +40,15 @@ export function MacroItineraryPanelV3({
   onSelectDay: (dayId: string) => void;
   onGenerate: () => void | Promise<void>;
   onUpdate: () => void | Promise<void>;
+  onRecalculate: (dayId: string) => void | Promise<void>;
+  onRecalculateDirty: () => void | Promise<void>;
   onContinue: () => void | Promise<void>;
 }) {
   const plan = workspace.trip.plan;
   const macroStatus = workspace.itineraryUpdateState.macro.status;
   const routeStates = workspace.macroRouteStates;
   const itineraryVisits = visits(workspace);
+  const dirtyRouteCount = routeStates.filter((state) => state.required && state.dirty).length;
 
   if (!plan.days.length) return <section className="workspace-requirements-v3">
     <div><p className="eyebrow">STEP 4</p><h2>行程骨架</h2><p>这一阶段只决定目的地顺序、每个目的地停留天数，以及哪一天发生跨目的地移动。不会安排具体兴趣点。</p></div>
@@ -71,15 +76,17 @@ export function MacroItineraryPanelV3({
         const transfer = day.startAnchor.placeId !== day.endAnchor.placeId;
         const route = routeStates.find((state) => state.dayId === day.id);
         const transferMode = (day as typeof day & { transferMode?: string }).transferMode ?? "none";
-        return <button type="button" className={`macro-day-v3 ${selectedDayId === day.id ? "active" : ""}`} key={day.id} onClick={() => onSelectDay(day.id)}>
+        return <div className={`macro-day-v3 ${selectedDayId === day.id ? "active" : ""}`} key={day.id} onClick={() => onSelectDay(day.id)}>
           <span>Day {day.dayNumber}</span>
           <b>{transfer ? `${placeName(workspace, day.startAnchor.placeId)} → ${placeName(workspace, day.endAnchor.placeId)}` : placeName(workspace, day.endAnchor.placeId)}</b>
           <small>{transfer ? `${transferMode}${route?.route?.durationMinutes != null ? ` · ${Math.round(route.route.durationMinutes)} 分钟` : route?.dirty ? " · 路线需更新" : " · 路线待定位"}` : "停留日"}</small>
-        </button>;
+          {transfer && <button className="button small" type="button" disabled={busy} onClick={(event) => { event.stopPropagation(); void onRecalculate(day.id); }}><RefreshCw size={13}/>{route?.dirty || !route?.route ? "更新路线" : "重新计算"}</button>}
+        </div>;
       })}
     </div>
 
     <div className="workspace-primary-actions-v3">
+      {dirtyRouteCount > 0 && <button className="button" type="button" disabled={busy} onClick={() => void onRecalculateDirty()}><RefreshCw size={15}/>更新 Macro Route {dirtyRouteCount}</button>}
       {macroStatus === "needs_update" ? <button className="button primary" type="button" disabled={busy} onClick={() => void onUpdate()}><Sparkles size={15}/>更新受影响骨架</button> : <button className="button" type="button" disabled={busy} onClick={() => void onUpdate()}><RefreshCw size={15}/>重新规划骨架</button>}
       <button className="button primary" type="button" disabled={busy || macroStatus === "needs_update"} onClick={() => void onContinue()}><ArrowRight size={15}/>进入第五步详细行程</button>
     </div>

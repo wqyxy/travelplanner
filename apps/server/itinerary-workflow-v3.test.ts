@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { TravelPlanDocumentSchema, emptyTravelPlan, type TravelPlanDocument } from "./contracts-v2.js";
-import { buildMacroDaysV3, deriveItineraryUpdateStateV3 } from "./itinerary-workflow-v3.js";
+import { applyDetailedUpdatesV3, buildMacroDaysV3, deriveItineraryUpdateStateV3, macroReplacementCommandsV3 } from "./itinerary-workflow-v3.js";
 import type { TripDetailV3 } from "./travel-store-v3.js";
 
 function plan(): TravelPlanDocument {
@@ -60,6 +60,47 @@ describe("itinerary macro/detail workflow", () => {
       { destinationCandidateId: "macro-a", stayDays: 2, transferMode: "none" },
       { destinationCandidateId: "macro-b", stayDays: 2, transferMode: "drive" },
     ])).toThrow(/5 天/);
+  });
+
+  it("reuses stable Day IDs and affects only structurally moved or changed Days", () => {
+    const source = plan();
+    const days = buildMacroDaysV3(tripDetail(source), [
+      { destinationCandidateId: "macro-a", stayDays: 2, transferMode: "none" },
+      { destinationCandidateId: "macro-b", stayDays: 3, transferMode: "drive" },
+    ]);
+    const withDays = TravelPlanDocumentSchema.parse({ ...source, stage: "itinerary_planning", days });
+    const unchanged = macroReplacementCommandsV3(tripDetail(withDays), [
+      { destinationCandidateId: "macro-a", stayDays: 2, transferMode: "none" },
+      { destinationCandidateId: "macro-b", stayDays: 3, transferMode: "drive" },
+    ]);
+    expect(unchanged.commands).toEqual([]);
+    expect(unchanged.affectedDayIds).toEqual([]);
+
+    const changed = macroReplacementCommandsV3(tripDetail(withDays), [
+      { destinationCandidateId: "macro-a", stayDays: 1, transferMode: "none" },
+      { destinationCandidateId: "macro-b", stayDays: 4, transferMode: "drive" },
+    ]);
+    expect(changed.affectedDayIds).not.toContain(days[0].id);
+    expect(new Set(changed.affectedDayIds)).toEqual(new Set(days.slice(1).map((day) => day.id)));
+  });
+
+  it("keeps Macro anchors stable during Detail generation and enforces must_go only there", () => {
+    const source = plan();
+    const poi = { id: "poi-a", nameZh: "必去景点", nameLocal: null, nameEn: null, kind: "attraction" as const, city: "甲城", region: null, country: "测试国", countryCode: "NZ", approximate: false };
+    const micro = { id: "micro-a", placeId: poi.id, planningAreaCandidateId: "macro-a", preference: "must_go" as const, source: "user" as const, aiReason: null, aiScore: null, suggestedDurationMinutes: 60, tags: [] };
+    const macroDays = buildMacroDaysV3(tripDetail(source), [
+      { destinationCandidateId: "macro-a", stayDays: 2, transferMode: "none" },
+      { destinationCandidateId: "macro-b", stayDays: 3, transferMode: "drive" },
+    ]);
+    const macroPlan = TravelPlanDocumentSchema.parse({ ...source, stage: "itinerary_planning", places: [...source.places, poi], candidates: [...source.candidates, micro], days: macroDays });
+    const macroTrip = tripDetail(macroPlan);
+    const emptyUpdates = macroDays.map((day) => ({ dayId: day.id, stops: [] }));
+    expect(() => applyDetailedUpdatesV3(macroTrip, emptyUpdates, true)).toThrow(/必去/);
+
+    const updates = emptyUpdates.map((update, index) => index === 0 ? { ...update, stops: [{ candidateId: micro.id, activity: "参观", period: "morning" as const, startTime: "09:00", endTime: "10:00", durationMinutes: 60, transportFromPrevious: null, scheduleVerification: { status: "estimated" as const, checkedAt: null }, costNote: null, costVerification: null, notes: null }] } : update);
+    const detailed = applyDetailedUpdatesV3(macroTrip, updates, true);
+    expect(detailed.days.every((day) => day.detailLevel === "detailed" && day.detailStatus === "ready")).toBe(true);
+    expect(detailed.days.map((day) => [day.id, day.startAnchor, day.endAnchor])).toEqual(macroDays.map((day) => [day.id, day.startAnchor, day.endAnchor]));
   });
 
   it("marks macro itinerary for update when a day points to no active destination", () => {

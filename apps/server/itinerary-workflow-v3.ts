@@ -94,6 +94,11 @@ export function macroReplacementCommandsV3(trip: TripDetailV3, visits: Itinerary
     if (macroSignature(reused) !== macroSignature(target)) affectedDayIds.add(reused.id);
   }
 
+  const currentIndexById = new Map(trip.plan.days.map((day, index) => [day.id, index]));
+  desiredIds.forEach((id, index) => {
+    if (currentIndexById.get(id) !== index) affectedDayIds.add(id);
+  });
+
   const workingIds = trip.plan.days.map((day) => day.id);
   const commands: PlanCommand[] = [];
   for (let index = 0; index < desiredIds.length; index += 1) {
@@ -229,7 +234,7 @@ export function detailedReplacementCommandsV3(trip: TripDetailV3, updates: Detai
 export function deriveItineraryUpdateStateV3(plan: TravelPlanDocument) {
   const macros = macroCandidates(plan);
   const macroPlaceIds = new Set(macros.map((candidate) => candidate.placeId));
-  const represented = new Set(plan.days.map((day) => day.endAnchor.placeId).filter((id): id is string => Boolean(id) && macroPlaceIds.has(id)));
+  const represented = new Set(plan.days.map((day) => day.endAnchor.placeId).filter((id): id is string => typeof id === "string" && macroPlaceIds.has(id)));
   const hasInvalidMacroDay = plan.days.some((day) => !day.endAnchor.placeId || !macroPlaceIds.has(day.endAnchor.placeId));
   const macroNeedsUpdate = Boolean(plan.days.length) && (hasInvalidMacroDay || represented.size !== macroPlaceIds.size || [...macroPlaceIds].some((id) => !represented.has(id)));
 

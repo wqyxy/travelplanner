@@ -52,6 +52,26 @@
   border-color: currentColor;
 }
 
+.macro-day-v3 > span {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+}
+
+.macro-day-v3 > b {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.macro-day-v3 > small {
+  grid-column: 2;
+  grid-row: 2;
+}
+
+.macro-day-v3 > .button {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+}
+
 .workspace-warning-v3 {
   display: flex;
   gap: 10px;
@@ -95,5 +115,11 @@
 
   .macro-day-v3 small {
     grid-column: 2;
+  }
+
+  .macro-day-v3 > .button {
+    grid-column: 2;
+    grid-row: 3;
+    justify-self: start;
   }
 }

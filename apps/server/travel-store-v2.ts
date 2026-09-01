@@ -315,7 +315,9 @@ export class TravelStoreV2 {
     }
     const dayIds = new Set(plan.days.map((day) => day.id));
     for (const row of this.db.prepare("SELECT day_id FROM day_routes WHERE trip_id=?").all(tripId) as Row[]) {
-      if (!dayIds.has(String(row.day_id))) this.db.prepare("DELETE FROM day_routes WHERE trip_id=? AND day_id=?").run(tripId, String(row.day_id));
+      const routeDayId = String(row.day_id);
+      const canonicalDayId = routeDayId.startsWith("macro:") ? routeDayId.slice("macro:".length) : routeDayId;
+      if (!dayIds.has(canonicalDayId)) this.db.prepare("DELETE FROM day_routes WHERE trip_id=? AND day_id=?").run(tripId, routeDayId);
     }
   }
 
@@ -567,7 +569,8 @@ export class TravelStoreV2 {
     const route = DayRouteSchema.parse(value);
     const trip = this.requireTrip(tripId);
     if (trip.contentGeneration !== expectedGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
-    if (route.tripId !== tripId || !trip.plan.days.some((day) => day.id === route.dayId)) throw new Error("DayRoute 必须引用当前旅行中的 Day。");
+    const canonicalDayId = route.dayId.startsWith("macro:") ? route.dayId.slice("macro:".length) : route.dayId;
+    if (route.tripId !== tripId || !trip.plan.days.some((day) => day.id === canonicalDayId)) throw new Error("DayRoute 必须引用当前旅行中的 Day。");
     const prior = this.getDayRoute(tripId, route.dayId);
     const expectedVersion = prior ? prior.version + 1 : 1;
     if (route.version !== expectedVersion) throw new Error(`DayRoute version 必须为 ${expectedVersion}。`);

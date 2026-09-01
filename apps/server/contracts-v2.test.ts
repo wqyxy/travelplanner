@@ -42,7 +42,7 @@ describe("TravelPlanDocument v2", () => {
     value.places.push(place("p1"));
     value.candidates.push(candidate("c1", "p1", "excluded"));
     value.days.push({
-      id: "d1", dayNumber: 1, date: null, title: "京都", detailLevel: "planned", detailStatus: null,
+      id: "d1", dayNumber: 1, date: null, title: "京都", transferMode: "none", detailLevel: "planned", detailStatus: null,
       startAnchor: { id: "a1", placeId: null, label: null, notes: null },
       stops: [{ id: "s1", candidateId: "c1", placeId: "p1", activity: "参观", period: "morning", startTime: null, endTime: null, durationMinutes: 90, transportFromPrevious: null, scheduleVerification: null, costNote: null, costVerification: null, notes: null }],
       endAnchor: { id: "a2", placeId: null, label: null, notes: null },
@@ -50,13 +50,13 @@ describe("TravelPlanDocument v2", () => {
     expect(TravelPlanDocumentSchema.safeParse(value).success).toBe(false);
   });
 
-  it("requires every must_go Candidate after plan generation", () => {
+  it("allows must_go POIs to remain unscheduled in the Macro stage", () => {
     const value = emptyTravelPlan();
     value.stage = "itinerary_planning";
     value.places.push(place("p1"));
     value.candidates.push(candidate("c1", "p1", "must_go"));
-    value.days.push({ id: "d1", dayNumber: 1, date: null, title: "京都", detailLevel: "planned", detailStatus: null, startAnchor: { id: "a1", placeId: null, label: null, notes: null }, stops: [], endAnchor: { id: "a2", placeId: null, label: null, notes: null } });
-    expect(TravelPlanDocumentSchema.safeParse(value).success).toBe(false);
+    value.days.push({ id: "d1", dayNumber: 1, date: null, title: "京都", transferMode: "none", detailLevel: "planned", detailStatus: null, startAnchor: { id: "a1", placeId: null, label: null, notes: null }, stops: [], endAnchor: { id: "a2", placeId: null, label: null, notes: null } });
+    expect(TravelPlanDocumentSchema.safeParse(value).success).toBe(true);
   });
 
   it("does not require adjacent Day anchors to match", () => {
@@ -64,8 +64,8 @@ describe("TravelPlanDocument v2", () => {
     value.stage = "itinerary_planning";
     value.places.push(place("hotel-osaka"), place("hotel-kyoto"));
     value.days.push(
-      { id: "d1", dayNumber: 1, date: null, title: "大阪", detailLevel: "planned", detailStatus: null, startAnchor: { id: "a1", placeId: "hotel-osaka", label: null, notes: null }, stops: [], endAnchor: { id: "a2", placeId: "hotel-osaka", label: null, notes: null } },
-      { id: "d2", dayNumber: 2, date: null, title: "京都", detailLevel: "planned", detailStatus: null, startAnchor: { id: "a3", placeId: "hotel-kyoto", label: null, notes: null }, stops: [], endAnchor: { id: "a4", placeId: "hotel-kyoto", label: null, notes: null } },
+      { id: "d1", dayNumber: 1, date: null, title: "大阪", transferMode: "none", detailLevel: "planned", detailStatus: null, startAnchor: { id: "a1", placeId: "hotel-osaka", label: null, notes: null }, stops: [], endAnchor: { id: "a2", placeId: "hotel-osaka", label: null, notes: null } },
+      { id: "d2", dayNumber: 2, date: null, title: "京都", transferMode: "none", detailLevel: "planned", detailStatus: null, startAnchor: { id: "a3", placeId: "hotel-kyoto", label: null, notes: null }, stops: [], endAnchor: { id: "a4", placeId: "hotel-kyoto", label: null, notes: null } },
     );
     expect(TravelPlanDocumentSchema.safeParse(value).success).toBe(true);
   });

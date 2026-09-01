@@ -123,6 +123,14 @@ export async function dispatchTravelApiV3(
 
   match = /^\/api\/trips\/([^/]+)\/routes\/recalculate$/.exec(pathname);
   if (method === "POST" && match) return { status: 200, data: await deps.runtime.recalculateDirtyRoutes(decode(match[1]), body) };
+  match = /^\/api\/trips\/([^/]+)\/macro-routes\/recalculate$/.exec(pathname);
+  if (method === "POST" && match) return { status: 200, data: await deps.runtime.recalculateDirtyMacroRoutes(decode(match[1]), body) };
+  match = /^\/api\/trips\/([^/]+)\/macro-routes\/([^/]+)\/recalculate$/.exec(pathname);
+  if (method === "POST" && match) {
+    const expectedGeneration = Number(body.expectedGeneration);
+    if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 0) throw new Error("expectedGeneration 无效。");
+    return { status: 200, data: { route: await deps.runtime.recalculateMacroRoute(decode(match[1]), decode(match[2]), expectedGeneration) } };
+  }
   match = /^\/api\/trips\/([^/]+)\/routes\/([^/]+)\/recalculate$/.exec(pathname);
   if (method === "POST" && match) {
     const expectedGeneration = Number(body.expectedGeneration);

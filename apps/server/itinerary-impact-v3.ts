@@ -157,7 +157,6 @@ export function analyzeItineraryImpactV3(before: TravelPlanDocument, after: Trav
     }
   }
 
-  for (const dayId of macroDayIds) detailDayIds.add(dayId);
   for (const dayId of detailDayIds) detailRouteDayIds.add(dayId);
 
   return {
@@ -167,8 +166,8 @@ export function analyzeItineraryImpactV3(before: TravelPlanDocument, after: Trav
       affectedDayIds: [...macroDayIds],
     },
     detail: {
-      status: detailReasons.size || macroReasons.size ? "needs_update" : "ready",
-      reasons: [...detailReasons, ...macroReasons].filter((reason, index, values) => values.indexOf(reason) === index),
+      status: detailReasons.size ? "needs_update" : "ready",
+      reasons: [...detailReasons],
       affectedDayIds: [...detailDayIds],
       newOptionCandidateIds: [...newOptionCandidateIds],
     },

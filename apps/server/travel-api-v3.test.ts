@@ -14,6 +14,8 @@ function deps() {
   const runtime = {
     startConversation: (_tripId: string, stage: string, input: any) => ({ taskId: `dialogue:${stage}`, messageId: input.message }),
     createCtaAction: (input: any) => ({ action: { id: "action-1", actionType: input.actionType }, taskId: "action-task-1" }),
+    recalculateMacroRoute: (tripId: string, dayId: string, generation: number) => ({ tripId, dayId: `macro:${dayId}`, generation }),
+    recalculateDirtyMacroRoutes: (tripId: string, input: any) => ({ tripId, expectedGeneration: input.expectedGeneration, routes: [] }),
   } as unknown as TravelPlannerRuntimeV3;
   return { store, runtime };
 }
@@ -34,5 +36,12 @@ describe("travel API v3", () => {
   it("does not expose the old direct plan-generation endpoint", async () => {
     const result = await dispatchTravelApiV3("POST", "/api/trips/trip-1/plan/generate", new URLSearchParams(), {}, deps());
     expect(result).toBeNull();
+  });
+
+  it("exposes separate Macro Route recalculation endpoints", async () => {
+    const one = await dispatchTravelApiV3("POST", "/api/trips/trip-1/macro-routes/day-2/recalculate", new URLSearchParams(), { expectedGeneration: 7 }, deps());
+    expect(one?.data).toMatchObject({ route: { tripId: "trip-1", dayId: "macro:day-2", generation: 7 } });
+    const dirty = await dispatchTravelApiV3("POST", "/api/trips/trip-1/macro-routes/recalculate", new URLSearchParams(), { expectedGeneration: 7 }, deps());
+    expect(dirty?.data).toMatchObject({ tripId: "trip-1", expectedGeneration: 7, routes: [] });
   });
 });

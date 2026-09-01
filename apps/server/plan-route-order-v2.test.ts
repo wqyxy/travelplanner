@@ -64,6 +64,7 @@ const output: PlanGenerationOutput = {
     dayNumber: 1,
     date: null,
     title: "测试城",
+    transferMode: "none",
     detailLevel: "planned",
     detailStatus: null,
     startAnchor: { id: "start", placeId: null, label: null, notes: null },

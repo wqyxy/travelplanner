@@ -61,38 +61,6 @@ function anchorName(anchor: DayAnchor, places: Map<string, Place>, language: Iti
   return anchor.label || "Anchor 待设置";
 }
 
-function AnchorEditor({ day, anchorType, places, busy, onCommand }: {
-  day: Day;
-  anchorType: "start" | "end";
-  places: Place[];
-  busy: boolean;
-  onCommand: (command: PlanCommand) => Promise<void>;
-}) {
-  const anchor = anchorType === "start" ? day.startAnchor : day.endAnchor;
-  const [placeId, setPlaceId] = useState(anchor.placeId ?? "");
-  const [label, setLabel] = useState(anchor.label ?? "");
-  const [notes, setNotes] = useState(anchor.notes ?? "");
-  useEffect(() => {
-    setPlaceId(anchor.placeId ?? "");
-    setLabel(anchor.label ?? "");
-    setNotes(anchor.notes ?? "");
-  }, [anchor.placeId, anchor.label, anchor.notes]);
-  const save = () => onCommand({
-    type: "set_day_anchor",
-    dayId: day.id,
-    anchor: anchorType,
-    placeId: placeId || null,
-    label: placeId ? null : label.trim() || null,
-    notes: notes.trim() || null,
-  });
-  return <div className="anchor-editor-v2" onClick={(event) => event.stopPropagation()}>
-    <label><span>{anchorType === "start" ? "出发 Anchor" : "结束 Anchor"}</span><select value={placeId} disabled={busy} onChange={(event) => setPlaceId(event.target.value)}><option value="">不绑定地点</option>{places.map((place) => <option value={place.id} key={place.id}>{place.nameZh}{place.city ? ` · ${place.city}` : ""}</option>)}</select></label>
-    {!placeId && <label><span>自定义名称</span><input value={label} disabled={busy} placeholder={anchorType === "start" ? "例如：京都酒店" : "例如：大阪酒店"} onChange={(event) => setLabel(event.target.value)}/></label>}
-    <label><span>备注</span><input value={notes} disabled={busy} placeholder="可选" onChange={(event) => setNotes(event.target.value)}/></label>
-    <button className="button small" disabled={busy} onClick={() => void save()}><Save size={13}/>保存</button>
-  </div>;
-}
-
 function StopEditor({ stop, day, plan, places, language, busy, onCommand }: {
   stop: DayStop;
   day: Day;
@@ -178,7 +146,7 @@ export function ItineraryPanelV2({
   const [dragStopId, setDragStopId] = useState<string | null>(null);
   const [addPlaceByDay, setAddPlaceByDay] = useState<Record<string, string>>({});
   const stopCards = useRef(new Map<string, HTMLElement>());
-  const addableCandidates = plan.candidates.filter((candidate) => candidate.preference !== "excluded");
+  const addableCandidates = plan.candidates.filter((candidate) => candidate.preference !== "excluded" && places.get(candidate.placeId)?.kind !== "city");
   const dirtyStates = workspace.routeStates.filter((state) => state.dirty);
   const pendingDetailDays = plan.days.filter((day) => day.detailLevel !== "detailed" || day.detailStatus === "needs_review");
 
@@ -207,7 +175,7 @@ export function ItineraryPanelV2({
       </div>
     </header>
     <div className="itinerary-v2-days">
-      {plan.days.map((day, dayIndex) => {
+      {plan.days.map((day) => {
         const state = routeStateForDay(workspace.routeStates, day.id);
         const route = state.route;
         const selected = selectedDayId === day.id;
@@ -216,7 +184,6 @@ export function ItineraryPanelV2({
           <header>
             <div className="day-number-v2"><span>DAY</span><strong>{day.dayNumber}</strong></div>
             <div><h3>{day.title}</h3><small>{day.date || "日期待定"} · {day.detailLevel === "detailed" ? day.detailStatus === "needs_review" ? "细化需复核" : "已细化" : "待细化"}</small></div>
-            <div className="day-order-actions" onClick={(event) => event.stopPropagation()}><button className="icon-button compact" aria-label={`Day ${day.dayNumber} 前移`} disabled={busy || dayIndex === 0} onClick={() => void onCommand({ type: "move_day", dayId: day.id, targetIndex: dayIndex - 1 })}><ArrowUp size={14}/></button><button className="icon-button compact" aria-label={`Day ${day.dayNumber} 后移`} disabled={busy || dayIndex === plan.days.length - 1} onClick={() => void onCommand({ type: "move_day", dayId: day.id, targetIndex: dayIndex + 1 })}><ArrowDown size={14}/></button></div>
             <div className={`route-state-pill ${state.dirty ? "dirty" : route?.status || "idle"}`}>{state.dirty ? <><AlertTriangle size={13}/>路线有变更</> : route?.status === "ready" ? <><CheckCircle2 size={13}/>路线已更新</> : route?.status === "attention" ? <><AlertTriangle size={13}/>路线需注意</> : <><Route size={13}/>路线待生成</>}</div>
           </header>
           <div className={`day-route-summary ${state.dirty ? "dirty" : ""}`}>
@@ -228,7 +195,7 @@ export function ItineraryPanelV2({
             <button className="button small" disabled={busy} onClick={(event) => { event.stopPropagation(); void onRecalculate(day.id); }}><RefreshCw size={13}/>{state.dirty || !route ? "更新路线" : "重新计算"}</button>
             <button className="button small ghost" disabled={busy || !needsDetail} onClick={(event) => { event.stopPropagation(); void onRefine([day.id]); }}><CalendarDays size={13}/>{needsDetail ? "细化此日" : "已细化"}</button>
           </div>
-          <details className="day-editor-v2" onClick={(event) => event.stopPropagation()}><summary>编辑 Day、Anchor 与地点</summary><div className="day-editor-grid"><label><span>Day 标题</span><div className="inline-save"><input defaultValue={day.title} id={`day-title-${day.id}`} disabled={busy}/><button className="icon-button compact" aria-label="保存 Day 标题" disabled={busy} onClick={() => { const element = document.getElementById(`day-title-${day.id}`) as HTMLInputElement | null; const title = element?.value.trim(); if (title && title !== day.title) void onCommand({ type: "update_day", dayId: day.id, changes: { title } }); }}><Save size={14}/></button></div></label><AnchorEditor day={day} anchorType="start" places={plan.places} busy={busy} onCommand={onCommand}/><AnchorEditor day={day} anchorType="end" places={plan.places} busy={busy} onCommand={onCommand}/></div></details>
+          <details className="day-editor-v2" onClick={(event) => event.stopPropagation()}><summary>编辑 Day 标题</summary><div className="day-editor-grid"><label><span>Day 标题</span><div className="inline-save"><input defaultValue={day.title} id={`day-title-${day.id}`} disabled={busy}/><button className="icon-button compact" aria-label="保存 Day 标题" disabled={busy} onClick={() => { const element = document.getElementById(`day-title-${day.id}`) as HTMLInputElement | null; const title = element?.value.trim(); if (title && title !== day.title) void onCommand({ type: "update_day", dayId: day.id, changes: { title } }); }}><Save size={14}/></button></div></label></div></details>
           <div className="day-timeline-v2">
             <div className="timeline-node anchor"><i><Hotel size={14}/></i><div><small>出发 Anchor</small><strong>{anchorName(day.startAnchor, places, workspace.trip.planLanguage)}</strong>{day.startAnchor.notes && <p>{day.startAnchor.notes}</p>}</div></div>
             <div className={`stop-drop-zone ${dragStopId ? "visible" : ""}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => drop(event, day.id, 0)}>放到 Day {day.dayNumber} 首位</div>
