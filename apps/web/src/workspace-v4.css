@@ -7,6 +7,15 @@
   max-width: 96px;
 }
 
+.model-status > .ai-task-topbar {
+  flex: 0 1 300px;
+  max-width: 300px;
+}
+
+.model-status > .ai-task-topbar .ai-task-trigger {
+  height: 34px;
+}
+
 .workspace-side-v3 {
   position: relative;
   display: flex;
@@ -498,6 +507,32 @@
   .model-status .ai-model-select-v3 {
     display: block !important;
     max-width: 78px;
+  }
+
+  .model-status > .ai-task-topbar {
+    flex: 0 0 34px;
+    max-width: 34px;
+  }
+
+  .model-status > .ai-task-topbar .ai-task-trigger {
+    width: 34px;
+    justify-content: center;
+    padding: 5px;
+  }
+
+  .model-status > .ai-task-topbar .ai-task-running-line,
+  .model-status > .ai-task-topbar .ai-task-trigger > time,
+  .model-status > .ai-task-topbar .ai-task-trigger > em,
+  .model-status > .ai-task-topbar .ai-task-trigger > svg {
+    display: none;
+  }
+
+  .model-status > .ai-task-topbar .ai-task-popover {
+    position: fixed;
+    top: 70px;
+    right: 10px;
+    left: 10px;
+    width: calc(100vw - 20px);
   }
 
   .workspace-side-v3 {
