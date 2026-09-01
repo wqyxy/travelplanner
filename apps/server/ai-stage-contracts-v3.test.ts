@@ -53,6 +53,7 @@ describe("StageDialogueOutput strict transport", () => {
   it("accepts the controlled action envelope and rejects invented parameter keys", () => {
     expect(StageDialogueOutputSchema.safeParse({
       schemaVersion: 1,
+      requirementsCapture: null,
       result: {
         type: "action",
         assistantMessage: "可以，我先生成一个待确认动作。",
@@ -65,6 +66,7 @@ describe("StageDialogueOutput strict transport", () => {
 
     expect(StageDialogueOutputSchema.safeParse({
       schemaVersion: 1,
+      requirementsCapture: null,
       result: {
         type: "action",
         assistantMessage: "测试",
@@ -73,6 +75,18 @@ describe("StageDialogueOutput strict transport", () => {
         targetIds: [],
         impactSummary: "测试",
       },
+    }).success).toBe(false);
+
+    expect(StageDialogueOutputSchema.safeParse({
+      schemaVersion: 1,
+      requirementsCapture: { additionalRequirements: "每天驾驶不超过 3 小时；需要无障碍设施" },
+      result: { type: "reply", assistantMessage: "已记录。" },
+    }).success).toBe(true);
+
+    expect(StageDialogueOutputSchema.safeParse({
+      schemaVersion: 1,
+      requirementsCapture: { additionalRequirements: "   " },
+      result: { type: "reply", assistantMessage: "测试" },
     }).success).toBe(false);
   });
 });

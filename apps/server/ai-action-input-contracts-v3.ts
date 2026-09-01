@@ -20,6 +20,7 @@ const RequirementsPatch = z.object({
     duration: z.string().trim().max(500).optional(),
     travelers: z.string().trim().max(500).optional(),
     transport: z.string().trim().max(500).optional(),
+    additionalRequirements: z.string().trim().max(4000).optional(),
   }).strict().refine((value) => Object.keys(value).length > 0, "brief 至少需要一个字段。").optional(),
   dates: z.object({ start: z.string().trim().min(1).max(40).nullable(), end: z.string().trim().min(1).max(40).nullable(), requestedDurationDays: z.number().int().min(1).max(365).nullable() }).strict().optional(),
   travelers: z.object({ summary: z.string().max(1000), adults: z.number().int().min(0).max(100).nullable(), children: z.number().int().min(0).max(100).nullable() }).strict().optional(),
@@ -62,6 +63,7 @@ const ItineraryChanges = z.object({
 }).strict().refine((value) => Object.keys(value).length > 0, "行程编辑至少需要一个字段。");
 
 const Empty = z.object({}).strict();
+const RequirementsCapture = z.object({ additionalRequirements: z.string().trim().min(1).max(4000) }).strict();
 const Intent = z.object({ request: Request.optional(), allowWeb: z.boolean().optional() }).strict();
 const CandidateTarget = z.object({ candidateId: Id.optional() }).strict();
 const PreferenceInput = z.object({ candidateId: Id.optional(), candidateIds: z.array(Id).max(200).optional(), preference: Preference }).strict();
@@ -73,6 +75,7 @@ const DetailUpdate = z.object({ dayIds: z.array(Id).max(90).optional(), request:
 const ACTION_INPUT_CONTRACTS: Record<AiActionType, InputContractIdV3> = {
   "requirements.update": "requirements.mutation.input",
   "requirements.clear": "requirements.mutation.input",
+  "requirements.capture": "requirements.capture.input",
   "destination.generate": "destination.action.input",
   "destination.add": "destination.action.input",
   "destination.remove": "destination.action.input",
@@ -107,6 +110,7 @@ const ACTION_INPUT_CONTRACTS: Record<AiActionType, InputContractIdV3> = {
 const CTA_SCHEMAS: Record<AiActionType, z.ZodType<Record<string, unknown>>> = {
   "requirements.update": z.object({ changes: RequirementsPatch }).strict(),
   "requirements.clear": z.object({ fields: z.array(RequirementField).min(1).max(9) }).strict(),
+  "requirements.capture": RequirementsCapture,
   "destination.generate": Intent,
   "destination.add": Intent,
   "destination.remove": CandidateTarget,
@@ -139,6 +143,7 @@ const CTA_SCHEMAS: Record<AiActionType, z.ZodType<Record<string, unknown>>> = {
 };
 
 function compactDialogue(actionType: AiActionType, value: unknown): Record<string, unknown> {
+  if (actionType === "requirements.capture") return RequirementsCapture.parse(value);
   const p = DialogueActionParametersSchema.parse(value);
   const intent = () => ({ ...(p.request ? { request: p.request } : {}), ...(p.allowWeb !== null ? { allowWeb: p.allowWeb } : {}) });
   switch (actionType) {
@@ -165,6 +170,7 @@ function compactDialogue(actionType: AiActionType, value: unknown): Record<strin
 
 export function parseActionParametersV3(actionType: AiActionType, inputContract: InputContractIdV3, origin: AiActionOrigin, value: unknown): Record<string, unknown> {
   if (ACTION_INPUT_CONTRACTS[actionType] !== inputContract) throw new Error(`Action inputContract 注册不一致：${actionType}`);
+  if (actionType === "requirements.capture") return RequirementsCapture.parse(value);
   if (origin === "conversation") return compactDialogue(actionType, value);
   return CTA_SCHEMAS[actionType].parse(value ?? {});
 }

@@ -249,10 +249,13 @@
 .workspace-requirements-v3 dd { margin: 0; font-weight: 600; }
 .requirements-fields-v3 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .requirements-fields-v3 label { display: grid; gap: 6px; min-width: 0; }
+.requirements-fields-v3 label.wide { grid-column: 1 / -1; }
 .requirements-fields-v3 label > span { display: flex; align-items: center; gap: 6px; color: var(--muted, #6b7280); font-size: 12px; font-weight: 700; }
 .requirements-fields-v3 em { color: var(--danger, #b42318); font-size: 10px; font-style: normal; }
 .requirements-fields-v3 input { min-width: 0; width: 100%; border: 1px solid var(--border, rgba(127,127,127,.2)); border-radius: 8px; background: var(--control, #fff); color: var(--text); padding: 10px 11px; outline: none; }
 .requirements-fields-v3 input:focus { border-color: var(--accent, #2563eb); box-shadow: 0 0 0 3px rgba(37,99,235,.12); }
+.requirements-fields-v3 textarea { min-width: 0; width: 100%; min-height: 96px; resize: vertical; border: 1px solid var(--border, rgba(127,127,127,.2)); border-radius: 8px; background: var(--control, #fff); color: var(--text); padding: 10px 11px; outline: none; font: inherit; }
+.requirements-fields-v3 textarea:focus { border-color: var(--accent, #2563eb); box-shadow: 0 0 0 3px rgba(37,99,235,.12); }
 .requirements-save-status-v3 { min-height: 16px; color: var(--muted, #6b7280); }
 .requirements-save-status-v3.failed { color: var(--danger, #b42318); }
 @media (max-width: 560px) { .requirements-fields-v3 { grid-template-columns: 1fr; } }

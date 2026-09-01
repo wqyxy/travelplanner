@@ -15,6 +15,7 @@ function actionLabel(action: AiAction) {
   const labels: Partial<Record<AiAction["actionType"], string>> = {
     "requirements.update": "更新旅行需求",
     "requirements.clear": "清除旅行需求",
+    "requirements.capture": "记录其他需求",
     "destination.generate": "生成目的地建议",
     "destination.add": "新增目的地",
     "destination.remove": "删除目的地",

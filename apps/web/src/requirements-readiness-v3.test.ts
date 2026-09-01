@@ -5,7 +5,7 @@ import { hasTravelRequirements } from "./requirements-readiness-v3";
 function emptyFacts(): TripFacts {
   return {
     title: "未命名旅行",
-    brief: { destination: "", origin: "", departureTime: "", duration: "", travelers: "", transport: "" },
+    brief: { destination: "", origin: "", departureTime: "", duration: "", travelers: "", transport: "", additionalRequirements: "" },
     originPlaceId: null,
     destinationPlaceIds: [],
     dates: { start: null, end: null, requestedDurationDays: null },

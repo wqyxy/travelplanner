@@ -200,11 +200,13 @@ describe("TravelPlannerRuntimeV3 AI action regressions", () => {
 
   it("rejects generated destinations outside the saved United Kingdom scope", async () => {
     const store = db(); const created = store.createTrip();
-    store.writePlan(created.id, { ...created.plan, trip: { ...created.plan.trip, brief: { ...created.plan.trip.brief, destination: "英国" } } }, 0, { source: "test", summary: "United Kingdom scope" });
-    const rt = runtime(store, async () => run({ schemaVersion: 1, baseGeneration: 1, assistantMessage: "错误结果", places: [{ id: "tmp-place-fr", nameZh: "巴黎", nameLocal: null, nameEn: "Paris", kind: "city", city: "Paris", region: null, country: "France", countryCode: "FR", approximate: false }], candidates: [{ temporaryId: "tmp-candidate-fr", placeTemporaryId: "tmp-place-fr", planningAreaCandidateId: null, aiReason: "错误", aiScore: 50, suggestedDurationMinutes: 1440, tags: [], defaultPreference: "optional" }] }));
+    store.writePlan(created.id, { ...created.plan, trip: { ...created.plan.trip, brief: { ...created.plan.trip.brief, destination: "英国", additionalRequirements: "每天驾驶不超过 3 小时" } } }, 0, { source: "test", summary: "United Kingdom scope" });
+    const actionStates: any[] = [];
+    const rt = runtime(store, async (input) => { actionStates.push(input.state); return run({ schemaVersion: 1, baseGeneration: 1, assistantMessage: "错误结果", places: [{ id: "tmp-place-fr", nameZh: "巴黎", nameLocal: null, nameEn: "Paris", kind: "city", city: "Paris", region: null, country: "France", countryCode: "FR", approximate: false }], candidates: [{ temporaryId: "tmp-candidate-fr", placeTemporaryId: "tmp-place-fr", planningAreaCandidateId: null, aiReason: "错误", aiScore: 50, suggestedDurationMinutes: 1440, tags: [], defaultPreference: "optional" }] }); });
     const started = rt.createCtaAction({ tripId: created.id, stage: "destinations", actionType: "destination.generate", parameters: {}, targetIds: [], requestKey: "reject-outside-uk" });
     await waitFor(() => store.getAction(started.action.id)?.status === "failed");
     expect(store.getAction(started.action.id)?.errorSummary).toMatch(/范围外地点/);
+    expect(actionStates[0].tripFacts.brief.additionalRequirements).toBe("每天驾驶不超过 3 小时");
     expect(store.requireTrip(created.id).plan.candidates).toEqual([]);
     store.close();
   });

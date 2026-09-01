@@ -448,6 +448,7 @@ export class TravelPlannerRuntimeV3 {
         if (afterFirst.contentGeneration !== baseGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
         this.saveDialogueThread(afterFirst, stage, handle, existingThreadId);
         let webMs = 0;
+        let webReply: { assistantMessage: string; verification: unknown } | null = null;
 
         if (output.result.type === "web_required") {
           this.options.tasks.update(taskId, "waiting", "正在核验实时信息", "dialogue:web-required");
@@ -467,21 +468,29 @@ export class TravelPlannerRuntimeV3 {
           if (afterWeb.contentGeneration !== baseGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
           this.saveDialogueThread(afterWeb, stage, webHandle, webThread);
           webMs = Date.now() - webStarted;
-          this.options.store.createAssistantMessage(tripId, stage, verified.assistantMessage, { type: "reply", verification: verified.verification });
-        } else if (output.result.type === "action") {
+          webReply = { assistantMessage: verified.assistantMessage, verification: verified.verification };
+        }
+
+        const effectiveGeneration = output.requirementsCapture
+          ? await this.captureAdditionalRequirements(tripId, messageId, baseGeneration, output.requirementsCapture.additionalRequirements)
+          : baseGeneration;
+
+        if (output.result.type === "action") {
           const registration = actionRegistration(output.result.actionType);
           if (registration.stage !== stage) throw new Error(`阶段对话识别了越界 Action：${output.result.actionType}`);
           const normalizedParameters = parseActionParametersV3(output.result.actionType, registration.inputContract, "conversation", output.result.parameters);
           const scope = actionScope(output.result.actionType, output.result.targetIds, normalizedParameters);
           const action = AiActionRecordSchema.parse({
             id: randomUUID(), tripId, stage, actionType: output.result.actionType, executor: registration.executor, origin: "conversation", sourceMessageId: messageId,
-            parameters: output.result.parameters, targetIds: output.result.targetIds, scope, baseGeneration, status: "pending_confirmation",
+            parameters: output.result.parameters, targetIds: output.result.targetIds, scope, baseGeneration: effectiveGeneration, status: "pending_confirmation",
             taskId: null, proposalId: null, resultRef: null, startedAt: null, updatedAt: now(), completedAt: null, errorSummary: null,
           });
           const stored = this.options.store.createAction(action).action;
           this.options.store.createAssistantMessage(tripId, stage, output.result.assistantMessage, { type: "action", actionId: stored.id, impactSummary: output.result.impactSummary });
-          if (stored.actionType === "requirements.update" || stored.actionType === "requirements.clear") this.confirmClaimedAction(stored.id, baseGeneration);
+          if (stored.actionType === "requirements.update" || stored.actionType === "requirements.clear") this.confirmClaimedAction(stored.id, effectiveGeneration);
           else this.emit("travel.action.changed", { tripId, actionId: stored.id });
+        } else if (webReply) {
+          this.options.store.createAssistantMessage(tripId, stage, webReply.assistantMessage, { type: "reply", verification: webReply.verification });
         } else {
           this.options.store.createAssistantMessage(tripId, stage, output.result.assistantMessage, { type: output.result.type });
         }
@@ -507,6 +516,7 @@ export class TravelPlannerRuntimeV3 {
   }
 
   createCtaAction(input: { tripId: string; stage: ConversationStage; actionType: AiActionType; parameters?: Record<string, unknown>; targetIds?: string[]; requestKey: string }) {
+    if (input.actionType === "requirements.capture") throw new Error("requirements.capture 仅供阶段对话内部使用。");
     const registration = actionRegistration(input.actionType);
     if (registration.stage !== input.stage) throw new Error(`CTA Action 与阶段不匹配：${input.actionType}`);
     const trip = this.options.store.requireTrip(input.tripId);
@@ -707,6 +717,16 @@ export class TravelPlannerRuntimeV3 {
   private async executeDeterministic(action: AiActionRecord) {
     const trip = this.options.store.requireTrip(action.tripId);
     if (trip.contentGeneration !== action.baseGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
+    if (action.actionType === "requirements.capture") {
+      const additionalRequirements = String(action.parameters.additionalRequirements ?? "").trim();
+      if (!additionalRequirements) throw new Error("requirements.capture 缺少其他需求。");
+      const next = structuredClone(trip.plan);
+      next.trip.brief.additionalRequirements = additionalRequirements;
+      const parsed = TravelPlanDocumentSchema.parse(next);
+      const written = this.options.store.writePlan(action.tripId, parsed, action.baseGeneration, { source: "action:requirements.capture", summary: "记录其他需求" }, { keepActionId: action.id });
+      this.emit("travel.document.changed", { tripId: action.tripId, generation: written.generation, changedDayIds: [] });
+      return `generation:${written.generation}`;
+    }
     if (action.actionType === "requirements.update" || action.actionType === "requirements.clear") {
       const defaults = emptyTravelPlan().trip;
       const next = structuredClone(trip.plan);
@@ -1259,6 +1279,31 @@ export class TravelPlannerRuntimeV3 {
   private googleMapsLinks() {
     if (!this.options.googleMapsLinks) throw new Error("Google Maps 链接解析服务未配置。");
     return this.options.googleMapsLinks;
+  }
+
+  private async captureAdditionalRequirements(tripId: string, sourceMessageId: string, baseGeneration: number, additionalRequirements: string) {
+    const normalized = additionalRequirements.trim();
+    if (!normalized) return baseGeneration;
+    const trip = this.options.store.requireTrip(tripId);
+    if (trip.contentGeneration !== baseGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
+    if (trip.plan.trip.brief.additionalRequirements === normalized) return baseGeneration;
+    const action = AiActionRecordSchema.parse({
+      id: randomUUID(), tripId, stage: "requirements", actionType: "requirements.capture", executor: "deterministic", origin: "conversation", sourceMessageId,
+      parameters: { additionalRequirements: normalized }, targetIds: [], scope: { type: "trip", id: null }, baseGeneration, status: "pending_confirmation",
+      taskId: null, proposalId: null, resultRef: null, startedAt: null, updatedAt: now(), completedAt: null, errorSummary: null,
+    });
+    const stored = this.options.store.createAction(action).action;
+    const claimed = this.options.store.claimActionForExecution(stored.id, baseGeneration);
+    if (!claimed.claimed) throw new Error("CONTENT_GENERATION_SUPERSEDED");
+    try {
+      const resultRef = await this.executeDeterministic(claimed.action);
+      this.options.store.completeAction(stored.id, resultRef);
+      this.emit("travel.action.changed", { tripId, actionId: stored.id });
+      return this.options.store.requireTrip(tripId).contentGeneration;
+    } catch (error) {
+      this.options.store.failAction(stored.id, aiErrorMessageV3(error));
+      throw error;
+    }
   }
   async previewGoogleMapsLink(tripId: string, placeId: string, input: unknown) {
     const parsed = GoogleMapsLinkPreviewInputSchema.parse(input);

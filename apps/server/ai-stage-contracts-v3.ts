@@ -13,6 +13,7 @@ export type AiActionStage = z.infer<typeof AiActionStageSchema>;
 export const AiActionTypeSchema = z.enum([
   "requirements.update",
   "requirements.clear",
+  "requirements.capture",
   "destination.generate",
   "destination.add",
   "destination.remove",
@@ -105,6 +106,7 @@ const DialogueChangesSchema = z.object({
     duration: z.string().trim().max(500).optional(),
     travelers: z.string().trim().max(500).optional(),
     transport: z.string().trim().max(500).optional(),
+    additionalRequirements: z.string().trim().max(4000).optional(),
   }).strict().optional(),
   date: z.string().trim().min(1).max(40).nullable().optional(),
   activity: z.string().trim().min(1).max(2000).optional(),
@@ -198,6 +200,9 @@ const ActionDialogueResultSchema = z.object({
 
 export const StageDialogueOutputSchema = z.object({
   schemaVersion: z.literal(1),
+  requirementsCapture: z.object({
+    additionalRequirements: z.string().trim().min(1).max(4000),
+  }).strict().nullable(),
   result: z.discriminatedUnion("type", [
     z.object({ type: z.literal("reply"), assistantMessage: z.string().trim().min(1).max(12000) }).strict(),
     z.object({ type: z.literal("clarification"), assistantMessage: z.string().trim().min(1).max(12000) }).strict(),
@@ -308,6 +313,7 @@ export type PromptIdV3 =
 
 export type InputContractIdV3 =
   | "requirements.mutation.input"
+  | "requirements.capture.input"
   | "destination.action.input"
   | "interest.action.input"
   | "itinerary.action.input"

@@ -3,7 +3,7 @@ import type { AiProposal, Chat, Revision, RouteState, Trip, PlaceResolution, Day
 export type ConversationStage = "requirements" | "destinations" | "interests" | "itinerary";
 export type PlannerStepV3 = ConversationStage | "detail";
 export type AiActionType =
-  | "requirements.update" | "requirements.clear"
+  | "requirements.update" | "requirements.clear" | "requirements.capture"
   | "destination.generate" | "destination.add" | "destination.remove" | "destination.replace" | "destination.edit" | "destination.preference"
   | "interest.discover" | "interest.supplement" | "interest.add" | "interest.remove" | "interest.replace" | "interest.edit" | "interest.preference"
   | "itinerary.generate" | "itinerary.replan" | "itinerary.detail.generate" | "itinerary.detail.update" | "itinerary.stop.add" | "itinerary.stop.remove" | "itinerary.stop.replace" | "itinerary.stop.move" | "itinerary.day.reorder" | "itinerary.edit" | "itinerary.anchor.set" | "itinerary.day.optimize" | "itinerary.repair" | "itinerary.verify" | "itinerary.refine"

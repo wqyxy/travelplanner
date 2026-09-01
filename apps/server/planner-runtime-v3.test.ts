@@ -116,6 +116,49 @@ describe("TravelPlannerRuntimeV3", () => {
     db.close();
   });
 
+  it("keeps legacy v3 documents readable when the seventh brief field is absent", () => {
+    const db = store();
+    const trip = db.createTrip();
+    const legacy = TravelPlanDocumentSchema.parse({
+      ...trip.plan,
+      trip: { ...trip.plan.trip, brief: { destination: "英国", origin: "", departureTime: "", duration: "", travelers: "", transport: "" } },
+    });
+    expect(legacy.trip.brief.additionalRequirements).toBe("");
+    expect(db.requireTrip(trip.id).contentGeneration).toBe(0);
+    db.close();
+  });
+
+  it("captures durable additional requirements from every dialogue stage", async () => {
+    for (const stage of ["requirements", "destinations", "interests", "itinerary"] as const) {
+      const db = store();
+      const trip = db.createTrip();
+      const rt = runtime({ store: db, dialogue: () => handle({ schemaVersion: 1, requirementsCapture: { additionalRequirements: "不赶早；每天驾驶不超过 3 小时" }, result: { type: "reply", assistantMessage: "已记录。" } }) });
+      rt.startConversation(trip.id, stage, { message: "不赶早，每天开车别超过三小时", selection: { type: "trip", id: null } });
+      await waitFor(() => db.requireTrip(trip.id).plan.trip.brief.additionalRequirements.length > 0);
+      expect(db.requireTrip(trip.id).plan.trip.brief.additionalRequirements).toBe("不赶早；每天驾驶不超过 3 小时");
+      expect(db.listActions(trip.id).filter((action) => action.actionType === "requirements.capture")).toHaveLength(1);
+      db.close();
+    }
+  });
+
+  it("captures before a same-turn requirement action and allows an explicit manual clear", async () => {
+    const db = store();
+    const trip = db.createTrip();
+    const rt = runtime({ store: db, dialogue: () => handle({
+      schemaVersion: 1,
+      requirementsCapture: { additionalRequirements: "需要无障碍设施；不赶早" },
+      result: { type: "action", assistantMessage: "已更新节奏。", actionType: "requirements.update", parameters: dialogueParameters({ pace: "轻松" }), targetIds: [], impactSummary: "更新节奏" },
+    }) });
+    rt.startConversation(trip.id, "requirements", { message: "不赶早，也要无障碍，节奏轻松", selection: { type: "trip", id: null } });
+    await waitFor(() => db.listActions(trip.id).length === 2 && db.listActions(trip.id).every((action) => action.status === "applied" || action.status === "completed"));
+    expect(db.requireTrip(trip.id).contentGeneration).toBe(2);
+    expect(db.requireTrip(trip.id).plan.trip).toMatchObject({ pace: "轻松", brief: { additionalRequirements: "需要无障碍设施；不赶早" } });
+    const clear = rt.createCtaAction({ tripId: trip.id, stage: "requirements", actionType: "requirements.update", parameters: { changes: { brief: { additionalRequirements: "" } } }, targetIds: [], requestKey: "clear-additional-requirements" });
+    await waitFor(() => db.getAction(clear.action.id)?.status === "applied");
+    expect(db.requireTrip(trip.id).plan.trip.brief.additionalRequirements).toBe("");
+    db.close();
+  });
+
   it("discards a dialogue result when canonical generation changes while the model is running", async () => {
     const db = store();
     const trip = db.createTrip();
