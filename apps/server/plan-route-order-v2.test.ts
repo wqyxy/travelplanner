@@ -21,6 +21,7 @@ const trip = {
   stage: "place_selection",
   trip: {
     title: "测试",
+    brief: { destination: "测试城", origin: "", departureTime: "", duration: "1 天", travelers: "", transport: "", additionalRequirements: "" },
     originPlaceId: null,
     destinationPlaceIds: [],
     dates: { start: null, end: null, requestedDurationDays: 1 },
