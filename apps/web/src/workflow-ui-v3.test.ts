@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { actionBelongsToWorkflowStepV3, defaultWorkflowStepV3, latestRequiredWorkflowStepV3, requiredWorkflowStepFromResultRefV3, stageForWorkflowStepV3, workflowStepForActionTypeV3, WORKFLOW_STEPS_V3 } from "./workflow-ui-v3";
+import { actionBelongsToWorkflowStepV3, conversationRouteForWorkflowStepV3, defaultWorkflowStepV3, latestRequiredWorkflowStepV3, requiredWorkflowStepFromResultRefV3, stageForWorkflowStepV3, workflowStepForActionTypeV3, WORKFLOW_STEPS_V3 } from "./workflow-ui-v3";
 import type { WorkspaceV3 } from "./v3-types";
 
 function workspace(): WorkspaceV3 {
@@ -7,6 +7,20 @@ function workspace(): WorkspaceV3 {
     trip: { id: "trip", title: "测试", state: "active", updatedAt: "2026-09-02T00:00:00Z", planLanguage: "zh", contentGeneration: 1, plan: { schemaVersion: 2, stage: "place_selection", trip: {} as any, places: [], candidates: [], days: [], warnings: [] } },
     resolutions: [], routes: [], proposals: [], actions: [], routeStates: [], macroRouteStates: [], itineraryUpdateState: { macro: { status: "ready" }, detail: { status: "ready", affectedDayIds: [] } }, messages: { requirements: [], destinations: [], interests: [], itinerary: [] }, tasks: [], revisions: [], coverage: [],
   } as WorkspaceV3;
+}
+
+function workspaceWithDetailCandidate() {
+  const value = workspace();
+  value.trip.plan.places = [
+    { id: "area-place", nameZh: "蒂阿瑙", nameLocal: null, nameEn: "Te Anau", kind: "city", city: "Te Anau", region: null, country: "New Zealand", countryCode: "NZ", approximate: false },
+    { id: "detail-place", nameZh: "萤火虫洞", nameLocal: null, nameEn: "Glowworm Caves", kind: "attraction", city: "Te Anau", region: null, country: "New Zealand", countryCode: "NZ", approximate: false },
+  ];
+  value.trip.plan.candidates = [
+    { id: "area", placeId: "area-place", planningAreaCandidateId: null, planningRole: "planning_area", preference: "must_go", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: null, tags: [] },
+    { id: "detail", placeId: "detail-place", planningAreaCandidateId: "area", planningRole: "detail_interest", preference: "want_to_go", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: 90, tags: [] },
+  ];
+  value.trip.plan.days = [{ id: "day", dayNumber: 1, date: null, title: "蒂阿瑙", detailLevel: "detailed", detailStatus: "ready", startAnchor: { id: "a", placeId: "area-place", label: null, notes: null }, stops: [{ id: "stop", candidateId: "detail", placeId: "detail-place", activity: "游览", period: null, startTime: "10:00", endTime: "11:30", durationMinutes: 90, transportFromPrevious: null, scheduleVerification: { status: "estimated", checkedAt: null }, costNote: null, costVerification: null, notes: null }], endAnchor: { id: "b", placeId: "area-place", label: null, notes: null } } as any];
+  return value;
 }
 
 describe("Phase 6 workflow UI helpers", () => {
@@ -68,5 +82,25 @@ describe("Phase 6 workflow UI helpers", () => {
     value.actions = [{ id: "route-change", tripId: "trip", stage: "destinations", actionType: "itinerary.replan", executor: "ai", origin: "conversation", sourceMessageId: "message", parameters: {}, targetIds: [], scope: {}, baseGeneration: 1, status: "pending_confirmation", taskId: null, proposalId: null, resultRef: null, startedAt: null, updatedAt: "2026-09-02T03:00:00Z", completedAt: null, errorSummary: null }];
     expect(latestRequiredWorkflowStepV3(value)).toEqual({ step: "skeleton", actionId: "route-change" });
     expect(value.actions[0].status).toBe("pending_confirmation");
+  });
+
+  it("routes explicit Detail-to-Core intent from Step 4 to the Step 2 conversation while preserving the candidate", () => {
+    const value = workspaceWithDetailCandidate();
+    expect(conversationRouteForWorkflowStepV3(value, "interests", { type: "candidate", id: "detail" }, "这个地方很重要，要单独留一天")).toEqual({
+      stage: "destinations",
+      selection: { type: "candidate", id: "detail" },
+    });
+  });
+
+  it("routes the same promotion intent from a Step 5 stop to its candidate, but leaves normal detail chat in Step 5", () => {
+    const value = workspaceWithDetailCandidate();
+    expect(conversationRouteForWorkflowStepV3(value, "detail", { type: "stop", id: "stop" }, "把这里提升为重要游览地")).toEqual({
+      stage: "destinations",
+      selection: { type: "candidate", id: "detail" },
+    });
+    expect(conversationRouteForWorkflowStepV3(value, "detail", { type: "stop", id: "stop" }, "今天晚一点出发")).toEqual({
+      stage: "itinerary",
+      selection: { type: "stop", id: "stop" },
+    });
   });
 });
