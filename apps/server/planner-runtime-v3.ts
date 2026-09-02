@@ -1206,7 +1206,7 @@ export class TravelPlannerRuntimeV3 {
     assertDetailPlanningBlockers(detail);
     const plan = applyDetailedUpdatesPhase5V3(trip, result.dayUpdates, true);
     validateItineraryReferences(trip, plan.days, resolutions);
-    validateDetailedSchedulingOutcomeV3(plan, result.unscheduledCandidates, detail.targetDayIds);
+    validateDetailedSchedulingOutcomeV3(plan, result.unscheduledCandidates, detail.targetDayIds, detail.unavailableCandidateIds);
     const written = this.options.store.writePlan(action.tripId, plan, action.baseGeneration, { source: "action:itinerary.detail.generate", summary: "AI 生成每日详细行程" }, { keepActionId: action.id });
     this.options.store.completeAction(action.id, `generation:${written.generation};unscheduled:${result.unscheduledCandidates.length}`);
     this.emit("travel.document.changed", { tripId: action.tripId, generation: written.generation, changedDayIds: detail.targetDayIds });
@@ -1231,7 +1231,7 @@ export class TravelPlannerRuntimeV3 {
     assertDetailPlanningBlockers(detail);
     const replacement = detailedReplacementCommandsPhase5V3(trip, result.dayUpdates);
     validateItineraryReferences(trip, replacement.plan.days.filter((day) => requested.has(day.id)), resolutions);
-    validateDetailedSchedulingOutcomeV3(replacement.plan, result.unscheduledCandidates, requestedIds);
+    validateDetailedSchedulingOutcomeV3(replacement.plan, result.unscheduledCandidates, requestedIds, detail.unavailableCandidateIds);
     if (!replacement.commands.length) {
       const written = this.options.store.writePlan(action.tripId, replacement.plan, action.baseGeneration, { source: "action:itinerary.detail.update", summary: "确认受影响日期无需内容调整" }, { keepActionId: action.id });
       this.options.store.completeAction(action.id, `generation:${written.generation};no-content-change;unscheduled:${result.unscheduledCandidates.length}`);
