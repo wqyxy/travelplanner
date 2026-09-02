@@ -24,7 +24,7 @@ function workspaceFixture(): Workspace {
   ];
   const routes = [
     { tripId: "trip", dayId: "day-1", version: 1, inputFingerprint: "r1", status: "ready", distanceKm: 12.5, durationMinutes: 65, geometry: null, warnings: [], calculatedAt: "2026-09-02T01:00:00.000Z", legs: [{ id: "leg-1", fromNodeId: "a1", toNodeId: "s1", fromPlaceId: "p1", toPlaceId: "p2", mode: "drive", status: "ready", distanceKm: 12.5, durationMinutes: 65, geometry: { type: "LineString", coordinates: [[100, 30], [101, 31]] }, warning: null }] },
-    { tripId: "trip", dayId: "day-2", version: 1, inputFingerprint: "r2", status: "attention", distanceKm: null, durationMinutes: null, geometry: null, warnings: ["路线需更新"], calculatedAt: "2026-09-02T02:00:00.000Z", legs: [{ id: "leg-2", fromNodeId: "a3", toNodeId: "s2", fromPlaceId: "p3", toPlaceId: "p4", mode: "walk", status: "attention", distanceKm: null, durationMinutes: null, geometry: { type: "LineString", coordinates: [[102, 32], [103, 33]] }, warning: "路线需更新" }] },
+    { tripId: "trip", dayId: "day-2", version: 1, inputFingerprint: "r2", status: "attention", distanceKm: null, durationMinutes: null, geometry: null, warnings: ["路线需更新"], calculatedAt: "2026-09-02T02:00:00.000Z", legs: [{ id: "leg-2", fromNodeId: "a3", toNodeId: "s2", fromPlaceId: "p3", toPlaceId: "p4", mode: "walk", status: "attention", distanceKm: 7.5, durationMinutes: 95, geometry: { type: "LineString", coordinates: [[102, 32], [103, 33]] }, warning: "路线需更新" }] },
   ];
   return {
     trip: {
@@ -48,6 +48,19 @@ describe("workspace map presentation", () => {
     expect(itineraryPointFeatures(workspace, "day-2").map((feature) => feature.properties.mark)).toEqual(["起", "1", "终"]);
   });
 
+  it("shows only the simple primary preference marks and hides removed candidates", () => {
+    const workspace = workspaceFixture();
+    workspace.trip.plan.candidates[0].preference = "must_go";
+    workspace.trip.plan.candidates[1].preference = "want_to_go";
+    workspace.trip.plan.candidates[2].preference = "optional";
+    workspace.trip.plan.candidates[3].preference = "excluded";
+    expect(candidatePointFeatures(workspace).map((feature) => [feature.properties.candidateId, feature.properties.mark])).toEqual([
+      ["c1", "★"],
+      ["c2", "♡"],
+      ["c3", ""],
+    ]);
+  });
+
   it("uses the common English name instead of hiding it behind a local name", () => {
     const workspace = workspaceFixture();
     workspace.trip.planLanguage = "bilingual";
@@ -65,7 +78,7 @@ describe("workspace map presentation", () => {
     });
   });
 
-  it("shows every provider leg in all view and scopes a day without changing provider metrics", () => {
+  it("shows every provider leg in all view and hides stale metrics for a dirty route", () => {
     const workspace = workspaceFixture();
     const routes = routeGeometryFeatures(workspace, null);
     expect(routes).toHaveLength(2);
