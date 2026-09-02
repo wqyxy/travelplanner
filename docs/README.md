@@ -90,7 +90,7 @@ Update Card 默认紧凑、原因按需展开
 
 Phase 6 Browser Gate 已验证 mounted UI 符合这些主要交互合同；最终综合回归仍需再次覆盖关键场景。
 
-## 4. 当前实施状态 / 最终回归入口
+## 4. 当前实施状态
 
 [`IMPLEMENTATION_STATUS.md`](./IMPLEMENTATION_STATUS.md)
 
@@ -113,11 +113,34 @@ Phase 7：最终综合回归交接中
 
 当前不能直接宣称专项最终完成。
 
+## 5. 当前最终回归 Handoff
+
+[`FIVE_STEP_FINAL_REGRESSION_HANDOFF.md`](./FIVE_STEP_FINAL_REGRESSION_HANDOFF.md)
+
+回答：
+
+> Codex 现在具体应该怎么做最终综合回归？
+
+包含：
+
+```text
+实施前基线
+完整 diff review 范围
+Phase 1–6 targeted tests 并集
+项目真实 typecheck / full test / build 命令
+实施方案第 29 节 F1–F14 核心场景
+Detailed / Provider / Map 额外回归
+安全隔离 Browser E2E
+真实 AI smoke 的可执行 / BLOCKED 规则
+最终报告格式
+```
+
 下一步固定为：
 
 ```text
-由 Codex 对当前 feature branch 做最终综合回归
-→ PASS / FAIL / BLOCKED
+把该 Handoff 交给 Codex
+→ 对当前实际 HEAD 完成最终综合回归
+→ PASS / FAIL / PARTIAL
 → 用户根据报告决定是否修复、合并或结束专项
 ```
 
@@ -149,6 +172,9 @@ PRODUCT_PLAN
 
 IMPLEMENTATION_STATUS
 = 当前代码实际上做到哪里、当前 Gate 是什么
+
+FIVE_STEP_FINAL_REGRESSION_HANDOFF
+= 当前 Phase 7 独立最终测试任务
 ```
 
 设计文档头部如果仍带有 2026-09-02 设计冻结时的“尚未实施”历史描述，不再作为实时状态判断依据；实时状态以 `IMPLEMENTATION_STATUS.md` 为准。
