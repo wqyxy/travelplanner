@@ -147,6 +147,29 @@ describe("Phase 2 skeleton workflow", () => {
     expect(second.newDayIds).toEqual([]);
   });
 
+  it("keeps the surviving tail repeated Planning Area Block and Day identity after deleting the earlier occurrence", () => {
+    const first = applySkeletonPlanV3(tripDetail(basePlan()), ringDraft());
+    const rotoruaBlockId = first.formalizedStays[1].stayBlockId;
+    const tailAucklandBlockId = first.formalizedStays[2].stayBlockId;
+    const tailAucklandDayIds = first.plan.days
+      .filter((day) => day.stayBlockId === tailAucklandBlockId)
+      .map((day) => day.id);
+
+    const revisedDraft = {
+      stays: [
+        { planningAreaCandidateId: "macro-b", stayDays: 3, transferModeFromPrevious: "drive" },
+        { planningAreaCandidateId: "macro-a", stayDays: 2, transferModeFromPrevious: "drive" },
+      ],
+      omittedPlanningAreas: [{ candidateId: "macro-c", reason: "可选区域仍不采用。" }],
+    } satisfies SkeletonPlanDraft;
+    const second = applySkeletonPlanV3(tripDetail(first.plan, 1), revisedDraft);
+
+    expect(second.formalizedStays[0].stayBlockId).toBe(rotoruaBlockId);
+    expect(second.formalizedStays[1].stayBlockId).toBe(tailAucklandBlockId);
+    expect(second.plan.days.slice(-2).map((day) => day.id)).toEqual(tailAucklandDayIds);
+    expect(second.formalizedStays[1].stayBlockId).not.toBe(first.formalizedStays[0].stayBlockId);
+  });
+
   it("establishes stable Stay Block IDs only when a legacy Skeleton is explicitly saved", () => {
     const source = basePlan();
     const legacyDays = applySkeletonPlanV3(tripDetail(source), ringDraft()).plan.days.map(({ stayBlockId: _stayBlockId, ...day }) => day);
