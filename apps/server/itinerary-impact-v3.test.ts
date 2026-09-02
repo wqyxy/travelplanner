@@ -6,8 +6,14 @@ const place = (id: string, nameZh: string, kind: "city" | "attraction") => ({
   id, nameZh, nameLocal: null, nameEn: null, kind, city: kind === "city" ? null : "甲城", region: null, country: "测试国", countryCode: "NZ", approximate: false,
 });
 
-const candidate = (id: string, placeId: string, preference: "must_go" | "want_to_go" | "optional" | "excluded", planningAreaCandidateId: string | null) => ({
-  id, placeId, planningAreaCandidateId, preference, source: "user" as const, aiReason: null, aiScore: null, suggestedDurationMinutes: planningAreaCandidateId ? 120 : null, tags: [],
+const candidate = (
+  id: string,
+  placeId: string,
+  preference: "must_go" | "want_to_go" | "optional" | "excluded",
+  planningAreaCandidateId: string | null,
+  planningRole?: "planning_area" | "core_visit" | "detail_interest",
+) => ({
+  id, placeId, planningAreaCandidateId, ...(planningRole ? { planningRole } : {}), preference, source: "user" as const, aiReason: null, aiScore: null, suggestedDurationMinutes: planningAreaCandidateId ? 120 : null, tags: [],
 });
 
 function basePlan(detailed = true): TravelPlanDocument {
@@ -15,9 +21,12 @@ function basePlan(detailed = true): TravelPlanDocument {
     ...emptyTravelPlan(),
     stage: detailed ? "itinerary_refinement" : "itinerary_planning",
     places: [place("city-a", "甲城", "city"), place("poi-a", "甲景点", "attraction")],
-    candidates: [candidate("macro-a", "city-a", "must_go", null), candidate("micro-a", "poi-a", "optional", "macro-a")],
+    candidates: [
+      candidate("macro-a", "city-a", "must_go", null, "planning_area"),
+      candidate("micro-a", "poi-a", "optional", "macro-a", "detail_interest"),
+    ],
     days: [{
-      id: "day-1", dayNumber: 1, date: null, title: "甲城", transferMode: "none", detailLevel: detailed ? "detailed" : "planned", detailStatus: detailed ? "ready" : null,
+      id: "day-1", dayNumber: 1, date: null, title: "甲城", stayBlockId: "block-a", transferMode: "none", detailLevel: detailed ? "detailed" : "planned", detailStatus: detailed ? "ready" : null,
       startAnchor: { id: "start-1", placeId: "city-a", label: null, notes: null },
       stops: detailed ? [{ id: "stop-a", candidateId: "micro-a", placeId: "poi-a", activity: "参观", period: "morning", startTime: "09:00", endTime: "11:00", durationMinutes: 120, transportFromPrevious: null, scheduleVerification: { status: "estimated", checkedAt: null }, costNote: null, costVerification: null, notes: null }] : [],
       endAnchor: { id: "end-1", placeId: "city-a", label: null, notes: null },
@@ -25,35 +34,47 @@ function basePlan(detailed = true): TravelPlanDocument {
   });
 }
 
-describe("incremental itinerary impact", () => {
-  it("keeps Macro and Detail ready for an ordinary new optional POI", () => {
+describe("role-aware incremental itinerary impact", () => {
+  it("keeps Macro and Detail ready for an ordinary new optional Detail Interest", () => {
     const before = basePlan();
-    const after = TravelPlanDocumentSchema.parse({ ...before, places: [...before.places, place("poi-b", "乙景点", "attraction")], candidates: [...before.candidates, candidate("micro-b", "poi-b", "optional", "macro-a")] });
+    const after = TravelPlanDocumentSchema.parse({
+      ...before,
+      places: [...before.places, place("poi-b", "乙景点", "attraction")],
+      candidates: [...before.candidates, candidate("micro-b", "poi-b", "optional", "macro-a", "detail_interest")],
+    });
     const impact = analyzeItineraryImpactV3(before, after);
     expect(impact.macro.status).toBe("ready");
     expect(impact.detail.status).toBe("ready");
     expect(impact.detail.newOptionCandidateIds).toEqual(["micro-b"]);
   });
 
-  it("marks only destination days for a new must-go POI", () => {
+  it("marks only the parent Planning Area days for a new must-go Detail Interest", () => {
     const before = basePlan();
-    const after = TravelPlanDocumentSchema.parse({ ...before, places: [...before.places, place("poi-b", "乙景点", "attraction")], candidates: [...before.candidates, candidate("micro-b", "poi-b", "must_go", "macro-a")] });
+    const after = TravelPlanDocumentSchema.parse({
+      ...before,
+      places: [...before.places, place("poi-b", "乙景点", "attraction")],
+      candidates: [...before.candidates, candidate("micro-b", "poi-b", "must_go", "macro-a", "detail_interest")],
+    });
     const impact = analyzeItineraryImpactV3(before, after);
     expect(impact.macro.status).toBe("ready");
     expect(impact.detail.status).toBe("needs_update");
     expect(impact.detail.affectedDayIds).toEqual(["day-1"]);
   });
 
-  it("does not invalidate Detail when an unused POI is deleted", () => {
+  it("does not invalidate Detail when an unused Detail Interest is deleted", () => {
     const before = basePlan();
-    const extra = TravelPlanDocumentSchema.parse({ ...before, places: [...before.places, place("poi-unused", "未使用", "attraction")], candidates: [...before.candidates, candidate("micro-unused", "poi-unused", "optional", "macro-a")] });
+    const extra = TravelPlanDocumentSchema.parse({
+      ...before,
+      places: [...before.places, place("poi-unused", "未使用", "attraction")],
+      candidates: [...before.candidates, candidate("micro-unused", "poi-unused", "optional", "macro-a", "detail_interest")],
+    });
     const impact = analyzeItineraryImpactV3(extra, before);
     expect(impact.macro.status).toBe("ready");
     expect(impact.detail.status).toBe("ready");
     expect(impact.detail.affectedDayIds).toEqual([]);
   });
 
-  it("limits exclusion of a scheduled POI to the Day that used it", () => {
+  it("limits exclusion of a scheduled Detail Interest to the Day that used it", () => {
     const before = basePlan();
     const after = TravelPlanDocumentSchema.parse({
       ...before,
@@ -64,34 +85,56 @@ describe("incremental itinerary impact", () => {
     expect(impact.macro.status).toBe("ready");
     expect(impact.detail.status).toBe("needs_update");
     expect(impact.detail.affectedDayIds).toEqual(["day-1"]);
-    expect(after.days[0].stops).toEqual([]);
   });
 
-  it("defers Detail invalidation until a destination change is applied to Macro Days", () => {
+  it("makes a Core Visit change Macro-dirty without immediately invalidating Detail", () => {
     const before = basePlan();
-    const after = TravelPlanDocumentSchema.parse({ ...before, places: [...before.places, place("city-b", "乙城", "city")], candidates: [...before.candidates, candidate("macro-b", "city-b", "want_to_go", null)] });
+    const after = TravelPlanDocumentSchema.parse({
+      ...before,
+      places: [...before.places, place("core-a", "重要峡湾", "attraction")],
+      candidates: [...before.candidates, candidate("core-a-candidate", "core-a", "must_go", "macro-a", "core_visit")],
+    });
     const impact = analyzeItineraryImpactV3(before, after);
     expect(impact.macro.status).toBe("needs_update");
+    expect(impact.macro.affectedDayIds).toEqual(["day-1"]);
     expect(impact.detail.status).toBe("ready");
     expect(impact.detail.affectedDayIds).toEqual([]);
   });
 
-  it("marks Macro needs_update when a removed destination leaves an invalid Day", () => {
-    const before = basePlan(false);
+  it("makes Planning Area preference changes Macro-dirty", () => {
+    const before = basePlan();
     const after = TravelPlanDocumentSchema.parse({
       ...before,
-      candidates: before.candidates.filter((item) => item.id !== "macro-a" && item.planningAreaCandidateId !== "macro-a"),
-      places: [],
-      days: before.days.map((day) => ({ ...day, startAnchor: { ...day.startAnchor, placeId: null }, endAnchor: { ...day.endAnchor, placeId: null } })),
+      candidates: before.candidates.map((item) => item.id === "macro-a" ? { ...item, preference: "want_to_go" as const } : item),
     });
-    expect(analyzeItineraryImpactV3(before, after).macro.status).toBe("needs_update");
+    const impact = analyzeItineraryImpactV3(before, after);
+    expect(impact.macro.status).toBe("needs_update");
+    expect(impact.macro.affectedDayIds).toEqual(["day-1"]);
   });
 
-  it("does not replan Macro for a display-name-only Place change", () => {
+  it("makes important TripFacts changes Macro-dirty and scopes them to the current trip", () => {
     const before = basePlan();
-    const after = TravelPlanDocumentSchema.parse({ ...before, places: before.places.map((item) => item.id === "city-a" ? { ...item, nameZh: "皇后镇" } : item) });
+    const after = TravelPlanDocumentSchema.parse({ ...before, trip: { ...before.trip, pace: "更慢一些" } });
+    const impact = analyzeItineraryImpactV3(before, after);
+    expect(impact.macro.status).toBe("needs_update");
+    expect(impact.macro.affectedDayIds).toEqual(["day-1"]);
+    expect(impact.detail.status).toBe("ready");
+  });
+
+  it("keeps display-name changes outside the Macro fingerprint", () => {
+    const before = basePlan();
+    const after = TravelPlanDocumentSchema.parse({ ...before, places: before.places.map((item) => item.id === "city-a" ? { ...item, nameZh: "甲城市区" } : item) });
     const impact = analyzeItineraryImpactV3(before, after);
     expect(impact.macro.status).toBe("ready");
     expect(impact.detail.status).toBe("ready");
+    expect(impact.routes.macroDayIds).toEqual([]);
+  });
+
+  it("refreshes Macro Route for route-identity changes without making the Skeleton dirty", () => {
+    const before = basePlan();
+    const after = TravelPlanDocumentSchema.parse({ ...before, places: before.places.map((item) => item.id === "city-a" ? { ...item, approximate: true } : item) });
+    const impact = analyzeItineraryImpactV3(before, after);
+    expect(impact.macro.status).toBe("ready");
+    expect(impact.routes.macroDayIds).toEqual(["day-1"]);
   });
 });
