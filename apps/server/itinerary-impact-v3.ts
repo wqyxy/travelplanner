@@ -55,6 +55,17 @@ function dayIdsForPlanningArea(plan: TravelPlanDocument, planningAreaCandidateId
   if (!planningAreaCandidateId) return [];
   const area = plan.candidates.find((candidate) => candidate.id === planningAreaCandidateId);
   if (!area) return [];
+  // A transfer day belongs to the arriving Stay Block, so endAnchor is the canonical
+  // owner for Detail/Core capacity and affected-Day calculations.
+  return plan.days.filter((day) => day.endAnchor.placeId === area.placeId).map((day) => day.id);
+}
+
+function routeDayIdsForPlanningArea(plan: TravelPlanDocument, planningAreaCandidateId: string | null) {
+  if (!planningAreaCandidateId) return [];
+  const area = plan.candidates.find((candidate) => candidate.id === planningAreaCandidateId);
+  if (!area) return [];
+  // Route geometry depends on both ends, so a Planning Area identity change refreshes
+  // inbound and outbound Macro routes even though Detail ownership is endAnchor-based.
   return plan.days.filter((day) => day.startAnchor.placeId === area.placeId || day.endAnchor.placeId === area.placeId).map((day) => day.id);
 }
 
@@ -87,6 +98,10 @@ function routeIdentity(place: Place | null | undefined) {
 
 function addParentDays(target: Set<string>, plan: TravelPlanDocument, parentId: string | null | undefined) {
   for (const dayId of dayIdsForPlanningArea(plan, parentId ?? null)) target.add(dayId);
+}
+
+function addParentRouteDays(target: Set<string>, plan: TravelPlanDocument, parentId: string | null | undefined) {
+  for (const dayId of routeDayIdsForPlanningArea(plan, parentId ?? null)) target.add(dayId);
 }
 
 export function analyzeItineraryImpactV3(before: TravelPlanDocument, after: TravelPlanDocument): ItineraryImpactV3 {
@@ -138,8 +153,8 @@ export function analyzeItineraryImpactV3(before: TravelPlanDocument, after: Trav
 
     if (leftRole === "planning_area" || rightRole === "planning_area") {
       if (!same(routeIdentity(leftPlace), routeIdentity(rightPlace))) {
-        if (left) addParentDays(macroRouteDayIds, before, left.id);
-        if (right) addParentDays(macroRouteDayIds, after, right.id);
+        if (left) addParentRouteDays(macroRouteDayIds, before, left.id);
+        if (right) addParentRouteDays(macroRouteDayIds, after, right.id);
       }
     }
 
