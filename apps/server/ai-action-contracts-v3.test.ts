@@ -6,6 +6,7 @@ import {
   ItineraryGenerateOutputSchema,
   ItineraryRefineOutputSchema,
   ItineraryVerifyOutputSchema,
+  RequiresWorkflowStepResultSchema,
 } from "./ai-action-contracts-v3.js";
 
 function interestOutput() {
@@ -35,6 +36,34 @@ describe("V3 action contracts", () => {
     const wrongParent = structuredClone(valid);
     wrongParent.candidates[0].planningAreaCandidateId = "macro-2";
     expect(InterestDiscoverOutputSchema.safeParse(wrongParent).success).toBe(false);
+  });
+
+  it("keeps legacy requires_stage while accepting requires_workflow_step", () => {
+    expect(ItineraryGenerateOutputSchema.safeParse({
+      schemaVersion: 2,
+      baseGeneration: 0,
+      result: { type: "requires_stage", requiresStage: "interests", assistantMessage: "需要先补地点", reason: "缺少具体地点" },
+    }).success).toBe(true);
+
+    expect(ItineraryGenerateOutputSchema.safeParse({
+      schemaVersion: 2,
+      baseGeneration: 0,
+      result: { type: "requires_workflow_step", requiresWorkflowStep: "backbone", assistantMessage: "需要先调整想去的地方", reason: "必去区域超过总天数" },
+    }).success).toBe(true);
+
+    expect(RequiresWorkflowStepResultSchema.safeParse({
+      type: "requires_workflow_step",
+      requiresWorkflowStep: "skeleton",
+      assistantMessage: "请先重新确认路线和天数",
+      reason: "当前宏观安排无法承载每日计划",
+    }).success).toBe(true);
+
+    expect(RequiresWorkflowStepResultSchema.safeParse({
+      type: "requires_workflow_step",
+      requiresWorkflowStep: "detail",
+      assistantMessage: "非法回退",
+      reason: "detail 不是上游回退目标",
+    }).success).toBe(false);
   });
 
   it("keeps itinerary generation candidate-first without newPlaces/newCandidates", () => {
