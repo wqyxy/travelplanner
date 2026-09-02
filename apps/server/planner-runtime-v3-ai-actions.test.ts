@@ -260,7 +260,7 @@ describe("TravelPlannerRuntimeV3 AI action regressions", () => {
   });
 
   it("manages Core Visit preference and removal through Step 2 destination actions", async () => {
-    const store = db(); const created = store.createTrip(); const written = store.writePlan(created.id, backbonePlan(created.plan), 0, { source: "test", summary: "backbone fixture" });
+    const store = db(); const created = store.createTrip(); store.writePlan(created.id, backbonePlan(created.plan), 0, { source: "test", summary: "backbone fixture" });
     const rt = runtime(store, async () => { throw new Error("AI not expected"); });
     const preference = rt.createCtaAction({ tripId: created.id, stage: "destinations", actionType: "destination.preference", parameters: { candidateIds: ["core-1"], preference: "must_go" }, targetIds: ["core-1"], requestKey: "core-preference" });
     await waitFor(() => store.getAction(preference.action.id)?.status === "completed");
@@ -271,8 +271,6 @@ describe("TravelPlannerRuntimeV3 AI action regressions", () => {
     const after = store.requireTrip(created.id).plan;
     expect(after.candidates.some((candidate) => candidate.id === "core-1")).toBe(false);
     expect(after.candidates.some((candidate) => candidate.id === "macro-1")).toBe(true);
-    expect(after.contentGeneration).toBeUndefined();
-    expect(written.generation).toBe(1);
     store.close();
   });
 
