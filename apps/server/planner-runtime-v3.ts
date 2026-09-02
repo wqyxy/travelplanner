@@ -57,7 +57,8 @@ import {
 } from "./itinerary-workflow-v3.js";
 import { applyPlanCommands } from "./plan-commands-v2.js";
 import { buildPlanningCoverage } from "./planning-areas-v2.js";
-import { buildSkeletonContextV3 } from "./planning-context-v3.js";
+import { buildBackboneContextV3, buildSkeletonContextV3 } from "./planning-context-v3.js";
+import { effectivePlanningRole } from "./planning-roles-v3.js";
 import type { PlaceResolutionBatchProgress, PlaceResolverV2 } from "./place-resolver-v2.js";
 import { placeGeoFingerprint, resolutionIsCurrent } from "./place-resolver-v2.js";
 import { GoogleMapsLinkService } from "./google-maps-link.js";
@@ -215,11 +216,14 @@ function validateItineraryReferences(trip: TripDetailV3, sourceDays: Day[], reso
 
 function normalizeCandidateDiscoveryOutput(output: any, mode: "macro" | "micro") {
   if (mode === "macro") return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     baseGeneration: output.baseGeneration,
     assistantMessage: output.assistantMessage,
     places: output.places,
-    candidates: output.candidates.map((candidate: any) => ({ ...candidate, planningAreaCandidateId: null, defaultPreference: "optional" })),
+    candidates: output.candidates.map((candidate: any) => {
+      const { planningAreaCandidateId: _legacyParent, ...backboneCandidate } = candidate;
+      return { ...backboneCandidate, defaultPreference: "optional" };
+    }),
   };
   return output;
 }
@@ -631,10 +635,18 @@ export class TravelPlannerRuntimeV3 {
     const candidateState = (candidate: TripDetailV3["plan"]["candidates"][number]) => ({ ...candidate, place: places.get(candidate.placeId) ?? null, resolution: resolutionByPlace.get(candidate.placeId) ?? null });
     const base = { actionType: action.actionType, baseGeneration: action.baseGeneration, planLanguage: trip.planLanguage, parameters: action.parameters, targetIds: action.targetIds };
     if (action.actionType.startsWith("destination.")) {
-      return { ...base, tripFacts: trip.plan.trip, destinations: trip.plan.candidates.filter((candidate) => places.get(candidate.placeId)?.kind === "city").map((candidate) => ({ ...candidate, place: places.get(candidate.placeId) })) };
+      const backbone = buildBackboneContextV3(trip.plan);
+      const backboneCandidates = trip.plan.candidates.filter((candidate) => {
+        const place = places.get(candidate.placeId);
+        return Boolean(place && effectivePlanningRole(candidate, place) !== "detail_interest");
+      }).map(candidateState);
+      return { ...base, ...backbone, backboneCandidates };
     }
     if (action.actionType.startsWith("interest.")) {
-      const targetIds = action.targetIds.length ? action.targetIds : trip.plan.candidates.filter((candidate) => candidate.preference !== "excluded" && places.get(candidate.placeId)?.kind === "city").map((candidate) => candidate.id);
+      const targetIds = action.targetIds.length ? action.targetIds : trip.plan.candidates.filter((candidate) => {
+        const place = places.get(candidate.placeId);
+        return candidate.preference !== "excluded" && Boolean(place) && effectivePlanningRole(candidate, place!) === "planning_area";
+      }).map((candidate) => candidate.id);
       return { ...base, tripFacts: trip.plan.trip, targetMacroCandidateIds: targetIds };
     }
     if (action.actionType === "itinerary.generate" || action.actionType === "itinerary.replan") {
@@ -764,13 +776,21 @@ export class TravelPlannerRuntimeV3 {
       if (!value) throw new Error(`未知 Candidate：${id}`);
       return value;
     };
+    const role = (item: TripDetailV3["plan"]["candidates"][number]) => {
+      const place = places.get(item.placeId);
+      if (!place) throw new Error(`Candidate 引用未知 Place：${item.id}`);
+      return effectivePlanningRole(item, place);
+    };
     const targetCandidateId = String(p.candidateId ?? action.targetIds[0] ?? "");
     if (action.actionType === "destination.remove") {
-      const item = candidate(targetCandidateId); if (places.get(item.placeId)?.kind !== "city") throw new Error("只能在目的地阶段删除 Macro Candidate。");
-      return [{ type: "remove_candidate_tree", candidateId: item.id }];
+      const item = candidate(targetCandidateId);
+      const planningRole = role(item);
+      if (planningRole === "detail_interest") throw new Error("Step 2 只能删除停留区域或重要游览地。");
+      return [{ type: planningRole === "planning_area" ? "remove_candidate_tree" : "remove_candidate", candidateId: item.id }];
     }
     if (action.actionType === "interest.remove") {
-      const item = candidate(targetCandidateId); if (places.get(item.placeId)?.kind === "city") throw new Error("兴趣点删除不能删除 Macro Candidate。");
+      const item = candidate(targetCandidateId);
+      if (role(item) !== "detail_interest") throw new Error("兴趣点步骤只能删除普通兴趣点。");
       return [{ type: "remove_candidate", candidateId: item.id }];
     }
     if (action.actionType === "destination.preference" || action.actionType === "interest.preference") {
@@ -778,16 +798,18 @@ export class TravelPlannerRuntimeV3 {
       const preference = CandidatePreferenceSchema.parse(p.preference);
       if (!ids.length) throw new Error("缺少 Candidate ID。");
       for (const id of ids) {
-        const item = candidate(id); const macro = places.get(item.placeId)?.kind === "city";
-        if (action.actionType === "destination.preference" && !macro) throw new Error("目的地 preference 只能修改 Macro Candidate。");
-        if (action.actionType === "interest.preference" && macro) throw new Error("兴趣点 preference 只能修改 Micro Candidate。");
+        const item = candidate(id);
+        const planningRole = role(item);
+        if (action.actionType === "destination.preference" && planningRole === "detail_interest") throw new Error("Step 2 preference 只能修改停留区域或重要游览地。");
+        if (action.actionType === "interest.preference" && planningRole !== "detail_interest") throw new Error("兴趣点 preference 只能修改普通兴趣点。");
       }
       return ids.length === 1 ? [{ type: "set_candidate_preference", candidateId: ids[0], preference }] : [{ type: "bulk_set_candidate_preference", candidateIds: ids, preference }];
     }
     if (action.actionType === "destination.edit" || action.actionType === "interest.edit") {
-      const item = candidate(targetCandidateId); const macro = places.get(item.placeId)?.kind === "city";
-      if (action.actionType === "destination.edit" && !macro) throw new Error("目的地编辑只能修改 Macro Candidate。");
-      if (action.actionType === "interest.edit" && macro) throw new Error("兴趣点编辑只能修改 Micro Candidate。");
+      const item = candidate(targetCandidateId);
+      const planningRole = role(item);
+      if (action.actionType === "destination.edit" && planningRole === "detail_interest") throw new Error("Step 2 编辑只能修改停留区域或重要游览地。");
+      if (action.actionType === "interest.edit" && planningRole !== "detail_interest") throw new Error("兴趣点编辑只能修改普通兴趣点。");
       const commands: PlanCommand[] = [];
       if (p.placeChanges && typeof p.placeChanges === "object") commands.push(PlanCommandSchema.parse({ type: "update_place", placeId: item.placeId, changes: p.placeChanges }));
       if (p.candidateChanges && typeof p.candidateChanges === "object") commands.push(PlanCommandSchema.parse({ type: "update_candidate", candidateId: item.id, changes: p.candidateChanges }));
@@ -864,7 +886,7 @@ export class TravelPlannerRuntimeV3 {
     const applied = applyCandidateDiscovery(trip.plan, normalized);
     const plan = markImpact(trip.plan, applied.plan);
     const resolutionPlaceIds = [...new Set<string>(normalized.candidates.map((candidate: any) => applied.idMappings[candidate.placeTemporaryId]).filter((value: unknown): value is string => typeof value === "string" && Boolean(value)))];
-    const written = this.options.store.writePlan(action.tripId, plan, action.baseGeneration, { source: "action:destination.generate", summary: "AI 生成目的地建议" }, { keepActionId: action.id });
+    const written = this.options.store.writePlan(action.tripId, plan, action.baseGeneration, { source: "action:destination.generate", summary: "AI 生成想去的地方" }, { keepActionId: action.id });
     this.emit("travel.document.changed", { tripId: action.tripId, generation: written.generation, changedDayIds: [] });
     await this.resolveChangedPlaces(action.tripId, resolutionPlaceIds, written.generation, taskId ?? undefined);
     const resolved = currentResolvedPlaces(this.options.store.requireTrip(action.tripId), this.options.store.listPlaceResolutions(action.tripId)).filter((item) => resolutionPlaceIds.includes(item.placeId)).length;
@@ -874,13 +896,16 @@ export class TravelPlannerRuntimeV3 {
   private async persistInterestDiscovery(action: AiActionRecord, taskId: string | null = null) {
     const original = this.options.store.requireTrip(action.tripId);
     const places = new Map(original.plan.places.map((place) => [place.id, place]));
-    const targets = [...new Set(action.targetIds.length ? action.targetIds : original.plan.candidates.filter((candidate) => candidate.preference !== "excluded" && places.get(candidate.placeId)?.kind === "city").map((candidate) => candidate.id))];
-    if (!targets.length) throw new Error("请先生成并保留至少一个目的地。");
+    const targets = [...new Set(action.targetIds.length ? action.targetIds : original.plan.candidates.filter((candidate) => {
+      const place = places.get(candidate.placeId);
+      return candidate.preference !== "excluded" && Boolean(place) && effectivePlanningRole(candidate, place!) === "planning_area";
+    }).map((candidate) => candidate.id))];
+    if (!targets.length) throw new Error("请先生成并保留至少一个停留区域。");
 
     for (const targetId of targets) {
       const target = original.plan.candidates.find((candidate) => candidate.id === targetId);
       const targetPlace = target ? original.plan.places.find((place) => place.id === target.placeId) : null;
-      if (!target || target.preference === "excluded" || targetPlace?.kind !== "city") throw new Error(`兴趣点研究目标不是有效 Macro Candidate：${targetId}`);
+      if (!target || !targetPlace || target.preference === "excluded" || effectivePlanningRole(target, targetPlace) !== "planning_area") throw new Error(`兴趣点研究目标不是有效 Planning Area：${targetId}`);
     }
 
     let expectedGeneration = action.baseGeneration;
@@ -945,7 +970,7 @@ export class TravelPlannerRuntimeV3 {
       const snapshot = this.options.store.requireTrip(action.tripId);
       const target = snapshot.plan.candidates.find((candidate) => candidate.id === targetId);
       const targetPlace = target ? snapshot.plan.places.find((place) => place.id === target.placeId) : null;
-      if (!target || target.preference === "excluded" || targetPlace?.kind !== "city") throw new Error(`兴趣点研究目标不是有效 Macro Candidate：${targetId}`);
+      if (!target || !targetPlace || target.preference === "excluded" || effectivePlanningRole(target, targetPlace) !== "planning_area") throw new Error(`兴趣点研究目标不是有效 Planning Area：${targetId}`);
       const run = await this.options.ai.startAction<any>({
         actionType: action.actionType,
         state: {
