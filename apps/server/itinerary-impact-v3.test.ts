@@ -101,6 +101,45 @@ describe("role-aware incremental itinerary impact", () => {
     expect(impact.detail.affectedDayIds).toEqual([]);
   });
 
+  it("refreshes the used Detail Route when a scheduled Core Visit route identity changes", () => {
+    const base = basePlan();
+    const corePlace = place("core-a", "重要峡湾", "attraction");
+    const coreCandidate = candidate("core-a-candidate", "core-a", "must_go", "macro-a", "core_visit");
+    const before = TravelPlanDocumentSchema.parse({
+      ...base,
+      places: [...base.places, corePlace],
+      candidates: [...base.candidates, coreCandidate],
+      days: base.days.map((day) => ({
+        ...day,
+        stops: [{
+          id: "stop-core-a",
+          candidateId: "core-a-candidate",
+          placeId: "core-a",
+          activity: "游览重要峡湾",
+          period: "morning" as const,
+          startTime: "09:00",
+          endTime: "11:00",
+          durationMinutes: 120,
+          transportFromPrevious: null,
+          scheduleVerification: { status: "estimated" as const, checkedAt: null },
+          costNote: null,
+          costVerification: null,
+          notes: null,
+        }],
+      })),
+    });
+    const after = TravelPlanDocumentSchema.parse({
+      ...before,
+      places: before.places.map((item) => item.id === "core-a" ? { ...item, approximate: true } : item),
+    });
+
+    const impact = analyzeItineraryImpactV3(before, after);
+    expect(impact.macro.status).toBe("ready");
+    expect(impact.detail.status).toBe("ready");
+    expect(impact.detail.affectedDayIds).toEqual([]);
+    expect(impact.routes.detailDayIds).toEqual(["day-1"]);
+  });
+
   it("makes Planning Area preference changes Macro-dirty", () => {
     const before = basePlan();
     const after = TravelPlanDocumentSchema.parse({
