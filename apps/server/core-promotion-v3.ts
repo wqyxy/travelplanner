@@ -14,6 +14,7 @@ export function confirmDetailToCorePromotionV3(
   const action = store.getAction(actionId);
   if (!action || action.tripId !== tripId) return null;
   if (action.origin !== "conversation" || action.stage !== "destinations" || action.actionType !== "destination.edit") return null;
+  if (action.parameters.request !== "promote_to_core") return null;
 
   const trip = store.requireTrip(tripId);
   const targetCandidateId = String(action.parameters.candidateId ?? action.targetIds[0] ?? "");
