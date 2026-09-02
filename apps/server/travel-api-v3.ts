@@ -7,6 +7,7 @@ import {
   ProviderPlaceCandidateSchema,
 } from "./contracts-v2.js";
 import { AiActionTypeSchema, ConversationStageSchema, WorkspaceSelectionV3Schema } from "./ai-stage-contracts-v3.js";
+import { normalizeRequirementsCtaParametersV3 } from "./requirements-duration-v3.js";
 import { saveSkeletonEditDraftV3 } from "./skeleton-edit-api-v3.js";
 import type { TravelPlannerRuntimeV3 } from "./planner-runtime-v3.js";
 import type { TravelStoreV3 } from "./travel-store-v3.js";
@@ -80,13 +81,15 @@ export async function dispatchTravelApiV3(
 
   match = /^\/api\/trips\/([^/]+)\/actions\/cta$/.exec(pathname);
   if (method === "POST" && match) {
+    const tripId = decode(match[1]);
     const stage = ConversationStageSchema.parse(body.stage);
     const actionType = AiActionTypeSchema.parse(body.actionType);
     const requestKey = String(body.requestKey ?? "").trim();
     if (!requestKey || requestKey.length > 160) throw new Error("CTA requestKey 必须是 1–160 字符的稳定请求键。");
-    const parameters = body.parameters && typeof body.parameters === "object" && !Array.isArray(body.parameters) ? body.parameters as Record<string, unknown> : {};
+    const rawParameters = body.parameters && typeof body.parameters === "object" && !Array.isArray(body.parameters) ? body.parameters as Record<string, unknown> : {};
+    const parameters = normalizeRequirementsCtaParametersV3(deps.store.requireTrip(tripId).plan, actionType, rawParameters);
     const targetIds = Array.isArray(body.targetIds) ? body.targetIds.map(String).slice(0, 200) : [];
-    return { status: 202, data: deps.runtime.createCtaAction({ tripId: decode(match[1]), stage, actionType, parameters, targetIds, requestKey }) };
+    return { status: 202, data: deps.runtime.createCtaAction({ tripId, stage, actionType, parameters, targetIds, requestKey }) };
   }
 
   match = /^\/api\/trips\/([^/]+)\/actions\/([^/]+)\/confirm$/.exec(pathname);
