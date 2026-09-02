@@ -1,7 +1,7 @@
 # TravelPlanner Implementation Status
 
 > 更新时间：2026-09-02  
-> 当前状态：**五步重构设计已最终确认，代码尚未按该方案实施**
+> 当前状态：**五步重构设计与用户复杂度下沉规则已最终确认，代码尚未按该方案实施**
 
 ---
 
@@ -23,13 +23,14 @@ detailStatus
 Detail patch 基础
 ```
 
-2026-09-02 已完成五步重构的最终文档设计，但本轮**没有修改代码、没有运行测试**。
+2026-09-02 已完成五步重构和用户交互简化的最终文档设计，但本轮**没有修改代码、没有运行测试**。
 
 因此：
 
 ```text
 产品设计：已确认
 UI 设计：已确认
+复杂度下沉规则：已确认
 施工合同：已确认
 代码实施：未开始
 五步验证：未开始
@@ -39,17 +40,44 @@ UI 设计：已确认
 
 ---
 
-# 2. 最终确认的五步目标
+# 2. 最终确认的用户五步
 
 ```text
 1 旅行需求
-2 去哪些地方
-3 安排路线和天数
-4 补充景点
+2 想去哪些地方
+3 路线和天数
+4 补充景点（可选）
 5 每日行程
 ```
 
-核心新增 / 调整：
+用户心智：
+
+```text
+我想怎么玩
+→ 我想去哪些地方
+→ 这些天怎么排
+→ 要不要再补点景点
+→ 每天具体怎么玩
+```
+
+内部仍保留完整工程模型，但普通 UI 不要求用户理解：
+
+```text
+PlanningRole
+Backbone / Skeleton
+Macro / Detail
+stayBlockId
+fingerprint / macroDirty
+affectedDayIds
+requiresWorkflowStep
+ConversationStage
+Resolution
+CAS
+```
+
+---
+
+# 3. 核心目标合同
 
 ```text
 PlanningRole: planning_area / core_visit / detail_interest
@@ -59,19 +87,41 @@ Core Visit 只影响 Macro 时间，不成为 Anchor
 Day.stayBlockId? backward-compatible
 同一 Planning Area 可多次形成 Stay Block
 移动日计入到达 Stay Block
-Step 3 SkeletonEditDraft + 原子 Apply
+Step 3 SkeletonEditDraft + 原子保存
 requiresWorkflowStep 取代模糊 requiresStage 导航
 planningState 只保存 Macro basis fingerprint
 macroDirty 由 fingerprint 派生
 Planning Area / Core / Detail unresolved 完整 readiness
-Step 4 capacity-aware discovery
+Step 4 capacity-aware discovery 且可直接跳过
 Step 5 patch-only affectedDayIds
 右侧唯一业务入口
 ```
 
 ---
 
-# 3. 当前代码与目标之间已知的关键差异
+# 4. 用户复杂度下沉目标
+
+后续 Phase 6 必须实现，而不是作为可选 polish：
+
+```text
+Step 2 = 愿望清单，不让用户误以为全部候选一定进入路线
+Step 3 = 最终路线和天数
+Step 4 明确标记可选
+四级 preference 留在数据层，主 UI 主要使用“必去 / 想去”
+optional 默认弱化，excluded 用“移除 / 不考虑”表达
+重要游览地使用自然语言，不做 planningRole 编辑器
+Step 3 Draft 只显示“还差 N 天”，不显示 canonical / atomic 等术语
+Update Card 默认紧凑，原因按需展开
+requiresWorkflowStep 自动切换到正确工作区，不频繁提示“请前往某一步”
+未定位按是否真正阻塞分级展示
+工程状态不得直接成为普通用户标签
+```
+
+这些规则当前**均尚未实施**。
+
+---
+
+# 5. 当前代码与目标之间已知关键差异
 
 现有代码仍需要在实施时处理至少以下差异：
 
@@ -86,15 +136,16 @@ Day 尚无 stayBlockId
 现有 Macro 更新依赖通用 PlanCommand，存在 100 command 上限
 现有 Macro dirty / readiness 尚未采用最终 fingerprint 派生合同
 现有 Resolution readiness 尚未按 Planning Area / Core / Detail 三类完全区分
-Step 3 尚无完整的本地编辑草稿 + 原子 Apply
+Step 3 尚无完整的本地编辑草稿 + 原子保存
 Step 4 / Step 5 尚未按最终五步 Action ownership 收口
+现有 UI 尚未完成上述用户复杂度下沉
 ```
 
 这些差异必须以正式施工图为准逐项处理。
 
 ---
 
-# 4. Preference 最终合同
+# 6. Preference 最终合同
 
 Planning Area：
 
@@ -116,9 +167,11 @@ excluded    → 不参与
 
 当前代码“全部 non-excluded Macro 都必须进入一次”的行为属于待修改项。
 
+用户主 UI 不需要四级完整选择器；主要操作“必去 / 想去”。
+
 ---
 
-# 5. Stay Block 最终合同
+# 7. Stay Block 最终合同
 
 不新增独立 MacroDay / StayBlock 表。
 
@@ -132,11 +185,13 @@ stayBlockId?: string;
 
 AI Draft 不生成 canonical UUID；服务端 formalization 负责匹配旧 Block、复用 ID 或生成新 ID。
 
-旧 Day 没有 `stayBlockId`：正常读取；普通加载不写回；用户下一次主动 Step 3 Apply 后建立稳定 ID。
+旧 Day 没有 `stayBlockId`：正常读取；普通加载不写回；用户下一次主动 Step 3 保存后建立稳定 ID。
+
+用户 UI 不显示 `stayBlockId`。
 
 ---
 
-# 6. Macro Dependency 最终合同
+# 8. Macro Dependency 最终合同
 
 Canonical：
 
@@ -162,9 +217,15 @@ current fingerprint != basis fingerprint
 needs_confirmation
 ```
 
+用户只看到：
+
+```text
+路线和天数需要重新确认
+```
+
 ---
 
-# 7. Resolution 最终合同
+# 9. Resolution 最终合同
 
 ```text
 Planning Area unresolved
@@ -186,11 +247,13 @@ Detail want / optional unresolved
 → 跳过，不阻塞无关 Day
 ```
 
+UI：非阻塞轻量提示，真正阻塞下一步时才显示明确行动卡。
+
 ---
 
-# 8. Step 3 Apply 最终合同
+# 10. Step 3 Save 最终合同
 
-用户手工修改 Skeleton 先进入 `SkeletonEditDraft`。
+用户手工修改 Skeleton 先进入内部 `SkeletonEditDraft`。
 
 只有：
 
@@ -201,15 +264,15 @@ stayDays 总和 = 总旅行天数
 顺序 / transport 合法
 ```
 
-才允许 Apply。
+才允许保存。
 
-Apply 使用专用服务端原子边界：
+服务端使用专用原子边界：
 
 ```text
 applySkeletonPlanV3()
 ```
 
-它负责：
+负责：
 
 ```text
 validate
@@ -224,11 +287,20 @@ CAS atomic write
 
 不要求把 90 天大范围更新拆成不超过 100 条通用 PlanCommand。
 
+用户只看到：
+
+```text
+当前分配 19 / 20 天
+还剩 1 天需要安排
+```
+
+以及自然的重新分配建议。
+
 ---
 
-# 9. 下一步实施顺序
+# 11. 下一步实施顺序
 
-正式施工图采用以下 Phase：
+正式施工图采用：
 
 ```text
 Phase 0 Read-only Gap Review
@@ -237,19 +309,19 @@ Phase 2 Skeleton + Impact Consumer Foundation
 Phase 3 Backbone Producer
 Phase 4 Capacity-Aware Interests
 Phase 5 Detailed Itinerary
-Phase 6 UI / Map Integration
+Phase 6 UI / Map Integration + Complexity Downshift
 Phase 7 Verification Preparation
 ```
 
 关键顺序原则：
 
-> **先让下游消费者理解新角色 / Stay Block / Impact，再让 Step 2 开始生产新的 Core Visit。**
+> **先让下游消费者理解新角色 / Stay Block / Impact，再让 Step 2 开始生产新的 Core Visit；最后统一把工程复杂度隐藏到用户界面背后。**
 
 Phase 1–6 应在同一 feature branch 连续完成；中间状态不得作为完整产品单独发布。
 
 ---
 
-# 10. 下一步真正要做的第一件事
+# 12. 下一步真正要做的第一件事
 
 用户之后明确要求“开始实施”时，不应立即改代码。
 
@@ -273,32 +345,39 @@ Action Registry
 Resolution readiness
 UI ownership
 PlanCommand 100 上限
+工程状态是否直接暴露到 UI
 ```
 
 确认差异与施工图一致后，再进入 Phase 1。
 
 ---
 
-# 11. 未来必须验证的场景
+# 13. 未来必须验证的场景
 
 ```text
+普通用户不懂任何工程术语也能走完五步
+Step 2 明确是愿望清单，Step 3 才是最终路线
+四级 preference 不变成四按钮系统
+Step 4 可不运行 Discovery 直接进入 Step 5
 must / want / optional / excluded Planning Area
 Auckland → ... → Auckland 两个稳定 Stay Block
-20 天 Step 3 草稿 19/20 不可 Apply、20/20 可 Apply
-90 天 Skeleton 原子 Apply
-Milford = Core，不成为 Macro Anchor
+20 天 Step 3 草稿 19/20 不可保存、20/20 可保存
+90 天 Skeleton 原子保存
+Milford = Core，不成为 Macro Anchor，UI 只显示“重要游览地”
 Planning Area unresolved 可 Step 3、不可真实 Step 5 Anchor
 must_go Core / Detail unresolved 阻塞相关 Detail
 Detail → Core 只传播到相关 Macro / Detail
 Replan Macro 不变时只更新相关区域 Detail
 Macro 天数变化只更新 affectedDayIds
+Update Card 默认紧凑、原因可展开
+跨步骤请求自动切换上下文
 地图不承担业务 mutation
 Step 2 / 3、Step 4 / 5 无重复生成入口
 ```
 
 ---
 
-# 12. Verification Gate
+# 14. Verification Gate
 
 只有代码真正实施完后，才准备：
 
@@ -318,11 +397,11 @@ isolated Browser E2E
 
 ---
 
-# 13. Current Handoff
+# 15. Current Handoff
 
 当前最准确的交接描述：
 
-> TravelPlanner 已有 staged-v3 基础代码；五步产品、UI 与实施合同已经最终确认，但尚未实施。下一次开始开发时，先按施工图执行 Phase 0 只读差异审查，再进入 Phase 1–6。
+> TravelPlanner 已有 staged-v3 基础代码；五步产品、UI、用户复杂度下沉规则与实施合同已经最终确认，但尚未实施。下一次开始开发时，先按施工图执行 Phase 0 只读差异审查，再进入 Phase 1–6。
 
 实施依据优先级：
 
