@@ -4,8 +4,10 @@ import {
   type ConversationStage,
   type WorkspaceSelectionV3,
 } from "./ai-stage-contracts-v3.js";
-import { resolutionIsCurrent } from "./place-resolver-v2.js";
 import type { PlaceResolution } from "./contracts-v2.js";
+import { buildSkeletonContextV3 } from "./planning-context-v3.js";
+import { effectivePlanningRole } from "./planning-roles-v3.js";
+import { resolutionIsCurrent } from "./place-resolver-v2.js";
 import type { TripDetailV3 } from "./travel-store-v3.js";
 
 export const STAGE_CONTEXT_MAX_BYTES = 64 * 1024;
@@ -35,6 +37,7 @@ function candidateSummary(trip: TripDetailV3, candidate: TripDetailV3["plan"]["c
   return {
     id: candidate.id,
     planningAreaCandidateId: candidate.planningAreaCandidateId,
+    planningRole: place ? effectivePlanningRole(candidate, place) : candidate.planningRole ?? null,
     preference: candidate.preference,
     source: candidate.source,
     aiReason: clip(candidate.aiReason),
@@ -71,6 +74,8 @@ function dayDetail(trip: TripDetailV3, day: TripDetailV3["plan"]["days"][number]
     dayNumber: day.dayNumber,
     date: day.date,
     title: day.title,
+    stayBlockId: day.stayBlockId ?? null,
+    transferMode: day.transferMode,
     detailLevel: day.detailLevel,
     detailStatus: day.detailStatus,
     startAnchor: day.startAnchor,
@@ -98,6 +103,18 @@ function dayDetail(trip: TripDetailV3, day: TripDetailV3["plan"]["days"][number]
 
 function byteSize(value: unknown) { return Buffer.byteLength(JSON.stringify(value), "utf8"); }
 
+function candidateRole(trip: TripDetailV3, candidateId: string) {
+  const candidate = trip.plan.candidates.find((item) => item.id === candidateId);
+  if (!candidate) return null;
+  const place = trip.plan.places.find((item) => item.id === candidate.placeId);
+  return place ? effectivePlanningRole(candidate, place) : null;
+}
+
+function placeRole(trip: TripDetailV3, placeId: string) {
+  const candidate = trip.plan.candidates.find((item) => item.placeId === placeId);
+  return candidate ? candidateRole(trip, candidate.id) : null;
+}
+
 export function validateSelectionForStage(trip: TripDetailV3, stageValue: unknown, selectionValue: unknown): WorkspaceSelectionV3 {
   const stage = ConversationStageSchema.parse(stageValue);
   const selection = WorkspaceSelectionV3Schema.parse(selectionValue);
@@ -111,15 +128,15 @@ export function validateSelectionForStage(trip: TripDetailV3, stageValue: unknow
   if (selection.type === "candidate") {
     const candidate = candidates.get(selection.id);
     if (!candidate) throw new Error("selection 引用了未知 Candidate。");
-    const place = places.get(candidate.placeId);
-    if (stage === "destinations" && place?.kind !== "city") throw new Error("目的地阶段只能选择 Macro Candidate。");
-    if (stage === "interests" && place?.kind === "city") return selection;
+    const role = candidateRole(trip, candidate.id);
+    if (stage === "destinations" && role !== "planning_area" && role !== "core_visit") throw new Error("想去哪些地方 / 路线和天数阶段只能选择停留区域或重要游览地。");
     if (stage === "itinerary") throw new Error("行程阶段 selection 不接受 Candidate。");
   }
   if (selection.type === "place") {
     const place = places.get(selection.id);
     if (!place) throw new Error("selection 引用了未知 Place。");
-    if (stage === "destinations" && place.kind !== "city") throw new Error("目的地阶段只能选择 Macro Place。");
+    const role = placeRole(trip, place.id);
+    if (stage === "destinations" && role !== "planning_area" && role !== "core_visit") throw new Error("想去哪些地方 / 路线和天数阶段只能选择停留区域或重要游览地。");
     if (stage === "itinerary") throw new Error("行程阶段 selection 不接受独立 Place。");
   }
   if (selection.type === "day") {
@@ -143,38 +160,54 @@ export function buildStageContext(input: {
 }) {
   const { trip, stage, selection } = input;
   const places = new Map(trip.plan.places.map((place) => [place.id, place]));
-  const macros = trip.plan.candidates.filter((candidate) => places.get(candidate.placeId)?.kind === "city");
-  const micros = trip.plan.candidates.filter((candidate) => places.get(candidate.placeId)?.kind !== "city");
+  const planningAreas = trip.plan.candidates.filter((candidate) => {
+    const place = places.get(candidate.placeId);
+    return Boolean(place && effectivePlanningRole(candidate, place) === "planning_area");
+  });
+  const coreVisits = trip.plan.candidates.filter((candidate) => {
+    const place = places.get(candidate.placeId);
+    return Boolean(place && effectivePlanningRole(candidate, place) === "core_visit");
+  });
+  const detailInterests = trip.plan.candidates.filter((candidate) => {
+    const place = places.get(candidate.placeId);
+    return Boolean(place && effectivePlanningRole(candidate, place) === "detail_interest");
+  });
   let state: Record<string, unknown>;
 
   if (stage === "requirements") {
     state = { stage, baseGeneration: trip.contentGeneration, planLanguage: trip.planLanguage, tripFacts: trip.plan.trip, selection };
   } else if (stage === "destinations") {
+    const skeleton = buildSkeletonContextV3(trip.plan);
     state = {
       stage,
       baseGeneration: trip.contentGeneration,
       planLanguage: trip.planLanguage,
       tripFacts: trip.plan.trip,
-      destinations: macros.slice(0, STAGE_CONTEXT_MAX_PLACES).map((candidate) => candidateSummary(trip, candidate)),
+      destinations: [...planningAreas, ...coreVisits].slice(0, STAGE_CONTEXT_MAX_PLACES).map((candidate) => candidateSummary(trip, candidate)),
+      planningAreas: planningAreas.slice(0, STAGE_CONTEXT_MAX_PLACES).map((candidate) => candidateSummary(trip, candidate)),
+      coreVisits: coreVisits.slice(0, STAGE_CONTEXT_MAX_PLACES).map((candidate) => candidateSummary(trip, candidate)),
+      currentStays: skeleton.currentStays,
+      macroBasisState: skeleton.macroBasisState,
       selection,
     };
   } else if (stage === "interests") {
     const resolutionMap = new Map((input.resolutions ?? []).map((resolution) => [resolution.placeId, resolution]));
-    const selectedMacroId = selection.type === "candidate" && macros.some((candidate) => candidate.id === selection.id)
+    const selectedPlanningAreaId = selection.type === "candidate" && planningAreas.some((candidate) => candidate.id === selection.id)
       ? selection.id
       : selection.type === "candidate"
         ? trip.plan.candidates.find((candidate) => candidate.id === selection.id)?.planningAreaCandidateId ?? null
         : null;
-    const prioritizedMicros = selectedMacroId
-      ? micros.filter((candidate) => candidate.planningAreaCandidateId === selectedMacroId)
-      : micros;
+    const prioritizedDetails = selectedPlanningAreaId
+      ? detailInterests.filter((candidate) => candidate.planningAreaCandidateId === selectedPlanningAreaId)
+      : detailInterests;
     state = {
       stage,
       baseGeneration: trip.contentGeneration,
       planLanguage: trip.planLanguage,
       tripFacts: trip.plan.trip,
-      destinations: macros.slice(0, 60).map((candidate) => candidateSummary(trip, candidate)),
-      interests: prioritizedMicros.slice(0, STAGE_CONTEXT_MAX_PLACES).map((candidate) => {
+      destinations: planningAreas.slice(0, 60).map((candidate) => candidateSummary(trip, candidate)),
+      coreVisits: coreVisits.slice(0, 120).map((candidate) => candidateSummary(trip, candidate)),
+      interests: prioritizedDetails.slice(0, STAGE_CONTEXT_MAX_PLACES).map((candidate) => {
         const place = places.get(candidate.placeId);
         const resolution = place ? resolutionMap.get(place.id) : null;
         return {
@@ -183,7 +216,7 @@ export function buildStageContext(input: {
         };
       }),
       selection,
-      ...(selectedMacroId ? { focusedMacroCandidateId: selectedMacroId } : {}),
+      ...(selectedPlanningAreaId ? { focusedMacroCandidateId: selectedPlanningAreaId } : {}),
     };
   } else {
     const routeMap = new Map((input.routeStates ?? []).map((item) => [item.dayId, item]));
@@ -197,7 +230,8 @@ export function buildStageContext(input: {
       baseGeneration: trip.contentGeneration,
       planLanguage: trip.planLanguage,
       tripFacts: trip.plan.trip,
-      dayIndex: trip.plan.days.slice(0, STAGE_CONTEXT_MAX_DAYS).map((day) => ({ id: day.id, dayNumber: day.dayNumber, date: day.date, title: day.title, detailLevel: day.detailLevel, detailStatus: day.detailStatus, stopCount: day.stops.length })),
+      planningState: trip.plan.planningState ?? null,
+      dayIndex: trip.plan.days.slice(0, STAGE_CONTEXT_MAX_DAYS).map((day) => ({ id: day.id, dayNumber: day.dayNumber, date: day.date, title: day.title, stayBlockId: day.stayBlockId ?? null, detailLevel: day.detailLevel, detailStatus: day.detailStatus, stopCount: day.stops.length })),
       days: window.map((day) => dayDetail(trip, day, routeMap)),
       selection,
       ...(focusId ? { focusedDayId: focusId } : {}),
@@ -210,7 +244,8 @@ export function buildStageContext(input: {
         baseGeneration: trip.contentGeneration,
         planLanguage: trip.planLanguage,
         tripFacts: trip.plan.trip,
-        dayIndex: trip.plan.days.slice(0, STAGE_CONTEXT_MAX_DAYS).map((day) => ({ id: day.id, dayNumber: day.dayNumber, date: day.date, title: day.title, stopCount: day.stops.length })),
+        planningState: trip.plan.planningState ?? null,
+        dayIndex: trip.plan.days.slice(0, STAGE_CONTEXT_MAX_DAYS).map((day) => ({ id: day.id, dayNumber: day.dayNumber, date: day.date, title: day.title, stayBlockId: day.stayBlockId ?? null, stopCount: day.stops.length })),
         days: fallbackDays.filter(Boolean).map((day) => dayDetail(trip, day, routeMap, true)),
         selection,
         contextWindowed: true,
