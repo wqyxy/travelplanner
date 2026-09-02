@@ -540,7 +540,7 @@ export function deriveItineraryUpdateStateV3(plan: TravelPlanDocument) {
     if (effectivePlanningRole(candidate, place) === "planning_area") continue;
     const parent = candidatesById(plan).get(candidate.planningAreaCandidateId ?? "");
     if (!parent) continue;
-    for (const day of plan.days) if (day.startAnchor.placeId === parent.placeId || day.endAnchor.placeId === parent.placeId) affected.add(day.id);
+    for (const day of plan.days) if (day.endAnchor.placeId === parent.placeId) affected.add(day.id);
   }
 
   return {
