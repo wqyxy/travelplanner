@@ -190,20 +190,81 @@ export function deriveExistingStayBlocksV3(plan: TravelPlanDocument): ExistingBl
   return blocks;
 }
 
+function stayNeighborArea(stays: SkeletonStayDraft[], index: number, offset: -1 | 1) {
+  return stays[index + offset]?.planningAreaCandidateId ?? null;
+}
+
+function blockNeighborArea(blocks: ExistingBlockV3[], index: number, offset: -1 | 1) {
+  return blocks[index + offset]?.planningAreaCandidateId ?? null;
+}
+
+function existingBlockTransferMode(block: ExistingBlockV3) {
+  return block.days[0]?.transferMode ?? "none";
+}
+
+function stayBlockMatchScoreV3(
+  existing: ExistingBlockV3[],
+  existingIndex: number,
+  stays: SkeletonStayDraft[],
+  stayIndex: number,
+) {
+  const block = existing[existingIndex];
+  const stay = stays[stayIndex];
+  if (block.planningAreaCandidateId !== stay.planningAreaCandidateId) return null;
+
+  let score = 100;
+  const previousBlockArea = blockNeighborArea(existing, existingIndex, -1);
+  const previousStayArea = stayNeighborArea(stays, stayIndex, -1);
+  const nextBlockArea = blockNeighborArea(existing, existingIndex, 1);
+  const nextStayArea = stayNeighborArea(stays, stayIndex, 1);
+
+  if (previousBlockArea === previousStayArea) score += 80;
+  else if (previousBlockArea && previousStayArea) score -= 20;
+  if (nextBlockArea === nextStayArea) score += 80;
+  else if (nextBlockArea && nextStayArea) score -= 20;
+
+  const dayDelta = Math.abs(block.days.length - stay.stayDays);
+  score += Math.max(0, 40 - dayDelta * 10);
+  if (existingBlockTransferMode(block) === stay.transferModeFromPrevious) score += 20;
+  if (block.stayBlockId) score += 5;
+  score += Math.max(0, 10 - Math.abs(existingIndex - stayIndex));
+  return score;
+}
+
+function matchExistingStayBlocksV3(existing: ExistingBlockV3[], stays: SkeletonStayDraft[]) {
+  const pairs: Array<{ existingIndex: number; stayIndex: number; score: number }> = [];
+  for (let existingIndex = 0; existingIndex < existing.length; existingIndex += 1) {
+    for (let stayIndex = 0; stayIndex < stays.length; stayIndex += 1) {
+      const score = stayBlockMatchScoreV3(existing, existingIndex, stays, stayIndex);
+      if (score !== null) pairs.push({ existingIndex, stayIndex, score });
+    }
+  }
+  pairs.sort((left, right) => right.score - left.score
+    || Math.abs(left.existingIndex - left.stayIndex) - Math.abs(right.existingIndex - right.stayIndex)
+    || left.existingIndex - right.existingIndex
+    || left.stayIndex - right.stayIndex);
+
+  const usedExisting = new Set<number>();
+  const usedStays = new Set<number>();
+  const matches = new Map<number, ExistingBlockV3>();
+  for (const pair of pairs) {
+    if (usedExisting.has(pair.existingIndex) || usedStays.has(pair.stayIndex)) continue;
+    usedExisting.add(pair.existingIndex);
+    usedStays.add(pair.stayIndex);
+    matches.set(pair.stayIndex, existing[pair.existingIndex]);
+  }
+  return matches;
+}
+
 export function formalizeStayBlockIdsV3(plan: TravelPlanDocument, stays: SkeletonStayDraft[]): FormalizedSkeletonStayV3[] {
   const existing = deriveExistingStayBlocksV3(plan);
-  const byArea = new Map<string, ExistingBlockV3[]>();
-  for (const block of existing) {
-    const list = byArea.get(block.planningAreaCandidateId) ?? [];
-    list.push(block);
-    byArea.set(block.planningAreaCandidateId, list);
-  }
-
+  const matches = matchExistingStayBlocksV3(existing, stays);
   const occurrences = new Map<string, number>();
-  return stays.map((stay) => {
+
+  return stays.map((stay, index) => {
     const occurrence = occurrences.get(stay.planningAreaCandidateId) ?? 0;
     occurrences.set(stay.planningAreaCandidateId, occurrence + 1);
-    const match = byArea.get(stay.planningAreaCandidateId)?.[occurrence];
+    const match = matches.get(index);
     return {
       ...stay,
       occurrence,
