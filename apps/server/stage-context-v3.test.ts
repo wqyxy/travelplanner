@@ -67,7 +67,7 @@ function largeTrip(): TripDetailV3 {
 }
 
 describe("Phase 2 stage context consumers", () => {
-  it("shows Planning Areas, Core Visits and current Stay Blocks in destinations context without leaking Detail Interests", () => {
+  it("shows Planning Areas, Core Visits and current Stay Blocks in destinations context without leaking the general Detail pool", () => {
     const trip = workflowTrip();
     const result = buildStageContext({ trip, stage: "destinations", selection: { type: "trip", id: null }, resolutions: [] });
     const state = result.state as any;
@@ -76,14 +76,18 @@ describe("Phase 2 stage context consumers", () => {
     expect(state.coreVisits.map((item: any) => item.id)).toEqual(["core-a"]);
     expect(state.destinations.map((item: any) => item.id)).toEqual(["area-a", "core-a"]);
     expect(state.destinations.some((item: any) => item.id === "detail-a")).toBe(false);
+    expect(state.selectedCandidate).toBeNull();
     expect(state.currentStays).toEqual([expect.objectContaining({ planningAreaCandidateId: "area-a", stayBlockId: "block-a", stayDays: 1 })]);
   });
 
-  it("allows Planning Area/Core selection in destinations but rejects Detail Interest selection there", () => {
+  it("allows a selected Detail Interest to be carried into destinations only as the explicit cross-step promotion target", () => {
     const trip = workflowTrip();
     expect(validateSelectionForStage(trip, "destinations", { type: "candidate", id: "area-a" })).toEqual({ type: "candidate", id: "area-a" });
     expect(validateSelectionForStage(trip, "destinations", { type: "candidate", id: "core-a" })).toEqual({ type: "candidate", id: "core-a" });
-    expect(() => validateSelectionForStage(trip, "destinations", { type: "candidate", id: "detail-a" })).toThrow(/停留区域或重要游览地/);
+    expect(validateSelectionForStage(trip, "destinations", { type: "candidate", id: "detail-a" })).toEqual({ type: "candidate", id: "detail-a" });
+    const state = buildStageContext({ trip, stage: "destinations", selection: { type: "candidate", id: "detail-a" }, resolutions: [] }).state as any;
+    expect(state.destinations.map((item: any) => item.id)).toEqual(["area-a", "core-a"]);
+    expect(state.selectedCandidate).toMatchObject({ id: "detail-a", planningRole: "detail_interest", planningAreaCandidateId: "area-a" });
   });
 
   it("includes stayBlockId and planningState-compatible fields in itinerary context", () => {
