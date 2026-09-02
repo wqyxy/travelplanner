@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { StageDialogueOutputSchema } from "./ai-stage-contracts-v3.js";
+import { ConversationStageSchema, StageDialogueOutputSchema } from "./ai-stage-contracts-v3.js";
 import { buildOpenAiStructuredOutputSchema } from "./structured-ai-v2.js";
+import { conversationStageForWorkflowStepV3, WorkflowStepV3Schema } from "./workflow-step-contracts-v3.js";
 
 function assertNoFreeFormObjects(value: unknown, path = "root") {
   if (Array.isArray(value)) {
@@ -88,5 +89,17 @@ describe("StageDialogueOutput strict transport", () => {
       requirementsCapture: { additionalRequirements: "   " },
       result: { type: "reply", assistantMessage: "测试" },
     }).success).toBe(false);
+  });
+});
+
+describe("WorkflowStep remains separate from persisted ConversationStage", () => {
+  it("keeps ConversationStage at four values while mapping the five workflow steps", () => {
+    expect(ConversationStageSchema.options).toEqual(["requirements", "destinations", "interests", "itinerary"]);
+    expect(WorkflowStepV3Schema.options).toEqual(["requirements", "backbone", "skeleton", "interests", "detail"]);
+    expect(conversationStageForWorkflowStepV3("requirements")).toBe("requirements");
+    expect(conversationStageForWorkflowStepV3("backbone")).toBe("destinations");
+    expect(conversationStageForWorkflowStepV3("skeleton")).toBe("destinations");
+    expect(conversationStageForWorkflowStepV3("interests")).toBe("interests");
+    expect(conversationStageForWorkflowStepV3("detail")).toBe("itinerary");
   });
 });
