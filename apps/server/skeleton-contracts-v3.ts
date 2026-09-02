@@ -24,3 +24,9 @@ export const SkeletonPlanDraftSchema = z.object({
   }
 });
 export type SkeletonPlanDraft = z.infer<typeof SkeletonPlanDraftSchema>;
+
+// Phase 2 establishes the shared validation contract. Phase 6 can keep this as
+// UI-only working state and only submit it once inspectSkeletonEditDraftV3 says
+// the whole allocation is valid.
+export const SkeletonEditDraftSchema = SkeletonPlanDraftSchema;
+export type SkeletonEditDraft = SkeletonPlanDraft;
