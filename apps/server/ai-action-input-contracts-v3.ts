@@ -68,6 +68,12 @@ const Intent = z.object({ request: Request.optional(), allowWeb: z.boolean().opt
 const CandidateTarget = z.object({ candidateId: Id.optional() }).strict();
 const PreferenceInput = z.object({ candidateId: Id.optional(), candidateIds: z.array(Id).max(200).optional(), preference: Preference }).strict();
 const CandidateEdit = z.object({ candidateId: Id.optional(), placeChanges: PlaceChanges.optional(), candidateChanges: CandidateChanges.optional() }).strict().refine((value) => Boolean(value.placeChanges || value.candidateChanges), "编辑动作至少需要 placeChanges 或 candidateChanges。");
+const DestinationCandidateEdit = z.object({
+  candidateId: Id.optional(),
+  request: z.literal("promote_to_core").optional(),
+  placeChanges: PlaceChanges.optional(),
+  candidateChanges: CandidateChanges.optional(),
+}).strict().refine((value) => Boolean(value.placeChanges || value.candidateChanges || value.request === "promote_to_core"), "目的地编辑至少需要字段修改或受控重要游览地升级意图。");
 const DayOptimize = z.object({ dayId: Id.optional(), request: Request.optional() }).strict();
 const Refine = z.object({ dayIds: z.array(Id).max(2).optional(), request: Request.optional(), allowWeb: z.boolean().optional() }).strict();
 const DetailUpdate = z.object({ dayIds: z.array(Id).max(90).optional(), request: Request.optional(), allowWeb: z.boolean().optional() }).strict();
@@ -115,7 +121,7 @@ const CTA_SCHEMAS: Record<AiActionType, z.ZodType<Record<string, unknown>>> = {
   "destination.add": Intent,
   "destination.remove": CandidateTarget,
   "destination.replace": z.object({ candidateId: Id.optional(), request: Request.optional(), allowWeb: z.boolean().optional() }).strict(),
-  "destination.edit": CandidateEdit,
+  "destination.edit": DestinationCandidateEdit,
   "destination.preference": PreferenceInput,
   "interest.discover": Intent,
   "interest.supplement": Intent,
@@ -152,7 +158,8 @@ function compactDialogue(actionType: AiActionType, value: unknown): Record<strin
     case "destination.generate": case "destination.add": case "interest.discover": case "interest.supplement": case "interest.add": case "itinerary.generate": case "itinerary.replan": case "itinerary.detail.generate": case "itinerary.repair": case "itinerary.verify": return CTA_SCHEMAS[actionType].parse(intent());
     case "destination.remove": case "interest.remove": return CTA_SCHEMAS[actionType].parse({ ...(p.candidateId ? { candidateId: p.candidateId } : {}) });
     case "destination.replace": case "interest.replace": return CTA_SCHEMAS[actionType].parse({ ...(p.candidateId ? { candidateId: p.candidateId } : {}), ...intent() });
-    case "destination.edit": case "interest.edit": return CTA_SCHEMAS[actionType].parse({ ...(p.candidateId ? { candidateId: p.candidateId } : {}), ...(p.placeChanges ? { placeChanges: p.placeChanges } : {}), ...(p.candidateChanges ? { candidateChanges: p.candidateChanges } : {}) });
+    case "destination.edit": return CTA_SCHEMAS[actionType].parse({ ...(p.candidateId ? { candidateId: p.candidateId } : {}), ...(p.request === "promote_to_core" ? { request: p.request } : {}), ...(p.placeChanges ? { placeChanges: p.placeChanges } : {}), ...(p.candidateChanges ? { candidateChanges: p.candidateChanges } : {}) });
+    case "interest.edit": return CTA_SCHEMAS[actionType].parse({ ...(p.candidateId ? { candidateId: p.candidateId } : {}), ...(p.placeChanges ? { placeChanges: p.placeChanges } : {}), ...(p.candidateChanges ? { candidateChanges: p.candidateChanges } : {}) });
     case "destination.preference": case "interest.preference": return CTA_SCHEMAS[actionType].parse({ ...(p.candidateId ? { candidateId: p.candidateId } : {}), ...(p.candidateIds.length ? { candidateIds: p.candidateIds } : {}), preference: p.preference });
     case "itinerary.stop.add": return CTA_SCHEMAS[actionType].parse({ ...(p.dayId ? { dayId: p.dayId } : {}), ...(p.candidateId ? { candidateId: p.candidateId } : {}), index: p.index, ...(p.activity ? { activity: p.activity } : {}) });
     case "itinerary.stop.remove": return CTA_SCHEMAS[actionType].parse({ ...(p.stopId ? { stopId: p.stopId } : {}) });
