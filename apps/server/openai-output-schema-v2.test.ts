@@ -57,6 +57,16 @@ describe("OpenAI structured output adapter", () => {
     expect(() => buildOpenAiStructuredOutputSchema(mixed)).toThrow("不能混用 required/optional");
   });
 
+  it("bridges only the backward-compatible optional stayBlockId through nullable OpenAI transport", () => {
+    const dayLike = z.object({ id: z.string(), stayBlockId: z.string().optional() }).strict();
+    const converted = buildOpenAiStructuredOutputSchema(dayLike) as any;
+    expect(converted.required).toEqual(["id", "stayBlockId"]);
+    expect(converted.properties.stayBlockId.anyOf).toEqual(expect.arrayContaining([{ type: "null" }]));
+    const normalized = normalizeStructuredOutputTransport({ id: "day-1", stayBlockId: null });
+    expect(normalized).toEqual({ id: "day-1" });
+    expect(dayLike.parse(normalized)).toEqual({ id: "day-1" });
+  });
+
   it("preserves partial update semantics through patch transport", () => {
     const transport = {
       schemaVersion: 1,
