@@ -114,6 +114,25 @@ function addScheduledRouteDays(
   for (const dayId of afterScheduled.get(candidateId) ?? []) target.add(dayId);
 }
 
+function macroCandidateSemanticsChanged(
+  left: TripCandidate | undefined,
+  right: TripCandidate | undefined,
+  leftRole: ReturnType<typeof roleOf>,
+  rightRole: ReturnType<typeof roleOf>,
+) {
+  const leftMacro = leftRole === "planning_area" || leftRole === "core_visit";
+  const rightMacro = rightRole === "planning_area" || rightRole === "core_visit";
+  if (!leftMacro && !rightMacro) return false;
+  if (!left || !right) return true;
+  if (leftRole !== rightRole) return true;
+  if (left.placeId !== right.placeId || left.preference !== right.preference) return true;
+  if (leftRole === "core_visit") {
+    return left.planningAreaCandidateId !== right.planningAreaCandidateId
+      || left.suggestedDurationMinutes !== right.suggestedDurationMinutes;
+  }
+  return false;
+}
+
 export function analyzeItineraryImpactV3(before: TravelPlanDocument, after: TravelPlanDocument): ItineraryImpactV3 {
   const beforePlaces = placeById(before);
   const afterPlaces = placeById(after);
@@ -153,11 +172,11 @@ export function analyzeItineraryImpactV3(before: TravelPlanDocument, after: Trav
       addScheduledRouteDays(detailRouteDayIds, beforeScheduled, afterScheduled, id);
     }
 
-    const touchesMacroRole = leftRole === "planning_area" || leftRole === "core_visit" || rightRole === "planning_area" || rightRole === "core_visit";
-    if (touchesMacroRole) {
+    if (macroCandidateSemanticsChanged(left, right, leftRole, rightRole)) {
       if (!left && right) macroReasons.add(rightRole === "core_visit" ? `新增重要游览地 ${id}` : `新增停留区域 ${id}`);
       else if (left && !right) macroReasons.add(leftRole === "core_visit" ? `移除重要游览地 ${id}` : `移除停留区域 ${id}`);
       else if (leftRole !== rightRole) macroReasons.add(`地点规划角色变化 ${id}`);
+      else if (left?.placeId !== right?.placeId) macroReasons.add(`${rightRole === "core_visit" ? "重要游览地" : "停留区域"}身份变化 ${id}`);
       else if (left?.preference !== right?.preference) macroReasons.add(`${rightRole === "core_visit" ? "重要游览地" : "停留区域"}优先级变化 ${id}`);
       else if (leftRole === "core_visit" && (left?.planningAreaCandidateId !== right?.planningAreaCandidateId || left?.suggestedDurationMinutes !== right?.suggestedDurationMinutes)) macroReasons.add(`重要游览地时间容量变化 ${id}`);
       foundSpecificMacroReason = true;
