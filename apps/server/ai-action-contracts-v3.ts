@@ -14,8 +14,22 @@ import {
 } from "./contracts-v2.js";
 import { AiLedMicroCandidateDiscoveryOutputSchema } from "./ai-led-micro-contract-v2.js";
 import { StageDialogueOutputSchema, WebDialogueOutputSchema } from "./ai-stage-contracts-v3.js";
+import {
+  OmittedPlanningAreaSchema,
+  SkeletonStayDraftSchema,
+} from "./skeleton-contracts-v3.js";
 import { RequiresWorkflowStepResultSchema } from "./workflow-step-contracts-v3.js";
 export { RequiresWorkflowStepResultSchema } from "./workflow-step-contracts-v3.js";
+export {
+  OmittedPlanningAreaSchema,
+  SkeletonPlanDraftSchema,
+  SkeletonStayDraftSchema,
+} from "./skeleton-contracts-v3.js";
+export type {
+  OmittedPlanningArea,
+  SkeletonPlanDraft,
+  SkeletonStayDraft,
+} from "./skeleton-contracts-v3.js";
 
 const CandidateDraftSchema = z.object({
   temporaryId: IdSchema,
@@ -112,13 +126,14 @@ const RequiresInterestsSchema = z.object({
   reason: TextSchema.max(2000),
 }).strict();
 
-const ItineraryGenerateRequiresStageSchema = z.object({
+const LegacyItineraryGenerateRequiresStageSchema = z.object({
   type: z.literal("requires_stage"),
   requiresStage: z.enum(["requirements", "interests"]),
   assistantMessage: TextSchema.max(12000),
   reason: TextSchema.max(2000),
 }).strict();
 
+/** @deprecated Kept only as a compatibility type for Phase 1 callers; new Skeleton output uses SkeletonStayDraft. */
 export const ItineraryMacroVisitSchema = z.object({
   destinationCandidateId: IdSchema,
   stayDays: z.number().int().min(1).max(90),
@@ -129,16 +144,17 @@ export type ItineraryMacroVisit = z.infer<typeof ItineraryMacroVisitSchema>;
 const ItineraryGenerationSuccessSchema = z.object({
   type: z.literal("success"),
   assistantMessage: TextSchema.max(12000),
-  destinations: z.array(ItineraryMacroVisitSchema).min(1).max(30),
+  stays: z.array(SkeletonStayDraftSchema).min(1).max(90),
+  omittedPlanningAreas: z.array(OmittedPlanningAreaSchema).max(1800),
 }).strict().superRefine((value, context) => {
-  const ids = value.destinations.map((item) => item.destinationCandidateId);
-  if (new Set(ids).size !== ids.length) context.addIssue({ code: "custom", path: ["destinations"], message: "Macro 行程中同一目的地只能出现一次。" });
+  const omitted = value.omittedPlanningAreas.map((item) => item.candidateId);
+  if (new Set(omitted).size !== omitted.length) context.addIssue({ code: "custom", path: ["omittedPlanningAreas"], message: "同一个 Planning Area 只能省略一次。" });
 });
 
 export const ItineraryGenerateOutputSchema = z.object({
   schemaVersion: z.literal(2),
   baseGeneration: z.number().int().min(0),
-  result: z.discriminatedUnion("type", [ItineraryGenerationSuccessSchema, ItineraryGenerateRequiresStageSchema, RequiresWorkflowStepResultSchema]),
+  result: z.discriminatedUnion("type", [ItineraryGenerationSuccessSchema, LegacyItineraryGenerateRequiresStageSchema, RequiresWorkflowStepResultSchema]),
 }).strict();
 export type ItineraryGenerateOutput = z.infer<typeof ItineraryGenerateOutputSchema>;
 
@@ -147,10 +163,11 @@ const ItineraryReplacementSuccessSchema = z.object({
   assistantMessage: TextSchema.max(12000),
   title: TextSchema.max(300),
   explanation: TextSchema.max(4000),
-  destinations: z.array(ItineraryMacroVisitSchema).min(1).max(30),
+  stays: z.array(SkeletonStayDraftSchema).min(1).max(90),
+  omittedPlanningAreas: z.array(OmittedPlanningAreaSchema).max(1800),
 }).strict().superRefine((value, context) => {
-  const ids = value.destinations.map((item) => item.destinationCandidateId);
-  if (new Set(ids).size !== ids.length) context.addIssue({ code: "custom", path: ["destinations"], message: "Macro 行程中同一目的地只能出现一次。" });
+  const omitted = value.omittedPlanningAreas.map((item) => item.candidateId);
+  if (new Set(omitted).size !== omitted.length) context.addIssue({ code: "custom", path: ["omittedPlanningAreas"], message: "同一个 Planning Area 只能省略一次。" });
 });
 
 export const ItineraryReplanOutputSchema = z.object({
