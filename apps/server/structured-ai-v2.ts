@@ -60,6 +60,18 @@ const FORBIDDEN_SCHEMA_KEYS = new Set(["allOf", "not", "if", "then", "else", "de
 // OpenAI structured output does not accept mixed required/optional objects, so the
 // transport schema requires this one field as nullable and normalization removes null.
 const NULLABLE_REQUIRED_TRANSPORT_FIELDS = new Set(["stayBlockId"]);
+const TRIP_CANDIDATE_TRANSPORT_KEYS = [
+  "id",
+  "placeId",
+  "planningAreaCandidateId",
+  "planningRole",
+  "preference",
+  "source",
+  "aiReason",
+  "aiScore",
+  "suggestedDurationMinutes",
+  "tags",
+] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -67,6 +79,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isObjectSchema(record: Record<string, unknown>) {
   return record.type === "object" || (Array.isArray(record.type) && record.type.includes("object"));
+}
+
+function isTripCandidateTransportShape(properties: Record<string, unknown>, optionalKeys: string[]) {
+  const keys = Object.keys(properties).sort();
+  const expected = [...TRIP_CANDIDATE_TRANSPORT_KEYS].sort();
+  return optionalKeys.length === 1
+    && optionalKeys[0] === "planningRole"
+    && keys.length === expected.length
+    && keys.every((key, index) => key === expected[index]);
 }
 
 function transportSchema(value: unknown, path: string[] = []): unknown {
@@ -95,10 +116,13 @@ function transportSchema(value: unknown, path: string[] = []): unknown {
 
     if (optionalKeys.length) {
       if (required.size) {
-        if (!optionalKeys.every((key) => NULLABLE_REQUIRED_TRANSPORT_FIELDS.has(key))) {
+        const candidateTransport = isTripCandidateTransportShape(properties, optionalKeys);
+        if (!candidateTransport && !optionalKeys.every((key) => NULLABLE_REQUIRED_TRANSPORT_FIELDS.has(key))) {
           throw new Error(`AI output object 不能混用 required/optional 字段：${path.join(".") || "root"}`);
         }
-        for (const key of optionalKeys) properties[key] = { anyOf: [properties[key], { type: "null" }] };
+        if (!candidateTransport) {
+          for (const key of optionalKeys) properties[key] = { anyOf: [properties[key], { type: "null" }] };
+        }
         record.required = keys;
         record.additionalProperties = false;
         return record;
