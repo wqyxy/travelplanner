@@ -30,10 +30,12 @@ export type TripFacts = {
   assumptions: Array<{ text: string; source: "user" | "ai" | "system"; confidence: "low" | "medium" | "high" }>;
 };
 export type CandidatePreference = "must_go" | "want_to_go" | "optional" | "excluded";
+export type PlanningRole = "planning_area" | "core_visit" | "detail_interest";
 export type TripCandidate = {
   id: string;
   placeId: string;
   planningAreaCandidateId: string | null;
+  planningRole?: PlanningRole;
   preference: CandidatePreference;
   source: "ai" | "user";
   aiReason: string | null;
@@ -65,11 +67,16 @@ export type Day = {
   dayNumber: number;
   date: string | null;
   title: string;
+  stayBlockId?: string;
   detailLevel: "planned" | "detailed";
   detailStatus: "ready" | "needs_review" | null;
   startAnchor: DayAnchor;
   stops: DayStop[];
   endAnchor: DayAnchor;
+};
+export type PlanningState = {
+  macroBasisVersion: 1;
+  macroBasisFingerprint: string | null;
 };
 export type TravelPlanDocument = {
   schemaVersion: 2;
@@ -78,6 +85,7 @@ export type TravelPlanDocument = {
   places: Place[];
   candidates: TripCandidate[];
   days: Day[];
+  planningState?: PlanningState;
   warnings: string[];
 };
 export type Trip = {
