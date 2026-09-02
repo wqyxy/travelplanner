@@ -1,110 +1,593 @@
-# 第四/第五步行程拆分与增量更新设计
+# TravelPlanner Macro / Detail 增量更新设计
 
-## 目标
+> 状态：**五步流程下的当前增量设计，尚未实施本次五步变更**  
+> 更新日期：2026-09-02  
+> 详细施工图：[`TravelPlanner 五步规划流程重构实施方案.md`](./TravelPlanner%20五步规划流程重构实施方案.md)
 
-将原来的“第四步行程”拆为：
+---
 
-- 第四步：行程骨架（Macro Itinerary）——目的地顺序、停留天数、每天起终点、跨城语义交通方式。
-- 第五步：每日详细行程（Detailed Itinerary）——在第四步固定骨架内安排兴趣点、时间、活动顺序和详细路线。
+# 1. 目标
 
-同时，上游第二步/第三步发生修改时，不允许默认让整个下游重新生成。必须先做影响分析，仅让真正受影响的部分进入 `needs_update`。
+五步流程中，与行程直接相关的层级是：
 
-## 关键规则
+```text
+Step 2 去哪些地方
+→ Planning Area + Core Visit
 
-### 停留天数
+Step 3 安排路线和天数
+→ Macro Skeleton / Stay Block
 
-转移日计入到达目的地。例如 A 2 天、B 3 天：
+Step 4 补充景点
+→ Detail Interest
 
-- Day 1 A
-- Day 2 A
-- Day 3 A → B（B 第 1 天）
-- Day 4 B
-- Day 5 B
+Step 5 每日行程
+→ Detailed Itinerary
+```
 
-因此所有目的地 `stayDays` 之和严格等于旅行总天数。
+上游修改不允许默认让全部下游失效。
 
-### 单一 Day 事实来源
+统一流程：
 
-不新增一套与 canonical `Day` 重复的 Macro Day 数据。
+```text
+Change Set
+→ Role-Aware Impact Analyzer
+→ affected scope / macroDirty
+→ 用户在归属步骤主动更新
+→ old/new Diff
+→ only affectedDayIds needs_update
+→ Patch AI / Route refresh
+```
 
-第四步 AI 只返回最小宏观决策，服务端确定性展开为稳定 `Day`：
+---
 
-- `startAnchor` / `endAnchor` 指向目的地；
-- 无兴趣点 Stop；
-- `detailLevel = planned`；
-- 跨目的地日记录语义交通方式。
+# 2. Macro Skeleton 的最小事实
 
-第五步复用同一批稳定 Day ID，只补充 Stop 和详细时间，不得重写第四步 Anchor。
+Step 3 只决定：
 
-### 两种 Route
+```text
+Stay Block 顺序
+每个 Stay Block 的 Planning Area
+stayDays
+从上一 Stay Block 进入的语义交通方式
+```
 
-- Macro Route：只连接第四步 Day 的起点目的地和终点目的地；仅在两者不同的时候需要。
-- Detail Route：连接第五步真实 Stop 序列。
+服务端确定性展开 canonical Day。
 
-两种 Route 不能互相覆盖。存储层可使用独立 route key（例如 `macro:<dayId>` 与 `<dayId>`），或等价的显式 route kind。
+不新增一套与 canonical Day 重复的 MacroDay 数据表。
 
-Provider 路线失败只影响对应路线状态，不回滚 AI 规划。
+Step 5 复用相同 Day ID，只补充 Stop / 时间 / Detail Route。
 
-## 增量影响传播
+---
 
-上游修改 != 下游全部失效。
+# 3. Stay Block 支持重复 Planning Area
+
+同一 Planning Area 可以在一次旅行出现多次。
+
+例如：
+
+```text
+Auckland
+→ South Island
+→ Auckland
+```
+
+两个 Auckland 是两个独立 Stay Block。
+
+不能因为 Candidate ID 相同而合并。
+
+用于 Diff / Day ID 复用时至少区分：
+
+```text
+planningAreaCandidateId
++
+occurrenceIndex
+```
+
+---
+
+# 4. stayDays / 移动日唯一语义
+
+转移日计入到达 Stay Block。
+
+例如：
+
+```text
+A 2 天
+B 3 天
+```
+
+展开：
+
+```text
+Day 1 A
+Day 2 A
+Day 3 A → B   // B 第 1 天
+Day 4 B
+Day 5 B
+```
+
+因此：
+
+```text
+所有 Stay Block stayDays 之和
+= 旅行总天数
+```
+
+任何 Prompt、Context、UI、Impact Analyzer 都必须采用相同语义。
+
+---
+
+# 5. Core Visit 的 Macro 作用
+
+Core Visit：
+
+```text
+不成为 Stay Block
+不成为 Macro Anchor
+```
+
+但：
+
+```text
+参与 Step 3 时间容量判断
+```
+
+例如：
+
+```text
+Te Anau
+Core: Milford Sound ≈ 1 day
+```
+
+Step 3 应为 Te Anau 留出合理容量，但不决定 Milford 到底落入哪一天。
+
+具体落日属于 Step 5。
+
+---
+
+# 6. Macro Dependency Fingerprint
+
+建议：
+
+```ts
+planningState?: {
+  macroBasisVersion: 1;
+  macroBasisFingerprint: string | null;
+  macroDirty: boolean;
+};
+```
+
+Fingerprint 包含真正影响 Macro 的输入：
+
+```text
+旅行总天数 / 日期
+起点
+交通偏好
+pace
+travelers
+重要 constraints / themes / preferences
+Planning Areas
+Core Visits + parent + preference + suggestedDuration
+```
+
+不包含：
+
+```text
+普通 Detail Interest
+AI score
+纯显示名称
+Resolution 状态
+坐标微调
+Provider Place ID
+Route geometry
+```
+
+---
+
+# 7. 旧 Skeleton 没有 Fingerprint
+
+旧旅行已有 Day，但没有 planningState：
+
+```text
+不自动迁移
+不自动 Replan
+不自动补写 fingerprint
+```
+
+Step 3 显示：
+
+```text
+需要确认路线和天数
+```
+
+用户下一次主动更新 Step 3 后建立新 fingerprint。
+
+---
+
+# 8. Planning Area 变化
+
+以下变化通常导致：
+
+```text
+macroDirty = true
+```
+
+包括：
+
+```text
+新增 / 删除 Planning Area
+excluded / 恢复
+影响是否参与旅行的 preference 变化
+总旅行天数变化
+重要交通约束变化
+```
+
+纯显示名变化：
+
+```text
+不重新规划
+```
+
+Resolution / coordinate 变化：
+
+```text
+规划不变
+只刷新相关 Macro Route
+```
+
+---
+
+# 9. Core Visit 变化
+
+以下变化：
+
+```text
+新增
+删除
+excluded / 恢复
+preference 改变
+Detail → Core
+Core → Detail
+parent 改变
+suggestedDuration 显著变化
+```
+
+结果：
+
+```text
+macroDirty = true
+```
+
+并先把当前 Skeleton 中相关 Planning Area / Stay Block 对应 Detail Day 标记 `needs_review`。
+
+不要立刻把全旅行 Detailed Itinerary 全部失效。
+
+---
+
+# 10. Detail Interest 变化
+
+新增普通 `optional / want_to_go`：
+
+```text
+Skeleton 不变
+现有 Detail 继续 ready
+只是新增候选
+```
+
+新增 / 升级普通 `must_go`：
+
+```text
+Skeleton 通常不变
+对应 Planning Area 可承载 Day needs_review
+```
+
+删除已排入 Day 的兴趣点：
+
+```text
+只影响实际使用它的 Day
+```
+
+删除未使用兴趣点：
+
+```text
+不影响现有 Detailed Itinerary
+```
+
+定位变化：
+
+```text
+只刷新实际使用地点的 Detail Route
+```
+
+---
+
+# 11. Core Role 修改归属
+
+Core Visit 的结构管理只归 Step 2。
+
+如果用户在 Step 4 对某 Detail Interest 提出：
+
+```text
+设为重要游览地
+```
 
 流程：
 
-`Change Set → Impact Analyzer → affected scope → needs_update → Patch AI / Route refresh`
+```text
+Step 4 只导航 Step 2
+→ Step 2 Impact Card
+→ 用户确认 role change
+→ macroDirty=true
+```
 
-### 第二步目的地变化
+避免 Step 2 / Step 4 各有一套 Core 管理入口。
 
-- 新增/删除有效目的地：第四步 `needs_update`；第五步只在第四步 Diff 后更新受影响 Day。
-- 目的地纯展示名变化：不重新规划。
-- 地图定位/坐标变化：规划可保持，只刷新相关 Route。
-- 目的地优先级改变且影响是否纳入旅行：第四步 `needs_update`。
+---
 
-### 第三步兴趣点变化
+# 12. Step 3 Replan 后二次 Diff
 
-- 新增普通兴趣点：当前详细行程继续 `ready`，记录为新选项。
-- 新增/升级为 `must_go`：对应目的地的可承载 Day `needs_update`。
-- 删除/排除一个当前已排兴趣点：实际使用它的 Day `needs_update`。
-- 删除未使用兴趣点：不影响现有详细行程。
-- 地图定位变化：只刷新使用该地点的详细 Route。
+真正的 affectedDayIds 不能只凭“Core 变了”推断全旅行。
 
-## generation 的职责
+流程：
 
-`contentGeneration` 继续用于并发控制、旧任务取消、写入 CAS；不得再被解释为“任何 generation 变化都使整个第四/第五步过期”。
+```text
+Macro Dirty
+→ 用户在 Step 3 主动 Replan
+→ 比较 old/new Stay Blocks
+→ 比较 expanded Macro Days
+→ 识别 affectedDayIds
+→ 只扩展这些 Day 的 needs_review
+```
 
-是否需更新由依赖和结构 Diff 决定。
+例如：
 
-## Prompt / Action 边界
+```text
+Queenstown 4 → 3
+Te Anau 2 → 3
+```
 
-第四步：
+只影响真实发生结构变化的 Day 与必要相邻 transfer Day。
 
-- `生成行程骨架.md`
-- `更新行程骨架.md`
+---
 
-第五步：
+# 13. Replan 后 Macro 完全相同
 
-- `生成每日详细行程.md`
-- `更新每日详细行程.md`
+例如加入 Core Visit 后，AI 判断：
 
-首次详细生成可以一次考虑整趟旅行；增量更新只允许返回 `affectedDayIds`。
+```text
+Te Anau 仍然 2 天即可
+```
 
-## 数据库兼容
+则：
 
-当前 v3 SQLite 对 Conversation Stage 使用 CHECK 约束并明确不自动迁移旧数据库。因此此次不增加数据库级第五种 Conversation Stage。
+```text
+macroDirty=false
+Macro Day 结构保持
+```
 
-产品 UI 可以展示五步；第四、第五步底层复用 `itinerary` 会话通道，但使用不同 Action / Prompt / Schema。这样不会要求现有 v3 私人数据库重建。
+只需要更新 Core 所属区域的 Detailed Day，把新的 Core Visit 安排进去。
 
-## UI
+这正是增量设计的价值。
 
-所有编辑和生成入口继续集中在右侧面板，地图只负责展示。
+---
 
-第四步右侧显示目的地顺序、停留天数、跨城日和 Macro Route 状态。
+# 14. Day ID 稳定
 
-第五步右侧显示按 Day 的 POI、时间、活动和 Detail Route 状态。
+Replan 优先复用已有 Day ID。
 
-阶段汇总状态只聚合子节点：
+建议匹配优先级：
 
-- `ready`
-- `needs_update`
+```text
+1 planningAreaCandidateId + occurrenceIndex + block 内相对日
+2 相同 Macro signature
+3 相同 end Planning Area
+4 最后才重新映射
+```
 
-`needs_update` 不代表整阶段数据不可用；未受影响的 Day 保持原结果。
+未受影响 Day：
+
+```text
+Stop 保持
+Detail Route 保持
+detailStatus 保持
+```
+
+---
+
+# 15. Detailed Update 必须 Patch-only
+
+Step 5 增量更新必须：
+
+```text
+只返回 affectedDayIds 对应 patch
+不得返回整趟替换结果
+不得修改 Macro Anchor / Day identity
+```
+
+当前已保存 Detailed Day 视为 sticky baseline：
+
+```text
+能保留的 Stop 保留
+能保留的顺序保留
+能保留的时间保留
+用户手工确认内容优先保留
+```
+
+如果没有可靠 provenance 字段，不在本次重构中擅自增加复杂迁移；默认最小 Diff。
+
+---
+
+# 16. 两种 Route
+
+```text
+Macro Route
+= Day.startAnchor → Day.endAnchor
+只在两者不同时需要
+
+Detail Route
+= Step 5 真实 Stop Sequence
+```
+
+两种 Route 不能互相覆盖。
+
+Provider 路线失败：
+
+```text
+只影响对应 route status
+不回滚 AI 规划
+```
+
+---
+
+# 17. contentGeneration 的职责
+
+`contentGeneration` 继续用于：
+
+```text
+并发控制
+旧任务取消
+CAS 写入
+```
+
+不得解释为：
+
+```text
+任何 generation 变化
+→ 整个 Step 3 / Step 5 失效
+```
+
+是否需更新必须由 dependency + structural Diff 决定。
+
+---
+
+# 18. Action 归属
+
+Step 3：
+
+```text
+itinerary.generate
+itinerary.replan
+```
+
+其 Registry：
+
+```text
+ConversationStage = destinations
+WorkflowStep = skeleton
+```
+
+Step 5：
+
+```text
+itinerary.detail.generate
+itinerary.detail.update
+```
+
+其 Registry：
+
+```text
+ConversationStage = itinerary
+WorkflowStep = detail
+```
+
+不要让 Step 3 / Step 5 再共用同一个生成入口。
+
+---
+
+# 19. UI 状态
+
+继续复用：
+
+```ts
+Day.detailStatus = "ready" | "needs_review";
+```
+
+UI：
+
+```text
+已完成
+需更新
+```
+
+`needs_update` 不表示整个步骤数据不可用。
+
+必须展示：
+
+```text
+为什么需要更新
+受影响的 Stay Block / Day
+哪些内容保持不变
+唯一下一步动作
+```
+
+---
+
+# 20. 示例
+
+## 新增普通咖啡馆
+
+```text
+Step 3 不变
+Step 5 不变
+只是多一个候选
+```
+
+## 普通地点变 must_go
+
+```text
+只标记可承载该地点的区域 Day 需更新
+```
+
+## Detail → Core
+
+```text
+Step 4 → 导航 Step 2 确认
+Step 3 needs_update
+对应区域 Detail needs_review
+其他地区保持 ready
+```
+
+## Replan 结构不变
+
+```text
+Step 3 ready
+只更新相关区域 Detail
+```
+
+## 环线
+
+```text
+Auckland occurrence 1
+...
+Auckland occurrence 2
+```
+
+两个 Stay Block 独立 Diff / Day 复用。
+
+---
+
+# 21. 数据库兼容
+
+本次五步设计不新增第五种数据库 ConversationStage。
+
+继续：
+
+```text
+PRAGMA user_version = 3
+```
+
+`planningRole / planningState` 采用 optional backward-compatible 读取。
+
+不自动迁移真实私人数据库。
+
+---
+
+# 22. 最终原则
+
+```text
+Planning Area / Core Visit 决定 Macro 依赖
+Skeleton 决定时间结构
+Detail Interest 只在已知容量内补充
+Detailed Itinerary 只在固定 Skeleton 内排程
+局部变化只传播到真正依赖它的范围
+```
