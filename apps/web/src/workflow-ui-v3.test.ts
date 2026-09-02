@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { actionBelongsToWorkflowStepV3, defaultWorkflowStepV3, latestRequiredWorkflowStepV3, requiredWorkflowStepFromResultRefV3, stageForWorkflowStepV3, WORKFLOW_STEPS_V3 } from "./workflow-ui-v3";
+import { actionBelongsToWorkflowStepV3, defaultWorkflowStepV3, latestRequiredWorkflowStepV3, requiredWorkflowStepFromResultRefV3, stageForWorkflowStepV3, workflowStepForActionTypeV3, WORKFLOW_STEPS_V3 } from "./workflow-ui-v3";
 import type { WorkspaceV3 } from "./v3-types";
 
 function workspace(): WorkspaceV3 {
@@ -23,6 +23,8 @@ describe("Phase 6 workflow UI helpers", () => {
   it("maps Backbone and Skeleton to the same destinations conversation namespace without merging their actions", () => {
     expect(stageForWorkflowStepV3("backbone")).toBe("destinations");
     expect(stageForWorkflowStepV3("skeleton")).toBe("destinations");
+    expect(workflowStepForActionTypeV3("destination.generate")).toBe("backbone");
+    expect(workflowStepForActionTypeV3("itinerary.generate")).toBe("skeleton");
     expect(actionBelongsToWorkflowStepV3("destination.generate", "backbone")).toBe(true);
     expect(actionBelongsToWorkflowStepV3("itinerary.generate", "backbone")).toBe(false);
     expect(actionBelongsToWorkflowStepV3("itinerary.generate", "skeleton")).toBe(true);
@@ -38,6 +40,8 @@ describe("Phase 6 workflow UI helpers", () => {
     empty.trip.plan.days.push({ id: "day", dayNumber: 1, date: null, title: "A", detailLevel: "planned", detailStatus: null, startAnchor: { id: "a", placeId: "city", label: null, notes: null }, stops: [], endAnchor: { id: "b", placeId: "city", label: null, notes: null } } as any);
     expect(defaultWorkflowStepV3(empty)).toBe("interests");
     empty.itineraryUpdateState.macro.status = "needs_update";
+    expect(defaultWorkflowStepV3(empty)).toBe("skeleton");
+    empty.trip.plan.days[0].detailLevel = "detailed";
     expect(defaultWorkflowStepV3(empty)).toBe("skeleton");
   });
 
@@ -57,5 +61,12 @@ describe("Phase 6 workflow UI helpers", () => {
     expect(latestRequiredWorkflowStepV3(value)).toEqual({ step: "interests", actionId: "current" });
     value.trip.contentGeneration = 2;
     expect(latestRequiredWorkflowStepV3(value)).toBeNull();
+  });
+
+  it("switches Step 2/3 UI ownership for a conversation action without executing it", () => {
+    const value = workspace();
+    value.actions = [{ id: "route-change", tripId: "trip", stage: "destinations", actionType: "itinerary.replan", executor: "ai", origin: "conversation", sourceMessageId: "message", parameters: {}, targetIds: [], scope: {}, baseGeneration: 1, status: "pending_confirmation", taskId: null, proposalId: null, resultRef: null, startedAt: null, updatedAt: "2026-09-02T03:00:00Z", completedAt: null, errorSummary: null }];
+    expect(latestRequiredWorkflowStepV3(value)).toEqual({ step: "skeleton", actionId: "route-change" });
+    expect(value.actions[0].status).toBe("pending_confirmation");
   });
 });
