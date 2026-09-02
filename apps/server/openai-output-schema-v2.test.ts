@@ -67,6 +67,25 @@ describe("OpenAI structured output adapter", () => {
     expect(dayLike.parse(normalized)).toEqual({ id: "day-1" });
   });
 
+  it("requires planningRole for the exact TripCandidate transport shape without adding a nullable bridge", () => {
+    const candidateLike = z.object({
+      id: z.string(),
+      placeId: z.string(),
+      planningAreaCandidateId: z.string().nullable(),
+      planningRole: z.enum(["planning_area", "core_visit", "detail_interest"]).optional(),
+      preference: z.enum(["must_go", "want_to_go", "optional", "excluded"]),
+      source: z.enum(["ai", "user"]),
+      aiReason: z.string().nullable(),
+      aiScore: z.number().nullable(),
+      suggestedDurationMinutes: z.number().nullable(),
+      tags: z.array(z.string()),
+    }).strict();
+    const converted = buildOpenAiStructuredOutputSchema(candidateLike) as any;
+    expect(converted.required).toContain("planningRole");
+    expect(converted.properties.planningRole.anyOf).toBeUndefined();
+    expect(converted.properties.planningRole.enum).toEqual(["planning_area", "core_visit", "detail_interest"]);
+  });
+
   it("preserves partial update semantics through patch transport", () => {
     const transport = {
       schemaVersion: 1,
