@@ -3,7 +3,9 @@ import type { AiProposal, Chat, Revision, RouteState, Trip, PlaceResolution, Day
 export type ConversationStage = "requirements" | "destinations" | "interests" | "itinerary";
 export type WorkflowStepV3 = "requirements" | "backbone" | "skeleton" | "interests" | "detail";
 export type RequiresWorkflowStepV3 = Exclude<WorkflowStepV3, "detail">;
-export type PlannerStepV3 = WorkflowStepV3;
+// Legacy alias remains only because the old, no-longer-mounted AppV3.tsx is still
+// part of the TypeScript source tree. The mounted Phase 6 app uses WorkflowStepV3.
+export type PlannerStepV3 = ConversationStage | "detail";
 
 export function conversationStageForWorkflowStepV3(step: WorkflowStepV3): ConversationStage {
   if (step === "requirements") return "requirements";
