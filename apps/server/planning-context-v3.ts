@@ -203,9 +203,11 @@ export function buildDetailPlanningContextV3(
     if (!place || candidate.preference === "excluded" || !candidate.planningAreaCandidateId || !accessibleAreaIds.has(candidate.planningAreaCandidateId)) return [];
     const role = effectivePlanningRole(candidate, place);
     if (role !== "core_visit" && role !== "detail_interest") return [];
+    const summary = candidateSummary(plan, candidate);
+    if (!summary) return [];
     const resolution = currentResolutions.get(candidate.placeId) ?? null;
     return [{
-      ...candidateSummary(plan, candidate),
+      ...summary,
       resolutionStatus: resolution?.status ?? "unresolved",
       resolved: resolution?.status === "resolved",
     }];
