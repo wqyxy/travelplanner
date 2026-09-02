@@ -158,10 +158,12 @@ export function normalizeStructuredOutputTransport(value: unknown): unknown {
     }
     return result;
   }
-  return Object.fromEntries(Object.entries(value).flatMap(([key, item]) => {
-    if (NULLABLE_REQUIRED_TRANSPORT_FIELDS.has(key) && item === null) return [];
-    return [[key, normalizeStructuredOutputTransport(item)]];
-  }));
+  const result: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (NULLABLE_REQUIRED_TRANSPORT_FIELDS.has(key) && item === null) continue;
+    result[key] = normalizeStructuredOutputTransport(item);
+  }
+  return result;
 }
 
 function repairMessage(error: Error, attempt: number) {
