@@ -15,12 +15,18 @@ export function stageForWorkflowStepV3(step: WorkflowStepV3): ConversationStage 
   return conversationStageForWorkflowStepV3(step);
 }
 
+export function workflowStepForActionTypeV3(actionType: AiActionType): WorkflowStepV3 {
+  if (actionType.startsWith("requirements.")) return "requirements";
+  if (actionType.startsWith("destination.")) return "backbone";
+  if (actionType === "itinerary.generate" || actionType === "itinerary.replan") return "skeleton";
+  if (actionType.startsWith("interest.")) return "interests";
+  return "detail";
+}
+
 export function defaultWorkflowStepV3(workspace: WorkspaceV3): WorkflowStepV3 {
+  if (workspace.trip.plan.days.length && workspace.itineraryUpdateState.macro.status === "needs_update") return "skeleton";
   if (workspace.trip.plan.days.some((day) => day.detailLevel === "detailed")) return "detail";
-  if (workspace.trip.plan.days.length) {
-    if (workspace.itineraryUpdateState.macro.status === "needs_update") return "skeleton";
-    return "interests";
-  }
+  if (workspace.trip.plan.days.length) return "interests";
   if (workspace.trip.plan.candidates.length) return "backbone";
   return "requirements";
 }
@@ -32,11 +38,7 @@ export function selectionForWorkflowStepV3(step: WorkflowStepV3): WorkspaceSelec
 }
 
 export function actionBelongsToWorkflowStepV3(actionType: AiActionType, step: WorkflowStepV3) {
-  if (step === "requirements") return actionType.startsWith("requirements.");
-  if (step === "backbone") return actionType.startsWith("destination.");
-  if (step === "skeleton") return actionType === "itinerary.generate" || actionType === "itinerary.replan";
-  if (step === "interests") return actionType.startsWith("interest.");
-  return actionType.startsWith("itinerary.") && actionType !== "itinerary.generate" && actionType !== "itinerary.replan";
+  return workflowStepForActionTypeV3(actionType) === step;
 }
 
 export function requiredWorkflowStepFromResultRefV3(resultRef: string | null | undefined): WorkflowStepV3 | null {
@@ -47,12 +49,16 @@ export function requiredWorkflowStepFromResultRefV3(resultRef: string | null | u
 }
 
 export function latestRequiredWorkflowStepV3(workspace: WorkspaceV3): { step: WorkflowStepV3; actionId: string } | null {
-  const candidates = workspace.actions
+  const explicit = workspace.actions
     .filter((action) => action.status === "completed" && action.baseGeneration === workspace.trip.contentGeneration)
     .map((action) => ({ action, step: requiredWorkflowStepFromResultRefV3(action.resultRef) }))
-    .filter((item): item is { action: typeof workspace.actions[number]; step: WorkflowStepV3 } => Boolean(item.step))
-    .sort((left, right) => right.action.updatedAt.localeCompare(left.action.updatedAt));
-  const latest = candidates[0];
+    .filter((item): item is { action: typeof workspace.actions[number]; step: WorkflowStepV3 } => Boolean(item.step));
+  const conversationRedirects = workspace.actions
+    .filter((action) => action.origin === "conversation"
+      && action.baseGeneration === workspace.trip.contentGeneration
+      && ["pending_confirmation", "executing", "awaiting_apply"].includes(action.status))
+    .map((action) => ({ action, step: workflowStepForActionTypeV3(action.actionType) }));
+  const latest = [...explicit, ...conversationRedirects].sort((left, right) => right.action.updatedAt.localeCompare(left.action.updatedAt))[0];
   return latest ? { step: latest.step, actionId: latest.action.id } : null;
 }
 
