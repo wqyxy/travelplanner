@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Bot, ChevronDown, CircleStop, MapPinned, Route } from "lucide-react";
 import type { AiTaskV3 } from "./v3-types";
+import { publicSafeTextV3 } from "./public-text-v3";
 
 const ACTIVE = new Set(["starting", "running", "waiting", "reconnecting"]);
 const TASK_LIMIT = 12;
@@ -24,17 +25,16 @@ function publicTaskLabel(task: AiTaskV3) {
   return "AI 助手";
 }
 
-function publicFailure(value: string | null, fallback: string) {
-  if (!value) return fallback;
-  if (/Candidate|Place|planningRole|stayBlockId|fingerprint|macroDirty|generation|scope|WorkflowStep|ConversationStage|CONTENT_GENERATION|\bAction\b|Anchor|Macro|Resolution|\bCAS\b|(?:destination|interest|itinerary)\./iu.test(value)) return fallback;
-  return value;
+function publicMapText(value: string | null | undefined, fallback: string) {
+  const translated = (value ?? "").replace(/Macro/giu, "区域间").replace(/attention/giu, "需处理").replace(/ready/giu, "已完成");
+  return publicSafeTextV3(translated, fallback);
 }
 
 function publicTaskSummary(task: AiTaskV3) {
-  if (task.agent === "map") return task.summary.replace(/Macro/giu, "区域间").replace(/attention/giu, "需处理").replace(/ready/giu, "已完成");
+  if (task.agent === "map") return publicMapText(task.summary, "地图路线状态已更新");
   if (ACTIVE.has(task.status)) return `正在${publicTaskLabel(task)}`;
   if (task.status === "completed") return `${publicTaskLabel(task)}已完成`;
-  if (task.status === "failed") return publicFailure(task.lastError, `${publicTaskLabel(task)}未完成，请按页面提示重试`);
+  if (task.status === "failed") return publicSafeTextV3(task.lastError, `${publicTaskLabel(task)}未完成，请按页面提示重试`);
   return statusLabels[task.status] || "状态已更新";
 }
 
@@ -55,6 +55,6 @@ export function AiTaskTopbar({ tasks, onStop }: { tasks: AiTaskV3[]; onStop: (ta
     <button className={`ai-task-trigger ${selected.status}`} onClick={() => setOpen((value) => !value)} aria-expanded={open} title="查看 AI 进度">
       <span className="ai-task-agent-icon">{selected.agent === "map" ? <MapPinned size={15}/> : <Bot size={15}/>}</span><span className="ai-task-running-line"><b>{publicTaskLabel(selected)}</b><span>{statusLabels[selected.status]} · {publicTaskSummary(selected)}</span></span><time>{elapsed(selected.startedAt, selected.updatedAt, active)}</time>{activeCount > 1 && <em>+{activeCount - 1}</em>}<ChevronDown size={14}/>
     </button>
-    {open && <section className="ai-task-popover"><header><div><strong>AI 进度</strong><small>这里只显示可以直接理解的公开进度。</small></div><button className="icon-button" onClick={() => setOpen(false)}>×</button></header><div className="ai-task-list">{visible.map((task) => <article key={task.id} className={`ai-task-card ${task.status}`}><div className="ai-task-card-head"><span>{task.agent === "map" ? <MapPinned size={15}/> : <Route size={15}/>}<b>{publicTaskLabel(task)}</b><i>{statusLabels[task.status]}</i></span><time>{elapsed(task.startedAt, task.updatedAt, ACTIVE.has(task.status))}</time></div><p>{publicTaskSummary(task)}</p>{task.agent === "map" && <ol>{task.events.map((event) => <li key={event.id}><time>{new Date(event.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time><span>{event.summary.replace(/Macro/giu, "区域间").replace(/attention/giu, "需处理").replace(/ready/giu, "已完成")}</span></li>)}</ol>}{task.canStop && ACTIVE.has(task.status) && <button className="ai-task-stop" onClick={() => void onStop(task.id)}><CircleStop size={14}/>停止任务</button>}</article>)}</div></section>}
+    {open && <section className="ai-task-popover"><header><div><strong>AI 进度</strong><small>这里只显示可以直接理解的公开进度。</small></div><button className="icon-button" onClick={() => setOpen(false)}>×</button></header><div className="ai-task-list">{visible.map((task) => <article key={task.id} className={`ai-task-card ${task.status}`}><div className="ai-task-card-head"><span>{task.agent === "map" ? <MapPinned size={15}/> : <Route size={15}/>}<b>{publicTaskLabel(task)}</b><i>{statusLabels[task.status]}</i></span><time>{elapsed(task.startedAt, task.updatedAt, ACTIVE.has(task.status))}</time></div><p>{publicTaskSummary(task)}</p>{task.agent === "map" && <ol>{task.events.map((event) => <li key={event.id}><time>{new Date(event.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time><span>{publicMapText(event.summary, "地图路线状态已更新")}</span></li>)}</ol>}{task.canStop && ACTIVE.has(task.status) && <button className="ai-task-stop" onClick={() => void onStop(task.id)}><CircleStop size={14}/>停止任务</button>}</article>)}</div></section>}
   </div>;
 }
