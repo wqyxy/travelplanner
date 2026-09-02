@@ -122,10 +122,13 @@ export type TripFacts = z.infer<typeof TripFactsSchema>;
 
 export const CandidatePreferenceSchema = z.enum(["must_go", "want_to_go", "optional", "excluded"]);
 export type CandidatePreference = z.infer<typeof CandidatePreferenceSchema>;
+export const PlanningRoleSchema = z.enum(["planning_area", "core_visit", "detail_interest"]);
+export type PlanningRole = z.infer<typeof PlanningRoleSchema>;
 export const TripCandidateSchema = z.object({
   id: IdSchema,
   placeId: IdSchema,
   planningAreaCandidateId: IdSchema.nullable(),
+  planningRole: PlanningRoleSchema.optional(),
   preference: CandidatePreferenceSchema,
   source: z.enum(["ai", "user"]),
   aiReason: z.string().trim().min(1).max(1000).nullable(),
@@ -182,6 +185,7 @@ const DayObjectSchema = z.object({
   dayNumber: z.number().int().min(1).max(90),
   date: DateSchema.nullable(),
   title: TextSchema.max(300),
+  stayBlockId: IdSchema.optional(),
   transferMode: TransportModeSchema.default("none"),
   detailLevel: z.enum(["planned", "detailed"]),
   detailStatus: z.enum(["ready", "needs_review"]).nullable(),
@@ -208,12 +212,19 @@ export const DetailedDaySchema = DayObjectSchema.superRefine((day, context) => {
 });
 export type Day = z.infer<typeof DaySchema>;
 
+export const PlanningStateSchema = z.object({
+  macroBasisVersion: z.literal(1),
+  macroBasisFingerprint: z.string().trim().min(1).max(1000).nullable(),
+}).strict();
+export type PlanningState = z.infer<typeof PlanningStateSchema>;
+
 function addDocumentIssues(value: {
   stage: TripStage;
   trip: TripFacts;
   places: Place[];
   candidates: TripCandidate[];
   days: Day[];
+  planningState?: PlanningState;
 }, context: z.RefinementCtx) {
   const placeIds = new Set<string>();
   for (const [index, place] of value.places.entries()) {
@@ -235,6 +246,19 @@ function addDocumentIssues(value: {
   }
 
   for (const [index, candidate] of value.candidates.entries()) {
+    const ownPlace = placesById.get(candidate.placeId);
+    const explicitRole = candidate.planningRole;
+    const effectiveRole = explicitRole ?? (ownPlace?.kind === "city" ? "planning_area" : "detail_interest");
+
+    if (explicitRole === "planning_area") {
+      if (ownPlace?.kind !== "city") context.addIssue({ code: "custom", path: ["candidates", index, "planningRole"], message: "planning_area 必须引用 kind=city 的 Place。" });
+      if (candidate.planningAreaCandidateId !== null) context.addIssue({ code: "custom", path: ["candidates", index, "planningAreaCandidateId"], message: "planning_area 不得存在父 Planning Area。" });
+    }
+    if (explicitRole === "core_visit" || explicitRole === "detail_interest") {
+      if (ownPlace?.kind === "city") context.addIssue({ code: "custom", path: ["candidates", index, "planningRole"], message: `${explicitRole} 不得使用 kind=city。` });
+      if (!candidate.planningAreaCandidateId) context.addIssue({ code: "custom", path: ["candidates", index, "planningAreaCandidateId"], message: `${explicitRole} 必须绑定 Planning Area。` });
+    }
+
     if (!candidate.planningAreaCandidateId) continue;
     const parent = candidates.get(candidate.planningAreaCandidateId);
     const parentPlace = parent ? placesById.get(parent.placeId) : null;
@@ -242,12 +266,12 @@ function addDocumentIssues(value: {
       context.addIssue({ code: "custom", path: ["candidates", index, "planningAreaCandidateId"], message: "Micro Candidate 必须引用另一条已存在的 Macro Candidate。" });
       continue;
     }
-    if (parentPlace?.kind !== "city") {
-      context.addIssue({ code: "custom", path: ["candidates", index, "planningAreaCandidateId"], message: "planningAreaCandidateId 必须指向 Macro 目的地 Candidate。" });
+    const parentRole = parent.planningRole ?? (parentPlace?.kind === "city" ? "planning_area" : "detail_interest");
+    if (parentPlace?.kind !== "city" || parentRole !== "planning_area") {
+      context.addIssue({ code: "custom", path: ["candidates", index, "planningAreaCandidateId"], message: "planningAreaCandidateId 必须指向 Planning Area Candidate。" });
     }
-    const ownPlace = placesById.get(candidate.placeId);
-    if (ownPlace?.kind === "city") {
-      context.addIssue({ code: "custom", path: ["candidates", index, "planningAreaCandidateId"], message: "Macro Candidate 不得再归属于其他 Macro Candidate。" });
+    if (ownPlace?.kind === "city" || effectiveRole === "planning_area") {
+      context.addIssue({ code: "custom", path: ["candidates", index, "planningAreaCandidateId"], message: "Planning Area Candidate 不得再归属于其他 Planning Area Candidate。" });
     }
   }
 
@@ -320,6 +344,7 @@ export const TravelPlanDocumentSchema = z.object({
   places: z.array(PlaceSchema).max(1800),
   candidates: z.array(TripCandidateSchema).max(1800),
   days: z.array(DaySchema).max(90),
+  planningState: PlanningStateSchema.optional(),
   warnings: z.array(TextSchema.max(700)).max(100),
 }).strict().superRefine(addDocumentIssues);
 export type TravelPlanDocument = z.infer<typeof TravelPlanDocumentSchema>;
