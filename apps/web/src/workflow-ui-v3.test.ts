@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { actionBelongsToWorkflowStepV3, defaultWorkflowStepV3, requiredWorkflowStepFromResultRefV3, WORKFLOW_STEPS_V3 } from "./workflow-ui-v3";
+import { actionBelongsToWorkflowStepV3, defaultWorkflowStepV3, latestRequiredWorkflowStepV3, requiredWorkflowStepFromResultRefV3, stageForWorkflowStepV3, WORKFLOW_STEPS_V3 } from "./workflow-ui-v3";
 import type { WorkspaceV3 } from "./v3-types";
 
 function workspace(): WorkspaceV3 {
@@ -20,7 +20,9 @@ describe("Phase 6 workflow UI helpers", () => {
     ]);
   });
 
-  it("separates Backbone and Skeleton while they still share the destinations conversation namespace", () => {
+  it("maps Backbone and Skeleton to the same destinations conversation namespace without merging their actions", () => {
+    expect(stageForWorkflowStepV3("backbone")).toBe("destinations");
+    expect(stageForWorkflowStepV3("skeleton")).toBe("destinations");
     expect(actionBelongsToWorkflowStepV3("destination.generate", "backbone")).toBe(true);
     expect(actionBelongsToWorkflowStepV3("itinerary.generate", "backbone")).toBe(false);
     expect(actionBelongsToWorkflowStepV3("itinerary.generate", "skeleton")).toBe(true);
@@ -44,5 +46,16 @@ describe("Phase 6 workflow UI helpers", () => {
     expect(requiredWorkflowStepFromResultRefV3("requiresWorkflowStep:backbone")).toBe("backbone");
     expect(requiredWorkflowStepFromResultRefV3("requiresStage:interests")).toBeNull();
     expect(requiredWorkflowStepFromResultRefV3("requiresWorkflowStep:detail")).toBeNull();
+  });
+
+  it("auto-navigates only for a current-generation upstream request", () => {
+    const value = workspace();
+    value.actions = [
+      { id: "old", tripId: "trip", stage: "itinerary", actionType: "itinerary.detail.generate", executor: "ai", origin: "cta", sourceMessageId: null, parameters: {}, targetIds: [], scope: {}, baseGeneration: 0, status: "completed", taskId: null, proposalId: null, resultRef: "requiresWorkflowStep:skeleton", startedAt: null, updatedAt: "2026-09-02T01:00:00Z", completedAt: "2026-09-02T01:00:00Z", errorSummary: null },
+      { id: "current", tripId: "trip", stage: "itinerary", actionType: "itinerary.detail.generate", executor: "ai", origin: "cta", sourceMessageId: null, parameters: {}, targetIds: [], scope: {}, baseGeneration: 1, status: "completed", taskId: null, proposalId: null, resultRef: "requiresWorkflowStep:interests", startedAt: null, updatedAt: "2026-09-02T02:00:00Z", completedAt: "2026-09-02T02:00:00Z", errorSummary: null },
+    ];
+    expect(latestRequiredWorkflowStepV3(value)).toEqual({ step: "interests", actionId: "current" });
+    value.trip.contentGeneration = 2;
+    expect(latestRequiredWorkflowStepV3(value)).toBeNull();
   });
 });
