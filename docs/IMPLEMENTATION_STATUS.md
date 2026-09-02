@@ -1,46 +1,94 @@
 # TravelPlanner Implementation Status
 
-> 更新时间：2026-09-02  
-> 当前状态：**五步重构设计与用户复杂度下沉规则已最终确认，代码尚未按该方案实施**
+> 更新时间：2026-09-03  
+> 当前状态：**五步重构 Phase 1–6 已实施并逐阶段通过独立 Codex Gate；Phase 7 正在做最终综合回归交接，尚未最终验收完成**
 
 ---
 
 # 1. Current Gate
 
-现有 staged-v3 已经具备可复用基础：
+当前分支：
 
 ```text
-右侧工作区 AI 入口
-四个 ConversationStage
-Dialogue / Action Registry
-确定性 Action 与 AI Action 分离
-Proposal / Scope / generation / CAS
-Candidate-first / save-first
-Resolution 状态
-Macro / Detail Route 基础
-canonical Day / Stop
-detailStatus
-Detail patch 基础
+feature/five-step-workflow-refactor
 ```
 
-2026-09-02 已完成五步重构和用户交互简化的最终文档设计，但本轮**没有修改代码、没有运行测试**。
-
-因此：
+实施前 `main` / merge-base：
 
 ```text
-产品设计：已确认
-UI 设计：已确认
-复杂度下沉规则：已确认
-施工合同：已确认
-代码实施：未开始
-五步验证：未开始
+b048c1980247443b5d6568ddd4302c41c9ce832b
 ```
 
-不能因为文档已经完成就宣称功能存在。
+Phase 6 最终 PASS HEAD：
+
+```text
+0f8cdd2bdb58b248cc39aefbd05c8cdfd0ce2ae7
+```
+
+Phase 7 只允许：
+
+```text
+静态 review 最终 diff
+更新文档与交接信息
+生成最终 Codex 综合回归提示词
+STOP
+```
+
+本实施 Agent 在 Phase 7 不运行：
+
+```text
+git diff --check
+Vitest / Jest
+typecheck
+full test
+build
+真实 AI smoke
+Browser E2E
+GitHub Actions 测试工作流
+```
+
+这些由最终 Codex Gate 独立执行。
 
 ---
 
-# 2. 最终确认的用户五步
+# 2. 已完成的 Phase Gate
+
+```text
+Phase 0 Read-only Gap Review                  DONE
+Phase 1 Role + Contract Foundation            PASS
+Phase 2 Skeleton + Impact Consumer Foundation PASS
+Phase 3 Backbone Producer                    PASS
+Phase 4 Capacity-Aware Interests             PASS
+Phase 5 Detailed Itinerary                   PASS
+Phase 6 UI / Map + Complexity Downshift      PASS
+Phase 7 Docs + Final Regression Handoff       IN PROGRESS
+```
+
+关键 Gate 证据：
+
+```text
+Phase 1：23 targeted tests PASS
+Phase 2：38 targeted tests PASS
+Phase 3：33 targeted tests PASS
+Phase 4：39 targeted tests PASS
+Phase 5：50 targeted tests PASS，Errors 0，exit 0
+Phase 6 Repair Gate：67 targeted tests PASS，web/server typecheck PASS，isolated Browser J/K PASS
+```
+
+这些逐阶段 PASS 不能替代 Phase 7 的当前最终综合回归。
+
+---
+
+# 3. 当前用户五步已经落地
+
+Mounted 产品主入口：
+
+```text
+main.tsx
+→ AppWorkflowV3
+```
+
+用户流程：
 
 ```text
 1 旅行需求
@@ -50,150 +98,145 @@ UI 设计：已确认
 5 每日行程
 ```
 
-用户心智：
+内部 WorkflowStep：
 
 ```text
-我想怎么玩
-→ 我想去哪些地方
-→ 这些天怎么排
-→ 要不要再补点景点
-→ 每天具体怎么玩
+requirements
+backbone
+skeleton
+interests
+detail
 ```
 
-内部仍保留完整工程模型，但普通 UI 不要求用户理解：
+数据库 / Dialogue / Action ConversationStage 仍是四个：
 
 ```text
-PlanningRole
-Backbone / Skeleton
-Macro / Detail
-stayBlockId
-fingerprint / macroDirty
-affectedDayIds
-requiresWorkflowStep
-ConversationStage
-Resolution
-CAS
+requirements
+destinations
+interests
+itinerary
 ```
+
+映射：
+
+```text
+requirements → requirements
+backbone     → destinations
+skeleton     → destinations
+interests    → interests
+detail       → itinerary
+```
+
+ConversationStage 没有替换 canonical `TripStage`。
 
 ---
 
-# 3. 核心目标合同
+# 4. 已落地的核心数据与规划合同
+
+## Planning Role
 
 ```text
-PlanningRole: planning_area / core_visit / detail_interest
-preference 真正影响 Planning Area 是否最终采用
-Core Visit 只影响 Macro 时间，不成为 Anchor
-稳定 Stay Block identity
-Day.stayBlockId? backward-compatible
-同一 Planning Area 可多次形成 Stay Block
-移动日计入到达 Stay Block
-Step 3 SkeletonEditDraft + 原子保存
-requiresWorkflowStep 取代模糊 requiresStage 导航
-planningState 只保存 Macro basis fingerprint
-macroDirty 由 fingerprint 派生
-Planning Area / Core / Detail unresolved 完整 readiness
-Step 4 capacity-aware discovery 且可直接跳过
-Step 5 patch-only affectedDayIds
-右侧唯一业务入口
+planning_area
+core_visit
+detail_interest
 ```
+
+兼容旧 Candidate：
+
+```text
+无 planningRole + city     → planning_area
+无 planningRole + non-city → detail_interest
+```
+
+Canonical 约束：
+
+```text
+Planning Area = city + no parent
+Core Visit    = non-city + parent Planning Area
+Detail        = non-city + parent Planning Area
+```
+
+Core Visit 影响时间预算，但永不成为 Macro Anchor。
+
+## Preference
+
+数据层继续保留：
+
+```text
+must_go
+want_to_go
+optional
+excluded
+```
+
+Step 3：
+
+```text
+must_go     → 必须采用
+want_to_go  → 优先；省略必须解释
+optional    → 可省略
+excluded    → 不得采用
+```
+
+普通 UI 主操作只强调：
+
+```text
+必去
+想去
+```
+
+optional 默认弱化；excluded 通过“移除 / 不考虑”表达。
 
 ---
 
-# 4. 用户复杂度下沉目标
+# 5. Skeleton / Stay Block 已落地
 
-后续 Phase 6 必须实现，而不是作为可选 polish：
-
-```text
-Step 2 = 愿望清单，不让用户误以为全部候选一定进入路线
-Step 3 = 最终路线和天数
-Step 4 明确标记可选
-四级 preference 留在数据层，主 UI 主要使用“必去 / 想去”
-optional 默认弱化，excluded 用“移除 / 不考虑”表达
-重要游览地使用自然语言，不做 planningRole 编辑器
-Step 3 Draft 只显示“还差 N 天”，不显示 canonical / atomic 等术语
-Update Card 默认紧凑，原因按需展开
-requiresWorkflowStep 自动切换到正确工作区，不频繁提示“请前往某一步”
-未定位按是否真正阻塞分级展示
-工程状态不得直接成为普通用户标签
-```
-
-这些规则当前**均尚未实施**。
-
----
-
-# 5. 当前代码与目标之间已知关键差异
-
-现有代码仍需要在实施时处理至少以下差异：
-
-```text
-TripCandidate 尚无 planningRole
-Day 尚无 stayBlockId
-现有 Macro 识别主要依赖 Place.kind=city
-现有 Skeleton 强制每个非 excluded Macro 恰好出现一次
-现有 Skeleton 禁止重复同一 destinationCandidateId
-现有 Itinerary Macro output 仍使用 destinations 单次访问结构
-现有 requiresStage 无法精确区分 Step 2 / Step 3
-现有 Macro 更新依赖通用 PlanCommand，存在 100 command 上限
-现有 Macro dirty / readiness 尚未采用最终 fingerprint 派生合同
-现有 Resolution readiness 尚未按 Planning Area / Core / Detail 三类完全区分
-Step 3 尚无完整的本地编辑草稿 + 原子保存
-Step 4 / Step 5 尚未按最终五步 Action ownership 收口
-现有 UI 尚未完成上述用户复杂度下沉
-```
-
-这些差异必须以正式施工图为准逐项处理。
-
----
-
-# 6. Preference 最终合同
-
-Planning Area：
-
-```text
-must_go     → 必须进入 Skeleton
-want_to_go  → 优先；omitted 必须解释
-optional    → 可以 omitted
-excluded    → 禁止进入
-```
-
-Core Visit：
-
-```text
-must_go     → 必须预留容量并最终安排
-want_to_go  → 优先
-optional    → 不单独强迫增加 stayDays
-excluded    → 不参与
-```
-
-当前代码“全部 non-excluded Macro 都必须进入一次”的行为属于待修改项。
-
-用户主 UI 不需要四级完整选择器；主要操作“必去 / 想去”。
-
----
-
-# 7. Stay Block 最终合同
-
-不新增独立 MacroDay / StayBlock 表。
-
-Canonical Day 增加可选：
+Canonical Day 支持：
 
 ```ts
 stayBlockId?: string;
 ```
 
-同一 Stay Block 的 Day 共享稳定 ID。
+已实现：
 
-AI Draft 不生成 canonical UUID；服务端 formalization 负责匹配旧 Block、复用 ID 或生成新 ID。
+```text
+同一 Planning Area 可重复出现
+Auckland → ... → Auckland 两个独立稳定 Stay Block
+移动日计入到达 Stay Block
+stable stayBlockId reuse
+Day ID reuse
+preference-aware coverage
+omitted Planning Area reason
+```
 
-旧 Day 没有 `stayBlockId`：正常读取；普通加载不写回；用户下一次主动 Step 3 保存后建立稳定 ID。
+Step 3 手工编辑使用 UI-only Draft，只有完整合法后才一次保存。
 
-用户 UI 不显示 `stayBlockId`。
+专用边界：
+
+```text
+PUT /api/trips/:tripId/skeleton
+→ validate whole Draft
+→ applySkeletonPlanV3
+→ one canonical CAS write
+```
+
+因此 90 天大范围 Skeleton 不依赖把整个重规划拆成不超过 100 条通用 PlanCommand。
+
+用户只看到：
+
+```text
+还剩 N 天需要安排
+还需要减少 N 天
+已分配完整
+```
+
+不看到 Draft / canonical / CAS / stayBlockId。
 
 ---
 
-# 8. Macro Dependency 最终合同
+# 6. Macro Dependency / Impact 已落地
 
-Canonical：
+Canonical 只保存：
 
 ```ts
 planningState?: {
@@ -204,196 +247,278 @@ planningState?: {
 
 不持久化 `macroDirty`。
 
-运行时派生：
+运行时从 current fingerprint 与 basis fingerprint 派生：
 
 ```text
-current fingerprint != basis fingerprint
-→ macroDirty
+current     → ready
+mismatch    → needs_update
+无旧 basis → needs_confirmation
 ```
 
-缺 fingerprint：
+Impact Analyzer 按角色和依赖传播真实受影响范围；普通 Detail 变化不会默认使全旅程失效。
 
-```text
-needs_confirmation
-```
-
-用户只看到：
+用户只看到自然语言：
 
 ```text
 路线和天数需要重新确认
+2 天需要更新，其他 18 天保持不变
 ```
 
 ---
 
-# 9. Resolution 最终合同
+# 7. Backbone / Interests 已落地
+
+Step 2 `destination.generate`：
+
+```text
+可混合生成 Planning Area + Core Visit
+ParentCandidateRef two-pass formalization
+正式 parent ID 后再 canonical 保存
+Detail → incoming Core 可受控升级
+Core 不被 incoming Detail 静默降级
+不覆盖已有用户 preference
+parent 冲突 fail closed
+save-first + best-effort Resolver
+```
+
+Step 4：
+
+```text
+只针对已采用 Planning Area 的容量发现 Detail
+每区域 0–9，允许 0
+不重复 Core
+Core 只读背景
+首次进入不自动 discovery
+Skeleton dirty 时禁止按旧容量 AI 批量推荐
+Step 4 可完全跳过
+```
+
+---
+
+# 8. Detailed Itinerary 已落地
+
+Detail Context 只窗口化相关 Day / Planning Area，并带 sticky baseline。
+
+Resolution readiness：
 
 ```text
 Planning Area unresolved
 → Step 3 可做语义 Skeleton
-→ Macro Route pending
-→ Step 5 使用该 Anchor 时阻塞
+→ 真正被 Step 5 Anchor 使用时阻塞相关范围
 
-Core must_go unresolved
-→ Step 3 可计算容量
-→ 阻塞相关 Detail Generate
+must_go Core / Detail unresolved
+→ 阻塞相关 Detail
 
-Core want / optional unresolved
-→ 不成为 Stop，可解释未排
-
-Detail must_go unresolved
-→ 阻塞相关 Detail Generate
-
-Detail want / optional unresolved
-→ 跳过，不阻塞无关 Day
+want / optional unresolved
+→ unavailable / 不排入 Stop
+→ 不阻塞无关范围
 ```
 
-UI：非阻塞轻量提示，真正阻塞下一步时才显示明确行动卡。
+调度优先级：
+
+```text
+resolved Core must_go   → 必须安排
+resolved Detail must_go → 必须安排
+resolved Core want      → 优先；若未排需理由
+```
+
+Detail Update：
+
+```text
+patch-only affectedDayIds
+sticky existing Day
+reuse Stop ID
+优先 move/update
+真正新增/删除才 add/remove
+固定 Macro，不允许 Step 5 偷改 Stay Block / Anchor / Day identity
+Macro 不合理 → requiresWorkflowStep=skeleton
+```
+
+Detailed Generate / Update 已拒绝旧 `requires_stage: interests` 强制 gate，因此 Step 4 不运行 Discovery 也可以进入 Step 5。
 
 ---
 
-# 10. Step 3 Save 最终合同
+# 9. UI / Map Complexity Downshift 已落地
 
-用户手工修改 Skeleton 先进入内部 `SkeletonEditDraft`。
-
-只有：
+主入口：
 
 ```text
-采用范围合法
-must_go coverage 合法
-stayDays 总和 = 总旅行天数
-顺序 / transport 合法
+右侧五步导航 + 当前步骤内容 + Workflow Assistant
 ```
 
-才允许保存。
-
-服务端使用专用原子边界：
+地图 / 时间轴只负责：
 
 ```text
-applySkeletonPlanV3()
+展示
+选择
+聚焦
 ```
 
-负责：
+Marker click 只更新 selection，不产生业务 mutation。
+
+地图点选定位必须先从右侧对象卡发起。
+
+已验证的用户语言边界：
 
 ```text
-validate
-formalize stayBlockId
-expand Days
-reuse Day IDs
-Macro Diff
+Planning Area → 停留地点 / 停留区域
+Core Visit    → 重要游览地
+Detail        → 普通景点
+```
+
+普通 UI 不要求理解：
+
+```text
+planningRole
+stayBlockId
+fingerprint
+macroDirty
 affectedDayIds
-basis fingerprint
-CAS atomic write
+WorkflowStep
+ConversationStage
+CAS
+Resolution
+generation
+Candidate ID
+Stop ID
 ```
 
-不要求把 90 天大范围更新拆成不超过 100 条通用 PlanCommand。
+Update Card 默认紧凑，原因渐进展开。
 
-用户只看到：
+未定位按是否真正阻塞分级。
 
-```text
-当前分配 19 / 20 天
-还剩 1 天需要安排
-```
-
-以及自然的重新分配建议。
-
----
-
-# 11. 下一步实施顺序
-
-正式施工图采用：
+候选地图长期偏好图例只显示：
 
 ```text
-Phase 0 Read-only Gap Review
-Phase 1 Role + Contract Foundation
-Phase 2 Skeleton + Impact Consumer Foundation
-Phase 3 Backbone Producer
-Phase 4 Capacity-Aware Interests
-Phase 5 Detailed Itinerary
-Phase 6 UI / Map Integration + Complexity Downshift
-Phase 7 Verification Preparation
-```
-
-关键顺序原则：
-
-> **先让下游消费者理解新角色 / Stay Block / Impact，再让 Step 2 开始生产新的 Core Visit；最后统一把工程复杂度隐藏到用户界面背后。**
-
-Phase 1–6 应在同一 feature branch 连续完成；中间状态不得作为完整产品单独发布。
-
----
-
-# 12. 下一步真正要做的第一件事
-
-用户之后明确要求“开始实施”时，不应立即改代码。
-
-先执行：
-
-```text
-Phase 0：只读 review 当前 main / 实施分支代码
-```
-
-输出逐文件差异清单，至少核对：
-
-```text
-contracts
-candidate workflow
-itinerary contracts
-itinerary workflow
-impact analyzer
-stage / workflow mapping
-context builder
-Action Registry
-Resolution readiness
-UI ownership
-PlanCommand 100 上限
-工程状态是否直接暴露到 UI
-```
-
-确认差异与施工图一致后，再进入 Phase 1。
-
----
-
-# 13. 未来必须验证的场景
-
-```text
-普通用户不懂任何工程术语也能走完五步
-Step 2 明确是愿望清单，Step 3 才是最终路线
-四级 preference 不变成四按钮系统
-Step 4 可不运行 Discovery 直接进入 Step 5
-must / want / optional / excluded Planning Area
-Auckland → ... → Auckland 两个稳定 Stay Block
-20 天 Step 3 草稿 19/20 不可保存、20/20 可保存
-90 天 Skeleton 原子保存
-Milford = Core，不成为 Macro Anchor，UI 只显示“重要游览地”
-Planning Area unresolved 可 Step 3、不可真实 Step 5 Anchor
-must_go Core / Detail unresolved 阻塞相关 Detail
-Detail → Core 只传播到相关 Macro / Detail
-Replan Macro 不变时只更新相关区域 Detail
-Macro 天数变化只更新 affectedDayIds
-Update Card 默认紧凑、原因可展开
-跨步骤请求自动切换上下文
-地图不承担业务 mutation
-Step 2 / 3、Step 4 / 5 无重复生成入口
+必去
+想去
 ```
 
 ---
 
-# 14. Verification Gate
+# 10. 跨步骤 ownership 已落地
 
-只有代码真正实施完后，才准备：
+Step 2 / Step 3 虽共享 `destinations` ConversationStage，但 Action ownership 分开：
+
+```text
+destination.*           → Step 2
+itinerary.generate      → Step 3
+itinerary.replan        → Step 3
+interest.*              → Step 4
+itinerary.detail.*      → Step 5
+```
+
+`requiresWorkflowStep` 或识别到另一步 Action 时：
+
+```text
+自动切换正确 UI context
+但不自动确认 Action
+不静默 mutation
+```
+
+旧 generation 的历史 requires action 不会反复劫持当前 UI。
+
+---
+
+# 11. Step 1 duration bridge
+
+Step 1 表单仍允许自然语言：
+
+```text
+20 天左右
+2周
+7 days
+```
+
+`requirements.update` CTA 边界会同步结构化：
+
+```text
+requestedDurationDays
+```
+
+从而保证 Step 3 UI 与服务端 Skeleton 校验使用同一总天数口径。
+
+明确传入结构化 dates 时不会被自然语言推断覆盖。
+
+---
+
+# 12. 数据库 / Provider 边界没有改变
+
+继续保持：
+
+```text
+PRAGMA user_version = 3
+private_data/travel-v2.sqlite3
+```
+
+本专项没有：
+
+```text
+v3 → v4 migration
+自动私人数据库 rewrite
+双写
+修改 Place Resolver 事实来源
+修改 Route Provider 事实来源
+让 AI 生产可信坐标 / Provider ID / geometry / Provider distance / duration
+```
+
+新增 optional 字段由现有 JSON canonical 文档兼容读取；旧数据普通加载不因为这些字段缺失而自动改写。
+
+---
+
+# 13. Final Static Diff Review
+
+实施前基线：
+
+```text
+b048c1980247443b5d6568ddd4302c41c9ce832b
+```
+
+Phase 7 静态 review 确认分支 diff 集中在：
+
+```text
+contracts / role / workflow-step contracts
+Skeleton / Impact / Planning Context
+Backbone / Interest / Detail producers
+Planner Runtime wiring
+Step 3 atomic API
+five-step mounted UI / Map presentation
+Prompt user-language and action ownership
+对应 targeted tests
+Phase 7 文档 / handoff
+```
+
+静态 diff 未出现：
+
+```text
+travel-store migration
+config/private_data changes
+Resolver implementation changes
+Route Provider implementation changes
+与五步重构无关的大范围业务重构
+```
+
+最终是否可合并 / 发布仍以 Phase 7 Codex 综合回归结果为准。
+
+---
+
+# 14. Final Verification Gate
+
+Phase 7 Codex 必须重新独立执行，而不是引用之前 PASS：
 
 ```text
 git diff --check
-targeted Vitest
-typecheck
-全量 Vitest
-build
-真实 AI smoke
+Phase 1–6 targeted tests 的并集 / 必要回归
+npm run typecheck
+npm test
+npm run build
 isolated Browser E2E
+真实 AI smoke（仅当已有合法 AI 配置且项目存在可安全执行的方法）
 ```
 
-完整验收继续需要用户明确确认。
+真实 AI smoke 缺配置时应标记 `BLOCKED`，不得伪造 PASS；它是否导致总体不能最终 PASS，由最终报告按施工图和用户决定明确说明。
 
-本轮只改文档，所以没有运行任何上述验证。
+任何测试 / build / Browser 的真实产品失败都不得在 Gate 中自动修复；先报告，由用户决定回到哪个 Phase 修复。
 
 ---
 
@@ -401,13 +526,16 @@ isolated Browser E2E
 
 当前最准确的交接描述：
 
-> TravelPlanner 已有 staged-v3 基础代码；五步产品、UI、用户复杂度下沉规则与实施合同已经最终确认，但尚未实施。下一次开始开发时，先按施工图执行 Phase 0 只读差异审查，再进入 Phase 1–6。
+> TravelPlanner 五步重构已经完成 Phase 1–6 实施，并通过逐阶段独立 Gate。Phase 7 只负责文档对齐和最终综合回归交接。当前不能因为前六阶段 PASS 就宣称专项最终完成；下一步是使用 Phase 7 提示词由 Codex 对当前 HEAD 做完整回归，得到最终 PASS / FAIL / BLOCKED 证据。
 
-实施依据优先级：
+实施 / 验收依据优先级：
 
 ```text
-TravelPlanner 五步规划流程重构实施方案.md
+用户当前明确决定
+→ TravelPlanner 五步规划流程重构实施方案.md
 → 五步 UI 交互规范.md
 → PRODUCT_PLAN.md
-→ 本文件仅用于判断当前实际状态
+→ IMPLEMENTATION_STATUS.md（只说明当前实际完成状态）
 ```
+
+设计文档中若仍保留 2026-09-02 设计冻结时的历史状态描述，以本文件的实时实施状态为准；不要据此误判当前代码尚未实施。
