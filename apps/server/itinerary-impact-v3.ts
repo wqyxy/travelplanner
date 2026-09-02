@@ -104,6 +104,16 @@ function addParentRouteDays(target: Set<string>, plan: TravelPlanDocument, paren
   for (const dayId of routeDayIdsForPlanningArea(plan, parentId ?? null)) target.add(dayId);
 }
 
+function addScheduledRouteDays(
+  target: Set<string>,
+  beforeScheduled: Map<string, Set<string>>,
+  afterScheduled: Map<string, Set<string>>,
+  candidateId: string,
+) {
+  for (const dayId of beforeScheduled.get(candidateId) ?? []) target.add(dayId);
+  for (const dayId of afterScheduled.get(candidateId) ?? []) target.add(dayId);
+}
+
 export function analyzeItineraryImpactV3(before: TravelPlanDocument, after: TravelPlanDocument): ItineraryImpactV3 {
   const beforePlaces = placeById(before);
   const afterPlaces = placeById(after);
@@ -136,6 +146,13 @@ export function analyzeItineraryImpactV3(before: TravelPlanDocument, after: Trav
     const rightRole = roleOf(right, rightPlace);
     if (!candidateChanged(left, right) && same(leftPlace ?? null, rightPlace ?? null)) continue;
 
+    const routeIdentityChanged = !same(routeIdentity(leftPlace), routeIdentity(rightPlace));
+    if (routeIdentityChanged) {
+      // Any concrete Candidate that is already used by a Day contributes to that Day's
+      // detailed route, regardless of whether its planning role is Core or Detail.
+      addScheduledRouteDays(detailRouteDayIds, beforeScheduled, afterScheduled, id);
+    }
+
     const touchesMacroRole = leftRole === "planning_area" || leftRole === "core_visit" || rightRole === "planning_area" || rightRole === "core_visit";
     if (touchesMacroRole) {
       if (!left && right) macroReasons.add(rightRole === "core_visit" ? `新增重要游览地 ${id}` : `新增停留区域 ${id}`);
@@ -152,7 +169,7 @@ export function analyzeItineraryImpactV3(before: TravelPlanDocument, after: Trav
     }
 
     if (leftRole === "planning_area" || rightRole === "planning_area") {
-      if (!same(routeIdentity(leftPlace), routeIdentity(rightPlace))) {
+      if (routeIdentityChanged) {
         if (left) addParentRouteDays(macroRouteDayIds, before, left.id);
         if (right) addParentRouteDays(macroRouteDayIds, after, right.id);
       }
@@ -182,10 +199,6 @@ export function analyzeItineraryImpactV3(before: TravelPlanDocument, after: Trav
         detailReasons.add(`兴趣点改为必去 ${id}`);
         addParentDays(detailDayIds, after, right.planningAreaCandidateId);
       }
-    }
-
-    if (!same(routeIdentity(leftPlace), routeIdentity(rightPlace))) {
-      for (const dayId of afterScheduled.get(id) ?? []) detailRouteDayIds.add(dayId);
     }
   }
 
