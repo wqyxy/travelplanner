@@ -11,6 +11,7 @@ import type { LoadedPromptRegistryV3 } from "./prompt-registry-v3.js";
 import type { PlaceResolverV2 } from "./place-resolver-v2.js";
 import type { DayRouteServiceV2 } from "./day-route-v2.js";
 import { TravelPlanDocumentSchema, type TravelPlanDocument } from "./contracts-v2.js";
+import { computeMacroDependencyFingerprintV3 } from "./planning-state-v3.js";
 
 const roots: string[] = [];
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
@@ -40,7 +41,7 @@ function prompts(): LoadedPromptRegistryV3 {
 function runtime(store: TravelStoreV3, startAction: (input: any) => Promise<any>, resolverOverride?: PlaceResolverV2) {
   const ai = { startAction, startDialogue: async () => { throw new Error("dialogue not expected"); }, startWebDialogue: async () => { throw new Error("web dialogue not expected"); } } as unknown as StagedTravelAiV3;
   const resolver = resolverOverride ?? ({ resolve: async () => ({ resolution: null, candidates: [] }), resolveMany: async () => [], searchCandidates: async () => [] } as unknown as PlaceResolverV2);
-  const routes = { workspaceRouteState: () => [], recalculate: async () => { throw new Error("route not expected"); } } as unknown as DayRouteServiceV2;
+  const routes = { workspaceRouteState: () => [], workspaceMacroRouteState: () => [], recalculate: async () => { throw new Error("route not expected"); }, recalculateMacro: async () => null } as unknown as DayRouteServiceV2;
   return new TravelPlannerRuntimeV3({ store, ai, prompts: prompts(), tasks: new AiTaskMonitorV3(store, () => undefined), resolver, routes, emit: () => undefined });
 }
 
@@ -63,6 +64,7 @@ function macroPlan(base: TravelPlanDocument, count: number) {
       id: `macro-${index + 1}`,
       placeId: `place-m${index + 1}`,
       planningAreaCandidateId: null,
+      planningRole: "planning_area" as const,
       preference: "optional" as const,
       source: "ai" as const,
       aiReason: null,
@@ -70,6 +72,40 @@ function macroPlan(base: TravelPlanDocument, count: number) {
       suggestedDurationMinutes: 1440,
       tags: [],
     })),
+  });
+}
+
+function withReadySkeleton(plan: TravelPlanDocument, adoptedIds = plan.candidates.filter((candidate) => candidate.planningRole === "planning_area" || !candidate.planningAreaCandidateId).map((candidate) => candidate.id)) {
+  const candidates = new Map(plan.candidates.map((candidate) => [candidate.id, candidate]));
+  const places = new Map(plan.places.map((place) => [place.id, place]));
+  const days = adoptedIds.map((candidateId, index) => {
+    const candidate = candidates.get(candidateId)!;
+    const place = places.get(candidate.placeId)!;
+    const previousCandidate = index ? candidates.get(adoptedIds[index - 1])! : candidate;
+    const previousPlace = places.get(previousCandidate.placeId)!;
+    return {
+      id: `day-${index + 1}`,
+      stayBlockId: `block-${candidateId}`,
+      dayNumber: index + 1,
+      date: null,
+      title: place.nameZh,
+      transferMode: index ? "rail" as const : "none" as const,
+      detailLevel: "planned" as const,
+      detailStatus: null,
+      startAnchor: { id: `start-${index + 1}`, placeId: previousPlace.id, label: previousPlace.nameZh, notes: null },
+      stops: [],
+      endAnchor: { id: `end-${index + 1}`, placeId: place.id, label: place.nameZh, notes: null },
+    };
+  });
+  const staged = TravelPlanDocumentSchema.parse({
+    ...plan,
+    trip: { ...plan.trip, dates: { ...plan.trip.dates, requestedDurationDays: days.length } },
+    days,
+    planningState: { macroBasisVersion: 1, macroBasisFingerprint: null },
+  });
+  return TravelPlanDocumentSchema.parse({
+    ...staged,
+    planningState: { macroBasisVersion: 1, macroBasisFingerprint: computeMacroDependencyFingerprintV3(staged) },
   });
 }
 
@@ -83,7 +119,25 @@ function planWithExistingInterest(base: TravelPlanDocument, macroCount = 1) {
     ],
     candidates: [
       ...plan.candidates,
-      { id: "existing-candidate", placeId: "existing-place", planningAreaCandidateId: "macro-1", preference: "optional", source: "ai", aiReason: "值得参观", aiScore: 90, suggestedDurationMinutes: 60, tags: [] },
+      { id: "existing-candidate", placeId: "existing-place", planningAreaCandidateId: "macro-1", planningRole: "detail_interest", preference: "optional", source: "ai", aiReason: "值得参观", aiScore: 90, suggestedDurationMinutes: 60, tags: [] },
+    ],
+  });
+}
+
+function planWithCoreAndDetail(base: TravelPlanDocument) {
+  const plan = macroPlan(base, 2);
+  return TravelPlanDocumentSchema.parse({
+    ...plan,
+    trip: { ...plan.trip, pace: "轻松" },
+    places: [
+      ...plan.places,
+      { id: "core-place", nameZh: "核心景点", nameLocal: null, nameEn: "Core Attraction", kind: "attraction", city: "Macro 2", region: null, country: "Test", countryCode: "TT", approximate: false },
+      { id: "detail-place", nameZh: "已有景点", nameLocal: null, nameEn: "Existing Detail", kind: "attraction", city: "Macro 2", region: null, country: "Test", countryCode: "TT", approximate: false },
+    ],
+    candidates: [
+      ...plan.candidates,
+      { id: "core-1", placeId: "core-place", planningAreaCandidateId: "macro-2", planningRole: "core_visit", preference: "must_go", source: "user", aiReason: "重要", aiScore: null, suggestedDurationMinutes: 240, tags: [] },
+      { id: "detail-1", placeId: "detail-place", planningAreaCandidateId: "macro-2", planningRole: "detail_interest", preference: "optional", source: "ai", aiReason: "已有", aiScore: 80, suggestedDurationMinutes: 60, tags: [] },
     ],
   });
 }
@@ -96,6 +150,28 @@ function output(targetId: string, index: number) {
     areaTargets: [{ planningAreaCandidateId: targetId, targetCount: 1, reason: "本轮新增 1 个" }],
     places: [{ id: `tmp-place-${index}`, nameZh: `景点${index}`, nameLocal: null, nameEn: `Attraction ${index}`, kind: "attraction", city: `Macro ${index}`, region: null, country: "Test", countryCode: "TT", approximate: false }],
     candidates: [{ temporaryId: `tmp-candidate-${index}`, placeTemporaryId: `tmp-place-${index}`, planningAreaCandidateId: targetId, aiReason: "值得参观", aiScore: 90, suggestedDurationMinutes: 60, tags: [], defaultPreference: "optional", prominence: "major", experienceTypes: ["landmark"], visitPointType: "landmark", researchBasis: ["multi_guide_consensus"] }],
+  };
+}
+
+function zeroOutput(targetId: string) {
+  return {
+    schemaVersion: 1,
+    baseGeneration: 1,
+    assistantMessage: `当前 ${targetId} 无需新增`,
+    areaTargets: [{ planningAreaCandidateId: targetId, targetCount: 0, reason: "容量和已有内容已经足够" }],
+    places: [],
+    candidates: [],
+  };
+}
+
+function coreDuplicateOutput(targetId: string) {
+  return {
+    schemaVersion: 1,
+    baseGeneration: 1,
+    assistantMessage: "研究完成",
+    areaTargets: [{ planningAreaCandidateId: targetId, targetCount: 1, reason: "研究时重复发现 Core" }],
+    places: [{ id: "tmp-core-place", nameZh: "核心景点", nameLocal: null, nameEn: "Core Attraction", kind: "attraction", city: "Macro 2", region: null, country: "Test", countryCode: "TT", approximate: false }],
+    candidates: [{ temporaryId: "tmp-core-candidate", placeTemporaryId: "tmp-core-place", planningAreaCandidateId: targetId, aiReason: "重复 Core", aiScore: 95, suggestedDurationMinutes: 240, tags: [], defaultPreference: "optional", prominence: "iconic", experienceTypes: ["landmark"], visitPointType: "landmark", researchBasis: ["multi_guide_consensus"] }],
   };
 }
 
@@ -128,10 +204,99 @@ function immediateRun(value: unknown) {
 }
 
 describe("interest discovery v3 orchestration", () => {
+  it("targets only adopted Planning Areas by default and allows zero additions", async () => {
+    const store = db();
+    const created = store.createTrip();
+    store.writePlan(created.id, withReadySkeleton(macroPlan(created.plan, 3), ["macro-1", "macro-2"]), 0, { source: "test", summary: "adopted fixture" });
+    const calls: string[] = [];
+    const rt = runtime(store, async (input) => {
+      const targetId = String(input.state.targetMacroCandidate.id);
+      calls.push(targetId);
+      return immediateRun(input.validateResult(zeroOutput(targetId)));
+    });
+
+    const started = rt.createCtaAction({ tripId: created.id, stage: "interests", actionType: "interest.discover", parameters: {}, targetIds: [], requestKey: "adopted-only" });
+    await waitFor(() => store.getAction(started.action.id)?.status === "completed");
+    expect(calls.sort()).toEqual(["macro-1", "macro-2"]);
+    expect(calls).not.toContain("macro-3");
+    expect(store.getAction(started.action.id)?.resultRef).toMatch(/areas=2\/2;failed=0/);
+    expect(store.getAction(started.action.id)?.resultRef).toMatch(/added=0/);
+    expect(store.requireTrip(created.id).contentGeneration).toBe(1);
+    store.close();
+  });
+
+  it("rejects an omitted Planning Area before starting AI", async () => {
+    const store = db();
+    const created = store.createTrip();
+    store.writePlan(created.id, withReadySkeleton(macroPlan(created.plan, 3), ["macro-1", "macro-2"]), 0, { source: "test", summary: "omitted fixture" });
+    let calls = 0;
+    const rt = runtime(store, async () => { calls += 1; return immediateRun(zeroOutput("macro-3")); });
+
+    const started = rt.createCtaAction({ tripId: created.id, stage: "interests", actionType: "interest.supplement", parameters: {}, targetIds: ["macro-3"], requestKey: "reject-omitted" });
+    await waitFor(() => store.getAction(started.action.id)?.status === "failed");
+    expect(calls).toBe(0);
+    expect(store.getAction(started.action.id)?.errorSummary).toMatch(/已采用的停留区域/);
+    store.close();
+  });
+
+  it("passes stay capacity, arrival-transfer burden, Core Visits and existing Details to each child", async () => {
+    const store = db();
+    const created = store.createTrip();
+    const source = withReadySkeleton(planWithCoreAndDetail(created.plan), ["macro-1", "macro-2"]);
+    store.writePlan(created.id, source, 0, { source: "test", summary: "capacity context fixture" });
+    let state: any = null;
+    const rt = runtime(store, async (input) => { state = input.state; return immediateRun(input.validateResult(zeroOutput("macro-2"))); });
+
+    const started = rt.createCtaAction({ tripId: created.id, stage: "interests", actionType: "interest.discover", parameters: {}, targetIds: ["macro-2"], requestKey: "capacity-context" });
+    await waitFor(() => store.getAction(started.action.id)?.status === "completed");
+    expect(state.totalStayDays).toBe(1);
+    expect(state.arrivalTransferDayCount).toBe(1);
+    expect(state.stayBlocks).toHaveLength(1);
+    expect(state.stayBlocks[0].arrivalTransfer).toMatchObject({ hasArrivalTransfer: true, transferMode: "rail", fromPlaceId: "place-m1", toPlaceId: "place-m2" });
+    expect(state.coreVisits.map((item: any) => item.id)).toEqual(["core-1"]);
+    expect(state.existingDetailInterests.map((item: any) => item.id)).toEqual(["detail-1"]);
+    expect(state.pace).toBe("轻松");
+    store.close();
+  });
+
+  it("blocks capacity-aware discovery when the saved Skeleton basis is dirty", async () => {
+    const store = db();
+    const created = store.createTrip();
+    const ready = withReadySkeleton(macroPlan(created.plan, 1), ["macro-1"]);
+    ready.candidates[0] = { ...ready.candidates[0], preference: "must_go" };
+    store.writePlan(created.id, TravelPlanDocumentSchema.parse(ready), 0, { source: "test", summary: "dirty skeleton fixture" });
+    let calls = 0;
+    const rt = runtime(store, async () => { calls += 1; return immediateRun(zeroOutput("macro-1")); });
+
+    const started = rt.createCtaAction({ tripId: created.id, stage: "interests", actionType: "interest.discover", parameters: {}, targetIds: [], requestKey: "dirty-skeleton" });
+    await waitFor(() => store.getAction(started.action.id)?.status === "failed");
+    expect(calls).toBe(0);
+    expect(store.getAction(started.action.id)?.errorSummary).toMatch(/更新并确认路线和天数/);
+    store.close();
+  });
+
+  it("filters a semantic Core Visit duplicate instead of creating an ordinary Detail duplicate", async () => {
+    const store = db();
+    const created = store.createTrip();
+    const source = withReadySkeleton(planWithCoreAndDetail(created.plan), ["macro-1", "macro-2"]);
+    store.writePlan(created.id, source, 0, { source: "test", summary: "core duplicate fixture" });
+    const rt = runtime(store, async (input) => immediateRun(input.validateResult(coreDuplicateOutput("macro-2"))));
+
+    const started = rt.createCtaAction({ tripId: created.id, stage: "interests", actionType: "interest.supplement", parameters: {}, targetIds: ["macro-2"], requestKey: "core-duplicate" });
+    await waitFor(() => store.getAction(started.action.id)?.status === "completed");
+    const trip = store.requireTrip(created.id);
+    expect(trip.contentGeneration).toBe(1);
+    expect(trip.plan.candidates.filter((candidate) => candidate.placeId === "core-place")).toHaveLength(1);
+    expect(trip.plan.candidates.find((candidate) => candidate.id === "core-1")).toMatchObject({ planningRole: "core_visit", preference: "must_go", source: "user" });
+    expect(store.getAction(started.action.id)?.resultRef).toMatch(/coreSkipped=1/);
+    expect(store.getAction(started.action.id)?.resultRef).toMatch(/added=0/);
+    store.close();
+  });
+
   it("caps research at four concurrent areas, persists successes immediately and completes with partial failures", async () => {
     const store = db();
     const created = store.createTrip();
-    store.writePlan(created.id, macroPlan(created.plan, 6), 0, { source: "test", summary: "macro fixture" });
+    store.writePlan(created.id, withReadySkeleton(macroPlan(created.plan, 6)), 0, { source: "test", summary: "macro fixture" });
 
     const gates = new Map<string, ReturnType<typeof deferred<any>>>();
     const calls: string[] = [];
@@ -182,7 +347,7 @@ describe("interest discovery v3 orchestration", () => {
   it("stops all currently active interest workers and does not start more areas", async () => {
     const store = db();
     const created = store.createTrip();
-    store.writePlan(created.id, macroPlan(created.plan, 6), 0, { source: "test", summary: "macro fixture" });
+    store.writePlan(created.id, withReadySkeleton(macroPlan(created.plan, 6)), 0, { source: "test", summary: "macro fixture" });
 
     const calls: string[] = [];
     let interrupted = 0;
@@ -211,7 +376,7 @@ describe("interest discovery v3 orchestration", () => {
   it("preserves a saved first area while stopping the remaining active workers before any later area can persist", async () => {
     const store = db();
     const created = store.createTrip();
-    store.writePlan(created.id, macroPlan(created.plan, 6), 0, { source: "test", summary: "macro fixture" });
+    store.writePlan(created.id, withReadySkeleton(macroPlan(created.plan, 6)), 0, { source: "test", summary: "macro fixture" });
 
     const gates = new Map<string, ReturnType<typeof deferred<any>>>();
     const calls: string[] = [];
@@ -249,7 +414,7 @@ describe("interest discovery v3 orchestration", () => {
   it("interrupts a child that finishes startAction only after Stop was requested", async () => {
     const store = db();
     const created = store.createTrip();
-    store.writePlan(created.id, macroPlan(created.plan, 1), 0, { source: "test", summary: "macro fixture" });
+    store.writePlan(created.id, withReadySkeleton(macroPlan(created.plan, 1)), 0, { source: "test", summary: "macro fixture" });
     const startGate = deferred<void>();
     const resultGate = deferred<any>();
     let startEntered = false;
@@ -278,7 +443,7 @@ describe("interest discovery v3 orchestration", () => {
   it("aborts Resolver after a successful area was already saved and preserves that saved result", async () => {
     const store = db();
     const created = store.createTrip();
-    store.writePlan(created.id, macroPlan(created.plan, 1), 0, { source: "test", summary: "macro fixture" });
+    store.writePlan(created.id, withReadySkeleton(macroPlan(created.plan, 1)), 0, { source: "test", summary: "macro fixture" });
     let resolverStarted = false;
     let resolverAborted = false;
     const resolver = {
@@ -328,7 +493,7 @@ describe("interest discovery v3 orchestration", () => {
   it("keeps a fatal global failure fatal when another child returns late from startAction", async () => {
     const store = db();
     const created = store.createTrip();
-    store.writePlan(created.id, macroPlan(created.plan, 2), 0, { source: "test", summary: "macro fixture" });
+    store.writePlan(created.id, withReadySkeleton(macroPlan(created.plan, 2)), 0, { source: "test", summary: "macro fixture" });
     const lateStartGate = deferred<void>();
     let lateStartEntered = false;
     let lateInterrupted = 0;
@@ -362,7 +527,7 @@ describe("interest discovery v3 orchestration", () => {
   it("fails the whole Action only when every area fails", async () => {
     const store = db();
     const created = store.createTrip();
-    store.writePlan(created.id, macroPlan(created.plan, 2), 0, { source: "test", summary: "macro fixture" });
+    store.writePlan(created.id, withReadySkeleton(macroPlan(created.plan, 2)), 0, { source: "test", summary: "macro fixture" });
     const rt = runtime(store, async (input) => ({
       threadId: `failed-${input.state.targetMacroCandidate.id}`,
       result: Promise.reject(new Error("AI 结构化请求超时。")),
@@ -380,7 +545,7 @@ describe("interest discovery v3 orchestration", () => {
   it("treats a canonical duplicate no-op as success without bumping generation", async () => {
     const store = db();
     const created = store.createTrip();
-    store.writePlan(created.id, planWithExistingInterest(created.plan), 0, { source: "test", summary: "duplicate fixture" });
+    store.writePlan(created.id, withReadySkeleton(planWithExistingInterest(created.plan)), 0, { source: "test", summary: "duplicate fixture" });
     const rt = runtime(store, async (input) => immediateRun(input.validateResult(output("macro-1", 1))));
 
     const started = rt.createCtaAction({ tripId: created.id, stage: "interests", actionType: "interest.supplement", parameters: {}, targetIds: ["macro-1"], requestKey: "duplicate-noop" });
@@ -394,7 +559,7 @@ describe("interest discovery v3 orchestration", () => {
   it("rejects a duplicate Place already owned by another Macro without reparenting it", async () => {
     const store = db();
     const created = store.createTrip();
-    store.writePlan(created.id, planWithExistingInterest(created.plan, 2), 0, { source: "test", summary: "cross-macro fixture" });
+    store.writePlan(created.id, withReadySkeleton(planWithExistingInterest(created.plan, 2)), 0, { source: "test", summary: "cross-macro fixture" });
     const crossMacro = output("macro-2", 1);
     crossMacro.places[0].city = "Macro 1";
     const rt = runtime(store, async (input) => immediateRun(input.validateResult(crossMacro)));
@@ -410,7 +575,7 @@ describe("interest discovery v3 orchestration", () => {
   it("keeps UI option A semantics: added counts only new Candidates while location denominator covers all canonical mappings", async () => {
     const store = db();
     const created = store.createTrip();
-    store.writePlan(created.id, planWithExistingInterest(created.plan), 0, { source: "test", summary: "mixed duplicate fixture" });
+    store.writePlan(created.id, withReadySkeleton(planWithExistingInterest(created.plan)), 0, { source: "test", summary: "mixed duplicate fixture" });
     const rt = runtime(store, async (input) => immediateRun(input.validateResult(mixedDuplicateOutput())));
 
     const started = rt.createCtaAction({ tripId: created.id, stage: "interests", actionType: "interest.supplement", parameters: {}, targetIds: ["macro-1"], requestKey: "option-a-stats" });
