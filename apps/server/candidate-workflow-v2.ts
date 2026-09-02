@@ -14,6 +14,7 @@ import {
   DestinationGenerateOutputSchema,
   type DestinationGenerateOutput,
 } from "./ai-action-contracts-v3.js";
+import { AiLedMicroCandidateDiscoveryOutputSchema } from "./ai-led-micro-contract-v2.js";
 import { semanticPlaceKey } from "./plan-commands-v2.js";
 import { buildPlanningAreaContext, fulfilledMacroCityCandidateIds } from "./planning-areas-v2.js";
 import { effectivePlanningRole } from "./planning-roles-v3.js";
@@ -235,11 +236,18 @@ function normalizedBackboneInput(value: unknown): DestinationGenerateOutput | nu
   });
 }
 
+function parseCandidateDiscoveryOutput(value: unknown): CandidateDiscoveryOutput {
+  if (value && typeof value === "object" && Array.isArray((value as Record<string, unknown>).areaTargets)) {
+    return AiLedMicroCandidateDiscoveryOutputSchema.parse(value) as CandidateDiscoveryOutput;
+  }
+  return CandidateDiscoveryOutputSchema.parse(value);
+}
+
 export function applyCandidateDiscovery(current: TravelPlanDocument, value: unknown): CandidateDiscoveryApplyResult {
   const backbone = normalizedBackboneInput(value);
   if (backbone) return applyBackboneDiscoveryV3(current, backbone);
 
-  const output = CandidateDiscoveryOutputSchema.parse(value);
+  const output = parseCandidateDiscoveryOutput(value);
   const plan = clone(current);
   const idMappings = new Map<string, string>();
   const placesById = new Map(output.places.map((place) => [place.id, place]));
@@ -322,7 +330,7 @@ export function applyCandidateDiscovery(current: TravelPlanDocument, value: unkn
 }
 
 export function applyCandidateDiscoveryToStore(store: TravelStoreV2, tripId: string, value: unknown): StoredCandidateDiscoveryResult {
-  const output = CandidateDiscoveryOutputSchema.parse(value);
+  const output = parseCandidateDiscoveryOutput(value);
   const trip = store.requireTrip(tripId);
   if (output.baseGeneration !== trip.contentGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
   const applied = applyCandidateDiscovery(trip.plan, output);
