@@ -129,7 +129,7 @@ export function validateSelectionForStage(trip: TripDetailV3, stageValue: unknow
     const candidate = candidates.get(selection.id);
     if (!candidate) throw new Error("selection 引用了未知 Candidate。");
     const role = candidateRole(trip, candidate.id);
-    if (stage === "destinations" && role !== "planning_area" && role !== "core_visit") throw new Error("想去哪些地方 / 路线和天数阶段只能选择停留区域或重要游览地。");
+    if (stage === "destinations" && role !== "planning_area" && role !== "core_visit" && role !== "detail_interest") throw new Error("想去哪些地方 / 路线和天数阶段只能选择旅行地点。");
     if (stage === "itinerary") throw new Error("行程阶段 selection 不接受 Candidate。");
   }
   if (selection.type === "place") {
@@ -178,6 +178,7 @@ export function buildStageContext(input: {
     state = { stage, baseGeneration: trip.contentGeneration, planLanguage: trip.planLanguage, tripFacts: trip.plan.trip, selection };
   } else if (stage === "destinations") {
     const skeleton = buildSkeletonContextV3(trip.plan);
+    const selectedCandidate = selection.type === "candidate" ? trip.plan.candidates.find((candidate) => candidate.id === selection.id) ?? null : null;
     state = {
       stage,
       baseGeneration: trip.contentGeneration,
@@ -186,6 +187,7 @@ export function buildStageContext(input: {
       destinations: [...planningAreas, ...coreVisits].slice(0, STAGE_CONTEXT_MAX_PLACES).map((candidate) => candidateSummary(trip, candidate)),
       planningAreas: planningAreas.slice(0, STAGE_CONTEXT_MAX_PLACES).map((candidate) => candidateSummary(trip, candidate)),
       coreVisits: coreVisits.slice(0, STAGE_CONTEXT_MAX_PLACES).map((candidate) => candidateSummary(trip, candidate)),
+      selectedCandidate: selectedCandidate ? candidateSummary(trip, selectedCandidate) : null,
       currentStays: skeleton.currentStays,
       macroBasisState: skeleton.macroBasisState,
       selection,
