@@ -3,10 +3,7 @@ import type { AiProposal, Chat, Revision, RouteState, Trip, PlaceResolution, Day
 export type ConversationStage = "requirements" | "destinations" | "interests" | "itinerary";
 export type WorkflowStepV3 = "requirements" | "backbone" | "skeleton" | "interests" | "detail";
 export type RequiresWorkflowStepV3 = Exclude<WorkflowStepV3, "detail">;
-
-// Keep the currently shipped UI step union readable until Phase 6 switches the
-// actual navigation/orchestration to WorkflowStepV3.
-export type PlannerStepV3 = ConversationStage | "detail";
+export type PlannerStepV3 = WorkflowStepV3;
 
 export function conversationStageForWorkflowStepV3(step: WorkflowStepV3): ConversationStage {
   if (step === "requirements") return "requirements";
