@@ -73,7 +73,9 @@ function ActionCard({ action, proposal, currentGeneration, busy, onConfirm, onCa
     {requiresUpstream && <p>需要先处理前面的规划步骤，界面会自动带你回到需要确认的位置。</p>}
     {action.status === "failed" && <footer><button className="button primary" disabled={busy} onClick={() => void onRetry()}>再试一次</button></footer>}
     {action.status === "superseded" && <p>旅行计划已经变化，这个旧操作不再直接使用。</p>}
-    {proposal && <ProposalCard proposal={proposal} currentGeneration={currentGeneration} busy={busy} onAction={onProposalAction}/>} 
+    {proposal && (
+      <ProposalCard proposal={proposal} currentGeneration={currentGeneration} busy={busy} onAction={onProposalAction}/>
+    )}
   </section>;
 }
 
