@@ -1376,7 +1376,7 @@ export class TravelPlannerRuntimeV3 {
   setDirectResolution(tripId: string, placeId: string, input: unknown) { return (this.options.resolver as any).setDirect(tripId, placeId, input); }
   private googleMapsLinks() {
     if (!this.options.googleMapsLinks) throw new Error("Google Maps 链接解析服务未配置。");
-    return this.options.googleMapsLinks();
+    return this.options.googleMapsLinks;
   }
 
   private async captureAdditionalRequirements(tripId: string, sourceMessageId: string, baseGeneration: number, additionalRequirements: string) {
@@ -1422,6 +1422,7 @@ export class TravelPlannerRuntimeV3 {
     const plan = markImpact(trip.plan, applied.plan);
     const place = plan.places.find((item) => item.id === placeId) as Place | undefined;
     if (!place) throw new Error("找不到更新后的 Place。");
+    const generation = parsed.expectedGeneration + 1;
     const resolution: PlaceResolution = {
       tripId, placeId, geoFingerprint: placeGeoFingerprint(place), status: "resolved", method: "google_maps_link",
       provider: null, providerPlaceId: null, latitude: preview.latitude, longitude: preview.longitude,
