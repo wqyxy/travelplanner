@@ -113,13 +113,13 @@ describe("controlled Detail to Core promotion", () => {
     db.close();
   });
 
-  it("does not expose the promotion shortcut to CTA-origin destination.edit actions even with the sentinel", () => {
+  it("rejects the promotion sentinel for CTA-origin destination.edit at the input-contract boundary", () => {
     const db = store();
     const trip = db.createTrip();
     db.writePlan(trip.id, currentPlan(), 0, { source: "test", summary: "fixture" });
     const current = db.requireTrip(trip.id);
-    db.createAction(action(trip.id, current.contentGeneration, "cta"));
-    expect(confirmDetailToCorePromotionV3(db, trip.id, "cta-promote_to_core", { expectedGeneration: current.contentGeneration })).toBeNull();
+    expect(() => db.createAction(action(trip.id, current.contentGeneration, "cta"))).toThrow();
+    expect(db.getAction("cta-promote_to_core")).toBeNull();
     expect(db.requireTrip(trip.id).plan.candidates.find((candidate) => candidate.id === "detail")?.planningRole).toBe("detail_interest");
     db.close();
   });
