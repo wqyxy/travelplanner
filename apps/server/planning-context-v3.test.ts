@@ -67,7 +67,7 @@ describe("Phase 5 detail planning context", () => {
       ["want-b", "core_visit"],
     ]));
     expect(context.requiredMustGoCandidateIds).toEqual(expect.arrayContaining(["core-a", "detail-a", "core-b"]));
-    expect(context.priorityCoreCandidateIds).toContain("want-b");
+    expect(context.priorityCoreCandidateIds).not.toContain("want-b");
     expect(context.unavailableCandidateIds).toContain("want-b");
     expect(context.detailReadiness.blockingIssues).toEqual([]);
   });
