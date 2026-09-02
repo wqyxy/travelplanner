@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  DestinationGenerateOutputSchema,
   InterestDiscoverOutputSchema,
   ItineraryDetailGenerateOutputSchema,
   ItineraryDetailUpdateOutputSchema,
@@ -20,7 +21,56 @@ function interestOutput() {
   };
 }
 
+function mixedBackboneOutput() {
+  return {
+    schemaVersion: 2,
+    baseGeneration: 3,
+    assistantMessage: "已生成愿望清单。",
+    places: [
+      { id: "tmp-area-place", nameZh: "蒂阿瑙", nameLocal: null, nameEn: "Te Anau", kind: "city" as const, city: "Te Anau", region: "Southland", country: "New Zealand", countryCode: "NZ", approximate: false },
+      { id: "tmp-core-place", nameZh: "米尔福德峡湾", nameLocal: null, nameEn: "Milford Sound", kind: "attraction" as const, city: null, region: "Southland", country: "New Zealand", countryCode: "NZ", approximate: false },
+    ],
+    candidates: [
+      { temporaryId: "tmp-area", placeTemporaryId: "tmp-area-place", planningRole: "planning_area" as const, parentCandidateRef: null, aiReason: "住宿基地", aiScore: 90, suggestedDurationMinutes: null, tags: [], defaultPreference: "optional" as const },
+      { temporaryId: "tmp-core", placeTemporaryId: "tmp-core-place", planningRole: "core_visit" as const, parentCandidateRef: { type: "generated" as const, temporaryCandidateId: "tmp-area" }, aiReason: "重要一日游", aiScore: 98, suggestedDurationMinutes: 480, tags: [], defaultPreference: "optional" as const },
+    ],
+  };
+}
+
 describe("V3 action contracts", () => {
+  it("accepts mixed Planning Area + Core Visit output with generated parent refs", () => {
+    expect(DestinationGenerateOutputSchema.safeParse(mixedBackboneOutput()).success).toBe(true);
+
+    const existingParent = mixedBackboneOutput();
+    existingParent.places = [existingParent.places[1]] as any;
+    existingParent.candidates = [{
+      ...existingParent.candidates[1],
+      parentCandidateRef: { type: "existing", candidateId: "existing-area" },
+    }] as any;
+    expect(DestinationGenerateOutputSchema.safeParse(existingParent).success).toBe(true);
+  });
+
+  it("rejects invalid Backbone roles and generated parent references", () => {
+    const missingParent = mixedBackboneOutput();
+    missingParent.candidates[1] = { ...missingParent.candidates[1], parentCandidateRef: null } as any;
+    expect(DestinationGenerateOutputSchema.safeParse(missingParent).success).toBe(false);
+
+    const coreAsCity = mixedBackboneOutput();
+    coreAsCity.places[1] = { ...coreAsCity.places[1], kind: "city" } as any;
+    expect(DestinationGenerateOutputSchema.safeParse(coreAsCity).success).toBe(false);
+
+    const generatedParentIsCore = mixedBackboneOutput();
+    generatedParentIsCore.candidates[1] = {
+      ...generatedParentIsCore.candidates[1],
+      parentCandidateRef: { type: "generated", temporaryCandidateId: "tmp-core" },
+    } as any;
+    expect(DestinationGenerateOutputSchema.safeParse(generatedParentIsCore).success).toBe(false);
+
+    const detailRole = mixedBackboneOutput();
+    detailRole.candidates[1] = { ...detailRole.candidates[1], planningRole: "detail_interest" } as any;
+    expect(DestinationGenerateOutputSchema.safeParse(detailRole).success).toBe(false);
+  });
+
   it("rejects source URLs, city Places and mismatched Macro parents from interest discovery", () => {
     const valid = interestOutput();
     expect(InterestDiscoverOutputSchema.safeParse(valid).success).toBe(true);
