@@ -105,6 +105,7 @@ function coordinate(resolution: PlaceResolution | undefined): [number, number] |
 
 export function candidatePointFeatures(workspace: Workspace): WorkspaceMapPointFeature[] {
   return candidateRows(workspace).flatMap((row) => {
+    if (row.candidate.preference === "excluded") return [];
     const location = coordinate(row.resolution ?? undefined);
     if (!location) return [];
     const displayName = placeNamePresentation(row.place, workspace.trip.planLanguage);
@@ -125,7 +126,7 @@ export function candidatePointFeatures(workspace: Workspace): WorkspaceMapPointF
         mark: preferenceMarks[row.candidate.preference],
         score: row.candidate.aiScore ?? "",
         address: row.resolution?.address || "",
-        excluded: row.candidate.preference === "excluded",
+        excluded: false,
       },
     }];
   });
