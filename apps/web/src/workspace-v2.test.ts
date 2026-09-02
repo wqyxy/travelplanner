@@ -31,7 +31,7 @@ function workspace(): Workspace {
 describe("candidate-first web helpers", () => {
   it("joins candidates with semantic places and resolutions", () => {
     const rows = candidateRows(workspace());
-    expect(rows.map((row) => row.candidate.id)).toEqual(["area", "c1", "core", "c2"]);
+    expect(rows.map((row) => row.candidate.id)).toEqual(["c1", "area", "core", "c2"]);
     expect(rows.find((row) => row.candidate.id === "c1")?.resolution?.status).toBe("resolved");
     expect(rows.find((row) => row.candidate.id === "c2")?.resolution).toBeNull();
   });
