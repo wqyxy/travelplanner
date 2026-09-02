@@ -1,4 +1,6 @@
-import type { Day, TravelPlanDocument, TripCandidate } from "./contracts-v2.js";
+import type { Day, Place, TravelPlanDocument, TripCandidate } from "./contracts-v2.js";
+import { effectivePlanningRole } from "./planning-roles-v3.js";
+import { computeMacroDependencyFingerprintV3 } from "./planning-state-v3.js";
 
 export type PlanningUpdateStatusV3 = "ready" | "needs_update";
 
@@ -30,23 +32,30 @@ function candidateById(plan: TravelPlanDocument) {
   return new Map(plan.candidates.map((candidate) => [candidate.id, candidate]));
 }
 
-function activeMacroCandidates(plan: TravelPlanDocument) {
-  const places = placeById(plan);
-  return plan.candidates.filter((candidate) => candidate.preference !== "excluded" && places.get(candidate.placeId)?.kind === "city");
+function roleOf(candidate: TripCandidate | undefined, place: Place | null | undefined) {
+  return candidate && place ? effectivePlanningRole(candidate, place) : null;
 }
 
-function macroCandidateForDay(plan: TravelPlanDocument, day: Day) {
-  const candidates = activeMacroCandidates(plan);
+function activePlanningAreas(plan: TravelPlanDocument) {
+  const places = placeById(plan);
+  return plan.candidates.filter((candidate) => {
+    const place = places.get(candidate.placeId);
+    return candidate.preference !== "excluded" && place && effectivePlanningRole(candidate, place) === "planning_area";
+  });
+}
+
+function planningAreaCandidateForDay(plan: TravelPlanDocument, day: Day) {
+  const candidates = activePlanningAreas(plan);
   return candidates.find((candidate) => candidate.placeId === day.endAnchor.placeId)
     ?? candidates.find((candidate) => candidate.placeId === day.startAnchor.placeId)
     ?? null;
 }
 
-function dayIdsForMacroCandidate(plan: TravelPlanDocument, macroCandidateId: string | null) {
-  if (!macroCandidateId) return [];
-  const macro = plan.candidates.find((candidate) => candidate.id === macroCandidateId);
-  if (!macro) return [];
-  return plan.days.filter((day) => day.startAnchor.placeId === macro.placeId || day.endAnchor.placeId === macro.placeId).map((day) => day.id);
+function dayIdsForPlanningArea(plan: TravelPlanDocument, planningAreaCandidateId: string | null) {
+  if (!planningAreaCandidateId) return [];
+  const area = plan.candidates.find((candidate) => candidate.id === planningAreaCandidateId);
+  if (!area) return [];
+  return plan.days.filter((day) => day.startAnchor.placeId === area.placeId || day.endAnchor.placeId === area.placeId).map((day) => day.id);
 }
 
 function scheduledCandidateDays(plan: TravelPlanDocument) {
@@ -66,6 +75,20 @@ function candidateChanged(before: TripCandidate | undefined, after: TripCandidat
   return !same(before ?? null, after ?? null);
 }
 
+function routeIdentity(place: Place | null | undefined) {
+  return place ? {
+    id: place.id,
+    approximate: place.approximate,
+    city: place.city,
+    region: place.region,
+    country: place.country,
+  } : null;
+}
+
+function addParentDays(target: Set<string>, plan: TravelPlanDocument, parentId: string | null | undefined) {
+  for (const dayId of dayIdsForPlanningArea(plan, parentId ?? null)) target.add(dayId);
+}
+
 export function analyzeItineraryImpactV3(before: TravelPlanDocument, after: TravelPlanDocument): ItineraryImpactV3 {
   const beforePlaces = placeById(before);
   const afterPlaces = placeById(after);
@@ -82,78 +105,86 @@ export function analyzeItineraryImpactV3(before: TravelPlanDocument, after: Trav
   const detailRouteDayIds = new Set<string>();
   const newOptionCandidateIds = new Set<string>();
 
-  const beforeMacro = new Map(activeMacroCandidates(before).map((candidate) => [candidate.id, candidate]));
-  const afterMacro = new Map(activeMacroCandidates(after).map((candidate) => [candidate.id, candidate]));
-  const macroIds = new Set([...beforeMacro.keys(), ...afterMacro.keys()]);
-
-  for (const id of macroIds) {
-    const left = beforeMacro.get(id);
-    const right = afterMacro.get(id);
-    if (!left || !right) {
-      macroReasons.add(!left ? `新增目的地 ${id}` : `移除目的地 ${id}`);
-      for (const dayId of dayIdsForMacroCandidate(before, id)) macroDayIds.add(dayId);
-      for (const dayId of dayIdsForMacroCandidate(after, id)) macroDayIds.add(dayId);
-      continue;
-    }
-    if (left.preference !== right.preference) {
-      macroReasons.add(`目的地优先级变化 ${id}`);
-      for (const dayId of dayIdsForMacroCandidate(after, id)) macroDayIds.add(dayId);
-    }
-    const leftPlace = beforePlaces.get(left.placeId);
-    const rightPlace = afterPlaces.get(right.placeId);
-    if (!same(leftPlace ?? null, rightPlace ?? null)) {
-      for (const dayId of dayIdsForMacroCandidate(after, id)) macroRouteDayIds.add(dayId);
-    }
-  }
+  const beforeFingerprint = computeMacroDependencyFingerprintV3(before);
+  const afterFingerprint = computeMacroDependencyFingerprintV3(after);
+  if (beforeFingerprint !== afterFingerprint) macroReasons.add("影响路线和天数的规划依据发生变化");
 
   const candidateIds = new Set([...beforeCandidates.keys(), ...afterCandidates.keys()]);
+  let foundSpecificMacroReason = false;
+
   for (const id of candidateIds) {
     const left = beforeCandidates.get(id);
     const right = afterCandidates.get(id);
     const leftPlace = left ? beforePlaces.get(left.placeId) : null;
     const rightPlace = right ? afterPlaces.get(right.placeId) : null;
-    const isMicro = (leftPlace?.kind !== "city" && Boolean(leftPlace)) || (rightPlace?.kind !== "city" && Boolean(rightPlace));
-    if (!isMicro || !candidateChanged(left, right)) continue;
+    const leftRole = roleOf(left, leftPlace);
+    const rightRole = roleOf(right, rightPlace);
+    if (!candidateChanged(left, right) && same(leftPlace ?? null, rightPlace ?? null)) continue;
 
-    if (!left && right) {
+    const touchesMacroRole = leftRole === "planning_area" || leftRole === "core_visit" || rightRole === "planning_area" || rightRole === "core_visit";
+    if (touchesMacroRole) {
+      if (!left && right) macroReasons.add(rightRole === "core_visit" ? `新增重要游览地 ${id}` : `新增停留区域 ${id}`);
+      else if (left && !right) macroReasons.add(leftRole === "core_visit" ? `移除重要游览地 ${id}` : `移除停留区域 ${id}`);
+      else if (leftRole !== rightRole) macroReasons.add(`地点规划角色变化 ${id}`);
+      else if (left?.preference !== right?.preference) macroReasons.add(`${rightRole === "core_visit" ? "重要游览地" : "停留区域"}优先级变化 ${id}`);
+      else if (leftRole === "core_visit" && (left?.planningAreaCandidateId !== right?.planningAreaCandidateId || left?.suggestedDurationMinutes !== right?.suggestedDurationMinutes)) macroReasons.add(`重要游览地时间容量变化 ${id}`);
+      foundSpecificMacroReason = true;
+
+      if (leftRole === "planning_area") addParentDays(macroDayIds, before, left?.id);
+      if (rightRole === "planning_area") addParentDays(macroDayIds, after, right?.id);
+      if (leftRole === "core_visit") addParentDays(macroDayIds, before, left?.planningAreaCandidateId);
+      if (rightRole === "core_visit") addParentDays(macroDayIds, after, right?.planningAreaCandidateId);
+    }
+
+    if (leftRole === "planning_area" || rightRole === "planning_area") {
+      if (!same(routeIdentity(leftPlace), routeIdentity(rightPlace))) {
+        if (left) addParentDays(macroRouteDayIds, before, left.id);
+        if (right) addParentDays(macroRouteDayIds, after, right.id);
+      }
+    }
+
+    const leftDetail = leftRole === "detail_interest";
+    const rightDetail = rightRole === "detail_interest";
+    if (!leftDetail && !rightDetail) continue;
+
+    if (!left && right && rightDetail) {
       if (right.preference === "must_go") {
         detailReasons.add(`新增必去兴趣点 ${id}`);
-        for (const dayId of dayIdsForMacroCandidate(after, right.planningAreaCandidateId)) detailDayIds.add(dayId);
+        addParentDays(detailDayIds, after, right.planningAreaCandidateId);
       } else if (right.preference !== "excluded") {
         newOptionCandidateIds.add(id);
       }
-      continue;
-    }
-
-    if (left && !right) {
+    } else if (left && !right && leftDetail) {
       const usedDays = beforeScheduled.get(id) ?? new Set<string>();
       if (usedDays.size) detailReasons.add(`已排入行程的兴趣点被删除 ${id}`);
       for (const dayId of usedDays) detailDayIds.add(dayId);
-      continue;
+    } else if (left && right && rightDetail) {
+      if (right.preference === "excluded" && left.preference !== "excluded") {
+        const usedDays = beforeScheduled.get(id) ?? new Set<string>();
+        if (usedDays.size) detailReasons.add(`已排入行程的兴趣点改为不去 ${id}`);
+        for (const dayId of usedDays) detailDayIds.add(dayId);
+      } else if (right.preference === "must_go" && left.preference !== "must_go" && !(afterScheduled.get(id)?.size)) {
+        detailReasons.add(`兴趣点改为必去 ${id}`);
+        addParentDays(detailDayIds, after, right.planningAreaCandidateId);
+      }
     }
 
-    if (!left || !right) continue;
-    if (right.preference === "excluded" && left.preference !== "excluded") {
-      const usedDays = beforeScheduled.get(id) ?? new Set<string>();
-      if (usedDays.size) detailReasons.add(`已排入行程的兴趣点改为不去 ${id}`);
-      for (const dayId of usedDays) detailDayIds.add(dayId);
-    } else if (right.preference === "must_go" && left.preference !== "must_go" && !(afterScheduled.get(id)?.size)) {
-      detailReasons.add(`兴趣点改为必去 ${id}`);
-      for (const dayId of dayIdsForMacroCandidate(after, right.planningAreaCandidateId)) detailDayIds.add(dayId);
-    }
-
-    const leftResolvedIdentity = leftPlace ? { id: leftPlace.id, approximate: leftPlace.approximate, city: leftPlace.city, region: leftPlace.region, country: leftPlace.country } : null;
-    const rightResolvedIdentity = rightPlace ? { id: rightPlace.id, approximate: rightPlace.approximate, city: rightPlace.city, region: rightPlace.region, country: rightPlace.country } : null;
-    if (!same(leftResolvedIdentity, rightResolvedIdentity)) {
+    if (!same(routeIdentity(leftPlace), routeIdentity(rightPlace))) {
       for (const dayId of afterScheduled.get(id) ?? []) detailRouteDayIds.add(dayId);
     }
   }
 
+  if (beforeFingerprint !== afterFingerprint && !foundSpecificMacroReason) {
+    macroReasons.add("旅行天数、出发地、交通偏好、节奏、同行人或重要偏好发生变化");
+    for (const day of after.days) macroDayIds.add(day.id);
+  }
+
   if (macroReasons.size) {
     for (const day of after.days) {
-      const macro = macroCandidateForDay(after, day);
-      if (!macro || macroDayIds.has(day.id)) continue;
-      if (!beforeMacro.has(macro.id)) macroDayIds.add(day.id);
+      const area = planningAreaCandidateForDay(after, day);
+      if (!area || macroDayIds.has(day.id)) continue;
+      const beforeArea = beforeCandidates.get(area.id);
+      if (!beforeArea) macroDayIds.add(day.id);
     }
   }
 
@@ -161,7 +192,7 @@ export function analyzeItineraryImpactV3(before: TravelPlanDocument, after: Trav
 
   return {
     macro: {
-      status: macroReasons.size ? "needs_update" : "ready",
+      status: beforeFingerprint !== afterFingerprint ? "needs_update" : "ready",
       reasons: [...macroReasons],
       affectedDayIds: [...macroDayIds],
     },
@@ -172,7 +203,7 @@ export function analyzeItineraryImpactV3(before: TravelPlanDocument, after: Trav
       newOptionCandidateIds: [...newOptionCandidateIds],
     },
     routes: {
-      macroDayIds: [...macroRouteDayIds, ...macroDayIds].filter((id, index, values) => values.indexOf(id) === index),
+      macroDayIds: [...macroRouteDayIds],
       detailDayIds: [...detailRouteDayIds],
     },
   };
