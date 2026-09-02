@@ -7,6 +7,7 @@ import {
   ProviderPlaceCandidateSchema,
 } from "./contracts-v2.js";
 import { AiActionTypeSchema, ConversationStageSchema, WorkspaceSelectionV3Schema } from "./ai-stage-contracts-v3.js";
+import { saveSkeletonEditDraftV3 } from "./skeleton-edit-api-v3.js";
 import type { TravelPlannerRuntimeV3 } from "./planner-runtime-v3.js";
 import type { TravelStoreV3 } from "./travel-store-v3.js";
 
@@ -104,6 +105,9 @@ export async function dispatchTravelApiV3(
     const preference = CandidatePreferenceSchema.parse(body.preference);
     return { status: 200, data: deps.runtime.applyCommands(decode(match[1]), { expectedGeneration: body.expectedGeneration, commands: [{ type: "set_candidate_preference", candidateId: decode(match[2]), preference }] }) };
   }
+
+  match = /^\/api\/trips\/([^/]+)\/skeleton$/.exec(pathname);
+  if (method === "PUT" && match) return { status: 200, data: await saveSkeletonEditDraftV3(deps.store, deps.runtime, decode(match[1]), body) };
 
   match = /^\/api\/trips\/([^/]+)\/commands$/.exec(pathname);
   if (method === "POST" && match) return { status: 200, data: deps.runtime.applyCommands(decode(match[1]), body) };
