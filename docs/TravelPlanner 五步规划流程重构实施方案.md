@@ -159,6 +159,46 @@ requiresWorkflowStep = skeleton
 
 该原则是 Phase 6 UI 验收的硬要求，而不是文案优化项。
 
+## 3.1 本专项测试执行规则：实施环境不测试，统一交给 Codex
+
+这是本次五步重构的**专属执行规则**，优先于本文后续出现的任何测试清单。
+
+实施 Agent 在 GitHub / 当前实施环境中：
+
+```text
+可以：
+- 只读 review
+- 查看代码 / diff
+- 修改代码与文档
+- 静态检查实现是否符合施工图
+
+不得执行：
+- Vitest / Jest / 任何单元或集成测试
+- typecheck
+- build
+- 真实 AI smoke
+- Browser E2E
+- GitHub Actions 测试工作流
+- 任何为了验证功能而启动应用或运行测试脚本
+```
+
+本文各 Phase 中列出的“测试文件 / 测试场景”仅表示：
+
+> **最终 Codex 测试提示词必须覆盖什么。**
+
+它们不是本次实施 Agent 可以自行执行的命令。
+
+代码实施完成后，实施 Agent 必须交付一份**可直接复制到 Codex 使用的完整测试提示词**，由用户在 Codex 环境中自行执行测试。
+
+实施 Agent 不得因为“测试尚未执行”而自行补跑，也不得宣称“已验证通过”；只能明确说明：
+
+```text
+代码实施完成
+测试未在本次实施环境执行
+已提供 Codex 测试提示词
+等待用户在 Codex 中独立验收
+```
+
 ---
 
 # 4. 页面结构与动作唯一归属
@@ -1280,6 +1320,8 @@ apps/web/src/WorkspaceMapV2.tsx
 
 > **先让消费者理解新数据，再让上游生产新数据；最后统一做复杂度下沉的 UI 集成。**
 
+再次强调：本节列出的测试文件和测试场景全部用于最终 Codex 测试提示词，**实施阶段不执行测试。**
+
 ## Phase 0：Read-only Gap Review
 
 不改代码，只列：
@@ -1311,7 +1353,7 @@ legacy compatibility
 frontend types
 ```
 
-Targeted tests：
+加入最终 Codex 测试提示词的覆盖项（本阶段不执行）：
 
 ```text
 contracts-v2.test.ts
@@ -1340,7 +1382,7 @@ Impact Analyzer
 Planning Area unresolved semantic Skeleton
 ```
 
-测试：
+加入最终 Codex 测试提示词的覆盖项（本阶段不执行）：
 
 ```text
 itinerary-workflow-v3.test.ts
@@ -1375,7 +1417,7 @@ Resolver
 
 只有到本 Phase，新的 `destination.generate` 才开始正式生产 Core Visit。
 
-测试：
+加入最终 Codex 测试提示词的覆盖项（本阶段不执行）：
 
 ```text
 candidate-workflow-v2.test.ts
@@ -1396,7 +1438,7 @@ Core Step 4 只读背景
 role upgrade 走 Step 2 归属逻辑
 ```
 
-测试：
+加入最终 Codex 测试提示词的覆盖项（本阶段不执行）：
 
 ```text
 interest-discovery-v3.test.ts
@@ -1420,7 +1462,7 @@ minimal diff
 requiresWorkflowStep=skeleton
 ```
 
-测试：
+加入最终 Codex 测试提示词的覆盖项（本阶段不执行）：
 
 ```text
 itinerary-workflow-v3.test.ts
@@ -1455,29 +1497,164 @@ requiresWorkflowStep 自动切换上下文
 Map role filtering
 ```
 
-Phase 6 必须额外做“普通用户不懂内部术语”验收。
+Phase 6 的“普通用户不懂内部术语”验收也只写入最终 Codex 测试提示词，本阶段不执行浏览器测试。
 
-## Phase 7：Docs + Verification Preparation
+## Phase 7：Docs + Codex Test Prompt Handoff
 
-实施完成后才准备：
+实施完成后，本 Phase **不运行任何测试或验证命令**。
+
+禁止在本次实施环境执行：
 
 ```text
 git diff --check
-targeted Vitest
+Vitest / Jest
 typecheck
-全量 Vitest
+全量测试
 build
 真实 AI smoke
 Browser E2E
+GitHub Actions 测试工作流
 ```
 
-完整验收仍需用户明确确认。
+本 Phase 只做两件事：
+
+```text
+1. 静态 review 最终代码 / diff 与施工图是否一致
+2. 生成一份完整、可直接复制给 Codex 的测试提示词
+```
+
+最终 Codex 测试提示词至少必须要求 Codex：
+
+```text
+先只读 review 实际 diff 与施工图
+读取 package.json / 现有测试脚本，不凭空发明命令
+执行 git diff --check
+执行本文 Phase 1–5 列出的 targeted tests
+执行 typecheck
+执行全量 Vitest / 项目现有全量测试
+执行 build
+在环境允许时执行真实 AI smoke
+在隔离环境执行 Browser E2E
+覆盖第 29 节全部核心场景
+逐项记录 PASS / FAIL / BLOCKED 与证据
+失败时只诊断并报告，不自动修改代码，除非用户另行要求修复
+```
+
+### 28.7.1 实施完成后必须交付的 Codex 测试提示词模板
+
+实施 Agent 最终应根据实际改动文件、实际 npm scripts 和实际测试文件，把下面模板补全后直接交给用户：
+
+```text
+你现在只负责对 TravelPlanner 本次“五步规划流程重构”做独立测试与验收。
+
+重要限制：
+- 这是测试任务，不是实现任务。
+- 先不要修改任何源代码、Prompt、数据库或测试代码。
+- 发现失败时先记录、定位、解释，不自动修复；除非我之后明确让你修。
+- 不读取或改写真实私人数据库；需要数据时使用项目已有的测试 / isolated 数据路径。
+- 以 docs/TravelPlanner 五步规划流程重构实施方案.md 为最高优先级验收依据。
+- UI 体验同时对照 docs/五步 UI 交互规范.md。
+
+请按下面顺序执行：
+
+1. 只读 Review
+- 查看当前分支相对实施前基线的 diff。
+- 核对本次改动是否只围绕五步重构目标，没有无关重构。
+- 按 KEEP / EXTEND / REPLACE / DO NOT TOUCH 判断是否复用了已有 staged-v3 设计。
+- 重点核对：PlanningRole、stayBlockId、requiresWorkflowStep、Macro fingerprint、Skeleton 原子保存、Impact Analyzer、Resolution readiness、Step 4 可跳过、复杂度下沉、唯一业务入口。
+
+2. 静态完整性
+- 运行 git diff --check。
+- 读取 package.json 和 workspace scripts，确认项目真实可用的 test / typecheck / build 命令。
+- 不猜测不存在的脚本。
+
+3. Targeted Tests
+至少覆盖：
+- contracts-v2.test.ts
+- planning-roles-v3.test.ts
+- ai-action-contracts-v3.test.ts
+- itinerary-workflow-v3.test.ts
+- itinerary-impact-v3.test.ts
+- ai-stage-contracts-v3.test.ts
+- stage-context-v3.test.ts
+- candidate-workflow-v2.test.ts
+- planner-runtime-v3-ai-actions.test.ts
+- interest-discovery-v3.test.ts
+- candidate-discovery-policy-v2.test.ts
+- workspace-v2.test.ts
+如实际文件名因实现调整而变化，先说明映射关系再执行对应测试。
+
+4. Typecheck / Full Test / Build
+- 执行项目现有 typecheck。
+- 执行项目现有全量测试。
+- 执行项目现有 build。
+
+5. 核心业务场景
+逐项验证并给出证据：
+- must / want / optional / excluded Planning Area 语义正确。
+- Auckland → ... → Auckland 可以形成两个稳定 Stay Block，互不错误合并。
+- Step 3 19/20 天不能保存，20/20 天可原子保存。
+- 90 天大范围 Skeleton 更新不受通用 100 PlanCommand 上限阻断。
+- Milford Sound 可作为 Core Visit 影响时间预算，但不成为 Macro Anchor。
+- Planning Area unresolved 可做 Step 3，但真实 Step 5 Anchor 必须 resolved。
+- must_go Core / Detail unresolved 只阻塞相关 Detail。
+- Detail → Core 后只传播到相关 Macro / Detail 范围。
+- Replan 后 Macro 不变时，只更新相关区域 Detail。
+- Macro 天数变化只使真实 affectedDayIds 需更新。
+- Step 4 可以完全跳过 discovery 后直接进入 Step 5。
+- Step 5 提出“蒂阿瑙再加一天”时自动切换到 Step 3 上下文，不静默跨步骤 mutation。
+- UI 主操作只突出“必去 / 想去”，不要求用户理解四级内部 preference。
+- UI 不暴露 planningRole / stayBlockId / fingerprint / macroDirty / affectedDayIds / WorkflowStep / CAS / Resolution 等工程术语。
+- Update Card 默认紧凑，详细原因渐进展开。
+- 地图 / 时间轴只展示和选择，业务 mutation 仍只有右侧唯一入口。
+
+6. 真实 AI Smoke
+如果当前测试环境已有合法 AI 配置且项目已有 smoke 方法，则执行最小 smoke：
+- Step 2 能生成 Planning Area + Core Visit。
+- Step 3 能生成合法 Skeleton。
+- Step 4 discovery 只生成 detail_interest。
+- Step 5 固定 Macro 生成 Detailed Itinerary。
+如果环境缺少 AI 凭据，标记 BLOCKED，不要伪造通过。
+
+7. Browser E2E
+如果项目已有隔离 E2E 方法，则至少验证：
+- 五步导航在右侧。
+- Step 2 = 想去哪些地方。
+- Step 3 = 路线和天数。
+- Step 4 明确可选且可跳过。
+- Step 3 时间分配不足时显示自然语言“还剩 N 天需要安排”。
+- unresolved 非阻塞时轻量显示，真正阻塞时才出现行动卡。
+- 跨步骤意图自动切换上下文。
+- 地图没有第二套业务编辑入口。
+不要使用或污染真实私人旅行数据。
+
+8. 最终报告
+请输出：
+- 总体结论：PASS / FAIL / PARTIAL
+- 实际执行过的命令
+- Targeted Tests 结果
+- Typecheck 结果
+- Full Test 结果
+- Build 结果
+- AI Smoke 结果
+- Browser E2E 结果
+- 第 5 节每个核心业务场景的 PASS / FAIL / BLOCKED
+- 发现的问题，按 P0 / P1 / P2 排序
+- 每个失败对应的文件 / 行为 / 复现方式
+- 明确哪些项目因为环境原因没有验证
+
+再次强调：先测试和报告，不自动修代码。
+```
+
+实施 Agent 可以根据最终实际文件名和 npm scripts 对这份提示词做事实性补全，但不得弱化上述验收范围。
 
 **Phase 1–6 是同一 feature branch 的连续施工阶段，中间状态不得作为可发布产品单独合并。**
 
 ---
 
 # 29. 必须验收的核心场景
+
+以下场景由最终 Codex 测试提示词负责执行，本次实施环境只负责保证代码设计上覆盖，不实际运行。
 
 ## 29.1 用户复杂度
 
@@ -1717,4 +1894,4 @@ Update Card 渐进披露
 右侧控制台是唯一业务入口
 ```
 
-本方案完成文档确认后即可作为下一步代码实施的正式施工图；在用户明确要求实施前，不执行任何代码修改或测试。
+本方案完成文档确认后即可作为下一步代码实施的正式施工图；在用户明确要求实施前，不执行任何代码修改。即便未来进入实施，本专项也不在 GitHub / 当前实施环境运行测试，而是在实施完成后交付 Codex 测试提示词，由用户在 Codex 中独立验收。
