@@ -170,7 +170,7 @@ export function routeGeometryFeatures(workspace: Workspace, selectedDayId: strin
       type: "Feature" as const,
       id: `route-leg:${route.dayId}:${leg.id}`,
       geometry: leg.geometry,
-      properties: { id: leg.id, dayId: route.dayId, dayNumber: day.dayNumber, mode: leg.mode, status: leg.status, dirty, distanceKm: leg.distanceKm, durationMinutes: leg.durationMinutes, warning: leg.warning || "", calculatedAt: route.calculatedAt || "", color: colors.get(day.dayNumber) || "#3b82f6" },
+      properties: { id: leg.id, dayId: route.dayId, dayNumber: day.dayNumber, mode: leg.mode, status: leg.status, dirty, distanceKm: dirty ? null : leg.distanceKm, durationMinutes: dirty ? null : leg.durationMinutes, warning: leg.warning || "", calculatedAt: route.calculatedAt || "", color: colors.get(day.dayNumber) || "#3b82f6" },
     }] : []);
   });
 }
