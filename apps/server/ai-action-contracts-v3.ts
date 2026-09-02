@@ -223,7 +223,7 @@ const DetailGenerateSuccessSchema = z.object({
 export const ItineraryDetailGenerateOutputSchema = z.object({
   schemaVersion: z.literal(1),
   baseGeneration: z.number().int().min(0),
-  result: z.discriminatedUnion("type", [DetailGenerateSuccessSchema, RequiresInterestsSchema, RequiresWorkflowStepResultSchema]),
+  result: z.discriminatedUnion("type", [DetailGenerateSuccessSchema, RequiresWorkflowStepResultSchema]),
 }).strict();
 export type ItineraryDetailGenerateOutput = z.infer<typeof ItineraryDetailGenerateOutputSchema>;
 
@@ -246,7 +246,7 @@ const DetailUpdateSuccessSchema = z.object({
 export const ItineraryDetailUpdateOutputSchema = z.object({
   schemaVersion: z.literal(1),
   baseGeneration: z.number().int().min(0),
-  result: z.discriminatedUnion("type", [DetailUpdateSuccessSchema, RequiresInterestsSchema, RequiresWorkflowStepResultSchema]),
+  result: z.discriminatedUnion("type", [DetailUpdateSuccessSchema, RequiresWorkflowStepResultSchema]),
 }).strict();
 export type ItineraryDetailUpdateOutput = z.infer<typeof ItineraryDetailUpdateOutputSchema>;
 
