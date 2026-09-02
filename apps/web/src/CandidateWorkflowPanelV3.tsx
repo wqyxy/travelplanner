@@ -77,6 +77,18 @@ export function CandidateWorkflowPanelV3({
     setAdding(null); setName(""); setParentId(""); setDuration("");
   };
 
+  const confirmRemoval = (row: typeof rows[number], role: PlanningRole) => {
+    if (role === "detail_interest") return true;
+    const childCount = rows.filter((item) => item.candidate.planningAreaCandidateId === row.candidate.id && item.candidate.preference !== "excluded").length;
+    const affectedDays = workspace.trip.plan.days.filter((day) => day.startAnchor.placeId === row.place.id || day.endAnchor.placeId === row.place.id).length;
+    if (role === "planning_area") {
+      const impacts = [childCount ? `${childCount} 个所属游览地` : "", affectedDays ? `${affectedDays} 天现有路线` : ""].filter(Boolean).join("、");
+      return window.confirm(`移除“${row.place.nameZh}”${impacts ? `会同时影响 ${impacts}` : "会改变候选路线"}。确认移除吗？`);
+    }
+    if (workspace.trip.plan.days.length || row.candidate.preference === "must_go") return window.confirm(`移除重要游览地“${row.place.nameZh}”可能影响已经安排的时间容量。确认移除吗？`);
+    return true;
+  };
+
   const renderRow = (row: typeof rows[number]) => {
     const role = effectiveCandidatePlanningRole(row);
     const status = resolutionStatus(row);
@@ -94,7 +106,7 @@ export function CandidateWorkflowPanelV3({
       <div className="phase6-candidate-controls" onClick={(event) => event.stopPropagation()}>
         <PreferenceButtons value={row.candidate.preference} busy={busy} onChange={(value) => void onSetPreference([row.candidate.id], value)}/>
         {status !== "resolved" && <div className="phase6-location-actions"><button type="button" disabled={busy} onClick={() => void onRetry([row.place.id])}><RefreshCw size={13}/>重新识别</button><button type="button" disabled={busy} onClick={() => onBeginMapPick(row.place.id)}><MapPin size={13}/>地图点选</button></div>}
-        <button type="button" className="phase6-remove" disabled={busy} onClick={() => void onRemoveCandidate(row.candidate.id, role === "planning_area")}><Trash2 size={13}/>移除</button>
+        <button type="button" className="phase6-remove" disabled={busy} onClick={() => { if (confirmRemoval(row, role)) void onRemoveCandidate(row.candidate.id, role === "planning_area"); }}><Trash2 size={13}/>移除</button>
       </div>
     </article>;
   };
