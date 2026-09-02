@@ -112,8 +112,10 @@ export function validateDetailedSchedulingOutcomeV3(
   plan: TravelPlanDocument,
   unscheduledCandidates: DetailedUnscheduledCandidateV3[],
   targetDayIds: string[],
+  unavailableCandidateIds: string[] = [],
 ) {
   const targetSet = new Set(targetDayIds);
+  const unavailable = new Set(unavailableCandidateIds);
   const knownDayIds = new Set(plan.days.map((day) => day.id));
   for (const dayId of targetSet) if (!knownDayIds.has(dayId)) throw new Error(`详细排程结果引用未知 Day：${dayId}`);
   const ownerAreaIds = ownerAreaIdsForDays(plan, targetSet);
@@ -138,7 +140,7 @@ export function validateDetailedSchedulingOutcomeV3(
 
   for (const candidate of plan.candidates) {
     const place = places.get(candidate.placeId);
-    if (!place || candidate.preference !== "want_to_go" || !candidate.planningAreaCandidateId || !ownerAreaIds.has(candidate.planningAreaCandidateId)) continue;
+    if (!place || unavailable.has(candidate.id) || candidate.preference !== "want_to_go" || !candidate.planningAreaCandidateId || !ownerAreaIds.has(candidate.planningAreaCandidateId)) continue;
     if (effectivePlanningRole(candidate, place) !== "core_visit" || scheduled.has(candidate.id) || unscheduledIds.has(candidate.id)) continue;
     throw new Error(`想去的重要游览地未安排时必须说明原因：${place.nameZh}`);
   }
