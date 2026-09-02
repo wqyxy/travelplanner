@@ -263,11 +263,11 @@ describe("TravelPlannerRuntimeV3 AI action regressions", () => {
     const store = db(); const created = store.createTrip(); store.writePlan(created.id, backbonePlan(created.plan), 0, { source: "test", summary: "backbone fixture" });
     const rt = runtime(store, async () => { throw new Error("AI not expected"); });
     const preference = rt.createCtaAction({ tripId: created.id, stage: "destinations", actionType: "destination.preference", parameters: { candidateIds: ["core-1"], preference: "must_go" }, targetIds: ["core-1"], requestKey: "core-preference" });
-    await waitFor(() => store.getAction(preference.action.id)?.status === "completed");
+    await waitFor(() => store.getAction(preference.action.id)?.status === "applied");
     expect(store.requireTrip(created.id).plan.candidates.find((candidate) => candidate.id === "core-1")?.preference).toBe("must_go");
 
     const removal = rt.createCtaAction({ tripId: created.id, stage: "destinations", actionType: "destination.remove", parameters: { candidateId: "core-1" }, targetIds: ["core-1"], requestKey: "core-remove" });
-    await waitFor(() => store.getAction(removal.action.id)?.status === "completed");
+    await waitFor(() => store.getAction(removal.action.id)?.status === "applied");
     const after = store.requireTrip(created.id).plan;
     expect(after.candidates.some((candidate) => candidate.id === "core-1")).toBe(false);
     expect(after.candidates.some((candidate) => candidate.id === "macro-1")).toBe(true);
