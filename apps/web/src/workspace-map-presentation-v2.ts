@@ -53,8 +53,8 @@ export const preferenceColors: Record<CandidatePreference, string> = {
 
 export const preferenceMarks: Record<CandidatePreference, string> = {
   must_go: "★",
-  want_to_go: "✓",
-  optional: "○",
+  want_to_go: "♡",
+  optional: "",
   excluded: "×",
 };
 
@@ -66,7 +66,7 @@ export const transportModeLabels: Record<TransportMode, string> = {
   rail: "铁路",
   flight: "航班",
   ferry: "轮渡",
-  none: "交通待定",
+  none: "无需跨区域交通",
 };
 
 function hslToHex(hue: number, saturation: number, lightness: number) {
@@ -120,11 +120,11 @@ export function candidatePointFeatures(workspace: Workspace): WorkspaceMapPointF
         dayId: "",
         label: displayName.combined,
         name: displayName.primary,
-        secondary: displayName.secondary || "",
+        secondary: displayName.secondary ?? "",
         preference: row.candidate.preference,
         mark: preferenceMarks[row.candidate.preference],
         score: row.candidate.aiScore ?? "",
-        address: row.resolution?.address || "",
+        address: row.resolution?.address || row.place.region || row.place.country || "",
         excluded: row.candidate.preference === "excluded",
       },
     }];
@@ -133,110 +133,57 @@ export function candidatePointFeatures(workspace: Workspace): WorkspaceMapPointF
 
 export function itineraryPointFeatures(workspace: Workspace, selectedDayId: string | null): WorkspaceMapPointFeature[] {
   const resolutions = resolvedByPlace(workspace);
-  const places = new Map(workspace.trip.plan.places.map((place) => [place.id, place]));
-  const candidates = new Map(workspace.trip.plan.candidates.map((candidate) => [candidate.id, candidate]));
-  const candidateByPlace = new Map(workspace.trip.plan.candidates.map((candidate) => [candidate.placeId, candidate]));
   const days = selectedDayId ? workspace.trip.plan.days.filter((day) => day.id === selectedDayId) : workspace.trip.plan.days;
-  const allDays = selectedDayId === null;
+  const manyDays = selectedDayId === null;
   const features: WorkspaceMapPointFeature[] = [];
-
   for (const day of days) {
-    const add = (input: {
-      id: string;
-      entityType: "anchor" | "stop";
-      placeId: string | null;
-      stopId?: string;
-      candidateId?: string | null;
-      mark: string;
-      nameFallback: string;
-    }) => {
-      const placeId = input.placeId;
-      if (!placeId) return;
-      const resolution = resolutions.get(placeId);
+    const nodes = [
+      { id: day.startAnchor.id, type: "anchor" as const, placeId: day.startAnchor.placeId, candidateId: "", stopId: "", label: day.startAnchor.label || "出发", mark: manyDays ? `D${day.dayNumber}·起` : "起" },
+      ...day.stops.map((stop, index) => ({ id: stop.id, type: "stop" as const, placeId: stop.placeId, candidateId: stop.candidateId || "", stopId: stop.id, label: stop.activity, mark: manyDays ? `D${day.dayNumber}·${index + 1}` : String(index + 1) })),
+      { id: day.endAnchor.id, type: "anchor" as const, placeId: day.endAnchor.placeId, candidateId: "", stopId: "", label: day.endAnchor.label || "结束", mark: manyDays ? `D${day.dayNumber}·终` : "终" },
+    ];
+    for (const node of nodes) {
+      if (!node.placeId) continue;
+      const resolution = resolutions.get(node.placeId);
       const location = coordinate(resolution);
-      if (!location) return;
-      const place = places.get(placeId);
-      const candidate = input.candidateId ? candidates.get(input.candidateId) : candidateByPlace.get(placeId);
-      const displayName = placeNamePresentation(place, workspace.trip.planLanguage, input.nameFallback);
+      if (!location) continue;
+      const place = workspace.trip.plan.places.find((item) => item.id === node.placeId);
+      const displayName = placeNamePresentation(place, workspace.trip.planLanguage, node.label);
       features.push({
-        type: "Feature",
-        id: `${day.id}:${input.id}`,
-        geometry: { type: "Point", coordinates: location },
-        properties: {
-          entityType: input.entityType,
-          candidateId: candidate?.id || "",
-          stopId: input.stopId || "",
-          placeId,
-          dayId: day.id,
-          label: displayName.combined,
-          name: displayName.primary,
-          secondary: displayName.secondary || "",
-          preference: candidate?.preference || "anchor",
-          mark: allDays ? `D${day.dayNumber}·${input.mark}` : input.mark,
-          score: candidate?.aiScore ?? "",
-          address: resolution?.address || "",
-          excluded: false,
-        },
+        type: "Feature", id: `${day.id}:${node.id}`, geometry: { type: "Point", coordinates: location },
+        properties: { entityType: node.type, candidateId: node.candidateId, stopId: node.stopId, placeId: node.placeId, dayId: day.id, label: displayName.combined, name: displayName.primary, secondary: displayName.secondary ?? "", preference: "anchor", mark: node.mark, score: "", address: resolution?.address || place?.region || place?.country || "", excluded: false },
       });
-    };
-    add({ id: day.startAnchor.id, entityType: "anchor", placeId: day.startAnchor.placeId, mark: "起", nameFallback: day.startAnchor.label || "出发 Anchor" });
-    day.stops.forEach((stop, index) => add({
-      id: stop.id,
-      entityType: "stop",
-      placeId: stop.placeId,
-      stopId: stop.id,
-      candidateId: stop.candidateId,
-      mark: String(index + 1),
-      nameFallback: stop.activity,
-    }));
-    add({ id: day.endAnchor.id, entityType: "anchor", placeId: day.endAnchor.placeId, mark: "终", nameFallback: day.endAnchor.label || "结束 Anchor" });
+    }
   }
   return features;
 }
 
 export function routeGeometryFeatures(workspace: Workspace, selectedDayId: string | null): WorkspaceMapRouteFeature[] {
-  const dayNumbers = new Map(workspace.trip.plan.days.map((day) => [day.id, day.dayNumber]));
   const colors = dayRouteColors(workspace.trip.plan.days);
-  return workspace.routeStates.flatMap((state) => {
-    if (selectedDayId && state.dayId !== selectedDayId) return [];
-    const dayNumber = dayNumbers.get(state.dayId) ?? 0;
-    if (dayNumber < 1) return [];
-    return state.route?.legs.flatMap((leg) => {
-      if (!leg.geometry) return [];
-      const id = `route-leg:${state.dayId}:${leg.id}`;
-      return [{
-        type: "Feature" as const,
-        id,
-        geometry: leg.geometry,
-        properties: {
-          id,
-          dayId: state.dayId,
-          dayNumber,
-          mode: leg.mode,
-          status: leg.status,
-          dirty: state.dirty,
-          distanceKm: leg.distanceKm,
-          durationMinutes: leg.durationMinutes,
-          warning: leg.warning || "",
-          calculatedAt: state.route?.calculatedAt || "",
-          color: colors.get(dayNumber) || "#64748b",
-        },
-      }];
-    }) ?? [];
+  const states = new Map(workspace.routeStates.map((state) => [state.dayId, state]));
+  return workspace.routes.flatMap((route) => {
+    if (selectedDayId && route.dayId !== selectedDayId) return [];
+    const day = workspace.trip.plan.days.find((item) => item.id === route.dayId);
+    if (!day) return [];
+    const dirty = states.get(route.dayId)?.dirty ?? false;
+    return route.legs.flatMap((leg) => leg.geometry ? [{
+      type: "Feature" as const,
+      id: `route-leg:${route.dayId}:${leg.id}`,
+      geometry: leg.geometry,
+      properties: { id: leg.id, dayId: route.dayId, dayNumber: day.dayNumber, mode: leg.mode, status: leg.status, dirty, distanceKm: leg.distanceKm, durationMinutes: leg.durationMinutes, warning: leg.warning || "", calculatedAt: route.calculatedAt || "", color: colors.get(day.dayNumber) || "#3b82f6" },
+    }] : []);
   });
 }
 
-export function formatProviderDistance(distanceKm: number | null) {
-  if (distanceKm === null || !Number.isFinite(distanceKm) || distanceKm < 0) return "距离待计算";
-  const value = distanceKm < 1 ? Number(distanceKm.toFixed(2)) : distanceKm < 10 ? Number(distanceKm.toFixed(1)) : Math.round(distanceKm);
-  return `${value} km`;
+export function formatProviderDistance(value: number | null) {
+  if (value === null) return "距离待计算";
+  return value < 1 ? `${Math.round(value * 1000)} 米` : `${value.toFixed(value < 10 ? 1 : 0)} 公里`;
 }
 
-export function formatProviderDuration(durationMinutes: number | null) {
-  if (durationMinutes === null || !Number.isFinite(durationMinutes) || durationMinutes < 0) return "时间待计算";
-  const minutes = Math.round(durationMinutes);
-  if (minutes < 60) return `${minutes} 分钟`;
-  const hours = Math.floor(minutes / 60);
-  const remainder = minutes % 60;
-  return remainder ? `${hours} 小时 ${remainder} 分钟` : `${hours} 小时`;
+export function formatProviderDuration(value: number | null) {
+  if (value === null) return "时间待计算";
+  if (value < 60) return `${Math.round(value)} 分钟`;
+  const hours = Math.floor(value / 60);
+  const minutes = Math.round(value % 60);
+  return minutes ? `${hours} 小时 ${minutes} 分钟` : `${hours} 小时`;
 }
