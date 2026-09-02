@@ -1,210 +1,216 @@
 # TravelPlanner Implementation Status
 
-更新时间：2026-09-02
-实施分支：`refactor/stage-dialogue-actions-v3`  
-目标文档：`docs/AI_STAGE_DIALOGUE_AND_ACTION_REFACTOR_PLAN.md`
+更新时间：2026-09-02  
+实施分支：`refactor/stage-dialogue-actions-v3`
 
 ## Current Gate
 
-Phase 1–7 staged-v3、cutover、A–I hardening、Prompt Registry 修复以及 itinerary refine / Resolution 边界 hardening 已完成。
+此前 staged-v3 Dialogue / Action、Candidate-first、地点解析、路线与 itinerary hardening 已有实际代码实施历史。
+
+2026-09-02 新确认了一套五步产品与架构重构方案：
+
+```text
+1 旅行需求
+2 去哪些地方
+3 安排路线和天数
+4 补充景点
+5 每日行程
+```
+
+对应新增 / 更新设计包括：
+
+```text
+PlanningRole: planning_area / core_visit / detail_interest
+Stay Block 与重复 Planning Area / 环线支持
+Macro Dependency Fingerprint
+Step 2 Backbone / Step 3 Skeleton 分层
+Step 4 capacity-aware Interest Discovery
+Step 5 patch-only affectedDayIds 更新
+右侧唯一业务入口
+跨步骤 CTA 只导航
+```
+
+**重要：本次操作只更新设计文档，没有实施上述五步代码，也没有运行对应五步测试。**
+
+因此当前代码仍应视为“五步重构前基线”，不能因为文档已经确认就宣称五步功能已完成。
+
+## Current Implemented Foundation
+
+现有代码已经具备可被五步方案复用的基础能力，包括：
+
+```text
+右侧工作区 AI 入口
+四个 ConversationStage
+Dialogue / Action Registry
+确定性 Action 与 AI Action 分离
+Proposal / Scope / generation / CAS
+Candidate-first / save-first
+地图 Resolution 状态
+Macro / Detail Route 基础能力
+Day detailStatus
+```
+
+现有地点解析 hardening 继续作为基础：
+
+```text
+新地点保存后 best-effort resolve
+resolving / resolved / unresolved 状态可见
+有界 Place worker 协作
+保留 Provider 全局限速
+定位失败不回滚 Candidate
+逐 Place 状态刷新
+```
+
+五步设计不会改变“地图 Provider 才是可信地理事实来源”的边界。
+
+## Five-Step Design Not Yet Verified In Code
+
+后续实施前必须逐项核对当前代码是否已经满足：
+
+```text
+TripCandidate planningRole optional
+统一 effectivePlanningRole
+Mixed Backbone Destination Output
+Core Visit parent formalization
+同一 Planning Area 多 Stay Block
+移动日计入到达 Stay Block
+Step 3 itinerary.generate/replan 归 destinations + skeleton
+Step 4 首次进入不自动 discovery
+Core Visit 结构只在 Step 2 管理
+Step 4 / Step 5 不重复 detail.generate 入口
+Macro Fingerprint / macroDirty
+旧 Skeleton 无 fingerprint 的 needs confirmation
+Detail update patch-only / affectedDayIds
+Detailed Day 最小 Diff / sticky baseline
+右侧唯一 Action ownership
+```
+
+在实际代码 review 之前，不得从设计文档推断这些已经存在。
+
+## Five-Step Future Phases
+
+正式施工图定义：
+
+```text
+Phase 1 Role Foundation
+Phase 2 Backbone Generation
+Phase 3 Workflow + Skeleton
+Phase 4 Capacity-Aware Interests
+Phase 5 Detailed Itinerary
+Phase 6 UI / Map
+Phase 7 Docs + Final Verification Preparation
+```
+
+目前：
+
+```text
+设计文档：已确认
+代码实施：未按本次五步方案执行
+五步 targeted tests：未运行
+五步 typecheck/build：未运行
+五步 Browser E2E：未运行
+```
 
-地点编辑现已增加 Google Maps 分享链接导入：受控服务端解析 Google 长链及短链，预填行政区信息并显示链接地点名称作为提示，但绝不覆盖 Place 中文名称；用户保存确认后以同一 generation CAS 事务写入 Place 和链接坐标。该功能不接入 Google Places API、不抓取 Google 页面、不保存原始链接；短链只允许 Google 域内跳转。相关 targeted Vitest（链接解析、API、Store）已通过，完整 typecheck/build 仍待本轮统一验收。
+## ConversationStage
 
-最近一次完整 Codex 验收在上一轮代码上确认：
+数据库仍保持四个 ConversationStage：
 
-- strict Prompt Registry：PASS；
-- Review A–I：全部 PASS；
-- fresh-v3 / cutover：PASS；
-- `npm run typecheck`：PASS；
-- 全量 Vitest：PASS；
-- `npm run build`：PASS；
-- real Codex structured-output smoke：PASS。
+```text
+requirements
+destinations
+interests
+itinerary
+```
 
-Browser E2E 随后发现并已修复：
+五步未来映射：
 
-- `itinerary.refine` 改为 patch-only `dayUpdates`，模型不再能表达 Anchor / Day identity / Candidate / Place 改动；
-- itinerary 中任何 Anchor / Stop Place，包括 `kind=city`，都必须具有当前有效 Resolution。
+```text
+requirements → requirements
+backbone     → destinations
+skeleton     → destinations
+interests    → interests
+detail       → itinerary
+```
 
-这些修复尚待与本轮地点定位调度改造一起重新验收，因此当前仍不能标记 `READY FOR MERGE`。
+这是已确认设计；后续实施时需要核对 Stage Registry、Context Builder 与 UI 是否逐项符合。
 
-## Latest Location Finding
+## Data Boundary
 
-实际使用中发现：目的地生成后很长时间只出现极少数定位结果，其他地点看起来像完全没有开始定位。
+当前 staged v3 私人数据库路径仍为：
 
-核对当前 V3 后，问题由三部分构成：
+```text
+private_data/travel-v2.sqlite3
+```
 
-1. 最新 Runtime 已存在 destination.generate 后的 best-effort Resolver 调用，但旧实现只处理 `addedPlaceIds`，无法保证本轮所有经 `idMappings` 正式化的生成地点（包括与已有 Place 去重/复用的地点）都进入自动定位；
-2. `TravelPlannerRuntimeV3.resolveChangedPlaces()` 与 `PlaceResolverV2.resolveMany()` 都逐 Place 严格串行。单个地点最多需要 4 次 Provider 搜索，存在合理歧义时还可能进入 1–2 次 AI 消歧，因此一个慢地点会阻塞后面的所有地点；
-3. V3 `workspace()` 过去只返回 `status=resolved` 的 Resolution。数据库即使已经写入 `resolving` 或 `unresolved + errorMessage`，右侧 UI 也看不到，因此用户会误以为“根本没有定位”。
+内部版本仍为：
 
-注意：`MapService` 对 Nominatim 的约 1.1 秒全局请求间隔是有意的 Provider 限速，不应删除或并发打穿。
+```text
+PRAGMA user_version = 3
+```
 
-## Location Scheduling Hardening
+本次五步文档设计不要求增加第五种数据库 ConversationStage，也不要求为了 Workflow 五步变更数据库版本。
 
-### 1. 保留 Provider 限速，改为 3 个 Place worker 协作推进
+本次操作没有对真实旅行数据执行迁移或内容改写。
 
-`PlaceResolverV2.resolveMany()` 已从逐 Place 严格串行改为有界 worker pool：
+## Future Verification
 
-- `PLACE_RESOLUTION_BATCH_CONCURRENCY = 3`；
-- 最多同时推进 3 个 Place 的解析状态机；
-- 每个 Place 仍保留最多 4 次 Provider 搜索预算；
-- 实际 Nominatim HTTP 仍全部经过 `MapService` 原有全局 serial/rate limiter；
-- 当某个 Place 等待 AI 消歧时，其他 worker 可以继续取得 Provider 搜索机会；
-- 一个歧义地点不再阻塞整批地点。
+五步代码真正实施完成后，再准备：
 
-这提高的是调度公平性和首批结果速度，不提高对地图 Provider 的请求频率。
+```text
+git diff --check
+targeted Vitest
+typecheck
+全量 Vitest
+build
+真实 AI smoke
+isolated Browser E2E
+```
 
-### 2. Resolution 状态实时可见
+仍遵守项目规则：最终完整验收需用户明确确认后执行。
 
-`PlaceResolverV2.resolve()` 现在对状态变化提供回调：
+本次仅更新文档，所以不运行以上验收。
 
-- 开始时先持久化 `resolving`；
-- 成功后持久化 `resolved`；
-- 无法确认时持久化 `unresolved + errorMessage`；
-- 每次变化都通知 Runtime。
+## Required Browser Scenarios After Implementation
 
-Runtime 对每个变化广播：
+未来至少验证：
 
-`travel.resolution.changed`
+```text
+新西兰 20 天：
+Te Anau = Planning Area
+Milford Sound = Core Visit
+Milford 不成为 Macro Anchor
 
-前端已有 WebSocket 监听，会立即重新读取 workspace，因此地点卡能逐个显示：
+环线：
+Auckland → ... → Auckland
+必须保留两个独立 Stay Block
 
-- 定位中；
-- 已定位；
-- 未定位及具体错误。
+增量：
+普通 optional 兴趣点不使 Skeleton / Detail 失效
+Detail → Core 只传播到相关 Macro / Detail
+Replan Macro 不变时只更新相关区域 Detail
+Macro 天数改变时只更新 affectedDayIds
 
-### 3. workspace 不再隐藏失败和进行中状态
+未定位：
+unresolved must_go Core 可参与 Step 3 时间判断
+但不能成为 Step 5 真实 Stop
 
-`TravelPlannerRuntimeV3.workspace()` 现在返回所有 fingerprint 当前有效的 Resolution：
+唯一入口：
+Step 2 不直接执行 Step 3 Generate
+Step 4 不直接执行 Step 5 Generate
+地图不承担业务修改
+Core 不在 Step 2 / Step 4 各维护一套编辑器
+```
 
-- resolving；
-- resolved；
-- unresolved。
+## Current Handoff
 
-地图和 coverage 仍只把 `resolved` 当作可用地理事实，因此不会把无坐标状态误画到地图或误当作可路由地点。
+当前最准确的交接描述：
 
-### 4. 自动生成覆盖全部本轮正式化地点
+> staged-v3 已有 Dialogue / Action / Candidate / Resolution / Itinerary 基础代码；2026-09-02 又完成了五步产品与架构重构的正式文档设计，但该五步设计尚未实施。
 
-`destination.generate` 现在根据本轮 Candidate 的 `placeTemporaryId -> idMappings` 获取全部 canonical Place ID，再进入自动定位，而不是只依赖 `addedPlaceIds`。
+后续开发应：
 
-因此：
-
-- 新增 Place 会定位；
-- 被语义去重并复用的已有 Place 也会检查/补定位；
-- 每个本轮生成的 Candidate 都有明确的 canonical Place 定位去向。
-
-`interest.discover / supplement` 同样使用本轮正式化后的 canonical Place ID 集合进行定位。
-
-仍保持 save-first：
-
-- Candidate / Place 先保存；
-- 地图定位失败不回滚、不补位、不删除 Candidate；
-- 最终 unresolved 继续留在右侧供重试或人工定位。
-
-### 5. 自动定位任务显示整体进度
-
-对于 destination / interest AI Action，定位阶段会继续复用当前 Action Task，并更新摘要，例如：
-
-`正在定位地点 4/9 · 已定位`
-
-因此 Action 不会在 AI 刚生成 Candidate 后就表现为“全部结束”；只有本轮 best-effort 定位批次结束后才进入 completed。
-
-手动批量重新定位继续使用原 API，但现在同样使用 cooperative `resolveMany()`，并通过 WebSocket 逐 Place 刷新卡片状态。
-
-## Regression Coverage Added
-
-新增/扩展正式测试覆盖：
-
-- `resolveMany()` 同时最多推进 3 个 Place worker；
-- 每个 Place 都产生 `resolving -> resolved/unresolved` 状态流；
-- batch progress 最终 `completed === total`；
-- 一个等待 AI 消歧的慢 Place 不阻塞其他简单 Place 先完成；
-- destination.generate 会对全部本轮 canonical Place 映射触发自动定位；
-- Action resultRef 记录 resolved/total；
-- V3 workspace 可以读取 current `resolving` 与 `unresolved + errorMessage`；
-- Web helper 将 resolving 与 unresolved 分开计数。
-
-此前的 refine、unresolved itinerary、A–I、Prompt Registry、Store/Route regression 仍需在最终全量测试中保持通过。
-
-## Verification Status
-
-地点定位调度改造对应的完整建议验收仍未运行；本轮浏览器反馈相关的 targeted Runtime / Web helper 测试已经通过。
-
-## Destination / Interest Compact UI
-
-最新目的地页面反馈已同步到目的地与兴趣点共享布局：
-
-- 阶段顶部只保留五步单行导航，移除说明工具行和独立任务进度条；
-- 目的地 / 兴趣点 Candidate Panel 移除重复标题与说明；筛选、搜索、全选和手动添加在桌面合并为同一紧凑工具行，空间不足时最多换为两行；
-- 地点名称语言移动到全局顶部 AI 模型选择右侧，五步持续可用；
-- AI 公开任务进度移动到底部阶段 AI Dock，折叠态和展开态均与助手标题同一行；
-- 服务端 API、canonical 数据结构、Action 合同和私人数据路径均未改变。
-
-验证状态：`npm run typecheck:web` 与 `git diff --check` 已通过。浏览器已实测目的地 / 兴趣点在 1495×1039 使用单行工具栏，850px 降级为两行且无页面横向溢出；筛选数量、取消全选及无结果状态正确。`ai-task-topbar.test.ts` 仍被当前执行环境的 esbuild 目录访问限制阻断，待环境允许后补跑。
-
-最新浏览器反馈另补充了两项 requirements 阶段约束：
-
-- 对话识别出的 `requirements.update / requirements.clear` 通过受控参数校验后直接执行确定性 Action，不再显示二次确认卡；
-- 空白旅行需求下禁用“生成目的地建议”，服务端同时拒绝创建空需求的 `destination.generate` CTA Action。
-
-已执行：
-
-- `planner-runtime-v3.test.ts`；
-- `planner-runtime-v3-ai-actions.test.ts`；
-- `requirements-readiness-v3.test.ts`；
-- 共 3 个测试文件、15 个用例，全部 PASS。
-
-下一轮需要由 Codex 执行：
-
-1. targeted Place Resolver / Runtime / Web helper tests；
-2. `git diff --check`；
-3. `npm run typecheck`；
-4. `npm test`；
-5. `npm run build`；
-6. 上述全部 PASS 后再运行 isolated fresh-v3 real Browser E2E；
-7. 实际观察 9 个左右目的地生成后的自动定位触发、逐个状态出现、慢歧义地点不阻塞其他地点；
-8. 再继续 itinerary.generate → refine → Proposal → Apply 的最终闭环。
-
-## Itinerary Route Overview And Hover Metrics
-
-第 4 步“概览”和第 5 步“行程”的地图范围已拆分为显式 Candidate / itinerary view：
-
-- 两个行程阶段均增加“全览 / Day N”选择，进入阶段默认全览；
-- 概览全览使用全部 Macro route，详细行程全览使用全部 Day route，不混用；
-- 全览节点由所有 Day 的 Anchor / Stop 派生，单日仍保留原有起点、序号、终点标签；
-- 每个 Day 使用确定且互不相同的路线颜色，地图底部图例同步显示；
-- 每个可绘制 Route Leg 增加透明命中层、悬停高亮和 Popup，直接显示 Provider `distanceKm / durationMinutes`；
-- dirty route 保留按日颜色但使用弱化虚线，悬停明确标为“旧路线，需更新”；
-- 不增加 API、数据库字段、AI Prompt 或 Provider 调用，缺失指标保持待计算。
-
-已新增纯展示 helper 的 targeted Vitest 覆盖，但本轮尚未执行测试、typecheck 或 build；需按项目验证规则取得确认后统一运行。
-
-## Data Safety
-
-真实固定数据库仍为：
-
-`private_data/travel-v2.sqlite3`
-
-本轮 GitHub 修改没有读取、删除、移动、覆盖或迁移真实数据库。
-
-正常启动仍要求内部 `PRAGMA user_version=3`，旧 v2 / unknown / corrupt DB 在 HTTP listen 前 fail closed，不自动迁移或删除。
-
-## Place Name Display And Resolver Query Hardening
-
-针对新西兰官方双名地点出现“毛利名遮住英文名”并导致地图搜索失败的问题，已完成以下代码改造：
-
-- 地点卡、地图节点、Macro 概览与每日行程统一遵守旅行级 `planLanguage`；中英对照显示中文主名与 `nameEn`，只有英文名缺失时才回退 `nameLocal`；
-- Resolver 搜索别名改为 `nameEn -> nameLocal -> nameZh`，但保留旧 fingerprint 主名逻辑，避免历史 resolved 结果失效；
-- `approximate` 自然地点不再把接驳城市拼进基础查询，优先生成 `英文名/当地名 + countryCode`；普通精确地点仍保留城市上下文；
-- AI 补充搜索提示按完整查询原样使用，不再重复追加中英文混合的行政区；四次 Provider 预算、两轮 AI 消歧和 Nominatim 全局限速不变；
-- Place Schema 描述与共享 Prompt 明确 `nameZh/nameEn/nameLocal/city` 语义，不改变字段或数据库结构。
-
-当前私人旅行数据库、已有 Resolution 和公共缓存均未修改；现有 unresolved 地点继续由用户手动点击“重新识别”。本改造的 targeted tests、typecheck、build 与 Browser 验收尚未执行，需按验证规则取得确认后运行。
-
-## Do Not Do
-
-- 不取消 MapService / Nominatim 全局限速；
-- 不因定位失败回滚或删除 Candidate；
-- 不让 unresolved Place 进入 itinerary；
-- 不恢复旧全局 AI Conversation / Adjustment / 00–03 Prompt；
-- 最终自动化与 isolated Browser E2E 未全部 PASS 前，不宣称 `READY FOR MERGE`。
+```text
+先 review 当前代码与五步施工图的差异
+→ 再按 Phase 1–6 实施
+→ 用户确认后进入最终完整验收
+```
