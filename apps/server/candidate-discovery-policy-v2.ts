@@ -1,7 +1,10 @@
 import type {
   MacroCandidateDiscoveryOutput,
   MicroCandidateDiscoveryOutput,
+  TravelPlanDocument,
 } from "./contracts-v2.js";
+import { semanticPlaceKey } from "./plan-commands-v2.js";
+import { effectivePlanningRole } from "./planning-roles-v3.js";
 
 export const CANDIDATE_DISCOVERY_BATCH_LIMIT = 9;
 export const MICRO_DISCOVERY_AREA_BATCH_SIZE = 1;
@@ -74,6 +77,34 @@ export function validateMicroCandidateDiscovery(output: MicroCandidateDiscoveryO
     if ((outputCounts.get(targetId) ?? 0) !== targetCount) throw new Error(`目的地 ${targetId} 的 targetCount、Place 数量和 Candidate 数量必须一致。`);
   }
   return output;
+}
+
+export function filterCoreVisitDuplicatesV3(plan: TravelPlanDocument, output: MicroCandidateDiscoveryOutput) {
+  const places = new Map(plan.places.map((place) => [place.id, place]));
+  const coreKeys = new Set(plan.candidates.flatMap((candidate) => {
+    const place = places.get(candidate.placeId);
+    return place && effectivePlanningRole(candidate, place) === "core_visit" ? [semanticPlaceKey(place)] : [];
+  }));
+  if (!coreKeys.size || !output.candidates.length) return { output, skippedCoreDuplicateCount: 0 };
+
+  const incomingPlaces = new Map(output.places.map((place) => [place.id, place]));
+  const skippedPlaceIds = new Set<string>();
+  for (const candidate of output.candidates) {
+    const place = incomingPlaces.get(candidate.placeTemporaryId);
+    if (place && coreKeys.has(semanticPlaceKey(place))) skippedPlaceIds.add(candidate.placeTemporaryId);
+  }
+  if (!skippedPlaceIds.size) return { output, skippedCoreDuplicateCount: 0 };
+
+  const candidates = output.candidates.filter((candidate) => !skippedPlaceIds.has(candidate.placeTemporaryId));
+  const usedPlaceIds = new Set(candidates.map((candidate) => candidate.placeTemporaryId));
+  const placesAfterFilter = output.places.filter((place) => usedPlaceIds.has(place.id));
+  const filtered: MicroCandidateDiscoveryOutput = {
+    ...structuredClone(output),
+    areaTargets: output.areaTargets.map((target) => ({ ...target, targetCount: candidates.length })),
+    places: structuredClone(placesAfterFilter),
+    candidates: structuredClone(candidates),
+  };
+  return { output: filtered, skippedCoreDuplicateCount: skippedPlaceIds.size };
 }
 
 export function discoveryShortfalls(_output: MicroCandidateDiscoveryOutput, _acceptedCandidates: MicroCandidateDiscoveryOutput["candidates"]): FixedAreaTargetV2[] {
