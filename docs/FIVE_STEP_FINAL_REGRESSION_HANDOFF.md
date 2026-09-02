@@ -127,6 +127,7 @@ planningAreaCandidateId 原样保持
 不得开放任意 reparent
 不得让 CTA 绕过这条受控确认路径
 Macro fingerprint 变 dirty
+所属 Planning Area 的 Detail scope 同时需更新
 相关 Detailed Day 进入 needs_review
 用户不看到 planningRole / ID / fingerprint
 ```
@@ -139,7 +140,10 @@ apps/web/src/WorkflowAssistantV3.tsx
 apps/server/stage-context-v3.ts
 prompts/dialogues/目的地对话.md
 apps/server/core-promotion-v3.ts
+apps/server/itinerary-impact-v3.ts
 apps/server/travel-api-v3.ts
+apps/server/core-promotion-v3.test.ts
+apps/server/itinerary-impact-core-promotion-v3.test.ts
 ```
 
 ## 4.3 Step 4 stop-after-save regression
@@ -200,7 +204,7 @@ Picton, NZ
 先执行本轮失败和新增测试：
 
 ```bash
-npx vitest run --config vitest.config.ts apps/server/openai-output-schema-v2.test.ts apps/server/place-resolver-v2.test.ts apps/server/interest-discovery-stop-after-save-v3.test.ts apps/server/core-promotion-v3.test.ts apps/server/stage-context-v3.test.ts apps/web/src/workflow-ui-v3.test.ts apps/web/src/public-text-v3.test.ts apps/web/src/ai-task-topbar.test.ts
+npx vitest run --config vitest.config.ts apps/server/openai-output-schema-v2.test.ts apps/server/place-resolver-v2.test.ts apps/server/interest-discovery-stop-after-save-v3.test.ts apps/server/core-promotion-v3.test.ts apps/server/itinerary-impact-core-promotion-v3.test.ts apps/server/stage-context-v3.test.ts apps/web/src/workflow-ui-v3.test.ts apps/web/src/public-text-v3.test.ts apps/web/src/ai-task-topbar.test.ts
 ```
 
 必须报告：
@@ -219,7 +223,7 @@ Exit code
 执行：
 
 ```bash
-npx vitest run --config vitest.config.ts apps/server/contracts-v2.test.ts apps/server/planning-roles-v3.test.ts apps/server/ai-action-contracts-v3.test.ts apps/server/ai-action-contracts-v3-detail-phase5.test.ts apps/server/ai-stage-contracts-v3.test.ts apps/server/stage-context-v3.test.ts apps/server/candidate-workflow-v2.test.ts apps/server/candidate-discovery-policy-v2.test.ts apps/server/interest-discovery-v3.test.ts apps/server/itinerary-workflow-v3.test.ts apps/server/itinerary-impact-v3.test.ts apps/server/planning-context-v3.test.ts apps/server/detail-itinerary-v3.test.ts apps/server/planner-runtime-v3-ai-actions.test.ts apps/server/planner-runtime-v3-detail-phase5.test.ts apps/server/planner-runtime-v3-detail-unavailable-phase5.test.ts apps/server/requirements-duration-v3.test.ts apps/server/travel-api-v3-phase6.test.ts apps/server/skeleton-edit-api-v3.test.ts apps/server/plan-route-order-v2.test.ts apps/server/core-promotion-v3.test.ts apps/server/openai-output-schema-v2.test.ts apps/server/place-resolver-v2.test.ts apps/server/interest-discovery-stop-after-save-v3.test.ts apps/web/src/editor-actions-v2.test.ts apps/web/src/workflow-ui-v3.test.ts apps/web/src/skeleton-ui-v3.test.ts apps/web/src/workspace-map-presentation-v2.test.ts apps/web/src/workspace-v2.test.ts apps/web/src/ai-task-topbar.test.ts apps/web/src/public-text-v3.test.ts
+npx vitest run --config vitest.config.ts apps/server/contracts-v2.test.ts apps/server/planning-roles-v3.test.ts apps/server/ai-action-contracts-v3.test.ts apps/server/ai-action-contracts-v3-detail-phase5.test.ts apps/server/ai-stage-contracts-v3.test.ts apps/server/stage-context-v3.test.ts apps/server/candidate-workflow-v2.test.ts apps/server/candidate-discovery-policy-v2.test.ts apps/server/interest-discovery-v3.test.ts apps/server/itinerary-workflow-v3.test.ts apps/server/itinerary-impact-v3.test.ts apps/server/itinerary-impact-core-promotion-v3.test.ts apps/server/planning-context-v3.test.ts apps/server/detail-itinerary-v3.test.ts apps/server/planner-runtime-v3-ai-actions.test.ts apps/server/planner-runtime-v3-detail-phase5.test.ts apps/server/planner-runtime-v3-detail-unavailable-phase5.test.ts apps/server/requirements-duration-v3.test.ts apps/server/travel-api-v3-phase6.test.ts apps/server/skeleton-edit-api-v3.test.ts apps/server/plan-route-order-v2.test.ts apps/server/core-promotion-v3.test.ts apps/server/openai-output-schema-v2.test.ts apps/server/place-resolver-v2.test.ts apps/server/interest-discovery-stop-after-save-v3.test.ts apps/web/src/editor-actions-v2.test.ts apps/web/src/workflow-ui-v3.test.ts apps/web/src/skeleton-ui-v3.test.ts apps/web/src/workspace-map-presentation-v2.test.ts apps/web/src/workspace-v2.test.ts apps/web/src/ai-task-topbar.test.ts apps/web/src/public-text-v3.test.ts
 ```
 
 ---
