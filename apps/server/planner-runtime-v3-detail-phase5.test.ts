@@ -34,6 +34,14 @@ async function waitFor(check: () => boolean) {
   throw new Error("condition timeout");
 }
 
+async function waitForMapTasks(store: TravelStoreV3, tripId: string) {
+  const terminal = new Set(["completed", "failed", "stopped", "cancelled_by_generation"]);
+  await waitFor(() => {
+    const tasks = store.listAiTasks(tripId).filter((task) => task.agent === "map");
+    return tasks.length > 0 && tasks.every((task) => terminal.has(task.status));
+  });
+}
+
 function prompts(): LoadedPromptRegistryV3 {
   const compose = (id: any) => ({ id, relativePath: `${id}.md`, content: `# ${id}`, hash: `hash:${id}`, version: "v1" });
   return { prompts: new Map(), get: ((id: any) => compose(id)) as any, compose: compose as any };
@@ -138,6 +146,7 @@ describe("Phase 5 detailed itinerary runtime", () => {
     expect(after.days[0].detailStatus).toBe("ready");
     expect(after.days[0].startAnchor.placeId).toBe("city-a");
     expect(after.days[0].endAnchor.placeId).toBe("city-a");
+    await waitForMapTasks(store, created.id);
     store.close();
   });
 
@@ -234,6 +243,7 @@ describe("Phase 5 detailed itinerary runtime", () => {
     expect(after.days.find((day) => day.id === "day-a")?.detailStatus).toBe("ready");
     expect(after.days.find((day) => day.id === "day-b")?.detailStatus).toBe("ready");
     expect(after.days.find((day) => day.id === "day-b")?.stops[0].id).toBe("stop-core-b");
+    await waitForMapTasks(store, created.id);
     store.close();
   });
 });
