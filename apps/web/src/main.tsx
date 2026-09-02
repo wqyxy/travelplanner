@@ -1,11 +1,16 @@
 import { Component, StrictMode, type ErrorInfo, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
+import { setWorkerUrl } from "maplibre-gl";
+import "maplibre-gl/dist/maplibre-gl.css";
+import mapLibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import "./styles.css";
 import "./v3-fixes.css";
 import "./workspace-v4.css";
 import "./stage-ai-v3.css";
 import "./phase6-workflow.css";
 import AppWorkflowV3 from "./AppWorkflowV3";
+
+setWorkerUrl(mapLibreWorkerUrl);
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
   state = { error: null as string | null };
