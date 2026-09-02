@@ -30,7 +30,7 @@ export function MacroItineraryPanelV3({
   onSelectDay: (dayId: string) => void;
   onGenerate: () => void | Promise<void>;
   onUpdate: () => void | Promise<void>;
-  onSaveDraft: (draft: SkeletonEditDraftV3) => Promise<void>;
+  onSaveDraft?: (draft: SkeletonEditDraftV3) => Promise<void>;
   onRecalculate: (dayId: string) => void | Promise<void>;
   onRecalculateDirty: () => void | Promise<void>;
   onContinue: () => void | Promise<void>;
@@ -118,7 +118,7 @@ export function MacroItineraryPanelV3({
 
     <footer className="phase6-step-footer phase6-skeleton-footer">
       <div><button className="button" type="button" disabled={busy} onClick={() => { setDraft(model.draft); setSelectedBlockIndex(null); }}><RefreshCw size={14}/>恢复当前安排</button>{dirtyRouteCount > 0 && <button className="button" type="button" disabled={busy} onClick={() => void onRecalculateDirty()}><RefreshCw size={14}/>更新 {dirtyRouteCount} 段地图路线</button>}<button className="button" type="button" disabled={busy} onClick={() => void onUpdate()}><Sparkles size={14}/>让 AI 重新安排</button></div>
-      <div>{changed && <button className="button primary" type="button" disabled={busy || !canSave} title={canSave ? undefined : balance.message} onClick={() => void onSaveDraft(draft)}><Save size={14}/>保存这个调整</button>}<button className="button primary" type="button" disabled={busy || macroStatus === "needs_update" || changed || !canSave} onClick={() => void onContinue()}><ArrowRight size={15}/>下一步：补充景点（可选）</button></div>
+      <div>{changed && onSaveDraft && <button className="button primary" type="button" disabled={busy || !canSave} title={canSave ? undefined : balance.message} onClick={() => void onSaveDraft(draft)}><Save size={14}/>保存这个调整</button>}<button className="button primary" type="button" disabled={busy || macroStatus === "needs_update" || changed || !canSave} onClick={() => void onContinue()}><ArrowRight size={15}/>下一步：补充景点（可选）</button></div>
     </footer>
   </section>;
 }
