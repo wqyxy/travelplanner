@@ -159,9 +159,9 @@ requiresWorkflowStep = skeleton
 
 该原则是 Phase 6 UI 验收的硬要求，而不是文案优化项。
 
-## 3.1 本专项测试执行规则：实施环境不测试，统一交给 Codex
+## 3.1 本专项阶段测试闸门：每个 Phase 都必须暂停，由用户在 Codex 独立测试
 
-这是本次五步重构的**专属执行规则**，优先于本文后续出现的任何测试清单。
+这是本次五步重构的**专属执行规则**，优先于本文后续出现的任何测试清单或“连续施工”描述。
 
 实施 Agent 在 GitHub / 当前实施环境中：
 
@@ -171,6 +171,7 @@ requiresWorkflowStep = skeleton
 - 查看代码 / diff
 - 修改代码与文档
 - 静态检查实现是否符合施工图
+- 为当前 Phase 生成 Codex 测试提示词
 
 不得执行：
 - Vitest / Jest / 任何单元或集成测试
@@ -182,22 +183,104 @@ requiresWorkflowStep = skeleton
 - 任何为了验证功能而启动应用或运行测试脚本
 ```
 
-本文各 Phase 中列出的“测试文件 / 测试场景”仅表示：
-
-> **最终 Codex 测试提示词必须覆盖什么。**
-
-它们不是本次实施 Agent 可以自行执行的命令。
-
-代码实施完成后，实施 Agent 必须交付一份**可直接复制到 Codex 使用的完整测试提示词**，由用户在 Codex 环境中自行执行测试。
-
-实施 Agent 不得因为“测试尚未执行”而自行补跑，也不得宣称“已验证通过”；只能明确说明：
+整个实施过程必须严格采用：
 
 ```text
-代码实施完成
-测试未在本次实施环境执行
-已提供 Codex 测试提示词
-等待用户在 Codex 中独立验收
+Phase 0 完成
+→ STOP
+→ 给用户 Phase 0 Codex 验证提示词
+→ 用户在 Codex 独立执行
+→ 用户返回结果并明确说“通过 / 继续”
+→ 才允许进入 Phase 1
+
+Phase 1 完成
+→ STOP
+→ 给用户 Phase 1 Codex 测试提示词
+→ 用户在 Codex 独立执行
+→ 用户返回结果并明确说“通过 / 继续”
+→ 才允许进入 Phase 2
+
+Phase 2 完成
+→ STOP
+→ Phase 2 Codex 测试
+→ 用户确认
+→ Phase 3
+
+……
+
+Phase 6 完成
+→ STOP
+→ Phase 6 Codex 测试
+→ 用户确认
+→ Phase 7 最终交接 / 回归验收
 ```
+
+**严禁：**
+
+```text
+一次连续实施多个 Phase 后再统一测试
+Phase N 完成后自动开始 Phase N+1
+因为静态 review 看起来正确就跳过 Codex 测试闸门
+用户尚未明确确认通过时继续施工下一 Phase
+```
+
+每个 Phase 的 Codex 提示词必须是**阶段特定提示词**，只验证：
+
+```text
+1. 当前 Phase 承诺完成的内容
+2. 当前 Phase 必须保持的旧行为 / 前序 Phase 关键回归
+3. 当前 Phase 对下一 Phase 提供的接口是否已经准备好
+```
+
+不得在早期 Phase 提示词中要求尚未实施的未来能力。例如：
+
+```text
+Phase 1 不得因为 Phase 4 的 Step 4 Discovery 尚未完成而判 FAIL
+Phase 2 不得因为 Phase 6 UI 尚未完成而判 FAIL
+Phase 3 只验证 Backbone Producer 及必要前序回归，不要求完整 Detailed Itinerary
+```
+
+每个阶段测试提示词必须要求 Codex：
+
+```text
+- 先读取当前实际代码与 package.json / 测试脚本
+- 不凭空发明测试命令
+- 只使用隔离测试数据，不读写真实私人数据库
+- 先测试和报告，不自动修改实现代码
+- 输出 PASS / FAIL / BLOCKED
+- 给出实际执行命令与失败证据
+- 明确区分“当前 Phase 应完成”与“未来 Phase 尚未实施”
+```
+
+如果当前 Phase 测试结果为 `FAIL`：
+
+```text
+不得进入下一 Phase
+→ 用户把 Codex 报告交回实施 Agent
+→ 实施 Agent 只修当前 Phase 的问题（需用户明确要求修复）
+→ 修复后再次 STOP
+→ 重新给当前 Phase Codex 测试提示词
+→ 直到用户明确确认通过
+```
+
+如果结果为 `BLOCKED`：
+
+```text
+由用户决定：
+- 解决环境阻塞后重测
+或
+- 明确接受该阻塞并允许进入下一 Phase
+```
+
+实施 Agent 不得自行把 `BLOCKED` 当作 `PASS`。
+
+因此，本文各 Phase 中列出的“测试文件 / 测试场景”表示：
+
+> **该 Phase 完成后必须生成的 Codex 阶段测试提示词需要覆盖什么。**
+
+不是本次实施 Agent 可以自行执行的命令，也不是只留到最后统一测试。
+
+Phase 7 仍需要一份最终综合回归提示词，但它是**阶段测试之后的最终回归**，不能替代 Phase 0–6 的逐阶段测试闸门。
 
 ---
 
@@ -309,10 +392,10 @@ excluded
 UI 主操作不需要四级全部显性展示：
 
 ```text
-must_go   → 用户主要看到“必去”
+must_go    → 用户主要看到“必去”
 want_to_go → 用户主要看到“想去”
-optional  → AI 推荐默认状态，可弱化展示
-excluded  → 用户通过“移除 / 不考虑”表达
+optional   → AI 推荐默认状态，可弱化展示
+excluded   → 用户通过“移除 / 不考虑”表达
 ```
 
 数据模型保持四级，用户交互尽量两级。
@@ -1320,7 +1403,19 @@ apps/web/src/WorkspaceMapV2.tsx
 
 > **先让消费者理解新数据，再让上游生产新数据；最后统一做复杂度下沉的 UI 集成。**
 
-再次强调：本节列出的测试文件和测试场景全部用于最终 Codex 测试提示词，**实施阶段不执行测试。**
+再次强调：本节列出的测试文件和测试场景全部用于**对应 Phase 完成后的 Codex 阶段测试提示词**，实施 Agent 本身不执行测试。
+
+每个 Phase 的固定结束动作都是：
+
+```text
+完成当前 Phase
+→ 静态总结本 Phase 改了什么
+→ 生成当前 Phase 专属 Codex 测试提示词
+→ STOP
+→ 等待用户在 Codex 测试并明确确认
+```
+
+没有用户明确确认，不得进入下一 Phase。
 
 ## Phase 0：Read-only Gap Review
 
@@ -1338,6 +1433,20 @@ apps/web/src/WorkspaceMapV2.tsx
 
 产出逐文件差异清单。
 
+### Phase 0 Gate
+
+Phase 0 完成后立即停止，交付一份 **Codex 差异审查验证提示词**，要求 Codex 只读验证：
+
+```text
+- gap list 是否覆盖实际相关文件
+- KEEP / EXTEND / REPLACE / DO NOT TOUCH 分类是否合理
+- 是否误判已经存在的能力
+- 是否遗漏会影响 Phase 1–6 的现有耦合
+- 不改代码、不跑未来功能测试
+```
+
+用户明确确认 Phase 0 通过后，才进入 Phase 1。
+
 ## Phase 1：Role + Contract Foundation
 
 完成：
@@ -1353,7 +1462,7 @@ legacy compatibility
 frontend types
 ```
 
-加入最终 Codex 测试提示词的覆盖项（本阶段不执行）：
+### Phase 1 Codex Gate Prompt 必须覆盖
 
 ```text
 contracts-v2.test.ts
@@ -1361,7 +1470,21 @@ planning-roles-v3.test.ts
 ai-action-contracts-v3.test.ts
 ```
 
-必须覆盖：旧 Candidate / Day 可读、非法 role / parent、无 fingerprint needs_confirmation。
+必须验证：
+
+```text
+旧 Candidate / Day 可读
+planningRole 新旧兼容
+非法 role / parent 被拒绝
+Day.stayBlockId optional 兼容
+planningState 不持久化 macroDirty
+无 fingerprint → needs_confirmation
+requiresWorkflowStep 合同正确
+```
+
+不要测试 Phase 2 以后尚未实施的 Skeleton / Core Producer / UI 功能。
+
+Phase 1 完成后必须 STOP，交付 Phase 1 Codex 测试提示词；只有用户明确确认通过，才进入 Phase 2。
 
 ## Phase 2：Skeleton + Impact Consumer Foundation
 
@@ -1382,7 +1505,7 @@ Impact Analyzer
 Planning Area unresolved semantic Skeleton
 ```
 
-加入最终 Codex 测试提示词的覆盖项（本阶段不执行）：
+### Phase 2 Codex Gate Prompt 必须覆盖
 
 ```text
 itinerary-workflow-v3.test.ts
@@ -1398,7 +1521,15 @@ Auckland → ... → Auckland
 must / want / optional coverage
 20 天 draft 分配校验
 90 天 Save 不受 100 command 上限阻断
+arrival transfer day 计入到达 Stay Block
+stable stayBlockId / Day ID reuse
+Macro fingerprint / impact scope
+Planning Area unresolved 仍可形成语义 Skeleton
 ```
+
+Phase 2 提示词必须包含 Phase 1 合同的必要回归，但不要求 Phase 3 的 Mixed Backbone Producer 已存在。
+
+Phase 2 完成后必须 STOP；只有用户在 Codex 验证并明确确认通过，才进入 Phase 3。
 
 ## Phase 3：Backbone Producer
 
@@ -1417,12 +1548,30 @@ Resolver
 
 只有到本 Phase，新的 `destination.generate` 才开始正式生产 Core Visit。
 
-加入最终 Codex 测试提示词的覆盖项（本阶段不执行）：
+### Phase 3 Codex Gate Prompt 必须覆盖
 
 ```text
 candidate-workflow-v2.test.ts
 planner-runtime-v3-ai-actions.test.ts
+ai-action-contracts-v3.test.ts（必要回归）
 ```
+
+核心场景：
+
+```text
+Planning Area + Core Visit mixed output
+两阶段 parent formalization
+existing detail → incoming core 升级
+existing core 不被 incoming detail 静默降级
+preference 不被 discovery 覆盖
+parent 冲突不静默 reparent
+新 Candidate save-first + best-effort resolver
+Core 不成为 Macro Anchor
+```
+
+不要求 Phase 4 的 capacity-aware interest discovery 或 Phase 5 的完整详细行程已经实施。
+
+Phase 3 完成后必须 STOP；用户明确确认通过后才进入 Phase 4。
 
 ## Phase 4：Capacity-Aware Interests
 
@@ -1438,7 +1587,7 @@ Core Step 4 只读背景
 role upgrade 走 Step 2 归属逻辑
 ```
 
-加入最终 Codex 测试提示词的覆盖项（本阶段不执行）：
+### Phase 4 Codex Gate Prompt 必须覆盖
 
 ```text
 interest-discovery-v3.test.ts
@@ -1446,6 +1595,23 @@ candidate-discovery-policy-v2.test.ts
 workspace-v2.test.ts
 planner-runtime-v3-ai-actions.test.ts
 ```
+
+核心场景：
+
+```text
+只针对已采用 Planning Area 做 capacity-aware discovery
+0–9 个 detail_interest，允许 0
+不重复 Core Visit
+首次进入不自动发现
+Step 4 可跳过
+Skeleton Dirty 时禁止按旧容量 discovery
+Detail → Core 只发起 Step 2 归属流程
+save-first / 单区域失败不回滚其他区域
+```
+
+Phase 4 提示词只做必要的 Phase 1–3 回归，不要求 Phase 5 Detailed Itinerary 或 Phase 6 最终 UI 已完成。
+
+Phase 4 完成后必须 STOP；用户明确确认通过后才进入 Phase 5。
 
 ## Phase 5：Detailed Itinerary
 
@@ -1462,13 +1628,32 @@ minimal diff
 requiresWorkflowStep=skeleton
 ```
 
-加入最终 Codex 测试提示词的覆盖项（本阶段不执行）：
+### Phase 5 Codex Gate Prompt 必须覆盖
 
 ```text
 itinerary-workflow-v3.test.ts
 itinerary-impact-v3.test.ts
 planner-runtime-v3-ai-actions.test.ts
 ```
+
+核心场景：
+
+```text
+Core must_go resolved → 必须安排
+Core want_to_go → 优先，失败有理由
+Detail must_go resolved → 必须安排
+Planning Area / origin Anchor unresolved → 只阻塞相关真实 Detail
+must_go Core / Detail unresolved → 只阻塞相关范围
+patch-only affectedDayIds
+sticky existing Detailed Day
+最小化 Stop / 顺序 / 时间 Diff
+Macro 不合理 → requiresWorkflowStep=skeleton
+Step 4 未运行 discovery 也可在已有地点足够时进入 Step 5
+```
+
+Phase 5 提示词必须回归 Macro / stayBlockId / fingerprint 的关键契约，但不要求 Phase 6 UI 复杂度下沉已经完成。
+
+Phase 5 完成后必须 STOP；用户明确确认通过后才进入 Phase 6。
 
 ## Phase 6：UI / Map Integration + Complexity Downshift
 
@@ -1497,11 +1682,36 @@ requiresWorkflowStep 自动切换上下文
 Map role filtering
 ```
 
-Phase 6 的“普通用户不懂内部术语”验收也只写入最终 Codex 测试提示词，本阶段不执行浏览器测试。
+### Phase 6 Codex Gate Prompt 必须覆盖
 
-## Phase 7：Docs + Codex Test Prompt Handoff
+优先使用现有前端测试 / isolated Browser E2E；如果环境缺少浏览器能力则明确 `BLOCKED`，不得伪造通过。
 
-实施完成后，本 Phase **不运行任何测试或验证命令**。
+至少验证：
+
+```text
+五步导航只在右侧主工作区
+Step 2 = 想去哪些地方，表达愿望清单而非最终路线
+Step 3 = 路线和天数
+Step 4 明确可选且可直接进入 Step 5
+19/20 天显示“还剩 1 天需要安排”，而不是工程 Draft 状态
+主 UI 主要使用“必去 / 想去”
+不把 planningRole / stayBlockId / fingerprint / macroDirty / affectedDayIds / WorkflowStep / CAS / Resolution 暴露给普通用户
+Update Card 默认紧凑，可渐进展开原因
+未定位按阻塞程度分级
+跨步骤意图自动切换正确上下文，但不静默 mutation
+地图 / 时间轴只展示选择，没有第二套业务编辑入口
+环线两个 Auckland Stay Block 独立展示 / 选择
+```
+
+Phase 6 提示词还应做关键端到端回归，但不能把 Phase 7 的最终综合回归当作本阶段可以省略的理由。
+
+Phase 6 完成后必须 STOP；用户明确确认通过后，才进入 Phase 7。
+
+## Phase 7：Docs + Final Codex Regression Handoff
+
+只有 Phase 6 已被用户明确确认通过后，才进入本 Phase。
+
+本 Phase **仍不运行任何测试或验证命令**。
 
 禁止在本次实施环境执行：
 
@@ -1516,20 +1726,22 @@ Browser E2E
 GitHub Actions 测试工作流
 ```
 
-本 Phase 只做两件事：
+本 Phase 只做：
 
 ```text
 1. 静态 review 最终代码 / diff 与施工图是否一致
-2. 生成一份完整、可直接复制给 Codex 的测试提示词
+2. 更新必要文档 / handoff 信息
+3. 生成一份完整、可直接复制给 Codex 的最终综合回归测试提示词
+4. STOP，等待用户在 Codex 完成最终回归
 ```
 
-最终 Codex 测试提示词至少必须要求 Codex：
+最终 Codex 回归提示词至少必须要求 Codex：
 
 ```text
 先只读 review 实际 diff 与施工图
 读取 package.json / 现有测试脚本，不凭空发明命令
 执行 git diff --check
-执行本文 Phase 1–5 列出的 targeted tests
+执行 Phase 1–6 已使用过的 targeted tests / 必要回归
 执行 typecheck
 执行全量 Vitest / 项目现有全量测试
 执行 build
@@ -1540,12 +1752,14 @@ GitHub Actions 测试工作流
 失败时只诊断并报告，不自动修改代码，除非用户另行要求修复
 ```
 
-### 28.7.1 实施完成后必须交付的 Codex 测试提示词模板
+Phase 7 最终回归失败时，同样不得宣称本专项完成；由用户决定是否回到对应 Phase 修复并重新走该 Phase 的 Codex Gate。
 
-实施 Agent 最终应根据实际改动文件、实际 npm scripts 和实际测试文件，把下面模板补全后直接交给用户：
+### 28.7.1 Phase 7 最终 Codex 回归提示词模板
+
+实施 Agent 应根据最终实际改动文件、实际 npm scripts 和实际测试文件，把下面模板补全后直接交给用户：
 
 ```text
-你现在只负责对 TravelPlanner 本次“五步规划流程重构”做独立测试与验收。
+你现在只负责对 TravelPlanner 本次“五步规划流程重构”做独立最终回归测试与验收。
 
 重要限制：
 - 这是测试任务，不是实现任务。
@@ -1554,6 +1768,7 @@ GitHub Actions 测试工作流
 - 不读取或改写真实私人数据库；需要数据时使用项目已有的测试 / isolated 数据路径。
 - 以 docs/TravelPlanner 五步规划流程重构实施方案.md 为最高优先级验收依据。
 - UI 体验同时对照 docs/五步 UI 交互规范.md。
+- 前面 Phase 0–6 已逐阶段验收；本次是最终综合回归，不能用“之前阶段通过”替代当前实际验证。
 
 请按下面顺序执行：
 
@@ -1569,7 +1784,7 @@ GitHub Actions 测试工作流
 - 不猜测不存在的脚本。
 
 3. Targeted Tests
-至少覆盖：
+至少覆盖本次各 Phase 已确认的相关测试：
 - contracts-v2.test.ts
 - planning-roles-v3.test.ts
 - ai-action-contracts-v3.test.ts
@@ -1648,13 +1863,11 @@ GitHub Actions 测试工作流
 
 实施 Agent 可以根据最终实际文件名和 npm scripts 对这份提示词做事实性补全，但不得弱化上述验收范围。
 
-**Phase 1–6 是同一 feature branch 的连续施工阶段，中间状态不得作为可发布产品单独合并。**
-
 ---
 
 # 29. 必须验收的核心场景
 
-以下场景由最终 Codex 测试提示词负责执行，本次实施环境只负责保证代码设计上覆盖，不实际运行。
+以下场景必须分配到对应 Phase 的 Codex Gate 中逐阶段验证，并在 Phase 7 最终综合回归中再次覆盖。本次实施环境只负责实现与静态检查，不实际运行。
 
 ## 29.1 用户复杂度
 
@@ -1892,6 +2105,7 @@ Update Card 渐进披露
 局部修改只局部失效
 地图 / 时间轴只展示与选择
 右侧控制台是唯一业务入口
+每个 Phase 完成后必须暂停，由用户在 Codex 独立测试并明确确认，才能继续下一 Phase
 ```
 
-本方案完成文档确认后即可作为下一步代码实施的正式施工图；在用户明确要求实施前，不执行任何代码修改。即便未来进入实施，本专项也不在 GitHub / 当前实施环境运行测试，而是在实施完成后交付 Codex 测试提示词，由用户在 Codex 中独立验收。
+本方案完成文档确认后即可作为下一步代码实施的正式施工图；在用户明确要求实施前，不执行任何代码修改。即便未来进入实施，本专项也不在 GitHub / 当前实施环境运行测试；而是每个 Phase 完成后暂停，交付该 Phase 的 Codex 测试提示词，由用户独立验收并明确确认后，再进入下一 Phase。Phase 7 再做最终综合回归交接。
