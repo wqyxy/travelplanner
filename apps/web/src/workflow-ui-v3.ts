@@ -48,7 +48,7 @@ export function requiredWorkflowStepFromResultRefV3(resultRef: string | null | u
 
 export function latestRequiredWorkflowStepV3(workspace: WorkspaceV3): { step: WorkflowStepV3; actionId: string } | null {
   const candidates = workspace.actions
-    .filter((action) => action.status === "completed")
+    .filter((action) => action.status === "completed" && action.baseGeneration === workspace.trip.contentGeneration)
     .map((action) => ({ action, step: requiredWorkflowStepFromResultRefV3(action.resultRef) }))
     .filter((item): item is { action: typeof workspace.actions[number]; step: WorkflowStepV3 } => Boolean(item.step))
     .sort((left, right) => right.action.updatedAt.localeCompare(left.action.updatedAt));
@@ -85,9 +85,5 @@ export function detailResolutionSummaryV3(workspace: WorkspaceV3) {
   }
 
   const uniqueBlocking = [...new Map(blocking.map((item) => [item.key, item])).values()];
-  return {
-    blocking: uniqueBlocking,
-    blockingCount: uniqueBlocking.length,
-    nonBlockingNames: [...nonBlocking],
-  };
+  return { blocking: uniqueBlocking, blockingCount: uniqueBlocking.length, nonBlockingNames: [...nonBlocking] };
 }
