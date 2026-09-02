@@ -12,7 +12,9 @@ const plan: TravelPlanDocument = {
   schemaVersion: 2,
   stage: "itinerary_planning",
   trip: {
-    title: "测试", originPlaceId: null, destinationPlaceIds: [],
+    title: "测试",
+    brief: { destination: "", origin: "", departureTime: "", duration: "2 天", travelers: "", transport: "", additionalRequirements: "" },
+    originPlaceId: null, destinationPlaceIds: [],
     dates: { start: null, end: null, requestedDurationDays: 2 },
     travelers: { summary: "", adults: null, children: null },
     budget: { amount: null, currency: null, note: null }, pace: null, themes: [], preferences: [], constraints: [], assumptions: [],
