@@ -11,6 +11,8 @@ export const WORKFLOW_STEPS_V3: ReadonlyArray<{ step: WorkflowStepV3; number: nu
   { step: "detail", number: 5, label: "每日行程", shortLabel: "每日行程" },
 ];
 
+const CORE_PROMOTION_INTENT_V3 = /(重要游览地|很重要|特别重要|核心(?:景点|游览地)|提升为重要|单独(?:留|安排|预留)|留(?:出)?\s*(?:半天|一天|1\s*天|一整天|全天))/iu;
+
 export function stageForWorkflowStepV3(step: WorkflowStepV3): ConversationStage {
   return conversationStageForWorkflowStepV3(step);
 }
@@ -35,6 +37,29 @@ export function selectionForWorkflowStepV3(step: WorkflowStepV3): WorkspaceSelec
   return step === "backbone" || step === "interests"
     ? { type: "candidate_pool", id: null }
     : { type: "trip", id: null };
+}
+
+export function conversationRouteForWorkflowStepV3(
+  workspace: WorkspaceV3,
+  step: WorkflowStepV3,
+  selection: WorkspaceSelection,
+  message: string,
+): { stage: ConversationStage; selection: WorkspaceSelection } {
+  const normal = { stage: stageForWorkflowStepV3(step), selection };
+  if ((step !== "interests" && step !== "detail") || !CORE_PROMOTION_INTENT_V3.test(message)) return normal;
+
+  let candidateId = selection.type === "candidate" ? selection.id : null;
+  if (!candidateId && selection.type === "place") {
+    candidateId = workspace.trip.plan.candidates.find((candidate) => candidate.placeId === selection.id)?.id ?? null;
+  }
+  if (!candidateId && selection.type === "stop") {
+    candidateId = workspace.trip.plan.days.flatMap((day) => day.stops).find((stop) => stop.id === selection.id)?.candidateId ?? null;
+  }
+  if (!candidateId) return normal;
+
+  const row = candidateRows(workspace as any).find((item) => item.candidate.id === candidateId);
+  if (!row || effectiveCandidatePlanningRole(row) !== "detail_interest") return normal;
+  return { stage: "destinations", selection: { type: "candidate", id: candidateId } };
 }
 
 export function actionBelongsToWorkflowStepV3(actionType: AiActionType, step: WorkflowStepV3) {
