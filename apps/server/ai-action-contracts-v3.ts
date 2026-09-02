@@ -15,11 +15,24 @@ import {
 import { AiLedMicroCandidateDiscoveryOutputSchema } from "./ai-led-micro-contract-v2.js";
 import { StageDialogueOutputSchema, WebDialogueOutputSchema } from "./ai-stage-contracts-v3.js";
 import {
+  BackboneCandidateDraftSchema,
+  ParentCandidateRefSchema,
+  validateBackboneDraftBatch,
+} from "./backbone-contracts-v3.js";
+import {
   OmittedPlanningAreaSchema,
   SkeletonStayDraftSchema,
 } from "./skeleton-contracts-v3.js";
 import { RequiresWorkflowStepResultSchema } from "./workflow-step-contracts-v3.js";
 export { RequiresWorkflowStepResultSchema } from "./workflow-step-contracts-v3.js";
+export {
+  BackboneCandidateDraftSchema,
+  ParentCandidateRefSchema,
+} from "./backbone-contracts-v3.js";
+export type {
+  BackboneCandidateDraft,
+  ParentCandidateRef,
+} from "./backbone-contracts-v3.js";
 export {
   OmittedPlanningAreaSchema,
   SkeletonPlanDraftSchema,
@@ -59,23 +72,13 @@ function validateCandidateDrafts(
   }
 }
 
-const DestinationDiscoveryBaseSchema = z.object({
-  schemaVersion: z.literal(1),
+export const DestinationGenerateOutputSchema = z.object({
+  schemaVersion: z.literal(2),
   baseGeneration: z.number().int().min(0),
   assistantMessage: TextSchema.max(12000),
   places: z.array(PlaceSchema).min(1).max(30),
-  candidates: z.array(CandidateDraftSchema).min(1).max(30),
-}).strict();
-
-export const DestinationGenerateOutputSchema = DestinationDiscoveryBaseSchema.superRefine((value, context) => {
-  validateCandidateDrafts(value, context);
-  for (const [index, place] of value.places.entries()) {
-    if (place.kind !== "city") context.addIssue({ code: "custom", path: ["places", index, "kind"], message: "目的地 Macro 必须使用现有 kind=city。" });
-  }
-  for (const [index, candidate] of value.candidates.entries()) {
-    if (candidate.planningAreaCandidateId !== null) context.addIssue({ code: "custom", path: ["candidates", index, "planningAreaCandidateId"], message: "Macro Candidate 不得归属另一个 Macro。" });
-  }
-});
+  candidates: z.array(BackboneCandidateDraftSchema).min(1).max(30),
+}).strict().superRefine(validateBackboneDraftBatch);
 export type DestinationGenerateOutput = z.infer<typeof DestinationGenerateOutputSchema>;
 
 const SingleCandidateProposalBaseSchema = z.object({
