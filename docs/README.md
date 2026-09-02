@@ -1,88 +1,148 @@
 # TravelPlanner 文档索引
 
-## 当前有效文档
+> 更新日期：2026-09-02
 
-1. [`PRODUCT_PLAN.md`](./PRODUCT_PLAN.md)  
-   产品总体需求依据。功能范围、Candidate-first、地图事实边界和产品安全边界仍以此为准。
+## 当前文档优先级
 
-2. [`AI_STAGE_DIALOGUE_AND_ACTION_REFACTOR_PLAN.md`](./AI_STAGE_DIALOGUE_AND_ACTION_REFACTOR_PLAN.md)  
-   2026-08-30 已确认的 staged AI Dialogue / Action 重构目标。对于 AI 入口、四个 `ConversationStage`、Prompt Registry、Action Registry、阶段 Thread、消息持久化、reasoning/web 策略、Proposal 和数据库 v3 cutover，本文件是当前专项最高优先级依据。
-
-3. [`AI_LED_PLACE_DISCOVERY_AND_RESOLUTION.md`](./AI_LED_PLACE_DISCOVERY_AND_RESOLUTION.md)  
-   兴趣点发现与地图定位专项基线。它继续约束 Candidate-first、AI 主导兴趣点数量、save-first、地图 best-effort 定位等行为；若其中关于旧 00–03 Prompt、旧全局 Planner Runtime 或旧对话入口的描述与 staged AI 目标冲突，以 staged AI 目标为准。
-
-4. [`IMPLEMENTATION_STATUS.md`](./IMPLEMENTATION_STATUS.md)  
-   当前 staged AI 实施分支的实际完成状态、决策、风险和下一步；跨模型/Thread 交接必须先读本文件。
-
-5. [`IMPROVEMENT_STEPS.md`](./IMPROVEMENT_STEPS.md)  
-   此前代码改进与历史后续项。与上述当前专项文档冲突时，不作为 staged AI 架构依据。
-
-6. [`LOCAL_TEST_PROMPT.md`](./LOCAL_TEST_PROMPT.md)  
-   历史本地验收提示词；staged v3 完成后的最终验收应结合当前目标文档和 `IMPLEMENTATION_STATUS.md` 更新后再执行。
-
-## 当前 AI 架构基线
+涉及五步产品流程、规划角色、Macro / Detail 依赖或 UI 入口时，按以下顺序处理：
 
 ```text
-右侧工作区唯一 AI 入口
-→ requirements / destinations / interests / itinerary
-→ Stage Dialogue
-→ reply / clarification / web_required / Action
-→ Action Registry
-→ deterministic executor 或 AI executor
-→ save_result 或 Proposal → Apply
+当前用户明确决定
+→ TravelPlanner 五步规划流程重构实施方案.md
+→ 五步 UI 交互规范.md
+→ PRODUCT_PLAN.md
+→ AI_STAGE_DIALOGUE_AND_ACTION_REFACTOR_PLAN.md（Dialogue / Action 非冲突部分）
+→ AI_LED_PLACE_DISCOVERY_AND_RESOLUTION.md（非冲突部分）
+→ ITINERARY_MACRO_DETAIL_INCREMENTAL_DESIGN.md
+→ IMPLEMENTATION_STATUS.md（只描述实际实施事实）
+→ 历史文档
+```
+
+注意：
+
+> **2026-09-02 五步设计目前只完成文档确认，没有在本次操作中实施代码。**
+
+实际代码状态必须以 `IMPLEMENTATION_STATUS.md` 为准，不能因为设计文档已更新就宣称功能已经存在。
+
+---
+
+## 当前有效文档
+
+1. [`TravelPlanner 五步规划流程重构实施方案.md`](./TravelPlanner%20五步规划流程重构实施方案.md)  
+   当前五步重构正式施工图。定义 PlanningRole、Core Visit、Stay Block、Macro Fingerprint、Step / ConversationStage 映射、Prompt / Action、增量更新、兼容边界与实施 Phase。
+
+2. [`五步 UI 交互规范.md`](./五步%20UI%20交互规范.md)  
+   当前五步产品交互规范。P0 规则：地图 / 时间轴只展示和选择；右侧控制台是唯一业务入口；五步导航也位于右侧；同一个业务动作只能有一个归属步骤；跨步骤 CTA 只导航。
+
+3. [`PRODUCT_PLAN.md`](./PRODUCT_PLAN.md)  
+   产品总体需求依据。已经同步五步 Workflow、Planning Area / Core Visit / Detail Interest、Stay Block、右侧唯一入口和局部更新原则。
+
+4. [`AI_STAGE_DIALOGUE_AND_ACTION_REFACTOR_PLAN.md`](./AI_STAGE_DIALOGUE_AND_ACTION_REFACTOR_PLAN.md)  
+   staged-v3 Dialogue / Action 架构基线。ConversationStage 仍保持四个，但已经明确用户 Workflow 是五步，并通过 `workflowStep` 区分 Step 2 Backbone 与 Step 3 Skeleton。
+
+5. [`ITINERARY_MACRO_DETAIL_INCREMENTAL_DESIGN.md`](./ITINERARY_MACRO_DETAIL_INCREMENTAL_DESIGN.md)  
+   五步流程下的 Macro / Detail 依赖传播与局部更新专项设计。
+
+6. [`AI_LED_PLACE_DISCOVERY_AND_RESOLUTION.md`](./AI_LED_PLACE_DISCOVERY_AND_RESOLUTION.md)  
+   Candidate-first、save-first、地图 best-effort 定位专项基线。若旧流程编号、旧 Macro/Micro 表述与五步文档冲突，以五步文档为准。
+
+7. [`IMPLEMENTATION_STATUS.md`](./IMPLEMENTATION_STATUS.md)  
+   **实际代码实施状态**。任何跨模型 / Thread 交接都必须读取。设计文档描述“应该怎么做”，本文件描述“现在代码实际上做到哪”。
+
+8. [`IMPROVEMENT_STEPS.md`](./IMPROVEMENT_STEPS.md)  
+   历史代码改进与后续项。与当前五步设计冲突时不作为需求源。
+
+9. [`LOCAL_TEST_PROMPT.md`](./LOCAL_TEST_PROMPT.md)  
+   历史本地验收提示词。五步重构实施后必须结合新施工图重新更新验收步骤，不能直接把旧结果当作五步验收。
+
+---
+
+## 当前五步架构基线
+
+```text
+右侧控制台唯一业务入口
+→ 1 旅行需求
+→ 2 去哪些地方
+→ 3 安排路线和天数
+→ 4 补充景点
+→ 5 每日行程
+```
+
+内部：
+
+```text
+WorkflowStep:
+requirements / backbone / skeleton / interests / detail
+
+ConversationStage:
+requirements / destinations / interests / itinerary
+```
+
+映射：
+
+```text
+requirements → requirements
+backbone     → destinations
+skeleton     → destinations
+interests    → interests
+detail       → itinerary
 ```
 
 重要边界：
 
 - `ConversationStage` 不写入 canonical `TravelPlanDocument`；
-- canonical `TripStage` 继续保持 `place_selection / itinerary_planning / itinerary_refinement`；
-- Macro UI 可表达城市、区域、岛屿或独立停留地，但后台不扩 `PlaceKind`，继续统一 `kind=city`；
-- 精确编辑使用 deterministic 代码，不重复调用模型；
-- 行程 AI 不能创建 Place/Candidate；需要新地点时返回兴趣点阶段；
-- 地图 Provider 继续是坐标、Provider ID、路线 geometry、Provider 距离和时长的事实来源。
+- canonical `TripStage` 继续保持现有模型；
+- `PlanningRole` 与 `Place.kind`、`preference` 独立；
+- Planning Area 当前 canonical 规则仍要求 `Place.kind=city`；
+- 重要非城市地点使用 `core_visit` 表达，不作为 Macro Anchor；
+- 同一 Planning Area 可以形成多个 Stay Block；
+- 移动日计入到达 Stay Block；
+- Step 3 的 `itinerary.generate / replan` 归 `destinations + skeleton`；
+- Step 5 才使用 itinerary ConversationStage 生成 Detailed Itinerary；
+- 地图 Provider 继续是可信坐标、Provider ID、路线 geometry、Provider 距离和时长的来源；
+- 普通 Detail Interest 变化不能默认使整趟行程失效。
+
+---
 
 ## 数据库决策
 
-staged v3 仍使用固定文件路径：
+当前 staged v3 使用：
 
 ```text
 private_data/travel-v2.sqlite3
-```
-
-但内部数据库版本为：
-
-```text
 PRAGMA user_version = 3
 ```
 
-明确不实现：
+五步重构设计不要求增加第五 ConversationStage，因此本专项明确不因为 Workflow 五步而 bump 数据库版本。
 
-- version 2 → version 3 migration；
-- v1/v2 兼容读取；
-- 双写；
-- 启动时静默 reset、DROP、DELETE、移动、覆盖或重建旧数据库。
-
-因此：如果 `private_data/travel-v2.sqlite3` 仍是旧 version 2，staged v3 Runtime 会 fail closed。真正删除或人工移走旧文件属于最终明确 cutover 操作，不能由普通启动逻辑代替用户执行。
-
-公共地图缓存继续使用：
+继续禁止：
 
 ```text
-private_data/public-data-cache.sqlite3
+静默迁移私人数据库
+双写
+启动时自动 DROP / DELETE / 覆盖旧数据
 ```
+
+`planningRole / planningState` 按五步施工图使用 optional backward-compatible 读取。
+
+---
 
 ## 历史文档
 
-以下文档保留用于理解历史架构或此前实施过程，但不再作为当前 AI 架构需求源：
-
-- `AI-architecture-refactor.md`
-- `TRAVEL_WORKBENCH_V3.md`
-
-遇到冲突时，按以下优先级处理：
+以下文档保留用于理解历史架构，但不再作为当前五步产品需求源：
 
 ```text
-当前用户明确决定
-→ AI_STAGE_DIALOGUE_AND_ACTION_REFACTOR_PLAN.md
-→ PRODUCT_PLAN.md / AI_LED_PLACE_DISCOVERY_AND_RESOLUTION.md（非冲突部分）
-→ IMPLEMENTATION_STATUS.md（实施事实）
-→ 历史文档
+AI-architecture-refactor.md
+TRAVEL_WORKBENCH_V3.md
 ```
+
+如果历史文档仍写：
+
+```text
+四个用户可见步骤
+Macro 可以直接是任意非城市景区
+第四步才是 Macro Skeleton
+Step 3 / Step 5 共用 itinerary 对话空间
+```
+
+均以当前五步文档为准。
