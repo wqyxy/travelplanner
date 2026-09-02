@@ -31,7 +31,7 @@ function workspaceFixture(): Workspace {
       id: "trip", title: "测试旅行", state: "active", updatedAt: "2026-09-02T00:00:00.000Z", planLanguage: "zh", contentGeneration: 3,
       plan: { schemaVersion: 2, stage: "itinerary_refinement", trip: {} as any, places: [place("p1", "地点一"), place("p2", "地点二"), place("p3", "地点三"), place("p4", "地点四")] as any, candidates: ["p1", "p2", "p3", "p4"].map((placeId, index) => ({ id: `c${index + 1}`, placeId, planningAreaCandidateId: null, preference: "want_to_go", source: "ai", aiReason: null, aiScore: 80 - index, suggestedDurationMinutes: null, tags: [] })), days: days as any, warnings: [] },
     },
-    resolutions: ["p1", "p2", "p3", "p4"].map((placeId, index) => ({ id: `resolution-${index}`, tripId: "trip", placeId, geoFingerprint: placeId, status: "resolved", provider: "nominatim", providerPlaceId: null, latitude: 30 + index, longitude: 100 + index, address: `地址${index + 1}`, timezone: null, confidence: .9, resolvedAt: "2026-09-02T00:00:00.000Z", errorMessage: null, source: "provider" })),
+    resolutions: ["p1", "p2", "p3", "p4"].map((placeId, index) => ({ id: `resolution-${index}`, tripId: "trip", placeId, geoFingerprint: placeId, status: "resolved", method: "provider_match", provider: "nominatim", providerPlaceId: `provider-${index}`, latitude: 30 + index, longitude: 100 + index, address: `地址${index + 1}`, timezone: null, confidence: .9, resolvedAt: "2026-09-02T00:00:00.000Z", errorMessage: null, source: "provider" })),
     routes: routes as any,
     routeStates: [{ dayId: "day-1", dirty: false, route: routes[0] }, { dayId: "day-2", dirty: true, route: routes[1] }] as any,
     proposals: [], messages: [], tasks: [], revisions: [], coverage: [],
