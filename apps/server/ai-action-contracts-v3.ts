@@ -14,6 +14,8 @@ import {
 } from "./contracts-v2.js";
 import { AiLedMicroCandidateDiscoveryOutputSchema } from "./ai-led-micro-contract-v2.js";
 import { StageDialogueOutputSchema, WebDialogueOutputSchema } from "./ai-stage-contracts-v3.js";
+import { RequiresWorkflowStepResultSchema } from "./workflow-step-contracts-v3.js";
+export { RequiresWorkflowStepResultSchema } from "./workflow-step-contracts-v3.js";
 
 const CandidateDraftSchema = z.object({
   temporaryId: IdSchema,
@@ -133,7 +135,11 @@ const ItineraryGenerationSuccessSchema = z.object({
   if (new Set(ids).size !== ids.length) context.addIssue({ code: "custom", path: ["destinations"], message: "Macro 行程中同一目的地只能出现一次。" });
 });
 
-export const ItineraryGenerateOutputSchema = z.object({ schemaVersion: z.literal(2), baseGeneration: z.number().int().min(0), result: z.discriminatedUnion("type", [ItineraryGenerationSuccessSchema, ItineraryGenerateRequiresStageSchema]) }).strict();
+export const ItineraryGenerateOutputSchema = z.object({
+  schemaVersion: z.literal(2),
+  baseGeneration: z.number().int().min(0),
+  result: z.discriminatedUnion("type", [ItineraryGenerationSuccessSchema, ItineraryGenerateRequiresStageSchema, RequiresWorkflowStepResultSchema]),
+}).strict();
 export type ItineraryGenerateOutput = z.infer<typeof ItineraryGenerateOutputSchema>;
 
 const ItineraryReplacementSuccessSchema = z.object({
@@ -147,7 +153,11 @@ const ItineraryReplacementSuccessSchema = z.object({
   if (new Set(ids).size !== ids.length) context.addIssue({ code: "custom", path: ["destinations"], message: "Macro 行程中同一目的地只能出现一次。" });
 });
 
-export const ItineraryReplanOutputSchema = z.object({ schemaVersion: z.literal(1), baseGeneration: z.number().int().min(0), result: z.discriminatedUnion("type", [ItineraryReplacementSuccessSchema, RequiresInterestsSchema]) }).strict();
+export const ItineraryReplanOutputSchema = z.object({
+  schemaVersion: z.literal(1),
+  baseGeneration: z.number().int().min(0),
+  result: z.discriminatedUnion("type", [ItineraryReplacementSuccessSchema, RequiresInterestsSchema, RequiresWorkflowStepResultSchema]),
+}).strict();
 export type ItineraryReplanOutput = z.infer<typeof ItineraryReplanOutputSchema>;
 
 const DetailedStopDraftSchema = z.object({
@@ -187,7 +197,7 @@ const DetailGenerateSuccessSchema = z.object({
 export const ItineraryDetailGenerateOutputSchema = z.object({
   schemaVersion: z.literal(1),
   baseGeneration: z.number().int().min(0),
-  result: z.discriminatedUnion("type", [DetailGenerateSuccessSchema, RequiresInterestsSchema]),
+  result: z.discriminatedUnion("type", [DetailGenerateSuccessSchema, RequiresInterestsSchema, RequiresWorkflowStepResultSchema]),
 }).strict();
 export type ItineraryDetailGenerateOutput = z.infer<typeof ItineraryDetailGenerateOutputSchema>;
 
@@ -209,7 +219,7 @@ const DetailUpdateSuccessSchema = z.object({
 export const ItineraryDetailUpdateOutputSchema = z.object({
   schemaVersion: z.literal(1),
   baseGeneration: z.number().int().min(0),
-  result: z.discriminatedUnion("type", [DetailUpdateSuccessSchema, RequiresInterestsSchema]),
+  result: z.discriminatedUnion("type", [DetailUpdateSuccessSchema, RequiresInterestsSchema, RequiresWorkflowStepResultSchema]),
 }).strict();
 export type ItineraryDetailUpdateOutput = z.infer<typeof ItineraryDetailUpdateOutputSchema>;
 
@@ -219,6 +229,7 @@ export const ItineraryDayOptimizeOutputSchema = z.object({
   result: z.discriminatedUnion("type", [
     z.object({ type: z.literal("success"), assistantMessage: TextSchema.max(12000), title: TextSchema.max(300), explanation: TextSchema.max(4000), dayId: IdSchema, orderedStopIds: z.array(IdSchema).max(80) }).strict(),
     RequiresInterestsSchema,
+    RequiresWorkflowStepResultSchema,
   ]),
 }).strict();
 export type ItineraryDayOptimizeOutput = z.infer<typeof ItineraryDayOptimizeOutputSchema>;
@@ -229,6 +240,7 @@ export const ItineraryRepairOutputSchema = z.object({
   result: z.discriminatedUnion("type", [
     z.object({ type: z.literal("success"), assistantMessage: TextSchema.max(12000), title: TextSchema.max(300), explanation: TextSchema.max(4000), days: z.array(DaySchema).min(1).max(90) }).strict(),
     RequiresInterestsSchema,
+    RequiresWorkflowStepResultSchema,
   ]),
 }).strict();
 export type ItineraryRepairOutput = z.infer<typeof ItineraryRepairOutputSchema>;
@@ -304,6 +316,7 @@ export const ItineraryRefineOutputSchema = z.object({
       if (requested.size !== value.dayIds.length || returned.size !== value.dayUpdates.length || requested.size !== returned.size || [...requested].some((id) => !returned.has(id))) context.addIssue({ code: "custom", path: ["dayUpdates"], message: "细化动作必须恰好返回指定 Day。" });
     }),
     RequiresInterestsSchema,
+    RequiresWorkflowStepResultSchema,
   ]),
 }).strict();
 export type ItineraryRefineOutput = z.infer<typeof ItineraryRefineOutputSchema>;
