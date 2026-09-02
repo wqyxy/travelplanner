@@ -90,7 +90,7 @@ export function buildPlaceSearchQueries(place: Place, _compatibilityHints: strin
     // A city is its own locality. Repeating it as "Picton, Picton" makes
     // Nominatim favor same-named facilities such as stations and bus stops.
     add(first, place.region, countryScope);
-    add(second ?? first, countryScope);
+    add(first, countryScope);
   } else if (place.approximate) {
     // Approximate natural/linear Places often use a gateway city that is not their
     // physical locality. Search the provider-friendly aliases at country scope.
