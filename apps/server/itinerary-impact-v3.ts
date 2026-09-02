@@ -133,6 +133,11 @@ function macroCandidateSemanticsChanged(
   return false;
 }
 
+function detailCoreRoleChanged(leftRole: ReturnType<typeof roleOf>, rightRole: ReturnType<typeof roleOf>) {
+  return (leftRole === "detail_interest" && rightRole === "core_visit")
+    || (leftRole === "core_visit" && rightRole === "detail_interest");
+}
+
 export function analyzeItineraryImpactV3(before: TravelPlanDocument, after: TravelPlanDocument): ItineraryImpactV3 {
   const beforePlaces = placeById(before);
   const afterPlaces = placeById(after);
@@ -185,6 +190,12 @@ export function analyzeItineraryImpactV3(before: TravelPlanDocument, after: Trav
       if (rightRole === "planning_area") addParentDays(macroDayIds, after, right?.id);
       if (leftRole === "core_visit") addParentDays(macroDayIds, before, left?.planningAreaCandidateId);
       if (rightRole === "core_visit") addParentDays(macroDayIds, after, right?.planningAreaCandidateId);
+
+      if (detailCoreRoleChanged(leftRole, rightRole)) {
+        detailReasons.add(`地点重要程度变化 ${id}`);
+        addParentDays(detailDayIds, before, left?.planningAreaCandidateId);
+        addParentDays(detailDayIds, after, right?.planningAreaCandidateId);
+      }
     }
 
     if (leftRole === "planning_area" || rightRole === "planning_area") {
