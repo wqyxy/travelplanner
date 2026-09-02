@@ -2,29 +2,30 @@
 
 > 状态：**已确认的文档设计，尚未实施**  
 > 更新日期：2026-09-02  
-> 适用范围：TravelPlanner v3 产品流程、Candidate 角色、Macro / Detail 规划、Prompt / Action / Context、增量更新、兼容边界与实施顺序  
+> 适用范围：TravelPlanner v3 产品流程、Candidate 角色、Macro / Detail 规划、Prompt / Action / Context、增量更新、兼容边界、用户复杂度下沉与实施顺序  
 > 配套 UI 规范：[`五步 UI 交互规范.md`](./五步%20UI%20交互规范.md)
 
 ---
 
 # 1. 目标与最终流程
 
-产品统一为：
+用户可见流程统一为：
 
 ```text
 1 旅行需求
       ↓
-2 去哪些地方
-   ├─ Planning Area / 规划区域
-   └─ Core Visit / 重要游览地
+2 想去哪些地方
+   ├─ 停留区域候选
+   └─ 重要游览地候选
       ↓
-3 安排路线和天数
+3 路线和天数
+   ├─ 最终采用哪些区域
    ├─ Stay Block / 停留段
    ├─ 顺序
    ├─ 停留天数
    └─ 跨区域语义交通方式
       ↓
-4 补充景点
+4 补充景点（可选）
    └─ Detail Interest / 普通兴趣点
       ↓
 5 每日行程
@@ -34,7 +35,7 @@
    └─ Detail Route
 ```
 
-核心原则：
+内部核心原则：
 
 > 先确定哪些地点决定旅行结构，再分配时间；先有时间容量，再发现普通兴趣点；最后才安排具体日期和真实路线。
 
@@ -61,9 +62,9 @@ type WorkflowStepV3 =
 
 ```text
 1 旅行需求
-2 去哪些地方
-3 安排路线和天数
-4 补充景点
+2 想去哪些地方
+3 路线和天数
+4 补充景点（可选）
 5 每日行程
 ```
 
@@ -99,7 +100,7 @@ type RequiresWorkflowStep =
   | "interests";
 ```
 
-推荐统一结果：
+统一结果建议：
 
 ```ts
 {
@@ -114,7 +115,53 @@ type RequiresWorkflowStep =
 
 ---
 
-# 3. 页面结构与动作唯一归属
+# 3. 新增 P0：复杂度下沉，不把工程模型做成产品 UI
+
+这次重构保留必要的内部复杂度，但禁止把以下概念直接变成普通用户必须理解的界面：
+
+```text
+PlanningRole
+Backbone
+Skeleton
+Macro / Detail
+stayBlockId
+macroBasisFingerprint
+macroDirty
+affectedDayIds
+requiresWorkflowStep
+ConversationStage
+CAS
+Resolution
+```
+
+用户只需要理解：
+
+```text
+我想怎么玩
+→ 我想去哪些地方
+→ 这些天怎么排
+→ 要不要再补点景点
+→ 每天具体怎么玩
+```
+
+工程状态必须翻译为用户行动语言，例如：
+
+```text
+macroDirty
+→ 路线和天数需要重新确认
+
+affectedDayIds = 2
+→ 2 天需要更新，其他 18 天不变
+
+requiresWorkflowStep = skeleton
+→ 自动切换到“路线和天数”并展示待处理内容
+```
+
+该原则是 Phase 6 UI 验收的硬要求，而不是文案优化项。
+
+---
+
+# 4. 页面结构与动作唯一归属
 
 产品保持：
 
@@ -124,7 +171,7 @@ type RequiresWorkflowStep =
 右侧唯一控制台
 ```
 
-五步导航也位于右侧顶部，不新增独立左侧步骤栏。
+五步导航位于右侧顶部，不新增独立左侧步骤栏。
 
 地图 / 时间轴只负责：
 
@@ -146,13 +193,24 @@ Step 4 → interest.* / Detail Interest
 Step 5 → detail generate / update / Stop / Day
 ```
 
-跨步骤 CTA 只导航，不替目标步骤执行 Action。
+但“唯一归属”不等于让用户手动来回找入口。
+
+如果用户在错误步骤提出意图：
+
+```text
+识别 intent
+→ 自动切换到归属 WorkflowStep
+→ 保留 selection / intent
+→ 展示对应 Draft / Proposal / Confirmation
+```
+
+自动切换步骤可以发生；高影响 mutation 仍不得跨步骤静默执行。
 
 ---
 
-# 4. Place.kind、planningRole、preference 必须独立
+# 5. Place.kind、planningRole、preference 必须独立
 
-## 4.1 Place.kind
+## 5.1 Place.kind
 
 现实实体类型：
 
@@ -168,7 +226,7 @@ stop
 waypoint
 ```
 
-## 4.2 planningRole
+## 5.2 planningRole
 
 规划层级：
 
@@ -197,7 +255,7 @@ detail_interest:
 
 Core Visit 影响 Step 3 时间预算，在 Step 5 成为 Stop，但绝不成为 Macro Anchor。
 
-## 4.3 preference
+## 5.3 preference
 
 ```ts
 must_go
@@ -208,13 +266,22 @@ excluded
 
 它回答“用户有多想去”，不能与 planningRole 隐式绑定。
 
+UI 主操作不需要四级全部显性展示：
+
+```text
+must_go   → 用户主要看到“必去”
+want_to_go → 用户主要看到“想去”
+optional  → AI 推荐默认状态，可弱化展示
+excluded  → 用户通过“移除 / 不考虑”表达
+```
+
+数据模型保持四级，用户交互尽量两级。
+
 ---
 
-# 5. preference 在 Step 3 的最终语义
+# 6. preference 在 Step 3 的最终语义
 
-这是施工前必须固定的规则。
-
-## 5.1 Planning Area
+## 6.1 Planning Area
 
 ```text
 must_go
@@ -230,7 +297,7 @@ excluded
 → 禁止进入 Skeleton
 ```
 
-因此旧规则：
+旧规则：
 
 ```text
 每个 active planning_area 都必须覆盖一次
@@ -247,7 +314,7 @@ optional 由 Step 3 AI 决定是否采用
 excluded 禁止采用
 ```
 
-Step 3 输出必须把未采用的非 excluded Planning Area 显式列出，便于审计：
+Step 3 输出仍需要可审计：
 
 ```ts
 type OmittedPlanningArea = {
@@ -268,7 +335,9 @@ omittedPlanningAreas
 
 `must_go` 不允许出现在 omitted 中；`want_to_go` 被 omitted 必须有明确理由。
 
-## 5.2 Core Visit
+UI 不需要默认铺满全部 omitted optional；`want_to_go` omitted 要显著解释，optional omitted 可以折叠。
+
+## 6.2 Core Visit
 
 ```text
 must_go
@@ -278,7 +347,7 @@ want_to_go
 → Step 3 优先考虑；放不下时必须解释
 
 optional
-→ 不得仅为了它额外增加 stayDays；若既有容量足够可安排
+→ 不得仅为了它额外增加 stayDays；既有容量足够时可安排
 
 excluded
 → 不参与容量，也不排入 Day
@@ -286,7 +355,7 @@ excluded
 
 ---
 
-# 6. Core Visit 严格判定
+# 7. Core Visit 严格判定与用户表达
 
 Core Visit 必须首先满足：
 
@@ -313,9 +382,20 @@ Core Visit 必须首先满足：
 
 “用户点名”或“地点很有名”本身不等于 Core Visit。
 
+UI 不做 engineering Role editor。
+
+用户自然表达：
+
+```text
+这个地方很重要，要单独留一天
+这个地方不用专门安排这么多时间
+```
+
+服务端 / Action 层再映射为角色变化，并在高影响时展示确认。
+
 ---
 
-# 7. TripCandidate 兼容策略
+# 8. TripCandidate 兼容策略
 
 新增可选字段：
 
@@ -354,7 +434,7 @@ activeDetailInterests()
 
 ---
 
-# 8. Stay Block 是稳定业务对象，但不新增第二套 MacroDay 表
+# 9. Stay Block 是稳定业务对象，但不新增第二套 MacroDay 表
 
 Step 3 的一级编辑对象是 Stay Block。
 
@@ -410,12 +490,14 @@ type SkeletonStayDraft = {
 ```text
 正常读取
 不因普通加载自动写回
-下一次用户主动在 Step 3 Apply Skeleton 时再建立稳定 stayBlockId
+下一次用户主动在 Step 3 保存路线和天数时再建立稳定 stayBlockId
 ```
+
+UI 不显示 `stayBlockId`。
 
 ---
 
-# 9. stayDays 与移动日唯一语义
+# 10. stayDays 与移动日唯一语义
 
 统一：
 
@@ -449,7 +531,15 @@ Interest Discovery 必须知道各 Block 是否包含 arrival transfer day。
 
 ---
 
-# 10. Step 2：Backbone / 去哪些地方
+# 11. Step 2：Backbone / 想去哪些地方
+
+内部仍称 Backbone；用户只看到“想去哪些地方”。
+
+Step 2 是**候选愿望清单**，不是最终路线。
+
+页面固定说明：
+
+> 先选出想考虑的地方，下一步会根据总天数安排最终路线。
 
 Step 2 只管理：
 
@@ -460,18 +550,9 @@ Core Visit
 
 禁止批量产生普通 Detail Interest。
 
-Step 2 是 Core Visit 结构管理唯一主入口：
+Step 2 是 Core Visit 结构管理唯一归属步骤，但 UI 用“重要游览地”和自然语言调整，不把 role / parent 做成主界面。
 
-```text
-新增 / 删除
-parent
-角色升级 / 降级
-preference
-```
-
-Step 4 只能发起“设为重要游览地”的 intent，然后导航 Step 2 完成 Impact Confirmation。
-
-## 10.1 Mixed Destination Output
+## 11.1 Mixed Destination Output
 
 `destination.generate` 同一轮允许返回：
 
@@ -497,7 +578,7 @@ Phase B：Core Visit，generated parent ref → canonical Candidate ID
 
 canonical 永远只保存正式 `planningAreaCandidateId`。
 
-## 10.2 Duplicate Merge
+## 11.2 Duplicate Merge
 
 ```text
 existing detail + incoming core
@@ -513,7 +594,9 @@ Discovery 不覆盖已有用户 preference。
 
 ---
 
-# 11. Step 3：Skeleton / 安排路线和天数
+# 12. Step 3：Skeleton / 路线和天数
+
+内部仍称 Skeleton；用户只看到“路线和天数”。
 
 输入只包括：
 
@@ -546,19 +629,23 @@ requiresWorkflowStep = requirements | backbone
 
 而不是生成明显不可行 Skeleton。
 
+UI 对 `want_to_go` omitted 使用简洁折叠提示；optional omitted 不默认铺满。
+
 ---
 
-# 12. Step 3 手工修改必须使用“草稿 + 原子 Apply”
+# 13. Step 3 手工修改必须使用“草稿 + 原子保存”
 
 用户不能逐字段直接把 canonical Skeleton 写成临时非法状态。
 
-右侧维护 UI-only `SkeletonEditDraft`：
+右侧内部维护 UI-only `SkeletonEditDraft`：
 
 ```text
 顺序草稿
 stayDays 草稿
 transferMode 草稿
 ```
+
+但 UI 不显示 Draft / Apply / canonical 术语。
 
 用户可以连续修改：
 
@@ -572,7 +659,7 @@ Te Anau 2 → 3
 ```text
 总旅行：20 天
 当前分配：20 天
-✓ 可以应用
+✓ 已分配完整
 ```
 
 如果：
@@ -585,11 +672,14 @@ Te Anau 2 → 3
 则：
 
 ```text
-还需要分配 1 天
-[应用修改] disabled
+还剩 1 天需要安排
+[+1 蒂阿瑙]
+[+1 瓦纳卡]
+[让我帮你安排]
+[保存调整] disabled
 ```
 
-只有整个 Draft 满足全部 Skeleton invariant 后，才允许一次原子 Apply。
+只有整个 Draft 满足全部 Skeleton invariant 后，才允许一次原子保存。
 
 自然语言同样遵守：
 
@@ -597,11 +687,13 @@ Te Anau 2 → 3
 “皇后镇少一天”
 ```
 
-如果用户没有说明这一天如何重新分配，系统不能偷偷决定；应形成未完成 Draft / 澄清 / 建议，而不是直接写 canonical。
+如果用户没有说明这一天如何重新分配，系统不能偷偷决定；应形成未完成 Draft 或直接给 2–3 个重新分配建议。
+
+用户明确说“你合理分配”时，可以由 AI 完成 Proposal。
 
 ---
 
-# 13. Skeleton Apply 使用专用原子服务，不受通用 100 PlanCommand 上限约束
+# 14. Skeleton Save 使用专用原子服务，不受通用 100 PlanCommand 上限约束
 
 现有通用 Proposal / PlanCommand 适合局部编辑，但 90 天大范围 Skeleton Replan 可能超过 100 command 上限。
 
@@ -625,13 +717,13 @@ formalize / reuse stayBlockId
 更新 macroBasisFingerprint
 ```
 
-UI / AI 仍可以生成 Proposal / Diff 给用户确认，但 Apply 不必机械展开为数百条通用 PlanCommand。
+UI / AI 仍可以生成 Proposal / Diff 给用户确认，但 Save 不必机械展开为数百条通用 PlanCommand。
 
 这不是新增第二事实源；最终事实仍是 canonical Day。
 
 ---
 
-# 14. Day ID 与 Stay Block ID 复用
+# 15. Day ID 与 Stay Block ID 复用
 
 Replan 优先：
 
@@ -649,7 +741,7 @@ Replan 优先：
 
 ---
 
-# 15. Macro Dependency Fingerprint：macroDirty 必须派生，不双写
+# 16. Macro Dependency Fingerprint：macroDirty 必须派生，不双写
 
 canonical 只保存：
 
@@ -675,15 +767,6 @@ macroDirty =
 needs_confirmation
 ```
 
-避免：
-
-```text
-fingerprint 已变化
-但 macroDirty=false
-```
-
-这种双真相。
-
 Fingerprint 包含真正影响宏观规划的输入：
 
 ```text
@@ -708,24 +791,26 @@ Provider ID
 AI score
 ```
 
-旧 Skeleton 无 fingerprint：不自动迁移、不自动 replan；Step 3 显示“需要确认路线和天数”，用户主动 Apply 后建立基线。
+旧 Skeleton 无 fingerprint：不自动迁移、不自动 replan；Step 3 用户只看到“需要确认路线和天数”，主动保存后建立基线。
+
+UI 永远不直接显示 `macroDirty` / fingerprint。
 
 ---
 
-# 16. Resolution / 未定位完整边界
+# 17. Resolution / 未定位完整边界
 
-## 16.1 Planning Area unresolved
+## 17.1 Planning Area unresolved
 
 ```text
-Step 2：显示未定位
+Step 2：可显示轻量“尚未定位”
 Step 3：允许做语义 Skeleton
 Macro Route：标记待定位，不伪造 geometry / distance / duration
-Step 5：只要某 Detailed Day 使用到 unresolved Anchor，则阻塞该 Day 的 Detailed Generate / Update
+Step 5：只要某 Detailed Day 使用 unresolved Anchor，则阻塞该 Day 的 Detailed Generate / Update
 ```
 
 因此 Step 3 与地图解析解耦，但 Step 5 的真实日程与路线不能伪造 Anchor。
 
-## 16.2 Core Visit unresolved
+## 17.2 Core Visit unresolved
 
 ```text
 Step 3：仍可参与时间预算
@@ -733,14 +818,14 @@ must_go：阻塞相关 Detail Generate / Update
 want_to_go / optional：不能成为 Stop，可保留 unscheduled reason
 ```
 
-## 16.3 Detail Interest unresolved
+## 17.3 Detail Interest unresolved
 
 ```text
 must_go：阻塞相关 Detail Generate / Update
 want_to_go / optional：不进入 Stop，不阻塞其他可用地点
 ```
 
-## 16.4 origin unresolved
+## 17.4 origin unresolved
 
 若 origin 会成为某 Day 的真实 startAnchor：
 
@@ -751,9 +836,20 @@ Step 5 / Provider Route 前必须 resolved
 
 任何 unresolved 都不得用城市中心 / 猜测坐标伪装 resolved。
 
+UI 分级：
+
+```text
+非阻塞 unresolved → 轻量状态
+真正阻塞下一步 → 明确行动卡
+```
+
+不把 Resolution 状态机直接暴露给用户。
+
 ---
 
-# 17. Step 4：Capacity-Aware Interests
+# 18. Step 4：Capacity-Aware Interests / 补充景点（可选）
+
+Step 4 是可选增强步骤，不是必须经过一次 AI Discovery 的 gate。
 
 只有 Skeleton Ready 才允许 AI discovery。
 
@@ -764,10 +860,16 @@ Step 5 / Provider Route 前必须 resolved
 不自动批量发现
 ```
 
-唯一生成入口：
+用户可以直接：
 
 ```text
-[根据当前行程补充兴趣点]
+下一步：每日行程
+```
+
+也可以主动：
+
+```text
+帮我补充景点
 ```
 
 输入至少包含：
@@ -791,12 +893,13 @@ Skeleton Dirty 时：
 ```text
 允许浏览 / 手工编辑 / 定位
 禁止按旧容量 AI discovery
-Primary = 前往 Step 3 更新
+UI 紧凑提示路线和天数需要更新
+点击后自动切换 Step 3
 ```
 
 ---
 
-# 18. Step 5：Detailed Itinerary
+# 19. Step 5：Detailed Itinerary
 
 Step 5 负责：
 
@@ -825,7 +928,9 @@ transfer-day 结构
 requiresWorkflowStep = skeleton
 ```
 
-## 18.1 排程优先级
+用户体验：自动切换到“路线和天数”，展示需要处理的内容；不显示内部 WorkflowStep。
+
+## 19.1 排程优先级
 
 ```text
 core + must_go     → resolved 后必须安排
@@ -836,7 +941,7 @@ detail + must_go   → resolved 后必须安排
 detail + want/opt  → 按容量 / 路线 / pace 选择
 ```
 
-## 18.2 Detail Update 最小 Diff
+## 19.2 Detail Update 最小 Diff
 
 只处理 `affectedDayIds`。
 
@@ -849,11 +954,11 @@ detail + want/opt  → 按容量 / 路线 / pace 选择
 用户已确认的手工调整优先保留
 ```
 
-如果必须大改某一天，Proposal / Update Card 显示真实 Diff。
+如果必须大改某一天，Proposal / Update Card 显示用户可读 Diff，不显示内部 IDs。
 
 ---
 
-# 19. Role-Aware Impact Analyzer
+# 20. Role-Aware Impact Analyzer
 
 统一：
 
@@ -888,9 +993,11 @@ current fingerprint 改变
 
 Resolution / 坐标变化只刷新相关 Route，不改变 Macro Fingerprint。
 
+UI 不显示 analyzer / dirty / affectedDayIds，只显示翻译后的范围和下一步。
+
 ---
 
-# 20. Replan 后二次 Diff
+# 21. Replan 后二次 Diff
 
 Core Change 不直接让整趟 Detail 失效。
 
@@ -899,7 +1006,7 @@ Macro dependency change
 ↓
 derived macroDirty
 ↓
-用户主动 Step 3 Replan / Apply
+用户主动 Step 3 Replan / Save
 ↓
 Compare old/new Stay Blocks + Macro Days
 ↓
@@ -916,9 +1023,18 @@ Skeleton 结构保持
 只更新 Core 所属区域 Detail
 ```
 
+用户看到：
+
+```text
+路线和停留天数无需调整。
+只需要更新蒂阿瑙的每日安排。
+```
+
 ---
 
-# 21. Step 状态
+# 22. Step 状态
+
+内部：
 
 ```text
 Step 1
@@ -936,7 +1052,7 @@ Step 3
 → needs_confirmation
 
 Step 4
-Step 3 非 ready → 禁止 AI discovery
+Step 3 非 ready → 禁止 AI discovery，但仍可跳过页面 / 浏览已有内容
 
 Step 5
 Step 3 非 ready → 禁止 Detailed Generate / Update
@@ -951,9 +1067,22 @@ Day 继续：
 detailStatus = "ready" | "needs_review";
 ```
 
+用户态只允许：
+
+```text
+已完成
+需更新
+未开始
+处理中
+需要处理
+尚未定位
+```
+
+且状态必须配自然语言行动提示。
+
 ---
 
-# 22. Context Builder
+# 23. Context Builder
 
 建议新增：
 
@@ -986,15 +1115,17 @@ Detail Context 只窗口化相关 Day / Block，并带 sticky baseline。
 
 ---
 
-# 23. Prompt / Action 合同
+# 24. Prompt / Action 合同
 
-## 23.1 destination.generate
+## 24.1 destination.generate
 
 只生成 Planning Area + Core Visit；允许 mixed parent ref；禁止普通兴趣点。
 
-## 23.2 skeleton generate / replan
+Prompt 必须理解 Step 2 是“候选愿望清单”，不要因为总天数限制提前过度裁掉可考虑的 `want_to_go / optional`。
 
-建议成功输出：
+## 24.2 skeleton generate / replan
+
+成功输出：
 
 ```ts
 {
@@ -1024,11 +1155,11 @@ Core 不得作为 stay destination
 }
 ```
 
-## 23.3 interest.discover
+## 24.3 interest.discover
 
-只返回 detail_interest，0–9，允许 0。
+只返回 detail_interest，0–9，允许 0；Step 4 可跳过，不把“必须发现兴趣点”作为进入 Step 5 的条件。
 
-## 23.4 detail generate / update
+## 24.4 detail generate / update
 
 固定 Macro；update 只返回 affectedDayIds；遇到 Macro 问题：
 
@@ -1038,7 +1169,7 @@ requiresWorkflowStep = skeleton
 
 ---
 
-# 24. Provider / Map 边界
+# 25. Provider / Map 边界
 
 所有 Candidate：
 
@@ -1069,9 +1200,11 @@ Macro Route：Day Anchor → Anchor。
 Detail Route：真实 Stop Sequence。  
 两种 Route 互不覆盖。
 
+地图仍只展示 / 选择 / Provider 事实，不增加第二套编辑器。
+
 ---
 
-# 25. 数据库与兼容策略
+# 26. 数据库与兼容策略
 
 保持：
 
@@ -1094,9 +1227,9 @@ v3 → v4 migration
 
 ---
 
-# 26. 建议新增 / 修改代码边界
+# 27. 建议新增 / 修改代码边界
 
-重点：
+服务端重点：
 
 ```text
 apps/server/contracts-v2.ts
@@ -1137,11 +1270,15 @@ apps/web/src/ItineraryPanelV2.tsx
 apps/web/src/WorkspaceMapV2.tsx
 ```
 
+前端新增明确的“用户语言转换层”：工程状态不得直接透传为 UI 标签。
+
 ---
 
-# 27. 实施顺序
+# 28. 实施顺序
 
-正式实施前先做只读差异审查；随后遵循“先让消费者理解新数据，再让上游生产新数据”。
+正式实施前先做只读差异审查；随后遵循：
+
+> **先让消费者理解新数据，再让上游生产新数据；最后统一做复杂度下沉的 UI 集成。**
 
 ## Phase 0：Read-only Gap Review
 
@@ -1154,6 +1291,7 @@ apps/web/src/WorkspaceMapV2.tsx
 当前 Resolution readiness
 当前 100 PlanCommand 限制
 当前 UI 入口
+当前哪些工程状态会直接泄露到 UI
 ```
 
 产出逐文件差异清单。
@@ -1195,7 +1333,7 @@ repeated Planning Area
 stable stayBlockId
 arrival transfer day
 SkeletonEditDraft validation
-applySkeletonPlanV3 atomic Apply
+applySkeletonPlanV3 atomic Save
 Day ID reuse
 Macro fingerprint
 Impact Analyzer
@@ -1217,7 +1355,7 @@ stage-context-v3.test.ts
 Auckland → ... → Auckland
 must / want / optional coverage
 20 天 draft 分配校验
-90 天 Apply 不受 100 command 上限阻断
+90 天 Save 不受 100 command 上限阻断
 ```
 
 ## Phase 3：Backbone Producer
@@ -1253,8 +1391,9 @@ planner-runtime-v3-ai-actions.test.ts
 0–9 detail only
 Core duplicate prevention
 首次进入不自动 discovery
+Step 4 可跳过，不作为 Step 5 gate
 Core Step 4 只读背景
-role upgrade 只导航 Step 2
+role upgrade 走 Step 2 归属逻辑
 ```
 
 测试：
@@ -1289,22 +1428,34 @@ itinerary-impact-v3.test.ts
 planner-runtime-v3-ai-actions.test.ts
 ```
 
-## Phase 6：UI / Map Integration
+## Phase 6：UI / Map Integration + Complexity Downshift
+
+本 Phase 不只是“把五步画出来”，还必须完成用户复杂度下沉。
 
 完成：
 
 ```text
 右侧五步导航
+Step 2 文案 = 想去哪些地方 / 愿望清单
+Step 3 文案 = 路线和天数
+Step 4 标记可选并允许直接进入 Step 5
 Backbone Candidate Panel
 Step 3 时间轴 / Stay Block
-Skeleton Edit Draft + 分配计数
-原子 Apply
-Preference omitted 状态
-Update Card
-未定位前置提示
+Skeleton Edit Draft + 自然语言“还差 N 天”
+原子保存
+Preference 主 UI 只强调“必去 / 想去”
+optional 默认弱化显示，excluded 用“移除 / 不考虑”表达
+重要游览地使用自然语言，不做 planningRole 编辑器
+omitted want-to-go 用折叠原因，optional omitted 次级收纳
+Update Card 默认紧凑 + 查看原因渐进披露
+未定位按“非阻塞轻量 / 阻塞突出”分级
+requiresWorkflowStep 自动切换上下文
+工程术语不直接出现在普通 UI
 唯一业务入口
 Map role filtering
 ```
+
+Phase 6 必须额外做“普通用户不懂内部术语”验收。
 
 ## Phase 7：Docs + Verification Preparation
 
@@ -1326,9 +1477,34 @@ Browser E2E
 
 ---
 
-# 28. 必须验收的核心场景
+# 29. 必须验收的核心场景
 
-## 28.1 Preference 选择
+## 29.1 用户复杂度
+
+普通用户不理解：
+
+```text
+PlanningRole
+Macro
+Skeleton
+fingerprint
+dirty
+affectedDayIds
+Resolution
+WorkflowStep
+```
+
+仍能完整走完：
+
+```text
+旅行需求
+→ 想去哪些地方
+→ 路线和天数
+→ 可选补充景点
+→ 每日行程
+```
+
+## 29.2 Preference 选择
 
 Planning Areas：
 
@@ -1348,7 +1524,9 @@ C 可 omitted
 D 绝不能进入
 ```
 
-## 28.2 新西兰 20 天
+UI 主操作只需要“必去 / 想去”；C 默认可以无 Badge，D 通过移除 / 不考虑表达。
+
+## 29.3 新西兰 20 天
 
 ```text
 Te Anau = planning_area
@@ -1365,7 +1543,13 @@ Milford：
 Step 5 成为 Stop
 ```
 
-## 28.3 环线
+用户只看到：
+
+```text
+Milford Sound · 重要游览地 · 必去 · 预计全天
+```
+
+## 29.4 环线
 
 ```text
 Auckland #1
@@ -1373,15 +1557,15 @@ Auckland #1
 Auckland #2
 ```
 
-两个 Block 有不同稳定 `stayBlockId`，修改其中一个不默认改另一个。
+两个 Block 有不同稳定 `stayBlockId`，修改其中一个不默认改另一个；UI 不显示 ID。
 
-## 28.4 Step 3 手工分配
+## 29.5 Step 3 手工分配
 
 ```text
 Queenstown 4 → 3
 ```
 
-若总分配变 19 / 20 天：不能 Apply。
+若总分配变 19 / 20 天：不能保存；UI 只提示“还剩 1 天需要安排”并给建议。
 
 再：
 
@@ -1389,23 +1573,37 @@ Queenstown 4 → 3
 Te Anau 2 → 3
 ```
 
-总分配恢复 20 天后，才能一次原子 Apply。
+总分配恢复 20 天后，一次原子保存。
 
-## 28.5 Detail → Core
+## 29.6 Detail → Core
+
+用户不操作 role 字段，而是说：
 
 ```text
-Step 4 发起 intent
-→ Step 2 Impact Card
-→ 用户确认 role=core
-→ fingerprint 改变 / derived macroDirty
-→ Step 3 Replan
+这个地方很重要，要单独留一天
 ```
 
-## 28.6 Replan Macro 不变
+系统内部：
+
+```text
+Detail → Core
+→ Impact
+→ 用户确认
+→ fingerprint 改变
+→ Step 3 需重新确认
+```
+
+## 29.7 Replan Macro 不变
 
 更新 basis fingerprint，只使 Core 所属区域 Detail 需更新。
 
-## 28.7 Macro 天数变化
+用户看到：
+
+```text
+路线和天数无需调整，只需要更新蒂阿瑙的每日安排。
+```
+
+## 29.8 Macro 天数变化
 
 ```text
 Te Anau 2 → 3
@@ -1414,7 +1612,7 @@ Queenstown 4 → 3
 
 只影响真实 changed Day。
 
-## 28.8 unresolved
+## 29.9 unresolved
 
 ```text
 Planning Area unresolved
@@ -1429,17 +1627,56 @@ want / optional unresolved
 → 不排入 Stop，不阻塞无关 Day
 ```
 
-## 28.9 旧数据
+UI 非阻塞时轻量，阻塞时才突出。
+
+## 29.10 Step 4 可跳过
+
+用户已有足够地点：
+
+```text
+Step 3 Ready
+→ Step 4
+→ 不运行 discovery
+→ 直接 Step 5
+```
+
+必须正常生成 Detailed Itinerary。
+
+## 29.11 Update Card 渐进披露
+
+默认：
+
+```text
+蒂阿瑙需要更新
+预计影响 2 天，其他 18 天不变
+[去更新] [查看原因]
+```
+
+完整原因只在用户展开后显示。
+
+## 29.12 跨步骤自动上下文
+
+用户在 Step 5 说：
+
+```text
+蒂阿瑙再加一天
+```
+
+系统自动切换 Step 3 并展示重新分配建议；不能只回复“请去 Step 3”，也不能在 Step 5 静默 mutation。
+
+## 29.13 旧数据
 
 无 `planningRole` / `stayBlockId` / `planningState`：正常读取，不自动写回。
 
-## 28.10 长行程
+## 29.14 长行程
 
 90 天大范围 Skeleton Replan 使用 `applySkeletonPlanV3` 原子事务，不因通用 100 PlanCommand 上限失败。
 
 ---
 
-# 29. 最终架构原则
+# 30. 最终架构原则
+
+内部责任：
 
 ```text
 TripFacts          → 我想进行什么旅行？
@@ -1450,16 +1687,31 @@ Detail Interest    → 固定容量内还有什么值得去？
 Detailed Itinerary → 哪一天几点去哪里？
 ```
 
-系统必须始终表现为：
+用户心智：
 
 ```text
-上游决定结构
-下游补充细节
-preference 真正影响是否采用
-Stay Block 有稳定身份
-宏观 dirty 由 fingerprint 派生
-跨步骤返回使用 WorkflowStep
-Step 3 编辑先草稿后原子 Apply
+我想怎么玩
+→ 我想去哪些地方
+→ 这些天怎么排
+→ 要不要再补点景点
+→ 每天具体怎么玩
+```
+
+系统必须始终满足：
+
+```text
+内部复杂、用户简单
+Step 2 是愿望清单，Step 3 才是最终路线
+Step 4 可跳过
+四级 preference 留在数据层，主 UI 主要使用“必去 / 想去”
+Core Visit 保留，但不做工程化 Role 管理器
+Stay Block 有稳定身份，但 ID 不暴露
+宏观 dirty 由 fingerprint 派生，但用户只看到自然语言影响
+跨步骤返回使用 WorkflowStep，但用户体验是自动切换上下文
+Step 3 编辑先草稿后原子保存，但用户只看到“还差几天”
+Update Card 渐进披露
+未定位按阻塞程度展示
+上游决定结构，下游补充细节
 局部修改只局部失效
 地图 / 时间轴只展示与选择
 右侧控制台是唯一业务入口
