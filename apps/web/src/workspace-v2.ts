@@ -1,4 +1,4 @@
-import type { CandidatePreference, DayRoute, Place, PlaceResolution, RouteState, TripCandidate, Workspace } from "./v2-types";
+import type { CandidatePreference, DayRoute, Place, PlaceResolution, PlanningRole, RouteState, TripCandidate, Workspace } from "./v2-types";
 
 export type CandidateFilter = "all" | CandidatePreference | "unresolved";
 export type CandidateRow = { candidate: TripCandidate; place: Place; resolution: PlaceResolution | null };
@@ -15,6 +15,18 @@ export function candidateRows(workspace: Workspace): CandidateRow[] {
   }).sort((left, right) => preferenceOrder[left.candidate.preference] - preferenceOrder[right.candidate.preference]
     || (right.candidate.aiScore ?? -1) - (left.candidate.aiScore ?? -1)
     || left.place.nameZh.localeCompare(right.place.nameZh, "zh-CN"));
+}
+
+export function effectiveCandidatePlanningRole(row: CandidateRow): PlanningRole {
+  return row.candidate.planningRole ?? (row.place.kind === "city" ? "planning_area" : "detail_interest");
+}
+
+export function step4DetailRows(rows: CandidateRow[]) {
+  return rows.filter((row) => effectiveCandidatePlanningRole(row) === "detail_interest");
+}
+
+export function step4CoreRows(rows: CandidateRow[]) {
+  return rows.filter((row) => effectiveCandidatePlanningRole(row) === "core_visit");
 }
 
 const normalizeArea = (value: string | null | undefined) => (value ?? "")
