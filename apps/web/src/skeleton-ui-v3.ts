@@ -34,8 +34,8 @@ export function skeletonDayBalanceV3(plan: TravelPlanDocument, draft: SkeletonEd
     totalDays,
     allocatedDays,
     remainingDays,
-    canSave: totalDays !== null && remainingDays === 0 && draft.stays.length > 0,
-    message: totalDays === null
+    canSave: remainingDays === 0 && draft.stays.length > 0,
+    message: remainingDays === null
       ? "请先在旅行需求中确认总天数"
       : remainingDays === 0
         ? "已分配完整"
