@@ -11,6 +11,7 @@ import type { LoadedPromptRegistryV3 } from "./prompt-registry-v3.js";
 import type { PlaceResolverV2 } from "./place-resolver-v2.js";
 import type { DayRouteServiceV2 } from "./day-route-v2.js";
 import { TravelPlanDocumentSchema, type TravelPlanDocument } from "./contracts-v2.js";
+import { computeMacroDependencyFingerprintV3 } from "./planning-state-v3.js";
 
 const roots: string[] = [];
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
@@ -50,6 +51,7 @@ function runtime(store: TravelStoreV3, startAction: (input: any) => Promise<any>
   } as unknown as PlaceResolverV2;
   const routes = {
     workspaceRouteState: () => [],
+    workspaceMacroRouteState: () => [],
     recalculate: async () => { throw new Error("route not expected"); },
   } as unknown as DayRouteServiceV2;
   return new TravelPlannerRuntimeV3({
@@ -64,31 +66,47 @@ function runtime(store: TravelStoreV3, startAction: (input: any) => Promise<any>
 }
 
 function macroPlan(base: TravelPlanDocument, count: number) {
+  const places = Array.from({ length: count }, (_, index) => ({
+    id: `place-m${index + 1}`,
+    nameZh: `目的地${index + 1}`,
+    nameLocal: null,
+    nameEn: `Macro ${index + 1}`,
+    kind: "city" as const,
+    city: `Macro ${index + 1}`,
+    region: null,
+    country: "Test",
+    countryCode: "TT",
+    approximate: false,
+  }));
+  const candidates = Array.from({ length: count }, (_, index) => ({
+    id: `macro-${index + 1}`,
+    placeId: `place-m${index + 1}`,
+    planningAreaCandidateId: null,
+    planningRole: "planning_area" as const,
+    preference: "optional" as const,
+    source: "ai" as const,
+    aiReason: null,
+    aiScore: 80,
+    suggestedDurationMinutes: 1440,
+    tags: [],
+  }));
+  const days = Array.from({ length: count }, (_, index) => ({
+    id: `day-${index + 1}`,
+    dayNumber: index + 1,
+    date: null,
+    title: `目的地${index + 1}`,
+    stayBlockId: `block-${index + 1}`,
+    transferMode: "none" as const,
+    detailLevel: "planned" as const,
+    detailStatus: null,
+    startAnchor: { id: `start-${index + 1}`, placeId: `place-m${index + 1}`, label: null, notes: null },
+    stops: [],
+    endAnchor: { id: `end-${index + 1}`, placeId: `place-m${index + 1}`, label: null, notes: null },
+  }));
+  const prepared = TravelPlanDocumentSchema.parse({ ...base, stage: "itinerary_planning", places, candidates, days });
   return TravelPlanDocumentSchema.parse({
-    ...base,
-    places: Array.from({ length: count }, (_, index) => ({
-      id: `place-m${index + 1}`,
-      nameZh: `目的地${index + 1}`,
-      nameLocal: null,
-      nameEn: `Macro ${index + 1}`,
-      kind: "city" as const,
-      city: `Macro ${index + 1}`,
-      region: null,
-      country: "Test",
-      countryCode: "TT",
-      approximate: false,
-    })),
-    candidates: Array.from({ length: count }, (_, index) => ({
-      id: `macro-${index + 1}`,
-      placeId: `place-m${index + 1}`,
-      planningAreaCandidateId: null,
-      preference: "optional" as const,
-      source: "ai" as const,
-      aiReason: null,
-      aiScore: 80,
-      suggestedDurationMinutes: 1440,
-      tags: [],
-    })),
+    ...prepared,
+    planningState: { macroBasisVersion: 1, macroBasisFingerprint: computeMacroDependencyFingerprintV3(prepared) },
   });
 }
 
