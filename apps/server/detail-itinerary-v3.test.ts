@@ -62,9 +62,10 @@ describe("Phase 5 detailed itinerary policy", () => {
     expect(unchanged.days.find((day) => day.id === "day-b")?.stops).toEqual([]);
   });
 
-  it("requires a reason when a want-to-go Core Visit is not scheduled", () => {
+  it("requires a reason only for an available want-to-go Core Visit that is not scheduled", () => {
     const source = plan();
     expect(() => validateDetailedSchedulingOutcomeV3(source, [], ["day-a"])).toThrow(/想去的重要游览地/);
+    expect(() => validateDetailedSchedulingOutcomeV3(source, [], ["day-a"], ["want-a"])).not.toThrow();
     expect(() => validateDetailedSchedulingOutcomeV3(source, [{ candidateId: "want-a", reason: "当天已有两处必去，继续加入会超过轻松节奏容量。" }], ["day-a"])).not.toThrow();
     expect(() => validateDetailedSchedulingOutcomeV3(source, [{ candidateId: "core-a", reason: "放不下" }], ["day-a"])).toThrow(/必去地点不得作为未安排结果/);
   });
