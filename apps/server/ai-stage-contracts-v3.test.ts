@@ -107,8 +107,12 @@ describe("WorkflowStep remains separate from persisted ConversationStage", () =>
   it("assigns Skeleton generate/replan to destinations while Detail actions stay in itinerary", () => {
     expect(actionRegistration("itinerary.generate").stage).toBe("destinations");
     expect(actionRegistration("itinerary.replan").stage).toBe("destinations");
-    expect(promptRegistration("action.itinerary.generate").stage).toBe("destinations");
-    expect(promptRegistration("action.itinerary.replan").stage).toBe("destinations");
+    const generatePrompt = promptRegistration("action.itinerary.generate");
+    const replanPrompt = promptRegistration("action.itinerary.replan");
+    expect(generatePrompt.kind).toBe("action");
+    expect(replanPrompt.kind).toBe("action");
+    if (generatePrompt.kind === "action") expect(generatePrompt.stage).toBe("destinations");
+    if (replanPrompt.kind === "action") expect(replanPrompt.stage).toBe("destinations");
     expect(actionRegistration("itinerary.detail.generate").stage).toBe("itinerary");
     expect(actionRegistration("itinerary.detail.update").stage).toBe("itinerary");
   });
