@@ -2,7 +2,7 @@
 
 本地优先、Candidate-first 的 AI 可视化旅行规划工作台。
 
-> 2026-09-02：五步产品、架构与用户复杂度下沉规则已经完成文档设计，**对应代码尚未实施**。实际代码状态见 `docs/IMPLEMENTATION_STATUS.md`。
+> 2026-09-03：五步规划重构 **Phase 1–6 已完成实施并逐阶段通过独立 Codex Gate**；当前处于 Phase 7 最终综合回归交接，尚未在最终回归 PASS 前宣称本专项完成。实际状态见 `docs/IMPLEMENTATION_STATUS.md`。
 
 核心产品流程：
 
@@ -146,7 +146,7 @@ interests
 itinerary
 ```
 
-未来五步映射：
+当前五步映射：
 
 ```text
 requirements → requirements
@@ -189,6 +189,21 @@ Detailed Update 应以当前已保存 Day 为 sticky baseline，尽量保留现�
 ```
 
 Update Card 默认保持简洁，需要时再展开原因。
+
+## 当前实施状态
+
+Phase 1–6 已按正式施工图完成并分别通过独立 Codex Gate：
+
+```text
+Phase 1 Role + Contract Foundation             PASS
+Phase 2 Skeleton + Impact Consumer Foundation PASS
+Phase 3 Backbone Producer                     PASS
+Phase 4 Capacity-Aware Interests              PASS
+Phase 5 Detailed Itinerary                    PASS
+Phase 6 UI / Map + Complexity Downshift       PASS
+```
+
+当前只剩 Phase 7 最终综合回归。最终回归需要重新执行 targeted tests、typecheck、full test、build，并在安全隔离条件下做 Browser E2E；真实 AI smoke 仅在环境已有合法 AI 配置和现有 smoke 方法时执行。最终回归未 PASS 前，不把本专项标记为“全部完成”。
 
 ## 开发运行
 
@@ -234,7 +249,7 @@ private_data/travel-v2.sqlite3
 PRAGMA user_version = 3
 ```
 
-五步设计不因为 UI Workflow 变成五步而新增第五数据库 ConversationStage，也不要求为此提升数据库版本。
+五步 Workflow 不因为用户流程变成五步而新增第五数据库 ConversationStage，也不要求为此提升数据库版本。
 
 公共地图缓存：
 
@@ -249,9 +264,9 @@ private_data/public-data-cache.sqlite3
 `docs/` 只保留当前必须读取的文档：
 
 - 产品总纲：[`docs/PRODUCT_PLAN.md`](docs/PRODUCT_PLAN.md)
-- 当前正式施工图：[`docs/TravelPlanner 五步规划流程重构实施方案.md`](docs/TravelPlanner%20五步规划流程重构实施方案.md)
+- 当前正式施工图与最终验收依据：[`docs/TravelPlanner 五步规划流程重构实施方案.md`](docs/TravelPlanner%20五步规划流程重构实施方案.md)
 - UI 设计规范：[`docs/五步 UI 交互规范.md`](docs/五步%20UI%20交互规范.md)
-- 当前实施状态 / 下一步入口：[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md)
+- 当前实施状态 / 最终回归入口：[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md)
 - 文档索引：[`docs/README.md`](docs/README.md)
 
 已完成、已被取代或仅用于历史解释的专项方案不继续保留在 `docs/`；历史追溯使用 Git history。
