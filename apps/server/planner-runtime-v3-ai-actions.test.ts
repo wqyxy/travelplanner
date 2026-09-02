@@ -12,6 +12,7 @@ import type { PlaceResolverV2 } from "./place-resolver-v2.js";
 import { placeGeoFingerprint } from "./place-resolver-v2.js";
 import type { DayRouteServiceV2 } from "./day-route-v2.js";
 import { TravelPlanDocumentSchema, type Day, type PlaceResolution, type TravelPlanDocument } from "./contracts-v2.js";
+import { computeMacroDependencyFingerprintV3 } from "./planning-state-v3.js";
 
 const roots: string[] = [];
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
@@ -49,6 +50,19 @@ function macroPlan(base: TravelPlanDocument) {
       { id: "macro-2", placeId: "place-m2", planningAreaCandidateId: null, planningRole: "planning_area", preference: "optional", source: "ai", aiReason: null, aiScore: 80, suggestedDurationMinutes: 1440, tags: [] },
     ],
   });
+}
+
+function readyMacroPlan(base: TravelPlanDocument) {
+  const macro = macroPlan(base);
+  const staged = TravelPlanDocumentSchema.parse({
+    ...macro,
+    days: [
+      { id: "day-m1", stayBlockId: "block-m1", dayNumber: 1, date: null, title: "目的地一", transferMode: "none", detailLevel: "planned", detailStatus: null, startAnchor: { id: "start-m1", placeId: "place-m1", label: "目的地一", notes: null }, stops: [], endAnchor: { id: "end-m1", placeId: "place-m1", label: "目的地一", notes: null } },
+      { id: "day-m2", stayBlockId: "block-m2", dayNumber: 2, date: null, title: "目的地二", transferMode: "rail", detailLevel: "planned", detailStatus: null, startAnchor: { id: "start-m2", placeId: "place-m1", label: "目的地一", notes: null }, stops: [], endAnchor: { id: "end-m2", placeId: "place-m2", label: "目的地二", notes: null } },
+    ],
+    planningState: { macroBasisVersion: 1, macroBasisFingerprint: null },
+  });
+  return TravelPlanDocumentSchema.parse({ ...staged, planningState: { macroBasisVersion: 1, macroBasisFingerprint: computeMacroDependencyFingerprintV3(staged) } });
 }
 
 function backbonePlan(base: TravelPlanDocument) {
@@ -117,7 +131,7 @@ function mixedBackboneOutput(baseGeneration: number) {
 
 describe("TravelPlannerRuntimeV3 AI action regressions", () => {
   it("runs interest discovery exactly once per Macro and stop interrupts the current child run", async () => {
-    const store = db(); const trip = store.createTrip(); store.writePlan(trip.id, macroPlan(trip.plan), 0, { source: "test", summary: "macro fixture" });
+    const store = db(); const trip = store.createTrip(); store.writePlan(trip.id, readyMacroPlan(trip.plan), 0, { source: "test", summary: "confirmed skeleton fixture" });
     const calls: any[] = []; let rejectSecond!: (error: Error) => void; let interrupted = 0;
     const rt = runtime(store, async (input) => {
       calls.push(input.state);
