@@ -20,7 +20,21 @@
 
 > 产品最终应该是什么？
 
-定义五步产品流程、Planning Area / Core Visit / Detail Interest、preference 语义、右侧唯一控制台、Stay Block、增量更新、未定位和 Provider 边界。
+当前用户流程：
+
+```text
+1 旅行需求
+2 想去哪些地方
+3 路线和天数
+4 补充景点（可选）
+5 每日行程
+```
+
+产品最高原则之一：
+
+> **内部模型可以复杂，但普通用户不需要理解工程状态和术语。**
+
+包含 Planning Area / Core Visit / Detail Interest、preference 语义、右侧唯一控制台、Stay Block、增量更新、未定位和 Provider 边界。
 
 ## 2. 当前正式设计 / 下一步施工图
 
@@ -41,13 +55,14 @@ must / want / optional / excluded 的 Skeleton 语义
 重复 Planning Area / 环线
 移动日计入到达 Stay Block
 requiresWorkflowStep
-Step 3 SkeletonEditDraft + 原子 Apply
+Step 3 SkeletonEditDraft + 原子保存
 Macro fingerprint + 派生 macroDirty
 Planning Area / Core / Detail unresolved readiness
-capacity-aware interests
+Step 4 capacity-aware interests 且可跳过
 patch-only Detailed update
 applySkeletonPlanV3 避免 100 PlanCommand 上限
 Phase 0–7 实施顺序
+Phase 6 必须完成 Complexity Downshift
 ```
 
 ## 3. UI 设计规范
@@ -58,7 +73,19 @@ Phase 0–7 实施顺序
 
 > 用户实际怎么操作？
 
-定义唯一业务入口、五步导航、Preference UX、Stay Block 时间轴、Step 3 草稿编辑、Update Card、未定位提示和局部更新体验。
+重点规则：
+
+```text
+Step 2 是愿望清单，Step 3 才是最终路线
+Step 4 明确可选
+四级 preference 留在数据层，主 UI 主要操作“必去 / 想去”
+重要游览地保留，但不做 planningRole 编辑器
+Step 3 只告诉用户“还差 N 天”，不暴露 Draft / canonical 等术语
+Update Card 默认紧凑、原因按需展开
+跨步骤请求自动切换到正确工作区
+未定位按是否真正阻塞分级展示
+地图 / 时间轴仍只展示和选择
+```
 
 ## 4. 当前实施状态 / 下一步入口
 
@@ -73,6 +100,7 @@ Phase 0–7 实施顺序
 ```text
 五步产品设计：已确认
 五步 UI 设计：已确认
+用户复杂度下沉规则：已确认
 五步施工合同：已确认
 五步代码：尚未实施
 ```
@@ -139,10 +167,11 @@ Skeleton preference coverage
 requiresWorkflowStep
 Macro fingerprint
 Resolution readiness
-Skeleton atomic Apply
+Skeleton atomic Save
 Impact Analyzer
 Action ownership
 UI ownership
+工程状态是否直接暴露给用户
 ```
 
 确认 gap 后才进入正式修改。
