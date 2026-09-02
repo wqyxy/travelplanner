@@ -21,7 +21,7 @@ import type { TravelStoreV2, TripDetailV2 } from "./travel-store-v2.js";
 
 export type CandidateDiscoveryApplyResult = {
   plan: TravelPlanDocument;
-  output: CandidateDiscoveryOutput;
+  output: CandidateDiscoveryOutput | DestinationGenerateOutput;
   idMappings: Record<string, string>;
   addedCandidateIds: string[];
   updatedCandidateIds: string[];
@@ -222,7 +222,23 @@ export function applyBackboneDiscoveryV3(current: TravelPlanDocument, value: unk
   };
 }
 
+function normalizedBackboneInput(value: unknown): DestinationGenerateOutput | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.candidates) || !record.candidates.length) return null;
+  const candidates = record.candidates as Array<Record<string, unknown>>;
+  if (!candidates.every((candidate) => candidate.planningRole === "planning_area" || candidate.planningRole === "core_visit")) return null;
+  return DestinationGenerateOutputSchema.parse({
+    ...record,
+    schemaVersion: 2,
+    candidates: candidates.map(({ planningAreaCandidateId: _legacyParent, ...candidate }) => candidate),
+  });
+}
+
 export function applyCandidateDiscovery(current: TravelPlanDocument, value: unknown): CandidateDiscoveryApplyResult {
+  const backbone = normalizedBackboneInput(value);
+  if (backbone) return applyBackboneDiscoveryV3(current, backbone);
+
   const output = CandidateDiscoveryOutputSchema.parse(value);
   const plan = clone(current);
   const idMappings = new Map<string, string>();
