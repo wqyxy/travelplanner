@@ -4,7 +4,8 @@ import "./styles.css";
 import "./v3-fixes.css";
 import "./workspace-v4.css";
 import "./stage-ai-v3.css";
-import AppV3 from "./AppV3";
+import "./phase6-workflow.css";
+import AppWorkflowV3 from "./AppWorkflowV3";
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
   state = { error: null as string | null };
@@ -17,4 +18,4 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, { error: strin
   }
 }
 
-createRoot(document.getElementById("root")!).render(<StrictMode><AppErrorBoundary><AppV3/></AppErrorBoundary></StrictMode>);
+createRoot(document.getElementById("root")!).render(<StrictMode><AppErrorBoundary><AppWorkflowV3/></AppErrorBoundary></StrictMode>);
