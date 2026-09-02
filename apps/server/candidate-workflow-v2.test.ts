@@ -2,8 +2,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { emptyTravelPlan, type MacroCandidateDiscoveryOutput, type PlanGenerationOutput, type TravelPlanDocument } from "./contracts-v2.js";
-import { applyCandidateDiscovery, applyCandidateDiscoveryToStore, applyPlanGeneration, applyPlanGenerationToStore } from "./candidate-workflow-v2.js";
+import { emptyTravelPlan, TravelPlanDocumentSchema, type MacroCandidateDiscoveryOutput, type PlanGenerationOutput, type TravelPlanDocument } from "./contracts-v2.js";
+import { applyBackboneDiscoveryV3, applyCandidateDiscovery, applyCandidateDiscoveryToStore, applyPlanGeneration, applyPlanGenerationToStore } from "./candidate-workflow-v2.js";
+import type { DestinationGenerateOutput } from "./ai-action-contracts-v3.js";
 import { TravelStoreV2 } from "./travel-store-v2.js";
 
 const roots: string[] = [];
@@ -53,6 +54,38 @@ function generationOutput(plan: TravelPlanDocument, generation = 1): PlanGenerat
   };
 }
 
+function mixedBackboneOutput(): DestinationGenerateOutput {
+  return {
+    schemaVersion: 2,
+    baseGeneration: 0,
+    assistantMessage: "加入蒂阿瑙和米尔福德峡湾。",
+    places: [
+      { id: "tmp-te-anau", nameZh: "蒂阿瑙", nameLocal: null, nameEn: "Te Anau", kind: "city", city: "Te Anau", region: "Southland", country: "New Zealand", countryCode: "NZ", approximate: false },
+      { id: "tmp-milford", nameZh: "米尔福德峡湾", nameLocal: null, nameEn: "Milford Sound", kind: "attraction", city: null, region: "Southland", country: "New Zealand", countryCode: "NZ", approximate: false },
+    ],
+    candidates: [
+      { temporaryId: "tmp-area", placeTemporaryId: "tmp-te-anau", planningRole: "planning_area", parentCandidateRef: null, aiReason: "峡湾地区常用住宿基地", aiScore: 94, suggestedDurationMinutes: null, tags: ["住宿基地"], defaultPreference: "optional" },
+      { temporaryId: "tmp-core", placeTemporaryId: "tmp-milford", planningRole: "core_visit", parentCandidateRef: { type: "generated", temporaryCandidateId: "tmp-area" }, aiReason: "显著影响全天容量的重要游览地", aiScore: 99, suggestedDurationMinutes: 480, tags: ["峡湾"], defaultPreference: "optional" },
+    ],
+  };
+}
+
+function existingBackbonePlan() {
+  return TravelPlanDocumentSchema.parse({
+    ...emptyTravelPlan(),
+    places: [
+      { id: "place-area-a", nameZh: "蒂阿瑙", nameLocal: null, nameEn: "Te Anau", kind: "city", city: "Te Anau", region: "Southland", country: "New Zealand", countryCode: "NZ", approximate: false },
+      { id: "place-area-b", nameZh: "皇后镇", nameLocal: null, nameEn: "Queenstown", kind: "city", city: "Queenstown", region: "Otago", country: "New Zealand", countryCode: "NZ", approximate: false },
+      { id: "place-core", nameZh: "米尔福德峡湾", nameLocal: null, nameEn: "Milford Sound", kind: "attraction", city: null, region: "Southland", country: "New Zealand", countryCode: "NZ", approximate: false },
+    ],
+    candidates: [
+      { id: "area-a", placeId: "place-area-a", planningAreaCandidateId: null, planningRole: "planning_area", preference: "want_to_go", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: null, tags: [] },
+      { id: "area-b", placeId: "place-area-b", planningAreaCandidateId: null, planningRole: "planning_area", preference: "optional", source: "ai", aiReason: "备选", aiScore: 70, suggestedDurationMinutes: null, tags: [] },
+      { id: "detail-milford", placeId: "place-core", planningAreaCandidateId: "area-a", planningRole: "detail_interest", preference: "must_go", source: "user", aiReason: "用户已加入", aiScore: null, suggestedDurationMinutes: 360, tags: ["自然"] },
+    ],
+  });
+}
+
 describe("Candidate discovery", () => {
   it("assigns formal server IDs and defaults every discovered Candidate to optional", () => {
     const result = applyCandidateDiscovery(emptyTravelPlan(), discovery());
@@ -89,6 +122,79 @@ describe("Candidate discovery", () => {
     expect(result.trip.plan.candidates).toHaveLength(2);
     expect(() => applyCandidateDiscoveryToStore(store, trip.id, discovery(0))).toThrow("CONTENT_GENERATION_SUPERSEDED");
     store.close();
+  });
+});
+
+describe("Phase 3 Backbone discovery", () => {
+  it("formalizes Planning Areas first and resolves generated parent refs for Core Visits", () => {
+    const result = applyBackboneDiscoveryV3(emptyTravelPlan(), mixedBackboneOutput());
+    const areaId = result.idMappings["tmp-area"];
+    const coreId = result.idMappings["tmp-core"];
+    const area = result.plan.candidates.find((candidate) => candidate.id === areaId)!;
+    const core = result.plan.candidates.find((candidate) => candidate.id === coreId)!;
+
+    expect(area).toMatchObject({ planningRole: "planning_area", planningAreaCandidateId: null, preference: "optional" });
+    expect(core).toMatchObject({ planningRole: "core_visit", planningAreaCandidateId: area.id, preference: "optional" });
+    expect(area.placeId).toBe(result.idMappings["tmp-te-anau"]);
+    expect(core.placeId).toBe(result.idMappings["tmp-milford"]);
+    expect(core.planningAreaCandidateId).not.toBe("tmp-area");
+  });
+
+  it("upgrades an existing Detail Interest to Core while preserving preference and source", () => {
+    const current = existingBackbonePlan();
+    const result = applyBackboneDiscoveryV3(current, {
+      schemaVersion: 2,
+      baseGeneration: 0,
+      assistantMessage: "将米尔福德峡湾识别为重要游览地。",
+      places: [{ id: "tmp-milford", nameZh: "米尔福德峡湾", nameLocal: null, nameEn: "Milford Sound", kind: "attraction", city: null, region: "Southland", country: "New Zealand", countryCode: "NZ", approximate: false }],
+      candidates: [{ temporaryId: "tmp-core", placeTemporaryId: "tmp-milford", planningRole: "core_visit", parentCandidateRef: { type: "existing", candidateId: "area-a" }, aiReason: "需要预留大半天", aiScore: 95, suggestedDurationMinutes: 480, tags: ["峡湾"], defaultPreference: "optional" }],
+    });
+    const upgraded = result.plan.candidates.find((candidate) => candidate.id === "detail-milford")!;
+    expect(result.idMappings["tmp-core"]).toBe("detail-milford");
+    expect(upgraded).toMatchObject({ planningRole: "core_visit", planningAreaCandidateId: "area-a", preference: "must_go", source: "user" });
+    expect(result.updatedCandidateIds).toContain("detail-milford");
+  });
+
+  it("never silently downgrades an existing Core when ordinary discovery sees the same Place", () => {
+    const upgraded = applyBackboneDiscoveryV3(existingBackbonePlan(), {
+      schemaVersion: 2,
+      baseGeneration: 0,
+      assistantMessage: "升级 Core。",
+      places: [{ id: "tmp-milford", nameZh: "米尔福德峡湾", nameLocal: null, nameEn: "Milford Sound", kind: "attraction", city: null, region: "Southland", country: "New Zealand", countryCode: "NZ", approximate: false }],
+      candidates: [{ temporaryId: "tmp-core", placeTemporaryId: "tmp-milford", planningRole: "core_visit", parentCandidateRef: { type: "existing", candidateId: "area-a" }, aiReason: "重要", aiScore: 95, suggestedDurationMinutes: 480, tags: [], defaultPreference: "optional" }],
+    }).plan;
+
+    const rediscovered = applyCandidateDiscovery(upgraded, {
+      schemaVersion: 1,
+      baseGeneration: 1,
+      assistantMessage: "普通兴趣点研究再次遇到同一地点。",
+      places: [{ id: "tmp-detail", nameZh: "米尔福德峡湾", nameLocal: null, nameEn: "Milford Sound", kind: "attraction", city: null, region: "Southland", country: "New Zealand", countryCode: "NZ", approximate: false }],
+      candidates: [{ temporaryId: "tmp-detail-candidate", placeTemporaryId: "tmp-detail", planningAreaCandidateId: "area-a", aiReason: "再次发现", aiScore: 80, suggestedDurationMinutes: 360, tags: [], defaultPreference: "optional" }],
+    });
+    expect(rediscovered.plan.candidates.find((candidate) => candidate.id === "detail-milford")?.planningRole).toBe("core_visit");
+  });
+
+  it("rejects silent Core reparenting when a semantic duplicate belongs to another Planning Area", () => {
+    expect(() => applyBackboneDiscoveryV3(existingBackbonePlan(), {
+      schemaVersion: 2,
+      baseGeneration: 0,
+      assistantMessage: "错误地尝试改父级。",
+      places: [{ id: "tmp-milford", nameZh: "米尔福德峡湾", nameLocal: null, nameEn: "Milford Sound", kind: "attraction", city: null, region: "Southland", country: "New Zealand", countryCode: "NZ", approximate: false }],
+      candidates: [{ temporaryId: "tmp-core", placeTemporaryId: "tmp-milford", planningRole: "core_visit", parentCandidateRef: { type: "existing", candidateId: "area-b" }, aiReason: "错误父级", aiScore: 99, suggestedDurationMinutes: 480, tags: [], defaultPreference: "optional" }],
+    })).toThrow(/reparent/);
+  });
+
+  it("preserves an existing Planning Area preference when discovery returns the same semantic Place", () => {
+    const current = existingBackbonePlan();
+    const result = applyBackboneDiscoveryV3(current, {
+      schemaVersion: 2,
+      baseGeneration: 0,
+      assistantMessage: "再次研究蒂阿瑙。",
+      places: [{ id: "tmp-area", nameZh: "蒂阿瑙", nameLocal: null, nameEn: "Te Anau", kind: "city", city: "Te Anau", region: "Southland", country: "New Zealand", countryCode: "NZ", approximate: false }],
+      candidates: [{ temporaryId: "tmp-area-candidate", placeTemporaryId: "tmp-area", planningRole: "planning_area", parentCandidateRef: null, aiReason: "仍然适合作为基地", aiScore: 98, suggestedDurationMinutes: null, tags: [], defaultPreference: "optional" }],
+    });
+    expect(result.idMappings["tmp-area-candidate"]).toBe("area-a");
+    expect(result.plan.candidates.find((candidate) => candidate.id === "area-a")).toMatchObject({ preference: "want_to_go", source: "user" });
   });
 });
 
