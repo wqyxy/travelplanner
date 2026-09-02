@@ -1,12 +1,12 @@
 # TravelPlanner 文档索引
 
-> 更新日期：2026-09-02
+> 更新日期：2026-09-03
 
-`docs/` 只保留当前开发真正需要读取的文档。
+`docs/` 只保留当前开发、验收和交接真正需要读取的文档。
 
 原则：
 
-> 已完成、已被替代、仅用于历史解释或旧验收的文档不长期保留；历史追溯使用 Git history。
+> 已完成、已被替代、仅用于历史解释或旧验收的专项文档不长期堆积；历史追溯使用 Git history。
 
 ---
 
@@ -36,17 +36,17 @@
 
 包含 Planning Area / Core Visit / Detail Interest、preference 语义、右侧唯一控制台、Stay Block、增量更新、未定位和 Provider 边界。
 
-## 2. 当前正式设计 / 下一步施工图
+## 2. 正式实施 / 验收施工图
 
 [`TravelPlanner 五步规划流程重构实施方案.md`](./TravelPlanner%20五步规划流程重构实施方案.md)
 
 回答：
 
-> 下一步具体怎么改？
+> 五步重构按什么合同实施和验收？
 
-这是当前最高优先级实施依据。
+这是当前最高优先级专项验收依据。
 
-已经最终定死：
+已经实施并在 Phase 1–6 逐阶段 Gate 中验证的核心合同包括：
 
 ```text
 PlanningRole
@@ -61,9 +61,10 @@ Planning Area / Core / Detail unresolved readiness
 Step 4 capacity-aware interests 且可跳过
 patch-only Detailed update
 applySkeletonPlanV3 避免 100 PlanCommand 上限
-Phase 0–7 实施顺序
-Phase 6 必须完成 Complexity Downshift
+Phase 6 Complexity Downshift / Map ownership
 ```
+
+当前 Phase 7 仍需按该施工图执行最终综合回归。
 
 ## 3. UI 设计规范
 
@@ -87,33 +88,38 @@ Update Card 默认紧凑、原因按需展开
 地图 / 时间轴仍只展示和选择
 ```
 
-## 4. 当前实施状态 / 下一步入口
+Phase 6 Browser Gate 已验证 mounted UI 符合这些主要交互合同；最终综合回归仍需再次覆盖关键场景。
+
+## 4. 当前实施状态 / 最终回归入口
 
 [`IMPLEMENTATION_STATUS.md`](./IMPLEMENTATION_STATUS.md)
 
 回答：
 
-> 现在代码做到哪里，下一次开始开发先做什么？
+> 现在代码做到哪里，下一步应该做什么？
 
 当前结论：
 
 ```text
-五步产品设计：已确认
-五步 UI 设计：已确认
-用户复杂度下沉规则：已确认
-五步施工合同：已确认
-五步代码：尚未实施
+Phase 0 Gap Review：DONE
+Phase 1：PASS
+Phase 2：PASS
+Phase 3：PASS
+Phase 4：PASS
+Phase 5：PASS
+Phase 6：PASS
+Phase 7：最终综合回归交接中
 ```
 
-下一次用户明确要求开始实施时：
+当前不能直接宣称专项最终完成。
+
+下一步固定为：
 
 ```text
-先执行 Phase 0 只读代码差异 review
-→ 输出逐文件 gap list
-→ 再进入 Phase 1
+由 Codex 对当前 feature branch 做最终综合回归
+→ PASS / FAIL / BLOCKED
+→ 用户根据报告决定是否修复、合并或结束专项
 ```
-
-不能直接跳过 Phase 0 修改代码。
 
 ---
 
@@ -136,42 +142,40 @@ PRODUCT_PLAN
 = 产品是什么
 
 五步实施方案
-= 下一步如何实现
+= 五步重构合同、Phase Gate 与最终验收范围
 
 五步 UI 规范
 = 用户如何操作
 
 IMPLEMENTATION_STATUS
-= 当前代码实际上做到哪里
+= 当前代码实际上做到哪里、当前 Gate 是什么
 ```
+
+设计文档头部如果仍带有 2026-09-02 设计冻结时的“尚未实施”历史描述，不再作为实时状态判断依据；实时状态以 `IMPLEMENTATION_STATUS.md` 为准。
 
 ---
 
 # 当前下一步
 
-目前不要实施代码。
+不要继续增加产品功能，也不要直接合并 `main`。
 
-用户之后明确要求“开始实施”时，第一步固定为：
-
-```text
-Phase 0：只读 review 当前代码与五步施工图差异
-```
-
-重点检查：
+当前唯一下一步：
 
 ```text
-schema / contracts
-PlanningRole
-Stay Block / Day
-Skeleton preference coverage
-requiresWorkflowStep
-Macro fingerprint
-Resolution readiness
-Skeleton atomic Save
-Impact Analyzer
-Action ownership
-UI ownership
-工程状态是否直接暴露给用户
+Phase 7 Final Codex Regression
 ```
 
-确认 gap 后才进入正式修改。
+至少重新验证：
+
+```text
+git diff --check
+Phase 1–6 targeted tests 的必要并集
+web/server typecheck
+full Vitest
+build
+isolated Browser E2E
+真实 AI smoke（仅环境和现有项目方法允许时）
+第 29 节全部核心业务场景
+```
+
+发现失败先报告，不自动修复；由用户决定回到对应 Phase。
