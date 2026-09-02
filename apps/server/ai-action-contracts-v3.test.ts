@@ -71,17 +71,19 @@ describe("V3 action contracts", () => {
     expect(result.success).toBe(false);
   });
 
-  it("keeps step four macro-only", () => {
+  it("uses Stay Blocks, allows repeated Planning Areas, and forbids detailed Stops in Skeleton output", () => {
     expect(ItineraryGenerateOutputSchema.safeParse({
       schemaVersion: 2,
       baseGeneration: 0,
       result: {
         type: "success",
-        assistantMessage: "骨架完成",
-        destinations: [
-          { destinationCandidateId: "macro-a", stayDays: 2, transferMode: "none" },
-          { destinationCandidateId: "macro-b", stayDays: 3, transferMode: "drive" },
+        assistantMessage: "路线和天数完成",
+        stays: [
+          { planningAreaCandidateId: "macro-a", stayDays: 1, transferModeFromPrevious: "none" },
+          { planningAreaCandidateId: "macro-b", stayDays: 2, transferModeFromPrevious: "drive" },
+          { planningAreaCandidateId: "macro-a", stayDays: 2, transferModeFromPrevious: "drive" },
         ],
+        omittedPlanningAreas: [{ candidateId: "macro-c", reason: "可选区域本轮不采用" }],
       },
     }).success).toBe(true);
 
@@ -91,7 +93,18 @@ describe("V3 action contracts", () => {
       result: {
         type: "success",
         assistantMessage: "越界安排兴趣点",
-        destinations: [{ destinationCandidateId: "macro-a", stayDays: 5, transferMode: "none", stops: [{ candidateId: "micro-a" }] }],
+        stays: [{ planningAreaCandidateId: "macro-a", stayDays: 5, transferModeFromPrevious: "none", stops: [{ candidateId: "micro-a" }] }],
+        omittedPlanningAreas: [],
+      },
+    }).success).toBe(false);
+
+    expect(ItineraryGenerateOutputSchema.safeParse({
+      schemaVersion: 2,
+      baseGeneration: 0,
+      result: {
+        type: "success",
+        assistantMessage: "旧格式",
+        destinations: [{ destinationCandidateId: "macro-a", stayDays: 5, transferMode: "none" }],
       },
     }).success).toBe(false);
   });
