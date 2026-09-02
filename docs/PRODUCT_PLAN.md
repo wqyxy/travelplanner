@@ -37,27 +37,69 @@ Provider 距离 / 时长
 
 ---
 
-# 2. 用户流程：五步
+# 2. 产品复杂度原则：内部严谨，用户简单
+
+五步架构内部允许复杂，但这些复杂度原则上不直接暴露给普通用户。
+
+用户不需要理解：
 
 ```text
-1 旅行需求
-2 去哪些地方
-3 安排路线和天数
-4 补充景点
-5 每日行程
+PlanningRole
+Backbone
+Skeleton
+Macro / Detail
+stayBlockId
+macroBasisFingerprint
+macroDirty
+affectedDayIds
+requiresWorkflowStep
+ConversationStage
+CAS
+Resolution
 ```
 
-用户心智：
+用户只需要理解：
 
 ```text
-我要怎么玩
-→ 去哪些地方
-→ 这些天怎么分
-→ 还有什么值得去
+我想怎么玩
+→ 我想去哪些地方
+→ 这些天怎么排
+→ 要不要再补点景点
 → 每天具体怎么玩
 ```
 
-内部 WorkflowStep：
+最高原则：
+
+> **系统内部可以复杂，但任何工程状态都必须翻译成用户能直接行动的语言。**
+
+---
+
+# 3. 用户流程：五步
+
+统一用户文案：
+
+```text
+1 旅行需求
+2 想去哪些地方
+3 路线和天数
+4 补充景点（可选）
+5 每日行程
+```
+
+其中：
+
+```text
+Step 2 = 愿望清单 / 候选
+Step 3 = 真正排得下的最终路线
+```
+
+Step 2 页面必须明确告诉用户：
+
+> 先选出想考虑的地方，下一步会根据总天数安排最终路线。
+
+这样 Step 3 没有采用某个普通候选时，用户不会感觉系统擅自删除地点。
+
+内部 WorkflowStep 继续保持：
 
 ```text
 requirements
@@ -86,11 +128,11 @@ interests    → interests
 detail       → itinerary
 ```
 
-需要用户返回某一步时，以 WorkflowStep 表达，不用 ConversationStage 猜具体页面。
+需要返回某一步时，以 WorkflowStep 表达；但用户只看到对应中文步骤，不看到内部枚举。
 
 ---
 
-# 3. 最高优先级 UX：右侧唯一控制台
+# 4. 最高优先级 UX：右侧唯一控制台
 
 页面只有两个主要职责区：
 
@@ -112,17 +154,30 @@ detail       → itinerary
 
 同一个业务动作只有一个 canonical UI 入口。
 
-跨步骤 CTA 只导航：
+但“唯一入口”是系统规则，不应成为用户负担。
+
+如果用户在错误步骤发起请求：
 
 ```text
-Step 2 不直接生成 Step 3
-Step 4 不直接生成 Step 5
-Step 5 不直接执行 Step 3 Replan
+系统识别意图
+→ 自动切换到归属步骤
+→ 保留 selection / intent
+→ 展示可执行结果或确认卡
 ```
+
+用户不应该频繁看到：
+
+```text
+请前往第二步
+请前往第三步
+请前往第四步
+```
+
+跨步骤不得静默执行高影响 mutation，但可以自动完成上下文切换。
 
 ---
 
-# 4. 三个独立语义
+# 5. 三个独立语义
 
 ## Place.kind
 
@@ -151,9 +206,11 @@ excluded
 
 三者不能隐式耦合。
 
+这些概念主要属于数据 / Prompt / 服务端；UI 应使用自然语言。
+
 ---
 
-# 5. Planning Area
+# 6. Planning Area
 
 Planning Area 表达：
 
@@ -167,9 +224,7 @@ Place.kind = city
 planningAreaCandidateId = null
 ```
 
-它可以在一趟环线旅行中形成多个不同 Stay Block。
-
-例如：
+同一个 Planning Area 在环线旅行中可以形成多个 Stay Block：
 
 ```text
 Auckland #1
@@ -177,11 +232,11 @@ Auckland #1
 Auckland #2
 ```
 
-两次 Auckland 是同一个 Candidate 的两段不同停留，不得合并。
+用户只看到两段独立的“奥克兰停留”，不看到内部 `stayBlockId`。
 
 ---
 
-# 6. Core Visit
+# 7. Core Visit
 
 Core Visit 是：
 
@@ -205,9 +260,39 @@ Step 5 成为真实 Stop
 
 知名度、用户点名本身都不自动等于 Core Visit。
 
+## 用户界面不要做“角色管理器”
+
+普通用户不应该看到：
+
+```text
+planningRole
+Detail → Core
+Core → Detail
+修改 parent role
+```
+
+用户看到的是：
+
+```text
+Milford Sound
+重要游览地 · 必去
+预计占用全天
+```
+
+用户可以自然表达：
+
+```text
+这个地方很重要，要单独留一天
+这个地方不用专门安排这么多时间
+```
+
+系统内部再转换 planningRole / parent，并在必要时展示影响确认。
+
+高级角色调整可以放在“更多”里，不作为主操作。
+
 ---
 
-# 7. Detail Interest
+# 8. Detail Interest
 
 普通景点、餐厅、观景点、短活动：
 
@@ -221,11 +306,40 @@ planningAreaCandidateId = parent Planning Area
 
 ---
 
-# 8. preference 真正影响是否采用
+# 9. preference：数据层四级，用户层尽量两级
 
-这是五步设计的重要产品语义。
+数据模型继续保留：
 
-## Planning Area
+```text
+must_go
+want_to_go
+optional
+excluded
+```
+
+但主 UI 不需要让用户反复操作四级选择器。
+
+用户主要操作：
+
+```text
+⭐ 必去
+♡ 想去
+```
+
+其余语义：
+
+```text
+optional
+→ AI 新推荐的默认状态；通常不显示醒目 Badge
+→ 用户“取消想去”可回到 optional
+
+excluded
+→ 用户通过“移除 / 不考虑”表达
+```
+
+这样保留完整数据语义，但不让用户管理一个四状态系统。
+
+## Planning Area 的实际采用规则
 
 ```text
 must_go
@@ -240,10 +354,6 @@ optional
 excluded
 → 禁止纳入
 ```
-
-因此 Step 2 是“旅行骨干候选”，Step 3 才决定最终采用哪些非必去区域。
-
-未采用的 `want_to_go / optional` 需要在 Step 3 结果中可见，而不是静默消失。
 
 ## Core Visit
 
@@ -263,11 +373,11 @@ excluded
 
 ---
 
-# 9. Step 1：旅行需求
+# 10. Step 1：旅行需求
 
-解决：
+用户任务：
 
-> 我想进行什么旅行？
+> 告诉系统我想进行什么旅行。
 
 包括：
 
@@ -276,23 +386,29 @@ excluded
 出发地
 人数
 交通偏好
-pace
+节奏
 主题 / 偏好
 限制
-用户明确点名地点
+明确想去的地方
 ```
 
-需求变化必须先做 dependency analysis；只有真正影响 Macro 的变化才使 Step 3 需更新。
+需求变化必须先做 dependency analysis；只有真正影响宏观路线的变化才使 Step 3 需更新。
 
-完成后只导航 Step 2。
+完成后只进入 Step 2。
 
 ---
 
-# 10. Step 2：去哪些地方
+# 11. Step 2：想去哪些地方
 
-解决：
+用户任务：
 
-> 哪些停留区域和重要游览地构成这趟旅行的候选骨干？
+> 先选出这趟旅行想考虑的停留区域和重要游览地。
+
+Step 2 是候选愿望清单，不保证所有候选最终都会进入路线。
+
+页面顶部应有一句稳定说明：
+
+> 先选出想考虑的地方，下一步会根据总天数安排最终路线。
 
 AI 只生成：
 
@@ -303,13 +419,11 @@ Core Visit
 
 不批量生成普通 Detail Interest。
 
-Step 2 是 Core Visit 唯一结构管理入口。
-
-Step 4 若发现普通地点应升级为重要游览地，只导航 Step 2 完成影响确认。
+Step 2 是 Core Visit 的唯一结构归属步骤，但角色细节尽量通过自然语言和少量高级操作表达。
 
 ---
 
-# 11. Step 3：安排路线和天数
+# 12. Step 3：路线和天数
 
 Step 3 决定：
 
@@ -318,12 +432,12 @@ Step 3 决定：
 Stay Block 顺序
 每个 Stay Block stayDays
 跨区域语义交通方式
-未采用 Planning Areas 及原因
+没有采用的高优先级候选及原因
 ```
 
 同一个 Planning Area 可形成多个 Stay Block。
 
-Stay Block 是稳定业务对象；canonical Day 使用可选稳定 `stayBlockId` 标记其归属，但不新增第二套 MacroDay / StayBlock 数据表。
+Stay Block 是稳定业务对象；canonical Day 使用可选稳定 `stayBlockId` 标记归属，但 UI 不显示该 ID。
 
 移动日统一计入到达 Stay Block：
 
@@ -340,11 +454,24 @@ Day 5 B
 
 实际采用的 Stay Block `stayDays` 总和必须严格等于总旅行天数。
 
+## 未采用候选的展示要克制
+
+`want_to_go` 未采用必须解释，但不需要把所有 optional 候选铺满页面。
+
+默认可以显示：
+
+```text
+还有 2 个“想去”的地方没有排进路线
+[查看原因]
+```
+
+optional 未采用候选收在可折叠的“其他未采用候选”中。
+
 ---
 
-# 12. Step 3 手工编辑是草稿，不直接制造非法 canonical 状态
+# 13. Step 3 手工编辑：内部是 Draft，用户只看到“还差几天”
 
-用户修改：
+用户可以调整：
 
 ```text
 顺序
@@ -352,28 +479,53 @@ stayDays
 transferMode
 ```
 
-先进入 Step 3 编辑草稿。
+内部先进入 Skeleton Edit Draft，不直接污染 canonical。
 
-例如只做：
-
-```text
-Queenstown 4 → 3
-```
-
-如果总分配变成 19 / 20 天：
+但 UI 不出现：
 
 ```text
-还需要分配 1 天
-[应用修改] disabled
+Skeleton Draft
+Atomic Apply
+Canonical
 ```
 
-再把 Te Anau 2 → 3，使总数恢复 20 天后，才能一次原子 Apply。
+用户只看到自然状态：
 
-AI Composer 也不能在“皇后镇少一天”这种信息不足时偷偷决定多出的一天给谁。
+```text
+皇后镇 4 → 3 天
+
+总旅行：20 天
+当前分配：19 天
+还剩 1 天需要安排
+```
+
+并给直接建议：
+
+```text
+[+1 蒂阿瑙]
+[+1 瓦纳卡]
+[让我帮你安排]
+```
+
+在总天数合法前：
+
+```text
+[保存调整] disabled
+```
+
+合法后一次保存。
+
+如果用户说“皇后镇少一天”，系统不知道这一天去哪时不能偷偷决定；但可以主动给 2–3 个建议，或者在用户明确说“你合理分配”时由 AI 完整处理。
 
 ---
 
-# 13. Step 4：补充景点
+# 14. Step 4：补充景点（可选）
+
+Step 4 是明确的**可选增强步骤**。
+
+它解决：
+
+> 路线和天数已经确定，还要不要再找一些值得去的普通景点？
 
 只有 Step 3 Ready 后，AI 才按真实容量发现普通兴趣点。
 
@@ -383,13 +535,21 @@ AI Composer 也不能在“皇后镇少一天”这种信息不足时偷偷决�
 不自动批量生成
 ```
 
-用户主动点击：
+用户可以：
 
 ```text
-根据当前行程补充兴趣点
+[帮我补充景点]
 ```
 
-AI 根据：
+也可以直接：
+
+```text
+[下一步：每日行程]
+```
+
+因此用户已有足够地点时，不必为了流程完整性强制跑一次 Discovery。
+
+AI Discovery 根据：
 
 ```text
 采用的 Stay Blocks
@@ -400,15 +560,15 @@ pace
 已有普通兴趣点
 ```
 
-每个区域本轮可返回 0–9 个 Detail Interest，允许 0，不凑数。
+每个区域本轮 0–9 个，允许 0，不凑数。
 
 未进入 Skeleton 的 optional Planning Area 默认不做 capacity-aware discovery。
 
 ---
 
-# 14. Step 5：每日行程
+# 15. Step 5：每日行程
 
-解决：
+Step 5 解决：
 
 ```text
 Core Visit 放在哪一天
@@ -427,13 +587,13 @@ Day Anchor
 Day identity
 ```
 
-发现 Macro 不合理时，明确返回 Step 3。
+发现宏观安排不合理时，系统自动切换到 Step 3 对应上下文，并展示需要处理的内容；不得在 Step 5 静默修改宏观结构。
 
 局部更新只处理 affectedDayIds，并把已保存 Day 作为 sticky baseline，尽量保留 Stop / 顺序 / 时间和用户手工调整。
 
 ---
 
-# 15. Macro Dependency：dirty 是派生状态
+# 16. Macro Dependency：复杂度留在系统内部
 
 Canonical 可保存：
 
@@ -453,6 +613,15 @@ current fingerprint != basis fingerprint
 → macroDirty
 ```
 
+这些术语不直接展示给用户。
+
+用户只看到：
+
+```text
+蒂阿瑙的路线和天数需要重新确认
+预计影响 2 天，其他 18 天不变
+```
+
 旧 Skeleton 没有 fingerprint：
 
 ```text
@@ -461,18 +630,16 @@ current fingerprint != basis fingerprint
 显示“需要确认路线和天数”
 ```
 
-用户主动在 Step 3 Apply 后建立新基线。
-
 ---
 
-# 16. 未定位完整规则
+# 17. 未定位规则：只在用户需要行动时强调
 
 ## Planning Area unresolved
 
 ```text
-Step 3 可先做语义 Skeleton
-Macro Route 显示待定位
-Step 5 只要 Day 使用 unresolved Anchor，就阻塞该 Day 的真实 Detail
+Step 3 可先做语义路线和天数
+真实路线显示“待定位”
+Step 5 若 Day 使用 unresolved Anchor，则阻塞该 Day 的真实路线
 ```
 
 ## Core Visit unresolved
@@ -490,18 +657,24 @@ must_go → 阻塞相关 Detail Generate
 want / optional → 跳过，不阻塞无关 Day
 ```
 
-任何 unresolved 都不能使用猜测坐标伪装 resolved。
+UI 原则：
+
+```text
+普通非阻塞未定位 → 轻量状态
+真正阻塞下一步 → 明确行动卡
+```
+
+不把 Resolution 状态机直接暴露给用户。
 
 ---
 
-# 17. 增量更新
+# 18. 增量更新
 
 核心流程：
 
 ```text
 Change
 → Impact Analysis
-→ current Macro fingerprint
 → 用户在归属步骤主动更新
 → old/new Diff
 → affectedDayIds
@@ -521,23 +694,37 @@ Core / Planning Area 变化先改变 Macro dependency；Replan 后再根据真�
 
 ---
 
-# 18. “需更新”不是整阶段报废
+# 19. Update Card：信息完整，但渐进披露
 
-所有需要更新状态必须告诉用户：
+系统内部仍必须知道：
 
 ```text
-为什么
+为什么需要更新
 影响哪里
 哪里保持不变
-下一步去哪处理
+下一步做什么
 ```
 
-例如：
+但默认 UI 不要每次展开完整解释。
+
+默认紧凑卡：
 
 ```text
-2 天需更新
-其他 18 天保持不变
+⚠ 蒂阿瑙的安排需要更新
+预计影响 2 天，其他 18 天不变
+
+[去更新] [查看原因]
 ```
+
+用户点“查看原因”后再展开：
+
+```text
+Milford Sound 被设为重要游览地，原来的 2 天没有考虑这个全天活动……
+```
+
+原则：
+
+> **信息不能丢，但解释按需展开。**
 
 禁止笼统：
 
@@ -547,7 +734,7 @@ Core / Planning Area 变化先改变 Macro dependency；Replan 后再根据真�
 
 ---
 
-# 19. Map / Provider 边界
+# 20. Map / Provider 边界
 
 所有新 Candidate：
 
@@ -568,9 +755,11 @@ Macro Route：Anchor → Anchor。
 Detail Route：真实 Stop Sequence。  
 两者互不覆盖。
 
+地图只负责展示 / 选择 / Provider 事实，不成为第二套编辑器。
+
 ---
 
-# 20. AI Dialogue / Action
+# 21. AI Dialogue / Action
 
 AI Dialogue：
 
@@ -584,21 +773,17 @@ AI Dialogue：
 
 AI 修改继续遵守 Scope / Proposal / generation / CAS。
 
-跨步骤需求返回：
+跨步骤内部使用 `requiresWorkflowStep`，但用户体验是自动切换到对应步骤和上下文，不展示工程枚举。
 
-```text
-requiresWorkflowStep
-```
-
-而不是仅返回 ConversationStage。
+高影响 mutation 仍需要确认。
 
 ---
 
-# 21. Skeleton 大范围 Apply
+# 22. Skeleton 大范围 Apply
 
 长行程不能因为通用 Proposal 的 100 PlanCommand 上限而失败。
 
-Skeleton Generate / Replan / Step 3 Draft Apply 使用专用服务端原子边界：
+Skeleton Generate / Replan / Step 3 Draft Save 使用专用服务端原子边界：
 
 ```text
 validate
@@ -612,9 +797,11 @@ validate
 
 Proposal 仍负责向用户展示变化，但 canonical 写入不要求机械拆成数百个通用 PlanCommand。
 
+用户只看到“保存调整 / 更新路线和天数”。
+
 ---
 
-# 22. 数据与兼容
+# 23. 数据与兼容
 
 保持：
 
@@ -637,21 +824,22 @@ v3 → v4 migration
 
 ---
 
-# 23. 当前实施状态
+# 24. 当前实施状态
 
 当前已确认：
 
 ```text
 五步产品设计
 五步 UI 设计
+复杂度下沉原则
 最终施工合同
 ```
 
-但对应五步代码仍未实施。
+对应五步代码仍未实施。
 
 实际代码状态见 [`IMPLEMENTATION_STATUS.md`](./IMPLEMENTATION_STATUS.md)。
 
-下一步施工必须以：
+下一步施工以：
 
 ```text
 TravelPlanner 五步规划流程重构实施方案.md
@@ -661,16 +849,21 @@ TravelPlanner 五步规划流程重构实施方案.md
 
 ---
 
-# 24. 最终产品原则
+# 25. 最终产品原则
 
 ```text
 Candidate-first
 地图事实与 AI 语义分离
-preference 真正影响是否采用
-Stay Block 有稳定身份
-Macro dirty 由 fingerprint 派生
-跨步骤返回定位到 WorkflowStep
-Step 3 草稿后原子 Apply
+内部复杂、用户简单
+Step 2 是愿望清单，Step 3 才是最终路线
+Step 4 明确可跳过
+四级 preference 留在数据层，主 UI 主要使用“必去 / 想去”
+Core Visit 保留，但不做工程化 Role 管理器
+Stay Block 有稳定身份，但内部 ID 不暴露
+Macro dirty 由 fingerprint 派生，但用户只看到自然语言影响提示
+Step 3 草稿后原子保存，但用户只看到“还差几天”
+Update Card 使用渐进披露
+跨步骤自动切换上下文，不让用户被系统赶来赶去
 右侧唯一业务入口
 上游决定结构，下游补充细节
 局部修改只局部失效
@@ -680,4 +873,4 @@ Step 3 草稿后原子 Apply
 
 TravelPlanner 最终应让用户感受到：
 
-> AI 不但会规划旅行，还知道每个决定依赖什么，因此当我修改局部时，它只重新考虑真正受到影响的部分。
+> **我只是在自然地规划一趟旅行；系统在背后理解依赖关系和复杂状态，但不会要求我学习这些工程概念。**
