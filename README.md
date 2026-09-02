@@ -2,7 +2,7 @@
 
 本地优先、Candidate-first 的 AI 可视化旅行规划工作台。
 
-> 2026-09-02：五步产品与架构重构已经完成文档设计，**本次只更新文档，五步对应代码尚未实施**。实际代码状态见 `docs/IMPLEMENTATION_STATUS.md`。
+> 2026-09-02：五步产品与架构重构已经完成文档设计，**五步对应代码尚未实施**。实际代码状态见 `docs/IMPLEMENTATION_STATUS.md`。
 
 核心产品流程：
 
@@ -175,13 +175,15 @@ private_data/public-data-cache.sqlite3
 
 ## 文档
 
-- 五步正式施工图：[`docs/TravelPlanner 五步规划流程重构实施方案.md`](docs/TravelPlanner%20五步规划流程重构实施方案.md)
-- 五步 UI 规范：[`docs/五步 UI 交互规范.md`](docs/五步%20UI%20交互规范.md)
-- 产品总体依据：[`docs/PRODUCT_PLAN.md`](docs/PRODUCT_PLAN.md)
-- Dialogue / Action 架构：[`docs/AI_STAGE_DIALOGUE_AND_ACTION_REFACTOR_PLAN.md`](docs/AI_STAGE_DIALOGUE_AND_ACTION_REFACTOR_PLAN.md)
-- Macro / Detail 增量设计：[`docs/ITINERARY_MACRO_DETAIL_INCREMENTAL_DESIGN.md`](docs/ITINERARY_MACRO_DETAIL_INCREMENTAL_DESIGN.md)
-- 实际实施状态：[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md)
-- 文档优先级：[`docs/README.md`](docs/README.md)
+`docs/` 只保留当前必须读取的文档：
+
+- 产品总纲：[`docs/PRODUCT_PLAN.md`](docs/PRODUCT_PLAN.md)
+- 当前正式施工图：[`docs/TravelPlanner 五步规划流程重构实施方案.md`](docs/TravelPlanner%20五步规划流程重构实施方案.md)
+- UI 设计规范：[`docs/五步 UI 交互规范.md`](docs/五步%20UI%20交互规范.md)
+- 当前实施状态 / 下一步入口：[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md)
+- 文档索引：[`docs/README.md`](docs/README.md)
+
+已完成、已被取代或仅用于历史解释的专项方案不继续保留在 `docs/`；历史追溯使用 Git history。
 
 ## 安全边界
 
