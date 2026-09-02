@@ -207,11 +207,17 @@ export const DetailedDayUpdateSchema = z.object({
 });
 export type DetailedDayUpdate = z.infer<typeof DetailedDayUpdateSchema>;
 
+export const DetailedUnscheduledCandidateSchema = z.object({
+  candidateId: IdSchema,
+  reason: TextSchema.max(1000),
+}).strict();
+export type DetailedUnscheduledCandidate = z.infer<typeof DetailedUnscheduledCandidateSchema>;
+
 const DetailGenerateSuccessSchema = z.object({
   type: z.literal("success"),
   assistantMessage: TextSchema.max(12000),
   dayUpdates: z.array(DetailedDayUpdateSchema).min(1).max(90),
-  unscheduledCandidates: z.array(z.object({ candidateId: IdSchema, reason: TextSchema.max(1000) }).strict()).max(1800),
+  unscheduledCandidates: z.array(DetailedUnscheduledCandidateSchema).max(1800),
 }).strict();
 
 export const ItineraryDetailGenerateOutputSchema = z.object({
@@ -228,6 +234,7 @@ const DetailUpdateSuccessSchema = z.object({
   explanation: TextSchema.max(4000),
   affectedDayIds: z.array(IdSchema).min(1).max(90),
   dayUpdates: z.array(DetailedDayUpdateSchema).min(1).max(90),
+  unscheduledCandidates: z.array(DetailedUnscheduledCandidateSchema).max(1800).default([]),
 }).strict().superRefine((value, context) => {
   const requested = new Set(value.affectedDayIds);
   const returned = new Set(value.dayUpdates.map((day) => day.dayId));
