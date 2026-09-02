@@ -8,7 +8,7 @@ function workspace(): Workspace {
       id: "t", title: "关西", state: "active", updatedAt: "2026-08-27T00:00:00Z", planLanguage: "bilingual", contentGeneration: 2,
       plan: {
         schemaVersion: 2, stage: "place_selection",
-        trip: { title: "关西", originPlaceId: null, destinationPlaceIds: [], dates: { start: null, end: null, requestedDurationDays: 7 }, travelers: { summary: "家庭", adults: 2, children: 1 }, budget: { amount: null, currency: null, note: null }, pace: "轻松", themes: [], preferences: [], constraints: [], assumptions: [] },
+        trip: { title: "关西", brief: { destination: "关西", origin: "", departureTime: "", duration: "7 天", travelers: "家庭", transport: "", additionalRequirements: "" }, originPlaceId: null, destinationPlaceIds: [], dates: { start: null, end: null, requestedDurationDays: 7 }, travelers: { summary: "家庭", adults: 2, children: 1 }, budget: { amount: null, currency: null, note: null }, pace: "轻松", themes: [], preferences: [], constraints: [], assumptions: [] },
         places: [
           { id: "p0", nameZh: "京都", nameLocal: null, nameEn: "Kyoto", kind: "city", city: "京都", region: null, country: "日本", countryCode: "JP", approximate: false },
           { id: "p1", nameZh: "清水寺", nameLocal: null, nameEn: "Kiyomizu-dera", kind: "attraction", city: "京都", region: null, country: "日本", countryCode: "JP", approximate: false },
