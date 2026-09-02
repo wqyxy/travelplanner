@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ConversationStageSchema, StageDialogueOutputSchema } from "./ai-stage-contracts-v3.js";
+import { actionRegistration, promptRegistration } from "./ai-registries-v3.js";
 import { buildOpenAiStructuredOutputSchema } from "./structured-ai-v2.js";
 import { conversationStageForWorkflowStepV3, WorkflowStepV3Schema } from "./workflow-step-contracts-v3.js";
 
@@ -101,5 +102,14 @@ describe("WorkflowStep remains separate from persisted ConversationStage", () =>
     expect(conversationStageForWorkflowStepV3("skeleton")).toBe("destinations");
     expect(conversationStageForWorkflowStepV3("interests")).toBe("interests");
     expect(conversationStageForWorkflowStepV3("detail")).toBe("itinerary");
+  });
+
+  it("assigns Skeleton generate/replan to destinations while Detail actions stay in itinerary", () => {
+    expect(actionRegistration("itinerary.generate").stage).toBe("destinations");
+    expect(actionRegistration("itinerary.replan").stage).toBe("destinations");
+    expect(promptRegistration("action.itinerary.generate").stage).toBe("destinations");
+    expect(promptRegistration("action.itinerary.replan").stage).toBe("destinations");
+    expect(actionRegistration("itinerary.detail.generate").stage).toBe("itinerary");
+    expect(actionRegistration("itinerary.detail.update").stage).toBe("itinerary");
   });
 });
