@@ -35,12 +35,24 @@ function humanActionState(action: AiAction) {
   return "未完成";
 }
 
+function publicError(value: string) {
+  if (!value) return value;
+  if (/Candidate|Place|planningRole|stayBlockId|fingerprint|macroDirty|generation|scope|WorkflowStep|ConversationStage|requiresWorkflowStep|CONTENT_GENERATION|\bAction\b|Anchor|Macro|Resolution|\bCAS\b|(?:destination|interest|itinerary)\./iu.test(value)) {
+    return "这个操作与当前旅行计划不一致，请按页面提示处理后再试。";
+  }
+  return value;
+}
+
 function ProposalCard({ proposal, currentGeneration, busy, onAction }: { proposal: AiProposal; currentGeneration: number; busy: boolean; onAction: (proposalId: string, action: "apply" | "reject" | "undo") => Promise<void> }) {
   const current = proposal.baseGeneration === currentGeneration;
+  const impacts: string[] = [];
+  if (proposal.diff.affectedDayIds.length) impacts.push(`影响 ${proposal.diff.affectedDayIds.length} 天`);
+  if (proposal.diff.affectedCandidateIds.length) impacts.push(`涉及 ${proposal.diff.affectedCandidateIds.length} 个地点`);
+  if (!impacts.length) impacts.push(`包含 ${proposal.commands.length} 项调整`);
   return <section className={`phase6-proposal-card ${proposal.status}`}>
     <header><strong>{proposal.title}</strong><span>{proposal.status === "pending" ? "待确认" : proposal.status === "applied" ? "已采用" : proposal.status === "rejected" ? "未采用" : proposal.status === "superseded" ? "已失效" : proposal.status === "undone" ? "已撤销" : ""}</span></header>
     <p>{proposal.explanation}</p>
-    <details><summary>查看原因和具体修改</summary><div>{proposal.diff.commandSummaries.slice(0, 10).map((item, index) => <small key={`${proposal.id}:${index}`}>{item}</small>)}{proposal.diff.commandSummaries.length > 10 && <small>另有 {proposal.diff.commandSummaries.length - 10} 项调整</small>}</div></details>
+    <details><summary>查看具体影响</summary><div>{impacts.map((item) => <small key={item}>{item}</small>)}</div></details>
     {proposal.status === "pending" && <footer><button className="button" disabled={busy} onClick={() => void onAction(proposal.id, "reject")}>不采用</button><button className="button primary" disabled={busy || !current} title={!current ? "旅行计划已经变化，请重新生成这个调整" : undefined} onClick={() => void onAction(proposal.id, "apply")}>采用这个调整</button></footer>}
     {proposal.status === "applied" && <footer><button className="button" disabled={busy || currentGeneration !== proposal.baseGeneration + 1} onClick={() => void onAction(proposal.id, "undo")}>撤销这次调整</button></footer>}
   </section>;
@@ -59,7 +71,7 @@ function ActionCard({ action, proposal, currentGeneration, busy, onConfirm, onCa
   const requiresUpstream = action.status === "completed" && action.resultRef?.startsWith("requiresWorkflowStep:");
   return <section className={`phase6-action-card ${action.status}`}>
     <header><strong>{actionLabel(action)}</strong><span>{humanActionState(action)}</span></header>
-    {action.errorSummary && <p className="inline-error">{action.errorSummary}</p>}
+    {action.errorSummary && <p className="inline-error">{publicError(action.errorSummary)}</p>}
     {action.status === "pending_confirmation" && <><p>这个操作会修改旅行计划，请确认后再继续。</p><footer><button className="button" disabled={busy} onClick={() => void onCancel(action)}>取消</button><button className="button primary" disabled={busy || action.baseGeneration !== currentGeneration} onClick={() => void onConfirm(action)}>确认继续</button></footer></>}
     {action.status === "executing" && <div className="phase6-action-running"><LoaderCircle className="spin" size={14}/>正在处理…</div>}
     {action.status === "awaiting_apply" && !proposal && <small>已经准备好一份调整方案，请检查后决定是否采用。</small>}
@@ -122,7 +134,7 @@ export function WorkflowAssistantV3({ workflowStep, stage, workspace, selection,
         return <article className={`message ${message.role}`} key={message.id}>{message.role === "assistant" ? <ReactMarkdown>{message.content}</ReactMarkdown> : <p>{message.content}</p>}{message.turn && ["queued", "starting", "active"].includes(message.turn.status) && <div className="turn-status active"><small>{message.turn.progressMessage || "正在处理…"}</small></div>}{action && <ActionCard action={action} proposal={proposal} currentGeneration={workspace.trip.contentGeneration} busy={busy} onConfirm={onConfirmAction} onCancel={onCancelAction} onProposalAction={onProposalAction} onRetry={onRetryCurrent}/>}</article>;
       })}
       {ctaActions.length > 0 && <div className="phase6-current-actions"><small>{stepLabel} · 当前操作</small>{ctaActions.map((action) => <ActionCard key={action.id} action={action} proposal={action.proposalId ? proposals.get(action.proposalId) ?? null : null} currentGeneration={workspace.trip.contentGeneration} busy={busy} onConfirm={onConfirmAction} onCancel={onCancelAction} onProposalAction={onProposalAction} onRetry={onRetryCurrent}/>)}</div>}
-      {error && <p className="inline-error">{error}</p>}
+      {error && <p className="inline-error">{publicError(error)}</p>}
       <div ref={end}/>
     </div>
     <div className="assistant-compose-zone-v4">{activeTask && <button type="button" className="button small stage-stop-button-v3" onClick={() => void onStopTask(activeTask.id)}>停止当前处理</button>}<form className="assistant-composer-v4" onSubmit={submit}><textarea value={drafts[workflowStep]} disabled={busy} rows={1} placeholder={copy.placeholder} onChange={(event) => setDrafts((current) => ({ ...current, [workflowStep]: event.target.value }))}/><button className="button primary small" disabled={busy || !drafts[workflowStep].trim()}>发送</button></form><small>当前只会处理“{stepLabel}”相关内容；需要上游调整时会自动切换到对应步骤。</small></div>
