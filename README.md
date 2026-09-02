@@ -2,25 +2,25 @@
 
 本地优先、Candidate-first 的 AI 可视化旅行规划工作台。
 
-> 2026-09-02：五步产品与架构重构已经完成文档设计，**五步对应代码尚未实施**。实际代码状态见 `docs/IMPLEMENTATION_STATUS.md`。
+> 2026-09-02：五步产品、架构与用户复杂度下沉规则已经完成文档设计，**对应代码尚未实施**。实际代码状态见 `docs/IMPLEMENTATION_STATUS.md`。
 
 核心产品流程：
 
 ```text
 1 旅行需求
-→ 2 去哪些地方
-→ 3 安排路线和天数
-→ 4 补充景点
+→ 2 想去哪些地方
+→ 3 路线和天数
+→ 4 补充景点（可选）
 → 5 每日行程
 ```
 
 用户心智：
 
 ```text
-我要怎么玩
-→ 去哪些地方
-→ 这些天怎么分
-→ 还有什么值得去
+我想怎么玩
+→ 我想去哪些地方
+→ 这些天怎么排
+→ 要不要再补点景点
 → 每天具体怎么玩
 ```
 
@@ -34,7 +34,7 @@ TravelPlanner 使用：
 右侧唯一控制台
 ```
 
-五步导航、AI Composer、Action / Proposal、编辑、生成 / 更新和流程推进都属于右侧控制台。
+五步导航、AI Composer、编辑、生成 / 更新和流程推进都属于右侧控制台。
 
 地图 / 时间轴只负责：
 
@@ -44,11 +44,17 @@ TravelPlanner 使用：
 聚焦
 ```
 
-同一个业务动作只能有一个 canonical UI 入口；跨步骤 CTA 只导航，不代替目标步骤执行生成动作。
+同一个业务动作只有一个 canonical UI 入口。
+
+如果用户在错误步骤提出请求，系统可以自动切换到正确工作区并保留上下文，但不得跨步骤静默执行高影响 mutation。
+
+更重要的是：
+
+> **内部工程模型可以复杂，但普通用户不需要理解 PlanningRole、Skeleton、fingerprint、dirty、WorkflowStep、CAS 等术语。**
 
 ## 规划层级
 
-五步设计区分：
+五步设计内部区分：
 
 ```text
 Planning Area
@@ -71,9 +77,63 @@ preference
 
 三个概念保持独立。
 
+用户界面不要求理解这些工程术语：
+
+```text
+Planning Area → 停留地点 / 区域
+Core Visit → 重要游览地
+Detail Interest → 普通景点 / 活动
+```
+
 Step 3 使用 Stay Block 表达停留段；同一个 Planning Area 可以在环线旅行中出现多次。
 
 移动日统一计入到达 Stay Block。
+
+## Preference UX
+
+数据层继续保留：
+
+```text
+must_go
+want_to_go
+optional
+excluded
+```
+
+但普通 UI 主要让用户操作：
+
+```text
+必去
+想去
+```
+
+AI 推荐默认 optional 可弱化展示；“不考虑”通过移除表达。
+
+## Step 2 与 Step 3
+
+```text
+Step 2
+= 愿望清单：先选出想考虑的地方
+
+Step 3
+= 最终路线：根据总天数决定真正怎么排
+```
+
+因此“想去”的地点可以因为天数 / 绕行没有进入最终路线，但必须解释；普通 optional 候选可以不采用。
+
+## Step 4 可选
+
+Step 4 是增强步骤，不是硬 gate。
+
+用户已有足够地点时可以：
+
+```text
+路线和天数
+→ 补充景点（不运行 Discovery）
+→ 直接每日行程
+```
+
+需要更多推荐时再点击“帮我补充景点”。
 
 ## AI / Stage 架构
 
@@ -96,7 +156,9 @@ interests    → interests
 detail       → itinerary
 ```
 
-ConversationStage 只是 UI / Dialogue / Action 命名空间，不替换 canonical `TravelPlanDocument` 的 TripStage。
+ConversationStage 只是 Dialogue / Action 命名空间，不替换 canonical `TravelPlanDocument` 的 TripStage。
+
+内部跨步骤使用 `requiresWorkflowStep`，用户体验则是自动切换到正确工作区，而不是频繁提示“请前往某一步”。
 
 AI Dialogue 负责回答、澄清、判断是否需要实时核验和识别受控 Action；确定性编辑优先使用确定性代码。AI 修改仍遵守 Proposal / Scope / generation / CAS 边界。
 
@@ -118,6 +180,15 @@ Change
 普通兴趣点变化不能默认让整个行程失效。
 
 Detailed Update 应以当前已保存 Day 为 sticky baseline，尽量保留现有 Stop、顺序、时间和用户手工调整。
+
+用户不看到 `affectedDayIds / macroDirty` 等内部名词，只看到：
+
+```text
+2 天需要更新
+其他 18 天不变
+```
+
+Update Card 默认保持简洁，需要时再展开原因。
 
 ## 开发运行
 
@@ -188,7 +259,7 @@ private_data/public-data-cache.sqlite3
 ## 安全边界
 
 - AI 不输出可信坐标、Provider Place ID、路线 geometry、地图 Provider 距离或时间；
-- 用户基础编辑使用固定 PlanCommand / 受控确定性 mutation；
+- 用户基础编辑使用受控确定性 mutation；
 - AI 修改必须遵守 Scope / generation / Proposal 边界；
-- Route Dirty / itinerary needs_update 由依赖与输入 Diff 派生，不用单纯 generation 变化代表整阶段失效；
+- Route Dirty / itinerary needs_update 由依赖与输入 Diff 派生；
 - AI 不能自行读写文件、执行 Shell、调用 MCP、创建子 Agent；服务端是唯一调度者。
