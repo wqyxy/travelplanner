@@ -56,6 +56,10 @@ const safeError = (value: unknown) => value instanceof Error ? value : new Error
 const PATCH_KEY = "__patch";
 const MAX_STRUCTURED_REPAIRS = 2;
 const FORBIDDEN_SCHEMA_KEYS = new Set(["allOf", "not", "if", "then", "else", "dependentRequired", "dependentSchemas"]);
+// Canonical Day keeps stayBlockId optional so old v3 documents remain readable.
+// OpenAI structured output does not accept mixed required/optional objects, so the
+// transport schema requires this one field as nullable and normalization removes null.
+const NULLABLE_REQUIRED_TRANSPORT_FIELDS = new Set(["stayBlockId"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -90,7 +94,15 @@ function transportSchema(value: unknown, path: string[] = []): unknown {
     const optionalKeys = keys.filter((key) => !required.has(key));
 
     if (optionalKeys.length) {
-      if (required.size) throw new Error(`AI output object 不能混用 required/optional 字段：${path.join(".") || "root"}`);
+      if (required.size) {
+        if (!optionalKeys.every((key) => NULLABLE_REQUIRED_TRANSPORT_FIELDS.has(key))) {
+          throw new Error(`AI output object 不能混用 required/optional 字段：${path.join(".") || "root"}`);
+        }
+        for (const key of optionalKeys) properties[key] = { anyOf: [properties[key], { type: "null" }] };
+        record.required = keys;
+        record.additionalProperties = false;
+        return record;
+      }
       if (!keys.length) throw new Error(`AI output optional object 没有可修改字段：${path.join(".") || "root"}`);
       return {
         type: "object",
@@ -146,7 +158,10 @@ export function normalizeStructuredOutputTransport(value: unknown): unknown {
     }
     return result;
   }
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, normalizeStructuredOutputTransport(item)]));
+  return Object.fromEntries(Object.entries(value).flatMap(([key, item]) => {
+    if (NULLABLE_REQUIRED_TRANSPORT_FIELDS.has(key) && item === null) return [];
+    return [[key, normalizeStructuredOutputTransport(item)]];
+  }));
 }
 
 function repairMessage(error: Error, attempt: number) {
@@ -325,7 +340,7 @@ export class StructuredAiRunnerV2 {
         ...(options.effort ? { effort: options.effort } : {}),
       }, run.reasoningSummary), 120_000);
       run.turnId = String(turn?.turn?.id ?? run.turnId ?? "") || null;
-      // The timeout may win while turn/start is in flight.  A late turn must be
+      // The timeout may win while turn/start is in flight. A late turn must be
       // interrupted and can never reactivate the already-settled run.
       if (run.terminal && run.turnId) void this.client.call("turn/interrupt", { threadId, turnId: run.turnId }).catch(() => undefined);
     } catch (error) {
