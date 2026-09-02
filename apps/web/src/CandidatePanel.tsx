@@ -10,6 +10,8 @@ import {
   formatDuration,
   resolutionStatus,
   selectedUnresolvedRows,
+  step4CoreRows,
+  step4DetailRows,
   type CandidateFilter,
   type CandidateRow,
 } from "./workspace-v2";
@@ -117,9 +119,10 @@ export function CandidatePanel({
   onBeginMapPick: (placeId: string) => void;
 }) {
   const allRows = useMemo(() => candidateRows(workspace), [workspace]);
-  const rows = useMemo(() => allRows.filter((row) => view === "macro" ? row.place.kind === "city" : row.place.kind !== "city"), [allRows, view]);
-  const counts = useMemo(() => candidateCounts(rows, allRows), [rows, allRows]);
   const isMacro = view === "macro";
+  const coreRows = useMemo(() => isMacro ? [] : step4CoreRows(allRows), [allRows, isMacro]);
+  const rows = useMemo(() => isMacro ? allRows.filter((row) => row.place.kind === "city") : step4DetailRows(allRows), [allRows, isMacro]);
+  const counts = useMemo(() => candidateCounts(rows, allRows), [rows, allRows]);
   const macroRows = useMemo(() => allRows.filter((row) => row.place.kind === "city" && row.candidate.preference !== "excluded"), [allRows]);
   const coverageByMacroId = useMemo(() => new Map(workspace.coverage.map((item) => [item.macroCandidateId, item])), [workspace.coverage]);
   const [filter, setFilter] = useState<CandidateFilter>("all");
@@ -363,6 +366,8 @@ export function CandidatePanel({
       <div><i className="resolved-dot"/>已定位 {rows.filter((row) => resolutionStatus(row) === "resolved").length}<i className="unresolved-dot"/>未定位 {counts.unresolved}</div>
     </div>
 
+    {!isMacro && coreRows.length > 0 && <div className="candidate-core-context-v3"><strong>重要游览地（上一步已确定）</strong><span>{coreRows.map((row) => placeNamePresentation(row.place, workspace.trip.planLanguage).combined).join("、")}</span><small>这里只作为行程容量背景显示；如需调整重要游览地，请回到“想去哪些地方”。</small></div>}
+
     <div className="candidate-toolbar">
       <div className="candidate-filters" role="tablist" aria-label="地点筛选">
         {(Object.keys(filterLabels) as CandidateFilter[]).map((value) => <button type="button" role="tab" aria-selected={filter === value} className={filter === value ? "active" : ""} key={value} onClick={() => setFilter(value)}>{filterLabels[value]}<span>{counts[value]}</span></button>)}
@@ -377,19 +382,19 @@ export function CandidatePanel({
     {checked.size > 0 && <div className="candidate-bulk-bar"><span>已选择 {checked.size} 个</span><button onClick={() => void setBulk("must_go")}>★ 必去</button><button onClick={() => void setBulk("want_to_go")}>✓ 想去</button><button onClick={() => void setBulk("optional")}>○ 可选</button><button onClick={() => void setBulk("excluded")}>× 不去</button><button aria-label="清除批量选择" onClick={() => setChecked(new Set())}><X size={14}/></button></div>}
 
     <div className="candidate-list">
-      {!rows.length && <div className="candidate-empty"><Sparkles size={34}/><h3>{isMacro ? "还没有目的地建议" : "还没有详细兴趣点"}</h3><p>{isMacro ? "使用下方唯一主操作生成城市 / 区域建议。" : "先在“目的地”步骤确认范围，再从下方生成详细兴趣点。"}</p></div>}
+      {!rows.length && <div className="candidate-empty"><Sparkles size={34}/><h3>{isMacro ? "还没有目的地建议" : "还没有详细兴趣点"}</h3><p>{isMacro ? "使用下方唯一主操作生成城市 / 区域建议。" : "这一步是可选增强；可以补充普通景点，也可以直接继续。"}</p></div>}
       {rows.length > 0 && !visible.length && <div className="candidate-empty compact"><Search size={24}/><p>当前筛选条件下没有地点。</p></div>}
       {isMacro ? visible.map((row) => renderCandidate(row, row.candidate.preference === "excluded")) : groups.map((group) => {
         const collapsed = collapsedAreas.has(group.key);
         const cityPreference = group.cityRow?.candidate.preference ?? null;
         const areaExcluded = cityPreference === "excluded";
         const coverage = group.cityRow ? coverageByMacroId.get(group.cityRow.candidate.id) ?? null : null;
-        const concreteCount = coverage?.microCandidateCount ?? group.rows.filter((row) => row.place.kind !== "city").length;
+        const concreteCount = group.rows.length;
         const participatingCount = areaExcluded ? 0 : group.rows.filter((row) => row.candidate.preference !== "excluded").length;
         return <section className={`candidate-area-group ${areaExcluded ? "excluded" : ""}`} key={group.key}>
           <button className="candidate-area-head" type="button" onClick={() => toggleArea(group.key)}>
             <ChevronRight className={collapsed ? "" : "open"} size={16}/>
-            <span><strong>{group.cityRow ? placeNamePresentation(group.cityRow.place, workspace.trip.planLanguage).combined : group.label}</strong><small>{group.cityRow ? "目的地规划 · " : "区域分组 · "}{concreteCount} 个具体地点{coverage ? ` · ${coverage.participatingResolvedMicroCount} 个已定位可用` : ` · ${participatingCount} 个参与规划`}{areaExcluded ? " · 本次不去" : coverage?.status === "blocked" ? " · 需要补充具体地点" : coverage?.status === "attention" ? " · 建议补充具体地点" : ""}</small></span>
+            <span><strong>{group.cityRow ? placeNamePresentation(group.cityRow.place, workspace.trip.planLanguage).combined : group.label}</strong><small>{group.cityRow ? "停留区域 · " : "区域分组 · "}{concreteCount} 个普通兴趣点{coverage ? ` · ${coverage.participatingResolvedMicroCount} 个已定位可用` : ` · ${participatingCount} 个参与规划`}{areaExcluded ? " · 本次不去" : ""}</small></span>
             {group.cityRow && <em>{preferenceMarks[group.cityRow.candidate.preference]} {preferenceLabels[group.cityRow.candidate.preference]}</em>}
           </button>
           {!collapsed && <div className="candidate-area-cards">{group.rows.map((row) => renderCandidate(row, areaExcluded))}</div>}
@@ -398,9 +403,9 @@ export function CandidatePanel({
     </div>
 
     <footer className="candidate-footer candidate-footer-flow-v3">
-      <div>{!isMacro && unresolvedSelected.length > 0 && <button className="button" type="button" disabled={busy} onClick={() => void onRetry(unresolvedSelected.map((row) => row.place.id))}><RefreshCw size={14}/>批量重新定位 {unresolvedSelected.length} 个</button>}<button className="button" type="button" disabled={busy} onClick={() => void onDiscover()}><WandSparkles size={15}/>{rows.length ? "重新生成" : isMacro ? "生成目的地建议" : "生成兴趣点"}</button></div>
+      <div>{!isMacro && unresolvedSelected.length > 0 && <button className="button" type="button" disabled={busy} onClick={() => void onRetry(unresolvedSelected.map((row) => row.place.id))}><RefreshCw size={14}/>批量重新定位 {unresolvedSelected.length} 个</button>}<button className="button" type="button" disabled={busy} onClick={() => void onDiscover()}><WandSparkles size={15}/>{isMacro ? (rows.length ? "重新生成" : "生成目的地建议") : "补充景点"}</button></div>
       {!isMacro && unresolvedSelected.length > 0 && <small className="candidate-generation-warning">{unresolvedMustGo.length ? `${unresolvedMustGo.length} 个“必去”地点未定位，请先编辑或定位` : `${unresolvedSelected.length} 个未定位地点不会进入按天行程`}</small>}
-      <button className="button primary generate-plan" type="button" disabled={busy || !counts.selected || (!isMacro && (workspace.trip.plan.days.length > 0 || unresolvedMustGo.length > 0))} onClick={() => void onContinue()}><Sparkles size={15}/>{isMacro ? "生成详细兴趣点" : workspace.trip.plan.days.length ? "行程已生成" : "生成行程与路线"}</button>
+      <button className="button primary generate-plan" type="button" disabled={busy || (isMacro && !counts.selected)} onClick={() => void onContinue()}><Sparkles size={15}/>{isMacro ? "继续" : "下一步：每日行程"}</button>
     </footer>
 
     {choice && <div className="candidate-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setChoice(null); }}><section className="candidate-dialog choice-location-dialog"><header><div><strong>选择地点</strong><small>从地图 Provider 候选中选择，或粘贴 Google Maps 分享链接</small></div><button className="icon-button" onClick={() => setChoice(null)}><X size={18}/></button></header><div className="choice-google-link">
