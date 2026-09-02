@@ -7,6 +7,7 @@ import {
   ProviderPlaceCandidateSchema,
 } from "./contracts-v2.js";
 import { AiActionTypeSchema, ConversationStageSchema, WorkspaceSelectionV3Schema } from "./ai-stage-contracts-v3.js";
+import { confirmDetailToCorePromotionV3 } from "./core-promotion-v3.js";
 import { normalizeRequirementsCtaParametersV3 } from "./requirements-duration-v3.js";
 import { saveSkeletonEditDraftV3 } from "./skeleton-edit-api-v3.js";
 import type { TravelPlannerRuntimeV3 } from "./planner-runtime-v3.js";
@@ -93,7 +94,12 @@ export async function dispatchTravelApiV3(
   }
 
   match = /^\/api\/trips\/([^/]+)\/actions\/([^/]+)\/confirm$/.exec(pathname);
-  if (method === "POST" && match) return { status: 202, data: deps.runtime.confirmAction(decode(match[1]), decode(match[2]), body) };
+  if (method === "POST" && match) {
+    const tripId = decode(match[1]);
+    const actionId = decode(match[2]);
+    const promoted = confirmDetailToCorePromotionV3(deps.store, tripId, actionId, body);
+    return { status: 202, data: promoted ?? deps.runtime.confirmAction(tripId, actionId, body) };
+  }
   match = /^\/api\/trips\/([^/]+)\/actions\/([^/]+)\/cancel$/.exec(pathname);
   if (method === "POST" && match) return { status: 200, data: deps.runtime.cancelAction(decode(match[1]), decode(match[2]), body) };
 
