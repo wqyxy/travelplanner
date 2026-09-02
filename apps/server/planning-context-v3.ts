@@ -243,7 +243,7 @@ export function buildDetailPlanningContextV3(
     planningAreas: plan.candidates.filter((candidate) => accessibleAreaIds.has(candidate.id)).map((candidate) => candidateSummary(plan, candidate)).filter(Boolean),
     candidates: concreteCandidates,
     requiredMustGoCandidateIds: concreteCandidates.filter((candidate) => candidate.preference === "must_go" && candidate.resolved && candidate.planningAreaCandidateId && ownerAreaIds.has(candidate.planningAreaCandidateId)).map((candidate) => candidate.id),
-    priorityCoreCandidateIds: concreteCandidates.filter((candidate) => candidate.planningRole === "core_visit" && candidate.preference === "want_to_go" && candidate.planningAreaCandidateId && ownerAreaIds.has(candidate.planningAreaCandidateId)).map((candidate) => candidate.id),
+    priorityCoreCandidateIds: concreteCandidates.filter((candidate) => candidate.resolved && candidate.planningRole === "core_visit" && candidate.preference === "want_to_go" && candidate.planningAreaCandidateId && ownerAreaIds.has(candidate.planningAreaCandidateId)).map((candidate) => candidate.id),
     unavailableCandidateIds: concreteCandidates.filter((candidate) => !candidate.resolved && candidate.preference !== "must_go").map((candidate) => candidate.id),
   };
 }
