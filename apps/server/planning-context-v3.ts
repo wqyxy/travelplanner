@@ -1,4 +1,4 @@
-import type { TravelPlanDocument } from "./contracts-v2.js";
+import type { PlaceResolution, TravelPlanDocument } from "./contracts-v2.js";
 import { deriveExistingStayBlocksV3 } from "./itinerary-workflow-v3.js";
 import {
   activeCoreVisits,
@@ -9,6 +9,7 @@ import {
   computeMacroDependencyFingerprintV3,
   derivePlanMacroBasisStateV3,
 } from "./planning-state-v3.js";
+import { resolutionIsCurrent } from "./place-resolver-v2.js";
 
 function candidateSummary(plan: TravelPlanDocument, candidate: TravelPlanDocument["candidates"][number]) {
   const place = plan.places.find((item) => item.id === candidate.placeId);
@@ -32,6 +33,23 @@ function candidateSummary(plan: TravelPlanDocument, candidate: TravelPlanDocumen
       approximate: place.approximate,
     },
   };
+}
+
+function planningAreaCandidateForPlace(plan: TravelPlanDocument, placeId: string | null) {
+  if (!placeId) return null;
+  const places = new Map(plan.places.map((place) => [place.id, place]));
+  return plan.candidates.find((candidate) => {
+    const place = places.get(candidate.placeId);
+    return candidate.placeId === placeId && place && effectivePlanningRole(candidate, place) === "planning_area";
+  }) ?? null;
+}
+
+function currentResolutionByPlace(plan: TravelPlanDocument, resolutions: PlaceResolution[]) {
+  const places = new Map(plan.places.map((place) => [place.id, place]));
+  return new Map(resolutions.flatMap((resolution) => {
+    const place = places.get(resolution.placeId);
+    return place && resolutionIsCurrent(place, resolution) ? [[resolution.placeId, resolution] as const] : [];
+  }));
 }
 
 export function buildBackboneContextV3(plan: TravelPlanDocument) {
@@ -105,6 +123,126 @@ export function buildInterestAreaContextV3(plan: TravelPlanDocument, planningAre
     coreVisits: children.filter((item) => item.role === "core_visit").map((item) => candidateSummary(plan, item.candidate)).filter(Boolean),
     existingDetailInterests: children.filter((item) => item.role === "detail_interest").map((item) => candidateSummary(plan, item.candidate)).filter(Boolean),
     macroBasisState: readiness.macroBasisState,
+  };
+}
+
+export type DetailPlanningBlockingIssueV3 = {
+  type: "anchor_unresolved" | "must_go_unresolved";
+  dayIds: string[];
+  placeId: string;
+  candidateId: string | null;
+  planningRole: "core_visit" | "detail_interest" | null;
+};
+
+export function detailPlanningReadinessV3(
+  plan: TravelPlanDocument,
+  resolutions: PlaceResolution[],
+  requestedDayIds: string[] = plan.days.map((day) => day.id),
+) {
+  const macroBasisState = plan.days.length ? derivePlanMacroBasisStateV3(plan) : "needs_confirmation" as const;
+  const knownDayIds = new Set(plan.days.map((day) => day.id));
+  const targetIds = [...new Set(requestedDayIds)];
+  for (const dayId of targetIds) if (!knownDayIds.has(dayId)) throw new Error(`详细行程引用未知 Day：${dayId}`);
+  const targetDays = plan.days.filter((day) => targetIds.includes(day.id));
+  const currentResolutions = currentResolutionByPlace(plan, resolutions);
+  const blockingIssues: DetailPlanningBlockingIssueV3[] = [];
+
+  for (const day of targetDays) {
+    for (const placeId of new Set([day.startAnchor.placeId, day.endAnchor.placeId].filter((value): value is string => Boolean(value)))) {
+      if (currentResolutions.get(placeId)?.status === "resolved") continue;
+      blockingIssues.push({ type: "anchor_unresolved", dayIds: [day.id], placeId, candidateId: null, planningRole: null });
+    }
+  }
+
+  const ownerAreaByDay = new Map(targetDays.map((day) => [day.id, planningAreaCandidateForPlace(plan, day.endAnchor.placeId)]));
+  const targetAreaIds = new Set([...ownerAreaByDay.values()].filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate)).map((candidate) => candidate.id));
+  const places = new Map(plan.places.map((place) => [place.id, place]));
+  for (const candidate of plan.candidates) {
+    const place = places.get(candidate.placeId);
+    if (!place || candidate.preference !== "must_go" || !candidate.planningAreaCandidateId || !targetAreaIds.has(candidate.planningAreaCandidateId)) continue;
+    const role = effectivePlanningRole(candidate, place);
+    if (role !== "core_visit" && role !== "detail_interest") continue;
+    if (currentResolutions.get(candidate.placeId)?.status === "resolved") continue;
+    const dayIds = targetDays.filter((day) => ownerAreaByDay.get(day.id)?.id === candidate.planningAreaCandidateId).map((day) => day.id);
+    blockingIssues.push({ type: "must_go_unresolved", dayIds, placeId: candidate.placeId, candidateId: candidate.id, planningRole: role });
+  }
+
+  return {
+    ready: plan.days.length > 0 && macroBasisState === "current" && blockingIssues.length === 0,
+    macroBasisState,
+    requiresWorkflowStep: plan.days.length === 0 || macroBasisState !== "current" ? "skeleton" as const : null,
+    targetDayIds: targetIds,
+    blockingIssues,
+  };
+}
+
+export function buildDetailPlanningContextV3(
+  plan: TravelPlanDocument,
+  resolutions: PlaceResolution[],
+  requestedDayIds: string[] = plan.days.map((day) => day.id),
+) {
+  const readiness = detailPlanningReadinessV3(plan, resolutions, requestedDayIds);
+  const targetSet = new Set(readiness.targetDayIds);
+  const targetDays = plan.days.filter((day) => targetSet.has(day.id));
+  const places = new Map(plan.places.map((place) => [place.id, place]));
+  const currentResolutions = currentResolutionByPlace(plan, resolutions);
+  const accessibleAreaIds = new Set<string>();
+  const ownerAreaIds = new Set<string>();
+
+  for (const day of targetDays) {
+    const owner = planningAreaCandidateForPlace(plan, day.endAnchor.placeId);
+    if (owner) ownerAreaIds.add(owner.id);
+    for (const placeId of [day.startAnchor.placeId, day.endAnchor.placeId]) {
+      const area = planningAreaCandidateForPlace(plan, placeId);
+      if (area) accessibleAreaIds.add(area.id);
+    }
+  }
+
+  const concreteCandidates = plan.candidates.flatMap((candidate) => {
+    const place = places.get(candidate.placeId);
+    if (!place || candidate.preference === "excluded" || !candidate.planningAreaCandidateId || !accessibleAreaIds.has(candidate.planningAreaCandidateId)) return [];
+    const role = effectivePlanningRole(candidate, place);
+    if (role !== "core_visit" && role !== "detail_interest") return [];
+    const resolution = currentResolutions.get(candidate.placeId) ?? null;
+    return [{
+      ...candidateSummary(plan, candidate),
+      resolutionStatus: resolution?.status ?? "unresolved",
+      resolved: resolution?.status === "resolved",
+    }];
+  });
+
+  const blocks = deriveExistingStayBlocksV3(plan).filter((block) => block.days.some((day) => targetSet.has(day.id)));
+  return {
+    tripFacts: plan.trip,
+    pace: plan.trip.pace,
+    detailReadiness: readiness,
+    targetDayIds: readiness.targetDayIds,
+    stayBlocks: blocks.map((block) => ({
+      stayBlockId: block.stayBlockId,
+      occurrence: block.occurrence,
+      planningAreaCandidateId: block.planningAreaCandidateId,
+      dayIds: block.days.map((day) => day.id),
+      stayDays: block.days.length,
+    })),
+    days: targetDays.map((day) => ({
+      id: day.id,
+      dayNumber: day.dayNumber,
+      date: day.date,
+      title: day.title,
+      stayBlockId: day.stayBlockId ?? null,
+      transferMode: day.transferMode,
+      startAnchor: day.startAnchor,
+      endAnchor: day.endAnchor,
+      planningAreaCandidateId: planningAreaCandidateForPlace(plan, day.endAnchor.placeId)?.id ?? null,
+      detailLevel: day.detailLevel,
+      detailStatus: day.detailStatus,
+      stickyBaseline: day.stops.map((stop) => structuredClone(stop)),
+    })),
+    planningAreas: plan.candidates.filter((candidate) => accessibleAreaIds.has(candidate.id)).map((candidate) => candidateSummary(plan, candidate)).filter(Boolean),
+    candidates: concreteCandidates,
+    requiredMustGoCandidateIds: concreteCandidates.filter((candidate) => candidate.preference === "must_go" && candidate.resolved && candidate.planningAreaCandidateId && ownerAreaIds.has(candidate.planningAreaCandidateId)).map((candidate) => candidate.id),
+    priorityCoreCandidateIds: concreteCandidates.filter((candidate) => candidate.planningRole === "core_visit" && candidate.preference === "want_to_go" && candidate.planningAreaCandidateId && ownerAreaIds.has(candidate.planningAreaCandidateId)).map((candidate) => candidate.id),
+    unavailableCandidateIds: concreteCandidates.filter((candidate) => !candidate.resolved && candidate.preference !== "must_go").map((candidate) => candidate.id),
   };
 }
 
