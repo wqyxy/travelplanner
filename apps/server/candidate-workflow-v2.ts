@@ -10,13 +10,28 @@ import {
   type TravelPlanDocument,
   type TripCandidate,
 } from "./contracts-v2.js";
+import {
+  DestinationGenerateOutputSchema,
+  type DestinationGenerateOutput,
+} from "./ai-action-contracts-v3.js";
 import { semanticPlaceKey } from "./plan-commands-v2.js";
 import { buildPlanningAreaContext, fulfilledMacroCityCandidateIds } from "./planning-areas-v2.js";
+import { effectivePlanningRole } from "./planning-roles-v3.js";
 import type { TravelStoreV2, TripDetailV2 } from "./travel-store-v2.js";
 
 export type CandidateDiscoveryApplyResult = {
   plan: TravelPlanDocument;
   output: CandidateDiscoveryOutput;
+  idMappings: Record<string, string>;
+  addedCandidateIds: string[];
+  updatedCandidateIds: string[];
+  addedPlaceIds: string[];
+  mergedDuplicateCount: number;
+};
+
+export type BackboneDiscoveryApplyResult = {
+  plan: TravelPlanDocument;
+  output: DestinationGenerateOutput;
   idMappings: Record<string, string>;
   addedCandidateIds: string[];
   updatedCandidateIds: string[];
@@ -42,12 +57,168 @@ function mergeTags(left: string[], right: string[]) {
   return [...new Set([...left, ...right])].slice(0, 30);
 }
 
-function candidateMetadata(output: CandidateDiscoveryOutput["candidates"][number]) {
+function candidateMetadata(output: {
+  aiReason: string;
+  aiScore: number;
+  suggestedDurationMinutes: number | null;
+  tags: string[];
+}) {
   return {
     aiReason: output.aiReason,
     aiScore: output.aiScore,
     suggestedDurationMinutes: output.suggestedDurationMinutes,
     tags: output.tags,
+  };
+}
+
+function updateAiMetadata(existing: TripCandidate, source: {
+  aiReason: string;
+  aiScore: number;
+  suggestedDurationMinutes: number | null;
+  tags: string[];
+}) {
+  const previousScore = existing.aiScore ?? -1;
+  if (source.aiScore >= previousScore) {
+    existing.aiReason = source.aiReason;
+    existing.aiScore = source.aiScore;
+    existing.suggestedDurationMinutes = source.suggestedDurationMinutes;
+  }
+  existing.tags = mergeTags(existing.tags, source.tags);
+}
+
+export function applyBackboneDiscoveryV3(current: TravelPlanDocument, value: unknown): BackboneDiscoveryApplyResult {
+  const output = DestinationGenerateOutputSchema.parse(value);
+  const plan = clone(current);
+  const idMappings = new Map<string, string>();
+  const placesByTemporaryId = new Map(output.places.map((place) => [place.id, place]));
+  const existingPlaceByKey = new Map(plan.places.map((place) => [semanticPlaceKey(place), place]));
+  const canonicalPlaceByKey = new Map(existingPlaceByKey);
+  const addedPlaceIds: string[] = [];
+  let mergedDuplicateCount = 0;
+
+  for (const temporaryPlaceId of new Set(output.candidates.map((candidate) => candidate.placeTemporaryId))) {
+    const source = placesByTemporaryId.get(temporaryPlaceId);
+    if (!source) throw new Error(`Backbone Discovery 引用未知临时 Place：${temporaryPlaceId}`);
+    const key = semanticPlaceKey(source);
+    const existing = canonicalPlaceByKey.get(key);
+    if (existing) {
+      idMappings.set(temporaryPlaceId, existing.id);
+      if (!existingPlaceByKey.has(key)) mergedDuplicateCount += 1;
+      continue;
+    }
+    const place: Place = { ...clone(source), id: randomUUID() };
+    plan.places.push(place);
+    canonicalPlaceByKey.set(key, place);
+    idMappings.set(temporaryPlaceId, place.id);
+    addedPlaceIds.push(place.id);
+  }
+
+  const candidateByPlaceId = new Map(plan.candidates.map((candidate) => [candidate.placeId, candidate]));
+  const canonicalCandidateById = new Map(plan.candidates.map((candidate) => [candidate.id, candidate]));
+  const sourceByTemporaryId = new Map(output.candidates.map((candidate) => [candidate.temporaryId, candidate]));
+  const addedCandidateIds: string[] = [];
+  const updatedCandidateIds = new Set<string>();
+
+  const requirePlanningAreaParent = (candidateId: string) => {
+    const parent = canonicalCandidateById.get(candidateId);
+    const parentPlace = parent ? plan.places.find((place) => place.id === parent.placeId) : null;
+    if (!parent || !parentPlace || effectivePlanningRole(parent, parentPlace) !== "planning_area") {
+      throw new Error(`Core Visit 引用无效 Planning Area Candidate：${candidateId}`);
+    }
+    if (parent.preference === "excluded") throw new Error(`Core Visit 不能绑定已排除 Planning Area：${candidateId}`);
+    return parent;
+  };
+
+  const formalizeCandidate = (
+    source: DestinationGenerateOutput["candidates"][number],
+    parentId: string | null,
+  ) => {
+    const placeId = idMappings.get(source.placeTemporaryId);
+    if (!placeId) throw new Error(`Backbone Discovery 未能正式化 Place：${source.placeTemporaryId}`);
+    const place = plan.places.find((item) => item.id === placeId);
+    if (!place) throw new Error(`Backbone Discovery 找不到正式 Place：${placeId}`);
+    if (source.planningRole === "planning_area" && parentId !== null) throw new Error("Planning Area 不得绑定父 Candidate。");
+    if (source.planningRole === "core_visit" && !parentId) throw new Error("Core Visit 必须绑定 Planning Area。");
+
+    const existing = candidateByPlaceId.get(placeId);
+    if (existing) {
+      idMappings.set(source.temporaryId, existing.id);
+      const existingRole = effectivePlanningRole(existing, place);
+
+      if (source.planningRole === "planning_area") {
+        if (existingRole !== "planning_area") throw new Error(`同一地点已存在其他规划角色，拒绝静默改为 Planning Area：${existing.id}`);
+      } else {
+        if (existingRole === "planning_area") throw new Error(`Planning Area 不得静默降为 Core Visit：${existing.id}`);
+        if (existing.planningAreaCandidateId && existing.planningAreaCandidateId !== parentId) {
+          throw new Error(`Candidate 已归属其他 Planning Area，拒绝静默 reparent：${existing.id}`);
+        }
+        if (existingRole === "detail_interest") {
+          existing.planningRole = "core_visit";
+          existing.planningAreaCandidateId = parentId;
+          updatedCandidateIds.add(existing.id);
+        } else if (existingRole === "core_visit" && existing.planningAreaCandidateId !== parentId) {
+          throw new Error(`Core Visit 已归属其他 Planning Area，拒绝静默 reparent：${existing.id}`);
+        }
+      }
+
+      updateAiMetadata(existing, source);
+      updatedCandidateIds.add(existing.id);
+      mergedDuplicateCount += 1;
+      return existing;
+    }
+
+    const candidate: TripCandidate = {
+      id: randomUUID(),
+      placeId,
+      planningAreaCandidateId: parentId,
+      planningRole: source.planningRole,
+      preference: source.defaultPreference,
+      source: "ai",
+      ...candidateMetadata(source),
+    };
+    plan.candidates.push(candidate);
+    candidateByPlaceId.set(placeId, candidate);
+    canonicalCandidateById.set(candidate.id, candidate);
+    idMappings.set(source.temporaryId, candidate.id);
+    addedCandidateIds.push(candidate.id);
+    return candidate;
+  };
+
+  // Phase A: formalize all Planning Areas first. Generated parent references in Phase B
+  // can then resolve to canonical Candidate IDs, including semantic duplicates that map
+  // onto an already-existing Planning Area.
+  for (const source of output.candidates.filter((candidate) => candidate.planningRole === "planning_area")) {
+    formalizeCandidate(source, null);
+  }
+
+  // Phase B: formalize Core Visits only after every possible generated parent is known.
+  for (const source of output.candidates.filter((candidate) => candidate.planningRole === "core_visit")) {
+    const parentRef = source.parentCandidateRef;
+    if (!parentRef) throw new Error(`Core Visit 缺少 parentCandidateRef：${source.temporaryId}`);
+    let parentId: string;
+    if (parentRef.type === "existing") {
+      parentId = parentRef.candidateId;
+    } else {
+      const parentSource = sourceByTemporaryId.get(parentRef.temporaryCandidateId);
+      if (!parentSource || parentSource.planningRole !== "planning_area") {
+        throw new Error(`generated parent 不是本轮 Planning Area：${parentRef.temporaryCandidateId}`);
+      }
+      const mapped = idMappings.get(parentRef.temporaryCandidateId);
+      if (!mapped) throw new Error(`generated parent 尚未正式化：${parentRef.temporaryCandidateId}`);
+      parentId = mapped;
+    }
+    requirePlanningAreaParent(parentId);
+    formalizeCandidate(source, parentId);
+  }
+
+  return {
+    plan: TravelPlanDocumentSchema.parse(plan),
+    output,
+    idMappings: Object.fromEntries(idMappings),
+    addedCandidateIds,
+    updatedCandidateIds: [...updatedCandidateIds],
+    addedPlaceIds,
+    mergedDuplicateCount,
   };
 }
 
@@ -91,7 +262,7 @@ export function applyCandidateDiscovery(current: TravelPlanDocument, value: unkn
     if (parentId) {
       const parent = canonicalCandidateById.get(parentId);
       const parentPlace = parent ? plan.places.find((place) => place.id === parent.placeId) : null;
-      if (!parent || parentPlace?.kind !== "city") throw new Error(`Candidate Discovery 引用无效 Macro Candidate：${parentId}`);
+      if (!parent || !parentPlace || effectivePlanningRole(parent, parentPlace) !== "planning_area") throw new Error(`Candidate Discovery 引用无效 Planning Area Candidate：${parentId}`);
     }
     const existing = candidateByPlaceId.get(placeId);
     if (existing) {
@@ -103,13 +274,7 @@ export function applyCandidateDiscovery(current: TravelPlanDocument, value: unkn
         existing.planningAreaCandidateId = parentId;
         updatedCandidateIds.add(existing.id);
       }
-      const previousScore = existing.aiScore ?? -1;
-      if (source.aiScore >= previousScore) {
-        existing.aiReason = source.aiReason;
-        existing.aiScore = source.aiScore;
-        existing.suggestedDurationMinutes = source.suggestedDurationMinutes;
-      }
-      existing.tags = mergeTags(existing.tags, source.tags);
+      updateAiMetadata(existing, source);
       updatedCandidateIds.add(existing.id);
       mergedDuplicateCount += 1;
       continue;
