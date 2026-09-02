@@ -44,11 +44,38 @@ function currentPlan() {
   });
 }
 
-function action(tripId: string, baseGeneration: number, origin: "conversation" | "cta" = "conversation") {
+function conversationParameters(request: "promote_to_core" | null) {
+  return {
+    request,
+    candidateId: "detail",
+    candidateIds: [],
+    preference: null,
+    dayId: null,
+    dayIds: [],
+    stopId: null,
+    targetDayId: null,
+    targetIndex: null,
+    index: null,
+    anchor: null,
+    placeId: null,
+    label: null,
+    notes: null,
+    activity: null,
+    fields: [],
+    changes: null,
+    placeChanges: null,
+    candidateChanges: { suggestedDurationMinutes: 480, aiReason: "重要游览地，预留一天" },
+    allowWeb: null,
+  };
+}
+
+function action(tripId: string, baseGeneration: number, origin: "conversation" | "cta" = "conversation", request: "promote_to_core" | null = "promote_to_core") {
   return AiActionRecordSchema.parse({
-    id: `${origin}-promotion`, tripId, stage: "destinations", actionType: "destination.edit", executor: "deterministic", origin,
+    id: `${origin}-${request ?? "ordinary"}`, tripId, stage: "destinations", actionType: "destination.edit", executor: "deterministic", origin,
     sourceMessageId: origin === "conversation" ? "message-1" : null,
-    parameters: { candidateId: "detail", candidateChanges: { suggestedDurationMinutes: 480, aiReason: "重要游览地，预留一天" }, placeChanges: null },
+    parameters: origin === "conversation"
+      ? conversationParameters(request)
+      : { candidateId: "detail", request: "promote_to_core", candidateChanges: { suggestedDurationMinutes: 480, aiReason: "重要游览地，预留一天" } },
     targetIds: ["detail"], scope: { type: "candidate_pool", id: null }, baseGeneration, status: "pending_confirmation",
     taskId: null, proposalId: null, resultRef: null, startedAt: null, updatedAt: "2026-09-03T00:00:00.000Z", completedAt: null, errorSummary: null,
   });
@@ -64,7 +91,7 @@ describe("controlled Detail to Core promotion", () => {
     db.createAction(action(trip.id, before.contentGeneration));
     expect(db.requireTrip(trip.id).plan.candidates.find((candidate) => candidate.id === "detail")?.planningRole).toBe("detail_interest");
 
-    const result = confirmDetailToCorePromotionV3(db, trip.id, "conversation-promotion", { expectedGeneration: before.contentGeneration });
+    const result = confirmDetailToCorePromotionV3(db, trip.id, "conversation-promote_to_core", { expectedGeneration: before.contentGeneration });
     expect(result?.action.status).toBe("completed");
     const after = db.requireTrip(trip.id);
     const promoted = after.plan.candidates.find((candidate) => candidate.id === "detail");
@@ -75,13 +102,24 @@ describe("controlled Detail to Core promotion", () => {
     db.close();
   });
 
-  it("does not expose the promotion shortcut to CTA-origin destination.edit actions", () => {
+  it("does not treat an ordinary destination edit as a Core promotion without the explicit sentinel", () => {
+    const db = store();
+    const trip = db.createTrip();
+    db.writePlan(trip.id, currentPlan(), 0, { source: "test", summary: "fixture" });
+    const current = db.requireTrip(trip.id);
+    db.createAction(action(trip.id, current.contentGeneration, "conversation", null));
+    expect(confirmDetailToCorePromotionV3(db, trip.id, "conversation-ordinary", { expectedGeneration: current.contentGeneration })).toBeNull();
+    expect(db.requireTrip(trip.id).plan.candidates.find((candidate) => candidate.id === "detail")?.planningRole).toBe("detail_interest");
+    db.close();
+  });
+
+  it("does not expose the promotion shortcut to CTA-origin destination.edit actions even with the sentinel", () => {
     const db = store();
     const trip = db.createTrip();
     db.writePlan(trip.id, currentPlan(), 0, { source: "test", summary: "fixture" });
     const current = db.requireTrip(trip.id);
     db.createAction(action(trip.id, current.contentGeneration, "cta"));
-    expect(confirmDetailToCorePromotionV3(db, trip.id, "cta-promotion", { expectedGeneration: current.contentGeneration })).toBeNull();
+    expect(confirmDetailToCorePromotionV3(db, trip.id, "cta-promote_to_core", { expectedGeneration: current.contentGeneration })).toBeNull();
     expect(db.requireTrip(trip.id).plan.candidates.find((candidate) => candidate.id === "detail")?.planningRole).toBe("detail_interest");
     db.close();
   });
