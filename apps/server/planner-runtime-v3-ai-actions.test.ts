@@ -82,32 +82,40 @@ function backbonePlan(base: TravelPlanDocument) {
 
 function itineraryPlan(base: TravelPlanDocument, dayCount: number, includeThird = false) {
   const places = [
+    { id: "place-area", nameZh: "测试停留区", nameLocal: null, nameEn: "Test Area", kind: "city" as const, city: "Test", region: null, country: "Test", countryCode: "TT", approximate: false },
     { id: "place-a", nameZh: "地点 A", nameLocal: null, nameEn: "A", kind: "attraction" as const, city: "Test", region: null, country: "Test", countryCode: "TT", approximate: false },
     { id: "place-b", nameZh: "地点 B", nameLocal: null, nameEn: "B", kind: "attraction" as const, city: "Test", region: null, country: "Test", countryCode: "TT", approximate: false },
     ...(includeThird ? [{ id: "place-c", nameZh: "未定位 C", nameLocal: null, nameEn: "C", kind: "attraction" as const, city: "Test", region: null, country: "Test", countryCode: "TT", approximate: false }] : []),
   ];
-  const candidates = places.map((place, index) => ({ id: `candidate-${String.fromCharCode(97 + index)}`, placeId: place.id, planningAreaCandidateId: null, preference: "optional" as const, source: "user" as const, aiReason: null, aiScore: null, suggestedDurationMinutes: 60, tags: [] }));
+  const candidates = [
+    { id: "area", placeId: "place-area", planningAreaCandidateId: null, planningRole: "planning_area" as const, preference: "must_go" as const, source: "user" as const, aiReason: null, aiScore: null, suggestedDurationMinutes: null, tags: [] },
+    { id: "candidate-a", placeId: "place-a", planningAreaCandidateId: "area", planningRole: "detail_interest" as const, preference: "optional" as const, source: "user" as const, aiReason: null, aiScore: null, suggestedDurationMinutes: 60, tags: [] },
+    { id: "candidate-b", placeId: "place-b", planningAreaCandidateId: "area", planningRole: "detail_interest" as const, preference: "optional" as const, source: "user" as const, aiReason: null, aiScore: null, suggestedDurationMinutes: 60, tags: [] },
+    ...(includeThird ? [{ id: "candidate-c", placeId: "place-c", planningAreaCandidateId: "area", planningRole: "detail_interest" as const, preference: "optional" as const, source: "user" as const, aiReason: null, aiScore: null, suggestedDurationMinutes: 60, tags: [] }] : []),
+  ];
   const days: Day[] = Array.from({ length: dayCount }, (_, index) => ({
     id: `day-${index + 1}`,
+    stayBlockId: "block-area",
     dayNumber: index + 1,
     date: null,
     title: `Day ${index + 1}`,
     transferMode: "none",
     detailLevel: "planned",
     detailStatus: null,
-    startAnchor: { id: `start-${index + 1}`, placeId: null, label: null, notes: null },
+    startAnchor: { id: `start-${index + 1}`, placeId: "place-area", label: "测试停留区", notes: null },
     stops: [
       { id: `stop-a-${index + 1}`, candidateId: "candidate-a", placeId: "place-a", activity: "A", period: null, startTime: null, endTime: null, durationMinutes: 60, transportFromPrevious: null, scheduleVerification: null, costNote: null, costVerification: null, notes: null },
       { id: `stop-b-${index + 1}`, candidateId: "candidate-b", placeId: "place-b", activity: "B", period: null, startTime: null, endTime: null, durationMinutes: 60, transportFromPrevious: null, scheduleVerification: null, costNote: null, costVerification: null, notes: null },
     ],
-    endAnchor: { id: `end-${index + 1}`, placeId: null, label: null, notes: null },
+    endAnchor: { id: `end-${index + 1}`, placeId: "place-area", label: "测试停留区", notes: null },
   }));
-  return TravelPlanDocumentSchema.parse({ ...base, stage: "itinerary_planning", places, candidates, days });
+  const staged = TravelPlanDocumentSchema.parse({ ...base, stage: "itinerary_planning", places, candidates, days, planningState: { macroBasisVersion: 1, macroBasisFingerprint: null } });
+  return TravelPlanDocumentSchema.parse({ ...staged, planningState: { macroBasisVersion: 1, macroBasisFingerprint: computeMacroDependencyFingerprintV3(staged) } });
 }
 
 function resolveAB(store: TravelStoreV3, tripId: string, generation: number) {
   const trip = store.requireTrip(tripId);
-  for (const [index, id] of ["place-a", "place-b"].entries()) {
+  for (const [index, id] of ["place-area", "place-a", "place-b"].entries()) {
     const place = trip.plan.places.find((item) => item.id === id)!;
     store.upsertPlaceResolution(tripId, { tripId, placeId: id, geoFingerprint: placeGeoFingerprint(place), status: "resolved", method: "manual_coordinates", provider: null, providerPlaceId: null, latitude: 35 + index, longitude: 135 + index, address: null, confidence: null, resolvedAt: new Date().toISOString(), errorMessage: null }, generation);
   }
@@ -156,7 +164,7 @@ describe("TravelPlannerRuntimeV3 AI action regressions", () => {
       { candidateId: "candidate-b", activity: "B", period: "morning", startTime: "09:00", endTime: "10:00", durationMinutes: 60, transportFromPrevious: null, scheduleVerification: { status: "estimated", checkedAt: null }, costNote: null, costVerification: null, notes: null },
       { candidateId: "candidate-a", activity: "A", period: "morning", startTime: "10:30", endTime: "11:30", durationMinutes: 60, transportFromPrevious: { mode: "walk", durationMinutes: null, note: null, verification: { status: "estimated", checkedAt: null } }, scheduleVerification: { status: "estimated", checkedAt: null }, costNote: null, costVerification: null, notes: null },
     ] }));
-    const rt = runtime(store, async () => run({ schemaVersion: 1, baseGeneration: 1, result: { type: "success", assistantMessage: "只更新两天", title: "局部更新", explanation: "其余日期保持不变", affectedDayIds, dayUpdates } }));
+    const rt = runtime(store, async () => run({ schemaVersion: 1, baseGeneration: 1, result: { type: "success", assistantMessage: "只更新两天", title: "局部更新", explanation: "其余日期保持不变", affectedDayIds, dayUpdates, unscheduledCandidates: [] } }));
     const started = rt.createCtaAction({ tripId: created.id, stage: "itinerary", actionType: "itinerary.detail.update", parameters: { dayIds: affectedDayIds }, targetIds: affectedDayIds, requestKey: "detail-update-2-of-20" });
     await waitFor(() => store.getAction(started.action.id)?.status === "awaiting_apply");
     const action = store.getAction(started.action.id)!; const proposal = store.getProposal(action.proposalId!)!;
@@ -192,6 +200,7 @@ describe("TravelPlannerRuntimeV3 AI action regressions", () => {
     const rt = runtime(store, async () => run({ schemaVersion: 1, baseGeneration: 1, result: {
       type: "success", assistantMessage: "无需调整", title: "确认本日", explanation: "现有内容仍然有效", affectedDayIds: [day.id],
       dayUpdates: [{ dayId: day.id, stops: day.stops.map(({ candidateId, activity, period, startTime, endTime, durationMinutes, transportFromPrevious, scheduleVerification, costNote, costVerification, notes }) => ({ candidateId, activity, period, startTime, endTime, durationMinutes, transportFromPrevious, scheduleVerification, costNote, costVerification, notes })) }],
+      unscheduledCandidates: [],
     } }));
     const started = rt.createCtaAction({ tripId: created.id, stage: "itinerary", actionType: "itinerary.detail.update", parameters: { dayIds: [day.id] }, targetIds: [day.id], requestKey: "detail-no-content-change" });
     await waitFor(() => store.getAction(started.action.id)?.status === "completed");
