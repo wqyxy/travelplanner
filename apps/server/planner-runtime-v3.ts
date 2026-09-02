@@ -45,7 +45,7 @@ import { actionRegistration } from "./ai-registries-v3.js";
 import { parseActionParametersV3 } from "./ai-action-input-contracts-v3.js";
 import { AiTaskMonitorV3, aiErrorMessageV3, normalizePublicAiSummaryV3 } from "./ai-task-monitor-v3.js";
 import { applyCandidateDiscovery } from "./candidate-workflow-v2.js";
-import { CANDIDATE_DISCOVERY_BATCH_LIMIT, validateMicroCandidateDiscovery } from "./candidate-discovery-policy-v2.js";
+import { CANDIDATE_DISCOVERY_BATCH_LIMIT, filterCoreVisitDuplicatesV3, validateMicroCandidateDiscovery } from "./candidate-discovery-policy-v2.js";
 import { classifyCodexFailure } from "./codex-client.js";
 import { ROUTE_DAY_BATCH_CONCURRENCY, type DayRouteServiceV2 } from "./day-route-v2.js";
 import { analyzeItineraryImpactV3 } from "./itinerary-impact-v3.js";
@@ -57,7 +57,12 @@ import {
 } from "./itinerary-workflow-v3.js";
 import { applyPlanCommands } from "./plan-commands-v2.js";
 import { buildPlanningCoverage } from "./planning-areas-v2.js";
-import { buildBackboneContextV3, buildSkeletonContextV3 } from "./planning-context-v3.js";
+import {
+  buildBackboneContextV3,
+  buildInterestAreaContextV3,
+  buildSkeletonContextV3,
+  interestDiscoveryReadinessV3,
+} from "./planning-context-v3.js";
 import { effectivePlanningRole } from "./planning-roles-v3.js";
 import type { PlaceResolutionBatchProgress, PlaceResolverV2 } from "./place-resolver-v2.js";
 import { placeGeoFingerprint, resolutionIsCurrent } from "./place-resolver-v2.js";
@@ -643,6 +648,12 @@ export class TravelPlannerRuntimeV3 {
       return { ...base, ...backbone, backboneCandidates };
     }
     if (action.actionType.startsWith("interest.")) {
+      const capacityAware = action.actionType === "interest.discover" || action.actionType === "interest.supplement";
+      if (capacityAware) {
+        const readiness = interestDiscoveryReadinessV3(trip.plan);
+        const targetIds = action.targetIds.length ? [...new Set(action.targetIds)] : readiness.adoptedPlanningAreaIds;
+        return { ...base, tripFacts: trip.plan.trip, targetMacroCandidateIds: targetIds, interestDiscoveryReadiness: readiness };
+      }
       const targetIds = action.targetIds.length ? action.targetIds : trip.plan.candidates.filter((candidate) => {
         const place = places.get(candidate.placeId);
         return candidate.preference !== "excluded" && Boolean(place) && effectivePlanningRole(candidate, place!) === "planning_area";
@@ -895,17 +906,17 @@ export class TravelPlannerRuntimeV3 {
 
   private async persistInterestDiscovery(action: AiActionRecord, taskId: string | null = null) {
     const original = this.options.store.requireTrip(action.tripId);
-    const places = new Map(original.plan.places.map((place) => [place.id, place]));
-    const targets = [...new Set(action.targetIds.length ? action.targetIds : original.plan.candidates.filter((candidate) => {
-      const place = places.get(candidate.placeId);
-      return candidate.preference !== "excluded" && Boolean(place) && effectivePlanningRole(candidate, place!) === "planning_area";
-    }).map((candidate) => candidate.id))];
-    if (!targets.length) throw new Error("请先生成并保留至少一个停留区域。");
-
+    const readiness = interestDiscoveryReadinessV3(original.plan);
+    if (!readiness.ready) {
+      if (readiness.macroBasisState === "dirty") throw new Error("路线和天数已受前序修改影响，请先更新并确认路线和天数，再补充景点。");
+      throw new Error("请先完成并确认路线和天数，再补充景点。");
+    }
+    const adopted = new Set(readiness.adoptedPlanningAreaIds);
+    const targets = [...new Set(action.targetIds.length ? action.targetIds : readiness.adoptedPlanningAreaIds)];
+    if (!targets.length) throw new Error("当前路线没有可用于兴趣点研究的停留区域。");
     for (const targetId of targets) {
-      const target = original.plan.candidates.find((candidate) => candidate.id === targetId);
-      const targetPlace = target ? original.plan.places.find((place) => place.id === target.placeId) : null;
-      if (!target || !targetPlace || target.preference === "excluded" || effectivePlanningRole(target, targetPlace) !== "planning_area") throw new Error(`兴趣点研究目标不是有效 Planning Area：${targetId}`);
+      if (!adopted.has(targetId)) throw new Error(`兴趣点研究只能针对路线中已采用的停留区域：${targetId}`);
+      buildInterestAreaContextV3(original.plan, targetId);
     }
 
     let expectedGeneration = action.baseGeneration;
@@ -914,6 +925,7 @@ export class TravelPlannerRuntimeV3 {
     let aiSuggestedCount = 0;
     let actualAddedCount = 0;
     let mergedDuplicateCount = 0;
+    let skippedCoreDuplicateCount = 0;
     let peakConcurrency = 0;
     let cancelRequested = false;
     let haltRequested = false;
@@ -968,15 +980,16 @@ export class TravelPlannerRuntimeV3 {
     const processTarget = async (targetId: string) => {
       throwIfHalted();
       const snapshot = this.options.store.requireTrip(action.tripId);
+      const areaContext = buildInterestAreaContextV3(snapshot.plan, targetId);
       const target = snapshot.plan.candidates.find((candidate) => candidate.id === targetId);
       const targetPlace = target ? snapshot.plan.places.find((place) => place.id === target.placeId) : null;
-      if (!target || !targetPlace || target.preference === "excluded" || effectivePlanningRole(target, targetPlace) !== "planning_area") throw new Error(`兴趣点研究目标不是有效 Planning Area：${targetId}`);
+      if (!target || !targetPlace) throw new Error(`兴趣点研究目标不是有效 Planning Area：${targetId}`);
       const run = await this.options.ai.startAction<any>({
         actionType: action.actionType,
         state: {
           actionType: action.actionType,
           baseGeneration: action.baseGeneration,
-          tripFacts: original.plan.trip,
+          ...areaContext,
           targetMacroCandidate: { ...target, place: targetPlace },
           existingPlaces: snapshot.plan.candidates.filter((candidate) => candidate.planningAreaCandidateId === targetId).map((candidate) => ({ ...candidate, place: snapshot.plan.places.find((place) => place.id === candidate.placeId) ?? null })),
           areaRequest: { planningAreaCandidateId: targetId, maxNewCandidates: CANDIDATE_DISCOVERY_BATCH_LIMIT },
@@ -1004,10 +1017,12 @@ export class TravelPlannerRuntimeV3 {
           const current = this.options.store.requireTrip(action.tripId);
           if (current.contentGeneration !== expectedGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
           const normalized = normalizeCandidateDiscoveryOutput(output, "micro");
-          const applied = applyCandidateDiscovery(current.plan, normalized);
+          const filtered = filterCoreVisitDuplicatesV3(current.plan, normalized);
+          skippedCoreDuplicateCount += filtered.skippedCoreDuplicateCount;
+          const applied = applyCandidateDiscovery(current.plan, filtered.output);
           actualAddedCount += applied.addedCandidateIds.length;
           mergedDuplicateCount += applied.mergedDuplicateCount;
-          for (const candidate of normalized.candidates) {
+          for (const candidate of filtered.output.candidates) {
             const placeId = applied.idMappings[candidate.placeTemporaryId];
             if (placeId) resolutionPlaceIds.add(placeId);
           }
@@ -1091,13 +1106,14 @@ export class TravelPlannerRuntimeV3 {
       aiSuggestedCount,
       actualAddedCount,
       mergedDuplicateCount,
+      skippedCoreDuplicateCount,
       resolutionRequestedCount: resolutionPlaceIds.size,
       resolvedCount,
       unresolvedCount,
       peakConcurrency,
     };
     if (taskId) this.options.tasks.metadata(taskId, { ...(this.options.store.getAiTask(taskId)?.metadata ?? {}), interestDiscovery });
-    const resultRef = `interest:v1;areas=${successfulAreaIds.length}/${targets.length};failed=${failedAreas.length};suggested=${aiSuggestedCount};added=${actualAddedCount};merged=${mergedDuplicateCount};resolved=${resolvedCount};pending=${unresolvedCount}`;
+    const resultRef = `interest:v1;areas=${successfulAreaIds.length}/${targets.length};failed=${failedAreas.length};suggested=${aiSuggestedCount};added=${actualAddedCount};merged=${mergedDuplicateCount};coreSkipped=${skippedCoreDuplicateCount};resolved=${resolvedCount};pending=${unresolvedCount}`;
     throwIfHalted();
     this.options.store.completeAction(action.id, resultRef);
   }
