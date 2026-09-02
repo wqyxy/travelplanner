@@ -51,13 +51,13 @@ import { ROUTE_DAY_BATCH_CONCURRENCY, type DayRouteServiceV2 } from "./day-route
 import { analyzeItineraryImpactV3 } from "./itinerary-impact-v3.js";
 import {
   applyDetailedUpdatesV3,
-  buildMacroDaysV3,
+  applySkeletonPlanV3,
   deriveItineraryUpdateStateV3,
   detailedReplacementCommandsV3,
-  macroReplacementCommandsV3,
 } from "./itinerary-workflow-v3.js";
 import { applyPlanCommands } from "./plan-commands-v2.js";
 import { buildPlanningCoverage } from "./planning-areas-v2.js";
+import { buildSkeletonContextV3 } from "./planning-context-v3.js";
 import type { PlaceResolutionBatchProgress, PlaceResolverV2 } from "./place-resolver-v2.js";
 import { placeGeoFingerprint, resolutionIsCurrent } from "./place-resolver-v2.js";
 import { GoogleMapsLinkService } from "./google-maps-link.js";
@@ -638,14 +638,11 @@ export class TravelPlannerRuntimeV3 {
       return { ...base, tripFacts: trip.plan.trip, targetMacroCandidateIds: targetIds };
     }
     if (action.actionType === "itinerary.generate" || action.actionType === "itinerary.replan") {
+      const skeleton = buildSkeletonContextV3(trip.plan);
       return {
         ...base,
-        tripFacts: trip.plan.trip,
+        ...skeleton,
         stage: trip.plan.stage,
-        destinations: trip.plan.candidates
-          .filter((candidate) => candidate.preference !== "excluded" && places.get(candidate.placeId)?.kind === "city")
-          .map((candidate) => ({ ...candidate, place: places.get(candidate.placeId) })),
-        macroDays: trip.plan.days.map((day) => ({ id: day.id, dayNumber: day.dayNumber, date: day.date, title: day.title, transferMode: day.transferMode, startAnchor: day.startAnchor, endAnchor: day.endAnchor })),
         macroUpdateState: deriveItineraryUpdateStateV3(trip.plan).macro,
       };
     }
@@ -1088,36 +1085,50 @@ export class TravelPlannerRuntimeV3 {
     return this.createProposalForAction(action, output.title, output.explanation, commands, { type: "candidate_pool", id: null });
   }
 
+  private completeRequiresWorkflowStep(action: AiActionRecord, result: any) {
+    if (result?.type === "requires_workflow_step") {
+      this.options.store.completeAction(action.id, `requiresWorkflowStep:${result.requiresWorkflowStep}`);
+      return true;
+    }
+    if (result?.type === "requires_stage") {
+      this.options.store.completeAction(action.id, `requiresStage:${result.requiresStage}`);
+      return true;
+    }
+    return false;
+  }
+
   private persistItineraryGenerate(action: AiActionRecord, output: ItineraryGenerateOutput) {
     const result = output.result;
-    if (result.type === "requires_stage") {
-      this.options.store.completeAction(action.id, `requiresStage:${result.requiresStage}`);
-      return;
-    }
+    if (this.completeRequiresWorkflowStep(action, result)) return;
     const trip = this.options.store.requireTrip(action.tripId);
-    if (trip.plan.days.length) throw new Error("首次生成行程骨架只能在尚未存在 Day 时执行；已有骨架请使用重新规划。");
-    const days = buildMacroDaysV3(trip, result.destinations);
-    const plan = TravelPlanDocumentSchema.parse({ ...trip.plan, stage: "itinerary_planning", days });
-    const written = this.options.store.writePlan(action.tripId, plan, action.baseGeneration, { source: "action:itinerary.generate", summary: "AI 生成行程骨架" }, { keepActionId: action.id });
-    this.options.store.completeAction(action.id, `generation:${written.generation}`);
-    this.emit("travel.document.changed", { tripId: action.tripId, generation: written.generation, changedDayIds: days.map((day) => day.id) });
+    if (trip.plan.days.length) throw new Error("首次生成路线和天数只能在尚未存在 Day 时执行；已有结果请使用重新规划。");
+    if (result.type !== "success") throw new Error("路线和天数生成结果类型无效。");
+    const applied = applySkeletonPlanV3(trip, { stays: result.stays, omittedPlanningAreas: result.omittedPlanningAreas });
+    const written = this.options.store.writePlan(action.tripId, applied.plan, action.baseGeneration, { source: "action:itinerary.generate", summary: "AI 生成路线和天数" }, { keepActionId: action.id });
+    this.options.store.completeAction(action.id, `generation:${written.generation};omitted:${result.omittedPlanningAreas.length}`);
+    this.emit("travel.document.changed", { tripId: action.tripId, generation: written.generation, changedDayIds: applied.affectedDayIds });
     void this.recalculateAllMacroRoutes(action.tripId, written.generation);
   }
 
   private persistItineraryReplacement(action: AiActionRecord, output: ItineraryReplanOutput) {
     const result = output.result;
-    if (result.type === "requires_stage") { this.options.store.completeAction(action.id, `requiresStage:${result.requiresStage}`); return; }
+    if (this.completeRequiresWorkflowStep(action, result)) return;
+    if (result.type !== "success") throw new Error("路线和天数更新结果类型无效。");
     const trip = this.options.store.requireTrip(action.tripId);
-    const replacement = macroReplacementCommandsV3(trip, result.destinations);
-    if (!replacement.commands.length) { this.options.store.completeAction(action.id, "no-change"); return; }
-    return this.createProposalForAction(action, result.title, result.explanation, replacement.commands, { type: "trip", id: null }, replacement.affectedDayIds);
+    const applied = applySkeletonPlanV3(trip, { stays: result.stays, omittedPlanningAreas: result.omittedPlanningAreas });
+    if (same(applied.plan, trip.plan)) { this.options.store.completeAction(action.id, "no-change"); return; }
+    const written = this.options.store.writePlan(action.tripId, applied.plan, action.baseGeneration, { source: "action:itinerary.replan", summary: "AI 更新路线和天数" }, { keepActionId: action.id });
+    this.options.store.completeAction(action.id, `generation:${written.generation};affected:${applied.affectedDayIds.length};omitted:${result.omittedPlanningAreas.length}`);
+    this.emit("travel.document.changed", { tripId: action.tripId, generation: written.generation, changedDayIds: applied.affectedDayIds });
+    void this.recalculateAllMacroRoutes(action.tripId, written.generation);
   }
 
   private persistItineraryDetailGenerate(action: AiActionRecord, output: ItineraryDetailGenerateOutput) {
     const result = output.result;
-    if (result.type === "requires_stage") { this.options.store.completeAction(action.id, `requiresStage:${result.requiresStage}`); return; }
+    if (this.completeRequiresWorkflowStep(action, result)) return;
+    if (result.type !== "success") throw new Error("详细行程生成结果类型无效。");
     const trip = this.options.store.requireTrip(action.tripId);
-    if (!trip.plan.days.length) throw new Error("请先完成第四步行程骨架。");
+    if (!trip.plan.days.length) throw new Error("请先完成路线和天数。");
     const plan = applyDetailedUpdatesV3(trip, result.dayUpdates, true);
     validateItineraryReferences(trip, plan.days, this.options.store.listPlaceResolutions(action.tripId));
     const written = this.options.store.writePlan(action.tripId, plan, action.baseGeneration, { source: "action:itinerary.detail.generate", summary: "AI 生成每日详细行程" }, { keepActionId: action.id });
@@ -1128,7 +1139,8 @@ export class TravelPlannerRuntimeV3 {
 
   private persistItineraryDetailUpdate(action: AiActionRecord, output: ItineraryDetailUpdateOutput) {
     const result = output.result;
-    if (result.type === "requires_stage") { this.options.store.completeAction(action.id, `requiresStage:${result.requiresStage}`); return; }
+    if (this.completeRequiresWorkflowStep(action, result)) return;
+    if (result.type !== "success") throw new Error("详细行程更新结果类型无效。");
     const trip = this.options.store.requireTrip(action.tripId);
     const requestedIds = Array.isArray(action.parameters.dayIds) && action.parameters.dayIds.length
       ? action.parameters.dayIds.map(String)
@@ -1149,7 +1161,8 @@ export class TravelPlannerRuntimeV3 {
 
   private persistItineraryRepair(action: AiActionRecord, output: ItineraryRepairOutput) {
     const result = output.result;
-    if (result.type === "requires_stage") { this.options.store.completeAction(action.id, `requiresStage:${result.requiresStage}`); return; }
+    if (this.completeRequiresWorkflowStep(action, result)) return;
+    if (result.type !== "success") throw new Error("行程修复结果类型无效。");
     const trip = this.options.store.requireTrip(action.tripId);
     validateItineraryReferences(trip, result.days, this.options.store.listPlaceResolutions(action.tripId));
     const commands = replacementCommands(trip.plan, result.days);
@@ -1159,7 +1172,8 @@ export class TravelPlannerRuntimeV3 {
 
   private persistDayOptimize(action: AiActionRecord, output: ItineraryDayOptimizeOutput) {
     const result = output.result;
-    if (result.type === "requires_stage") { this.options.store.completeAction(action.id, `requiresStage:${result.requiresStage}`); return; }
+    if (this.completeRequiresWorkflowStep(action, result)) return;
+    if (result.type !== "success") throw new Error("单日优化结果类型无效。");
     const trip = this.options.store.requireTrip(action.tripId);
     const day = trip.plan.days.find((item) => item.id === result.dayId);
     if (!day) throw new Error(`未知 Day：${result.dayId}`);
@@ -1189,7 +1203,8 @@ export class TravelPlannerRuntimeV3 {
 
   private persistRefine(action: AiActionRecord, output: ItineraryRefineOutput) {
     const result = output.result;
-    if (result.type === "requires_stage") { this.options.store.completeAction(action.id, `requiresStage:${result.requiresStage}`); return; }
+    if (this.completeRequiresWorkflowStep(action, result)) return;
+    if (result.type !== "success") throw new Error("细化行程结果类型无效。");
     const trip = this.options.store.requireTrip(action.tripId);
     const commands = refinementCommands(trip.plan, output);
     if (!commands.length) { this.options.store.completeAction(action.id, "no-change"); return; }
