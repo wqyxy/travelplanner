@@ -24,11 +24,17 @@ function publicTaskLabel(task: AiTaskV3) {
   return "AI 助手";
 }
 
+function publicFailure(value: string | null, fallback: string) {
+  if (!value) return fallback;
+  if (/Candidate|Place|planningRole|stayBlockId|fingerprint|macroDirty|generation|scope|WorkflowStep|ConversationStage|CONTENT_GENERATION|\bAction\b|Anchor|Macro|Resolution|\bCAS\b|(?:destination|interest|itinerary)\./iu.test(value)) return fallback;
+  return value;
+}
+
 function publicTaskSummary(task: AiTaskV3) {
   if (task.agent === "map") return task.summary.replace(/Macro/giu, "区域间").replace(/attention/giu, "需处理").replace(/ready/giu, "已完成");
   if (ACTIVE.has(task.status)) return `正在${publicTaskLabel(task)}`;
   if (task.status === "completed") return `${publicTaskLabel(task)}已完成`;
-  if (task.status === "failed") return task.lastError || `${publicTaskLabel(task)}未完成`;
+  if (task.status === "failed") return publicFailure(task.lastError, `${publicTaskLabel(task)}未完成，请按页面提示重试`);
   return statusLabels[task.status] || "状态已更新";
 }
 
