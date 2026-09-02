@@ -30,7 +30,20 @@ export function planningAreaParent(candidate: TripCandidate, candidates: Iterabl
   return null;
 }
 
-function activeCandidatesByRole(context: PlanningRoleContextV3, role: PlanningRole): TripCandidate[] {
+function normalizeRoleContext(
+  contextOrCandidates: PlanningRoleContextV3 | TripCandidate[],
+  places?: Place[],
+): PlanningRoleContextV3 {
+  if (Array.isArray(contextOrCandidates)) return { candidates: contextOrCandidates, places: places ?? [] };
+  return contextOrCandidates;
+}
+
+function activeCandidatesByRole(
+  contextOrCandidates: PlanningRoleContextV3 | TripCandidate[],
+  role: PlanningRole,
+  places?: Place[],
+): TripCandidate[] {
+  const context = normalizeRoleContext(contextOrCandidates, places);
   const placesById = new Map(context.places.map((place) => [place.id, place]));
   return context.candidates.filter((candidate) => {
     if (candidate.preference === "excluded") return false;
@@ -39,14 +52,20 @@ function activeCandidatesByRole(context: PlanningRoleContextV3, role: PlanningRo
   });
 }
 
-export function activePlanningAreas(context: PlanningRoleContextV3): TripCandidate[] {
-  return activeCandidatesByRole(context, "planning_area");
+export function activePlanningAreas(context: PlanningRoleContextV3): TripCandidate[];
+export function activePlanningAreas(candidates: TripCandidate[], places: Place[]): TripCandidate[];
+export function activePlanningAreas(contextOrCandidates: PlanningRoleContextV3 | TripCandidate[], places?: Place[]): TripCandidate[] {
+  return activeCandidatesByRole(contextOrCandidates, "planning_area", places);
 }
 
-export function activeCoreVisits(context: PlanningRoleContextV3): TripCandidate[] {
-  return activeCandidatesByRole(context, "core_visit");
+export function activeCoreVisits(context: PlanningRoleContextV3): TripCandidate[];
+export function activeCoreVisits(candidates: TripCandidate[], places: Place[]): TripCandidate[];
+export function activeCoreVisits(contextOrCandidates: PlanningRoleContextV3 | TripCandidate[], places?: Place[]): TripCandidate[] {
+  return activeCandidatesByRole(contextOrCandidates, "core_visit", places);
 }
 
-export function activeDetailInterests(context: PlanningRoleContextV3): TripCandidate[] {
-  return activeCandidatesByRole(context, "detail_interest");
+export function activeDetailInterests(context: PlanningRoleContextV3): TripCandidate[];
+export function activeDetailInterests(candidates: TripCandidate[], places: Place[]): TripCandidate[];
+export function activeDetailInterests(contextOrCandidates: PlanningRoleContextV3 | TripCandidate[], places?: Place[]): TripCandidate[] {
+  return activeCandidatesByRole(contextOrCandidates, "detail_interest", places);
 }
