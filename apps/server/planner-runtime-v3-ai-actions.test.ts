@@ -45,8 +45,23 @@ function macroPlan(base: TravelPlanDocument) {
       { id: "place-m2", nameZh: "目的地二", nameLocal: null, nameEn: "Macro Two", kind: "city", city: "Macro Two", region: null, country: "Test", countryCode: "TT", approximate: false },
     ],
     candidates: [
-      { id: "macro-1", placeId: "place-m1", planningAreaCandidateId: null, preference: "must_go", source: "ai", aiReason: null, aiScore: 80, suggestedDurationMinutes: 1440, tags: [] },
-      { id: "macro-2", placeId: "place-m2", planningAreaCandidateId: null, preference: "optional", source: "ai", aiReason: null, aiScore: 80, suggestedDurationMinutes: 1440, tags: [] },
+      { id: "macro-1", placeId: "place-m1", planningAreaCandidateId: null, planningRole: "planning_area", preference: "must_go", source: "ai", aiReason: null, aiScore: 80, suggestedDurationMinutes: 1440, tags: [] },
+      { id: "macro-2", placeId: "place-m2", planningAreaCandidateId: null, planningRole: "planning_area", preference: "optional", source: "ai", aiReason: null, aiScore: 80, suggestedDurationMinutes: 1440, tags: [] },
+    ],
+  });
+}
+
+function backbonePlan(base: TravelPlanDocument) {
+  const macro = macroPlan(base);
+  return TravelPlanDocumentSchema.parse({
+    ...macro,
+    places: [
+      ...macro.places,
+      { id: "place-core", nameZh: "重要游览地", nameLocal: null, nameEn: "Core Visit", kind: "attraction", city: "Macro One", region: null, country: "Test", countryCode: "TT", approximate: false },
+    ],
+    candidates: [
+      ...macro.candidates,
+      { id: "core-1", placeId: "place-core", planningAreaCandidateId: "macro-1", planningRole: "core_visit", preference: "optional", source: "ai", aiReason: "重要", aiScore: 95, suggestedDurationMinutes: 360, tags: [] },
     ],
   });
 }
@@ -82,6 +97,22 @@ function resolveAB(store: TravelStoreV3, tripId: string, generation: number) {
     const place = trip.plan.places.find((item) => item.id === id)!;
     store.upsertPlaceResolution(tripId, { tripId, placeId: id, geoFingerprint: placeGeoFingerprint(place), status: "resolved", method: "manual_coordinates", provider: null, providerPlaceId: null, latitude: 35 + index, longitude: 135 + index, address: null, confidence: null, resolvedAt: new Date().toISOString(), errorMessage: null }, generation);
   }
+}
+
+function mixedBackboneOutput(baseGeneration: number) {
+  return {
+    schemaVersion: 2,
+    baseGeneration,
+    assistantMessage: "生成停留区域和重要游览地",
+    places: [
+      { id: "tmp-area-place", nameZh: "目的地一", nameLocal: null, nameEn: "Macro One", kind: "city", city: "Macro One", region: null, country: "Test", countryCode: "TT", approximate: false },
+      { id: "tmp-core-place", nameZh: "核心景点", nameLocal: null, nameEn: "Core Attraction", kind: "attraction", city: "Macro One", region: null, country: "Test", countryCode: "TT", approximate: false },
+    ],
+    candidates: [
+      { temporaryId: "tmp-area", placeTemporaryId: "tmp-area-place", planningRole: "planning_area", parentCandidateRef: null, aiReason: "适合作为停留区域", aiScore: 90, suggestedDurationMinutes: null, tags: [], defaultPreference: "optional" },
+      { temporaryId: "tmp-core", placeTemporaryId: "tmp-core-place", planningRole: "core_visit", parentCandidateRef: { type: "generated", temporaryCandidateId: "tmp-area" }, aiReason: "显著影响日程容量", aiScore: 98, suggestedDurationMinutes: 360, tags: [], defaultPreference: "optional" },
+    ],
+  };
 }
 
 describe("TravelPlannerRuntimeV3 AI action regressions", () => {
@@ -155,12 +186,16 @@ describe("TravelPlannerRuntimeV3 AI action regressions", () => {
     store.close();
   });
 
-  it("resolves every generated Macro mapping best-effort before destination generation completes", async () => {
-    const store = db(); const created = store.createTrip(); const resolvedIds: string[] = [];
+  it("saves mixed Backbone candidates before resolving them and formalizes Core parent references", async () => {
+    const store = db(); const created = store.createTrip(); const resolvedIds: string[] = []; let sawSavedCandidates = false;
     store.writePlan(created.id, { ...created.plan, trip: { ...created.plan.trip, brief: { ...created.plan.trip.brief, destination: "Test" }, preferences: ["自然风景"] } }, 0, { source: "test", summary: "requirements fixture" });
     const resolver = {
       resolve: async () => ({ resolution: null, candidates: [] }),
       resolveMany: async (tripId: string, placeIds: string[], generation: number, _signal?: AbortSignal, onProgress?: (event: any) => void) => {
+        const saved = store.requireTrip(tripId);
+        sawSavedCandidates = saved.contentGeneration === generation
+          && saved.plan.candidates.some((candidate) => candidate.planningRole === "planning_area")
+          && saved.plan.candidates.some((candidate) => candidate.planningRole === "core_visit");
         const results: Array<{ resolution: PlaceResolution; candidates: [] }> = [];
         for (const [index, placeId] of placeIds.entries()) {
           const trip = store.requireTrip(tripId); const place = trip.plan.places.find((item) => item.id === placeId)!;
@@ -177,37 +212,67 @@ describe("TravelPlannerRuntimeV3 AI action regressions", () => {
       },
       searchCandidates: async () => [],
     } as unknown as PlaceResolverV2;
-    const rt = runtime(store, async () => run({
-      schemaVersion: 1,
-      baseGeneration: 1,
-      assistantMessage: "生成目的地",
-      places: [
-        { id: "tmp-place-1", nameZh: "目的地一", nameLocal: null, nameEn: "Macro One", kind: "city", city: "Macro One", region: null, country: "Test", countryCode: "TT", approximate: false },
-        { id: "tmp-place-2", nameZh: "目的地二", nameLocal: null, nameEn: "Macro Two", kind: "city", city: "Macro Two", region: null, country: "Test", countryCode: "TT", approximate: false },
-      ],
-      candidates: [
-        { temporaryId: "tmp-candidate-1", placeTemporaryId: "tmp-place-1", planningAreaCandidateId: null, aiReason: "适合", aiScore: 90, suggestedDurationMinutes: 1440, tags: [], defaultPreference: "optional" },
-        { temporaryId: "tmp-candidate-2", placeTemporaryId: "tmp-place-2", planningAreaCandidateId: null, aiReason: "适合", aiScore: 88, suggestedDurationMinutes: 1440, tags: [], defaultPreference: "optional" },
-      ],
-    }), resolver);
+    const rt = runtime(store, async () => run(mixedBackboneOutput(1)), resolver);
     const started = rt.createCtaAction({ tripId: created.id, stage: "destinations", actionType: "destination.generate", parameters: {}, targetIds: [], requestKey: "destination-resolve" });
     await waitFor(() => store.getAction(started.action.id)?.status === "completed");
+    const plan = store.requireTrip(created.id).plan;
+    const area = plan.candidates.find((candidate) => candidate.planningRole === "planning_area")!;
+    const core = plan.candidates.find((candidate) => candidate.planningRole === "core_visit")!;
+    expect(sawSavedCandidates).toBe(true);
+    expect(core.planningAreaCandidateId).toBe(area.id);
+    expect(core.planningAreaCandidateId).not.toBe("tmp-area");
+    expect(plan.days).toEqual([]);
     expect(resolvedIds).toHaveLength(2);
     expect(store.listPlaceResolutions(created.id).filter((item) => item.status === "resolved")).toHaveLength(2);
     expect(store.getAction(started.action.id)?.resultRef).toMatch(/resolved:2\/2/);
     store.close();
   });
 
-  it("rejects generated destinations outside the saved United Kingdom scope", async () => {
+  it("keeps saved Backbone candidates when best-effort resolution fails", async () => {
+    const store = db(); const created = store.createTrip();
+    store.writePlan(created.id, { ...created.plan, trip: { ...created.plan.trip, brief: { ...created.plan.trip.brief, destination: "Test" } } }, 0, { source: "test", summary: "requirements fixture" });
+    const resolver = {
+      resolve: async () => ({ resolution: null, candidates: [] }),
+      resolveMany: async () => { throw new Error("provider unavailable"); },
+      searchCandidates: async () => [],
+    } as unknown as PlaceResolverV2;
+    const rt = runtime(store, async () => run(mixedBackboneOutput(1)), resolver);
+    const started = rt.createCtaAction({ tripId: created.id, stage: "destinations", actionType: "destination.generate", parameters: {}, targetIds: [], requestKey: "destination-resolution-failure" });
+    await waitFor(() => store.getAction(started.action.id)?.status === "completed");
+    const plan = store.requireTrip(created.id).plan;
+    expect(plan.candidates.filter((candidate) => candidate.planningRole === "planning_area")).toHaveLength(1);
+    expect(plan.candidates.filter((candidate) => candidate.planningRole === "core_visit")).toHaveLength(1);
+    expect(store.getAction(started.action.id)?.resultRef).toMatch(/resolved:0\/2/);
+    store.close();
+  });
+
+  it("rejects generated Backbone Places outside the saved United Kingdom scope", async () => {
     const store = db(); const created = store.createTrip();
     store.writePlan(created.id, { ...created.plan, trip: { ...created.plan.trip, brief: { ...created.plan.trip.brief, destination: "英国", additionalRequirements: "每天驾驶不超过 3 小时" } } }, 0, { source: "test", summary: "United Kingdom scope" });
     const actionStates: any[] = [];
-    const rt = runtime(store, async (input) => { actionStates.push(input.state); return run({ schemaVersion: 1, baseGeneration: 1, assistantMessage: "错误结果", places: [{ id: "tmp-place-fr", nameZh: "巴黎", nameLocal: null, nameEn: "Paris", kind: "city", city: "Paris", region: null, country: "France", countryCode: "FR", approximate: false }], candidates: [{ temporaryId: "tmp-candidate-fr", placeTemporaryId: "tmp-place-fr", planningAreaCandidateId: null, aiReason: "错误", aiScore: 50, suggestedDurationMinutes: 1440, tags: [], defaultPreference: "optional" }] }); });
+    const rt = runtime(store, async (input) => { actionStates.push(input.state); return run({ schemaVersion: 2, baseGeneration: 1, assistantMessage: "错误结果", places: [{ id: "tmp-place-fr", nameZh: "巴黎", nameLocal: null, nameEn: "Paris", kind: "city", city: "Paris", region: null, country: "France", countryCode: "FR", approximate: false }], candidates: [{ temporaryId: "tmp-candidate-fr", placeTemporaryId: "tmp-place-fr", planningRole: "planning_area", parentCandidateRef: null, aiReason: "错误", aiScore: 50, suggestedDurationMinutes: null, tags: [], defaultPreference: "optional" }] }); });
     const started = rt.createCtaAction({ tripId: created.id, stage: "destinations", actionType: "destination.generate", parameters: {}, targetIds: [], requestKey: "reject-outside-uk" });
     await waitFor(() => store.getAction(started.action.id)?.status === "failed");
     expect(store.getAction(started.action.id)?.errorSummary).toMatch(/范围外地点/);
     expect(actionStates[0].tripFacts.brief.additionalRequirements).toBe("每天驾驶不超过 3 小时");
     expect(store.requireTrip(created.id).plan.candidates).toEqual([]);
+    store.close();
+  });
+
+  it("manages Core Visit preference and removal through Step 2 destination actions", async () => {
+    const store = db(); const created = store.createTrip(); const written = store.writePlan(created.id, backbonePlan(created.plan), 0, { source: "test", summary: "backbone fixture" });
+    const rt = runtime(store, async () => { throw new Error("AI not expected"); });
+    const preference = rt.createCtaAction({ tripId: created.id, stage: "destinations", actionType: "destination.preference", parameters: { candidateIds: ["core-1"], preference: "must_go" }, targetIds: ["core-1"], requestKey: "core-preference" });
+    await waitFor(() => store.getAction(preference.action.id)?.status === "completed");
+    expect(store.requireTrip(created.id).plan.candidates.find((candidate) => candidate.id === "core-1")?.preference).toBe("must_go");
+
+    const removal = rt.createCtaAction({ tripId: created.id, stage: "destinations", actionType: "destination.remove", parameters: { candidateId: "core-1" }, targetIds: ["core-1"], requestKey: "core-remove" });
+    await waitFor(() => store.getAction(removal.action.id)?.status === "completed");
+    const after = store.requireTrip(created.id).plan;
+    expect(after.candidates.some((candidate) => candidate.id === "core-1")).toBe(false);
+    expect(after.candidates.some((candidate) => candidate.id === "macro-1")).toBe(true);
+    expect(after.contentGeneration).toBeUndefined();
+    expect(written.generation).toBe(1);
     store.close();
   });
 
@@ -225,7 +290,7 @@ describe("TravelPlannerRuntimeV3 AI action regressions", () => {
     store.close();
   });
 
-  it("allows unresolved Macro destinations while leaving their Route pending", async () => {
+  it("allows unresolved Planning Areas while leaving their Macro Route pending", async () => {
     const store = db(); const created = store.createTrip(); store.writePlan(created.id, macroPlan(created.plan), 0, { source: "test", summary: "macro itinerary fixture" });
     const rt = runtime(store, async () => run({
       schemaVersion: 2,
@@ -233,13 +298,14 @@ describe("TravelPlannerRuntimeV3 AI action regressions", () => {
       result: {
         type: "success",
         assistantMessage: "生成两天骨架",
-        destinations: [
-          { destinationCandidateId: "macro-1", stayDays: 1, transferMode: "none" },
-          { destinationCandidateId: "macro-2", stayDays: 1, transferMode: "rail" },
+        stays: [
+          { planningAreaCandidateId: "macro-1", stayDays: 1, transferModeFromPrevious: "none" },
+          { planningAreaCandidateId: "macro-2", stayDays: 1, transferModeFromPrevious: "rail" },
         ],
+        omittedPlanningAreas: [],
       },
     }));
-    const started = rt.createCtaAction({ tripId: created.id, stage: "itinerary", actionType: "itinerary.generate", parameters: {}, targetIds: [], requestKey: "generate-unresolved-macro" });
+    const started = rt.createCtaAction({ tripId: created.id, stage: "destinations", actionType: "itinerary.generate", parameters: {}, targetIds: [], requestKey: "generate-unresolved-macro" });
     await waitFor(() => store.getAction(started.action.id)?.status === "completed");
     expect(store.requireTrip(created.id).plan.days).toHaveLength(2);
     expect(store.getAction(started.action.id)?.errorSummary).toBeNull();
