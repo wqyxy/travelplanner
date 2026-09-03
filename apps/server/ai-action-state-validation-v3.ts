@@ -1,4 +1,5 @@
 import type { AiActionType } from "./ai-stage-contracts-v3.js";
+import { deriveExplicitReplanStayConstraintsV3 } from "./replan-intent-v3.js";
 
 type RecordValue = Record<string, unknown>;
 
@@ -24,12 +25,50 @@ function placeIdFromAnchor(value: unknown) {
   return typeof anchor?.placeId === "string" ? anchor.placeId : null;
 }
 
-export function validateAiActionOutputAgainstStateV3<T>(actionType: AiActionType, stateValue: unknown, outputValue: T): T {
-  if (actionType !== "itinerary.detail.generate" && actionType !== "itinerary.detail.update") return outputValue;
+function validateReplanOutputAgainstStateV3<T>(state: RecordValue, output: RecordValue, outputValue: T): T {
+  if (typeof state.baseGeneration === "number" && output.baseGeneration !== state.baseGeneration) {
+    throw new Error(`路线和天数输出 baseGeneration 必须保持为 ${state.baseGeneration}。`);
+  }
+  const result = asRecord(output.result);
+  if (!result || result.type !== "success") return outputValue;
 
+  const constraints = deriveExplicitReplanStayConstraintsV3(state);
+  if (!constraints.length) return outputValue;
+
+  const totals = new Map<string, number>();
+  const stays = Array.isArray(result.stays) ? result.stays.map(asRecord).filter((item): item is RecordValue => Boolean(item)) : [];
+  for (const stay of stays) {
+    if (typeof stay.planningAreaCandidateId !== "string" || typeof stay.stayDays !== "number") continue;
+    totals.set(stay.planningAreaCandidateId, (totals.get(stay.planningAreaCandidateId) ?? 0) + stay.stayDays);
+  }
+  const omitted = new Set(
+    Array.isArray(result.omittedPlanningAreas)
+      ? result.omittedPlanningAreas.map(asRecord).flatMap((item) => typeof item?.candidateId === "string" ? [item.candidateId] : [])
+      : [],
+  );
+
+  for (const constraint of constraints) {
+    const actualDays = totals.get(constraint.candidateId) ?? 0;
+    if (actualDays !== constraint.expectedDays) {
+      const direction = constraint.kind === "delta" && constraint.deltaDays !== null
+        ? `${constraint.deltaDays >= 0 ? "+" : ""}${constraint.deltaDays} 天`
+        : `改为 ${constraint.expectedDays} 天`;
+      throw new Error(`用户已明确要求${constraint.placeName}${direction}；按当前基线应为 ${constraint.expectedDays} 天，但输出为 ${actualDays} 天。请严格执行本轮明确的停留天数调整。`);
+    }
+    if (constraint.expectedDays > 0 && omitted.has(constraint.candidateId)) {
+      throw new Error(`用户已明确要求安排${constraint.placeName} ${constraint.expectedDays} 天，不得把它放入 omittedPlanningAreas。`);
+    }
+  }
+  return outputValue;
+}
+
+export function validateAiActionOutputAgainstStateV3<T>(actionType: AiActionType, stateValue: unknown, outputValue: T): T {
   const state = asRecord(stateValue);
   const output = asRecord(outputValue);
   if (!state || !output) return outputValue;
+
+  if (actionType === "itinerary.replan") return validateReplanOutputAgainstStateV3(state, output, outputValue);
+  if (actionType !== "itinerary.detail.generate" && actionType !== "itinerary.detail.update") return outputValue;
 
   if (typeof state.baseGeneration === "number" && output.baseGeneration !== state.baseGeneration) {
     throw new Error(`详细行程输出 baseGeneration 必须保持为 ${state.baseGeneration}。`);
