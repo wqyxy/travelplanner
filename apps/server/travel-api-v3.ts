@@ -9,6 +9,7 @@ import {
 import { AiActionTypeSchema, ConversationStageSchema, WorkspaceSelectionV3Schema } from "./ai-stage-contracts-v3.js";
 import { confirmDetailToCorePromotionV3 } from "./core-promotion-v3.js";
 import { normalizeRequirementsCtaParametersV3 } from "./requirements-duration-v3.js";
+import { recoverReplanCtaParametersV3 } from "./replan-intent-v3.js";
 import { saveSkeletonEditDraftV3 } from "./skeleton-edit-api-v3.js";
 import type { TravelPlannerRuntimeV3 } from "./planner-runtime-v3.js";
 import type { TravelStoreV3 } from "./travel-store-v3.js";
@@ -39,7 +40,7 @@ export async function dispatchTravelApiV3(
   let match = /^\/api\/trips\/([^/]+)$/.exec(pathname);
   if (match) {
     const tripId = decode(match[1]);
-    if (method === "GET") return { status: 200, data: { trip: deps.store.requireTrip(tripId) } };
+    if (method === "GET") return { status: 200, data: { trip: deps.store.requireTrip(tripId) };
     if (method === "PATCH") {
       let trip = deps.store.requireTrip(tripId);
       if (body.title !== undefined) trip = deps.store.rename(tripId, String(body.title));
@@ -88,7 +89,8 @@ export async function dispatchTravelApiV3(
     const requestKey = String(body.requestKey ?? "").trim();
     if (!requestKey || requestKey.length > 160) throw new Error("CTA requestKey 必须是 1–160 字符的稳定请求键。");
     const rawParameters = body.parameters && typeof body.parameters === "object" && !Array.isArray(body.parameters) ? body.parameters as Record<string, unknown> : {};
-    const parameters = normalizeRequirementsCtaParametersV3(deps.store.requireTrip(tripId).plan, actionType, rawParameters);
+    const normalizedParameters = normalizeRequirementsCtaParametersV3(deps.store.requireTrip(tripId).plan, actionType, rawParameters);
+    const parameters = recoverReplanCtaParametersV3(deps.store, tripId, actionType, normalizedParameters);
     const targetIds = Array.isArray(body.targetIds) ? body.targetIds.map(String).slice(0, 200) : [];
     return { status: 202, data: deps.runtime.createCtaAction({ tripId, stage, actionType, parameters, targetIds, requestKey }) };
   }
@@ -177,7 +179,7 @@ export async function dispatchTravelApiV3(
   match = /^\/api\/trips\/([^/]+)\/ai-tasks$/.exec(pathname);
   if (method === "GET" && match) return { status: 200, data: { tasks: deps.store.listAiTasks(decode(match[1])) } };
   match = /^\/api\/trips\/([^/]+)\/ai-tasks\/([^/]+)\/stop$/.exec(pathname);
-  if (method === "POST" && match) return { status: 200, data: deps.runtime.stopTask(decode(match[1]), decode(match[2])) };
+  if (method === "POST" && match) return { status: 200, data: deps.runtime.stopTask(decode(match[1]), decode(match[2]), body) };
 
   return null;
 }
