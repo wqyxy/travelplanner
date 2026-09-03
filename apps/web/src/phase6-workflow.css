@@ -92,11 +92,17 @@
 .phase6-stay-blocks { display: grid; gap: 8px; }
 .phase6-stay-block { display: grid; grid-template-columns: 46px minmax(120px,1fr) 88px minmax(150px,.8fr) minmax(120px,.7fr) auto; align-items: center; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
 .phase6-stay-block.selected { border-color: var(--primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 8%, transparent); }
-.phase6-stay-order { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; }
-.phase6-stay-order > span { grid-column: 1 / -1; text-align: center; font-size: 16px; font-weight: 900; }
+.phase6-stay-order { display: grid; justify-items: center; gap: 2px; }
+.phase6-stay-order > span { text-align: center; font-size: 16px; font-weight: 900; }
 .phase6-stay-order button,
 .phase6-stay-route button,
 .phase6-stay-remove { display: inline-flex; align-items: center; justify-content: center; gap: 3px; padding: 4px 5px; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); background: var(--control); font-size: 8px; }
+.phase6-stay-drag { cursor: grab; }
+.phase6-stay-drag:active { cursor: grabbing; }
+.phase6-stay-block.dragging { opacity: .3; }
+.phase6-stay-drag-preview { position: fixed; z-index: 120; display: flex; align-items: center; gap: 7px; min-width: 180px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--primary) 65%, var(--border)); border-radius: 12px; color: var(--text); background: var(--surface); box-shadow: 0 14px 32px rgba(15,23,42,.2); pointer-events: none; }
+.phase6-stay-drag-preview small { margin-left: auto; color: var(--muted); font-size: 10px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .phase6-stay-copy > div { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
 .phase6-stay-copy em { color: var(--primary); font-size: 9px; font-style: normal; }
 .phase6-stay-copy span,

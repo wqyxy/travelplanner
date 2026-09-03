@@ -55,6 +55,7 @@ export function CandidateWorkflowPanelV3({
   busy,
   macroNeedsUpdate,
   onSelectCandidate,
+  onFocusCandidate,
   onSetPreference,
   onDiscover,
   onAddCandidate,
@@ -73,6 +74,7 @@ export function CandidateWorkflowPanelV3({
   busy: boolean;
   macroNeedsUpdate: boolean;
   onSelectCandidate: (candidateId: string) => void;
+  onFocusCandidate: (candidateId: string) => void;
   onSetPreference: (candidateIds: string[], preference: CandidatePreference) => Promise<void>;
   onDiscover: () => Promise<void>;
   onAddCandidate: (draft: WorkflowCandidateDraftV3) => Promise<void>;
@@ -189,7 +191,8 @@ export function CandidateWorkflowPanelV3({
     const roleLabel = role === "planning_area" ? "停留地点" : role === "core_visit" ? "重要游览地" : "普通景点";
     const parent = row.candidate.planningAreaCandidateId ? planningAreas.find((area) => area.candidate.id === row.candidate.planningAreaCandidateId) : null;
     const blocking = mode === "interests" && row.candidate.preference === "must_go" && status !== "resolved";
-    return <article className={`phase6-candidate-card ${selectedCandidateId === row.candidate.id ? "selected" : ""} ${blocking ? "blocking" : ""}`} key={row.candidate.id} onClick={() => onSelectCandidate(row.candidate.id)}>
+    const selected = selectedCandidateId === row.candidate.id;
+    return <article className={`phase6-candidate-card ${selected ? "selected" : ""} ${blocking ? "blocking" : ""}`} key={row.candidate.id} onClick={() => selected ? onFocusCandidate(row.candidate.id) : onSelectCandidate(row.candidate.id)}>
       <div className="phase6-candidate-copy">
         <div className="phase6-candidate-title"><strong>{nameText.primary}</strong><span>{roleLabel}</span>{row.candidate.preference === "must_go" ? <em>★ 必去</em> : row.candidate.preference === "want_to_go" ? <em>♡ 想去</em> : null}</div>
         {nameText.secondary && <small>{nameText.secondary}</small>}
