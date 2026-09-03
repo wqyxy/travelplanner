@@ -1,39 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { TravelPlanDocumentSchema, emptyTravelPlan } from "./contracts-v2.js";
+import type { TravelPlanDocument } from "./contracts-v2.js";
 import { normalizeDetailDayCtaActionV3 } from "./detail-day-cta-v3.js";
 
 function planWithDay(input: { detailLevel: "planned" | "detailed"; detailStatus: "ready" | "needs_review" | null; stopCount: number }) {
-  const base = emptyTravelPlan();
-  return TravelPlanDocumentSchema.parse({
-    ...base,
+  return {
     days: [{
       id: "day-18",
-      dayNumber: 18,
-      date: null,
-      title: "Wanaka",
-      stayBlockId: "stay-wanaka",
-      transferMode: "drive",
       detailLevel: input.detailLevel,
       detailStatus: input.detailStatus,
-      startAnchor: { id: "start-18", placeId: null, label: "Wanaka", notes: null },
-      stops: Array.from({ length: input.stopCount }, (_, index) => ({
-        id: `stop-${index}`,
-        candidateId: null,
-        placeId: `place-${index}`,
-        activity: "existing",
-        period: null,
-        startTime: null,
-        endTime: null,
-        durationMinutes: null,
-        transportFromPrevious: null,
-        scheduleVerification: null,
-        costNote: null,
-        costVerification: null,
-        notes: null,
-      })),
-      endAnchor: { id: "end-18", placeId: null, label: "Wanaka", notes: null },
+      stops: Array.from({ length: input.stopCount }, (_, index) => ({ id: `stop-${index}` })),
     }],
-  });
+  } as unknown as TravelPlanDocument;
 }
 
 describe("normalizeDetailDayCtaActionV3", () => {
