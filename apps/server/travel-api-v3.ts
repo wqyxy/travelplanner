@@ -8,6 +8,7 @@ import {
 } from "./contracts-v2.js";
 import { AiActionTypeSchema, ConversationStageSchema, WorkspaceSelectionV3Schema } from "./ai-stage-contracts-v3.js";
 import { confirmDetailToCorePromotionV3 } from "./core-promotion-v3.js";
+import { normalizeDetailDayCtaActionV3 } from "./detail-day-cta-v3.js";
 import { normalizeRequirementsCtaParametersV3 } from "./requirements-duration-v3.js";
 import { recoverReplanCtaParametersV3 } from "./replan-intent-v3.js";
 import { saveSkeletonEditDraftV3 } from "./skeleton-edit-api-v3.js";
@@ -85,13 +86,15 @@ export async function dispatchTravelApiV3(
   if (method === "POST" && match) {
     const tripId = decode(match[1]);
     const stage = ConversationStageSchema.parse(body.stage);
-    const actionType = AiActionTypeSchema.parse(body.actionType);
+    const requestedActionType = AiActionTypeSchema.parse(body.actionType);
     const requestKey = String(body.requestKey ?? "").trim();
     if (!requestKey || requestKey.length > 160) throw new Error("CTA requestKey 必须是 1–160 字符的稳定请求键。");
     const rawParameters = body.parameters && typeof body.parameters === "object" && !Array.isArray(body.parameters) ? body.parameters as Record<string, unknown> : {};
-    const normalizedParameters = normalizeRequirementsCtaParametersV3(deps.store.requireTrip(tripId).plan, actionType, rawParameters);
-    const parameters = recoverReplanCtaParametersV3(deps.store, tripId, actionType, normalizedParameters);
     const targetIds = Array.isArray(body.targetIds) ? body.targetIds.map(String).slice(0, 200) : [];
+    const plan = deps.store.requireTrip(tripId).plan;
+    const actionType = normalizeDetailDayCtaActionV3(plan, requestedActionType, rawParameters, targetIds);
+    const normalizedParameters = normalizeRequirementsCtaParametersV3(plan, actionType, rawParameters);
+    const parameters = recoverReplanCtaParametersV3(deps.store, tripId, actionType, normalizedParameters);
     return { status: 202, data: deps.runtime.createCtaAction({ tripId, stage, actionType, parameters, targetIds, requestKey }) };
   }
 
