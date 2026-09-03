@@ -12,6 +12,8 @@ export const WORKFLOW_STEPS_V3: ReadonlyArray<{ step: WorkflowStepV3; number: nu
 ];
 
 const CORE_PROMOTION_INTENT_V3 = /(重要游览地|很重要|特别重要|核心(?:景点|游览地)|提升为重要|单独(?:留|安排|预留)|留(?:出)?\s*(?:半天|一天|1\s*天|一整天|全天))/iu;
+const SKELETON_DAY_CHANGE_INTENT_V3 = /(?:多(?:留|住)?|少(?:留|住)?|增加(?:停留)?|减少(?:停留)?|加|减|延长|缩短|改为|调整为|变为|变成)\s*(?:到|为)?\s*(?:\d{1,2}|[零一二两三四五六七八九十])\s*天/iu;
+const SKELETON_ORDER_CHANGE_INTENT_V3 = /(调整|修改|改变|重新|换).{0,12}(路线|顺序)|(先去|后去|放到|移到|挪到).{0,12}(之前|之后|前面|后面|最前|最后)/u;
 
 export function stageForWorkflowStepV3(step: WorkflowStepV3): ConversationStage {
   return conversationStageForWorkflowStepV3(step);
@@ -39,6 +41,14 @@ export function selectionForWorkflowStepV3(step: WorkflowStepV3): WorkspaceSelec
     : { type: "trip", id: null };
 }
 
+function explicitSkeletonReplanIntentV3(workspace: WorkspaceV3, message: string) {
+  const rows = candidateRows(workspace as any).filter((row) => effectiveCandidatePlanningRole(row) === "planning_area" && row.candidate.preference !== "excluded");
+  const mentionsPlanningArea = rows.some((row) => [row.place.nameZh, row.place.nameLocal, row.place.nameEn]
+    .some((name) => typeof name === "string" && name.trim().length > 0 && message.toLocaleLowerCase().includes(name.trim().toLocaleLowerCase())));
+  if (!mentionsPlanningArea) return false;
+  return SKELETON_DAY_CHANGE_INTENT_V3.test(message) || SKELETON_ORDER_CHANGE_INTENT_V3.test(message);
+}
+
 export function conversationRouteForWorkflowStepV3(
   workspace: WorkspaceV3,
   step: WorkflowStepV3,
@@ -46,20 +56,28 @@ export function conversationRouteForWorkflowStepV3(
   message: string,
 ): { stage: ConversationStage; selection: WorkspaceSelection } {
   const normal = { stage: stageForWorkflowStepV3(step), selection };
-  if ((step !== "interests" && step !== "detail") || !CORE_PROMOTION_INTENT_V3.test(message)) return normal;
+  if (step !== "interests" && step !== "detail") return normal;
 
-  let candidateId = selection.type === "candidate" ? selection.id : null;
-  if (!candidateId && selection.type === "place") {
-    candidateId = workspace.trip.plan.candidates.find((candidate) => candidate.placeId === selection.id)?.id ?? null;
+  if (CORE_PROMOTION_INTENT_V3.test(message)) {
+    let candidateId = selection.type === "candidate" ? selection.id : null;
+    if (!candidateId && selection.type === "place") {
+      candidateId = workspace.trip.plan.candidates.find((candidate) => candidate.placeId === selection.id)?.id ?? null;
+    }
+    if (!candidateId && selection.type === "stop") {
+      candidateId = workspace.trip.plan.days.flatMap((day) => day.stops).find((stop) => stop.id === selection.id)?.candidateId ?? null;
+    }
+    if (candidateId) {
+      const row = candidateRows(workspace as any).find((item) => item.candidate.id === candidateId);
+      if (row && effectiveCandidatePlanningRole(row) === "detail_interest") {
+        return { stage: "destinations", selection: { type: "candidate", id: candidateId } };
+      }
+    }
   }
-  if (!candidateId && selection.type === "stop") {
-    candidateId = workspace.trip.plan.days.flatMap((day) => day.stops).find((stop) => stop.id === selection.id)?.candidateId ?? null;
-  }
-  if (!candidateId) return normal;
 
-  const row = candidateRows(workspace as any).find((item) => item.candidate.id === candidateId);
-  if (!row || effectiveCandidatePlanningRole(row) !== "detail_interest") return normal;
-  return { stage: "destinations", selection: { type: "candidate", id: candidateId } };
+  if (explicitSkeletonReplanIntentV3(workspace, message)) {
+    return { stage: "destinations", selection: { type: "trip", id: null } };
+  }
+  return normal;
 }
 
 export function actionBelongsToWorkflowStepV3(actionType: AiActionType, step: WorkflowStepV3) {
