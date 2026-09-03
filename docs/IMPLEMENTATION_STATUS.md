@@ -1,7 +1,7 @@
 # TravelPlanner Implementation Status
 
 > 更新时间：2026-09-03
-> 当前状态：**五步重构所有隔离测试、typecheck、full suite、build、production Browser Map Gate 已通过；第一次真实 private_data + Real AI 五步 E2E 在 Step 2 暴露 parent reference 问题。Repair #4 已实施，等待使用保留测试旅行继续真实 E2E。**
+> 当前状态：**五步重构的隔离测试、typecheck、build、production Map Gate 已通过；真实 private_data + Real AI E2E 已验证 Step 1–4。Repair #6 已真实消除 Step 5 的 1 MB AI transport failure；最新真实失败是 Detailed AI 输出引用不在本轮白名单中的 Candidate。Repair #7 已将 Step 5 语义校验前移到 Structured AI repair 边界，等待继续同一旅行的真实 Step 5。**
 
 ---
 
@@ -19,13 +19,7 @@ feature/five-step-workflow-refactor
 b048c1980247443b5d6568ddd4302c41c9ce832b
 ```
 
-Production Map 修复后、第一次真实 E2E 的 HEAD：
-
-```text
-0cd5037114c12c1ae0b0cbfe4492a18cf95fafd3
-```
-
-第一次真实测试旅行：
+保留的真实 E2E 测试旅行：
 
 ```text
 Trip ID: d028c5f7-906e-4027-8fa1-faab7a3b7d71
@@ -36,9 +30,9 @@ Title: [五步E2E测试-保留] 新西兰20天南北岛自驾
 
 ---
 
-# 2. 已通过的综合 Gate
+# 2. 已通过的隔离综合 Gate
 
-在 `0cd5037...` 上已经验证：
+Production Map 修复后的综合验证曾通过：
 
 ```text
 git diff --check PASS
@@ -53,13 +47,13 @@ Provider boundary PASS
 security/private-data isolated checks PASS
 ```
 
-因此当前没有已知 Map、Provider、build、typecheck 或普通 regression 问题。
+Repair #5 / #6 的专项测试和 typecheck 也已由真实 E2E 执行环境通过。
 
 ---
 
-# 3. Real Private-Data E2E #1
+# 3. Real Private-Data E2E Progress
 
-真实测试明确授权使用：
+真实测试授权使用：
 
 ```text
 private_data/travel-v2.sqlite3
@@ -69,115 +63,242 @@ private_data/travel-v2.sqlite3
 真实数据库写入
 ```
 
-测试只新增并操作 `[五步E2E测试-保留]` 旅行，没有修改或删除其他旅行。
+只操作上述 `[五步E2E测试-保留]` 旅行，不修改其他旅行。
 
-## Step 1
+## Step 1 — PASS
 
-UI 需求保存成功，但发现一个 warning：
+Repair #5 已在 fresh backend 上真实验证：
+
+```text
+BASE_GENERATION: 3
+NEW_GENERATION: 4
+OLD_ACTION_ID: 6ae82bcf-665a-4935-9edd-3b33ac9b6779
+NEW_ACTION_ID: 9f2d719d-8b8e-452e-995b-673d36270c27
+```
+
+模型即使只返回：
+
+```json
+{ "changes": { "brief": { "duration": "20天" } } }
+```
+
+共享 Action normalization 也会在持久化前补为：
+
+```json
+{
+  "changes": {
+    "brief": { "duration": "20天" },
+    "dates": {
+      "start": null,
+      "end": null,
+      "requestedDurationDays": 20
+    }
+  }
+}
+```
+
+Canonical：
 
 ```text
 brief.duration = "20天"
-requestedDurationDays = null
+dates.requestedDurationDays = 20
 ```
 
-原因：原“旅行需求对话”Prompt 只要求把时长写入 `changes.brief.duration`；数字时长没有同步写入 `changes.dates.requestedDurationDays`。CTA 路径虽有 normalization，但真实 conversation Action 不经过该入口。
+## Step 2 — PASS
 
-## Step 2
-
-真实 `destination.generate` 连续两次失败，未保存任何 Candidate。
-
-错误：
+真实生成结果：
 
 ```text
-Core Visit 引用无效 Planning Area Candidate：candidate-auckland
-Core Visit 引用无效 Planning Area Candidate：tmp-candidate-rotorua
+17 Candidates
+8 Planning Areas
+9 Core Visits
 ```
 
-真实 AI 在同一批次同时生成 Planning Area 和 Core Visit 时，把本轮 Planning Area 的 `temporaryId` 错放进：
+Milford Sound：
 
-```json
-{ "type": "existing", "candidateId": "...temporaryId..." }
+```text
+planningRole = core_visit
+parent = Te Anau
 ```
 
-正确形式应为：
+Canonical parent 中无 temporary ID。
 
-```json
-{ "type": "generated", "temporaryCandidateId": "...temporaryId..." }
+Repair #4 的 same-batch Planning Area / Core parent reference 已真实通过。
+
+## Step 3 — PASS
+
+真实 Skeleton：
+
+```text
+20 Days
+remainingDays = 0
+Auckland Day 1 / Day 20 为不同 stayBlockId
+Te Anau = Day 14–17
 ```
 
-由于旧 contract 只校验 `generated` ref 的同批关系，该错误能通过 Structured AI parse，直到正式化/落库前才失败，因此没有利用已有 structured-output 自动修正机会。
+重复 Planning Area Stay Block 行为正确。
 
-Step 3–5 因 Step 2 无 Candidate 合法 BLOCKED。
+## Step 4 — PASS
+
+进入 Step 4 时没有自动 discovery。
+
+正常 UI 操作后当前真实数据：
+
+```text
+38 Candidates
+38 Places
+32 resolved
+6 unresolved
+```
+
+Auckland、Queenstown、Te Anau 均补充了普通兴趣点。
+
+旧数据中存在未显式保存 `planningRole` 的 Candidate，继续按 legacy effective role 兼容读取。
 
 ---
 
-# 4. Repair #4
+# 4. Repair #6 — Step 5 Input Size
 
-## 4.1 Step 2 parent reference 前移校验
-
-`apps/server/backbone-contracts-v3.ts` 现在额外拒绝：
+第一次真实 Step 5 在进入模型前失败：
 
 ```text
-Core Visit 的 parentCandidateRef.type = existing
-且 candidateId 同时等于本轮任意 Candidate temporaryId
+Input exceeds the maximum length of 1048576 characters.
 ```
 
-错误会在 `DestinationGenerateOutputSchema.parse()` 阶段出现：
+根因：AI state 中包含完整 Provider DayRoute / MacroRoute，包括：
 
 ```text
-existing parent 不得引用本轮 temporaryId；本轮生成的 Planning Area 必须使用 generated parent。
+route.geometry
+leg.geometry
+inputFingerprint
+calculatedAt
 ```
 
-这会进入现有 Structured AI 自动修正机制，而不是等到准备写 canonical plan 时整批失败。
+真实 20 天路线使 transport 超过 1 MB。
 
-安全边界没有放宽：
+Repair #6 在 `StagedTravelAiV3` 的 AI transport 边界压缩 itinerary route context：
+
+保留：
 
 ```text
-真正 existing parent 仍必须引用当前 canonical Planning Area
-真正 generated parent 仍必须引用本轮 planning_area temporaryId
-不存在的 parent 仍拒绝
-reparent 仍拒绝
+dayId / routeId / required / dirty
+status
+distanceKm
+durationMinutes
+warnings
+leg endpoints / mode / status / distance / duration / warning
 ```
 
-新增回归测试：
+删除 AI 不需要的 Provider geometry 和内部元数据。
+
+专项大输入夹具真实验证：
 
 ```text
-apps/server/real-ai-step2-parent-ref-regression-v3.test.ts
+beforeBytes = 7,611,991
+afterBytes = 621
+geometry absent
 ```
 
-覆盖真实出现的 `candidate-auckland` 型错误与正确 `generated` 写法。
+真实 E2E 再跑 Step 5 后，AI 请求成功进入 running，原 1 MB transport 错误不再出现。
 
-## 4.2 Step 2 Prompt 加硬
-
-`prompts/actions/destinations/生成目的地建议.md` 明确：
-
-```text
-existing.candidateId 只能从输入当前 Backbone 原样复制
-本轮 temporaryId 无论长得多像正式 ID 都不得写入 existing
-同批父级必须使用 generated.temporaryCandidateId
-```
-
-## 4.3 Step 1 数字时长同步
-
-`prompts/dialogues/旅行需求对话.md` 现在要求：
-
-```text
-20天 / 20 天左右 / 2周 / 7 days
-→ 保留 brief.duration 原话
-→ 同步 dates.requestedDurationDays
-```
-
-没有精确日期时不得编造日期，例如：
-
-```json
-{ "start": null, "end": null, "requestedDurationDays": 20 }
-```
-
-已有完整 start+end 时精确日期优先，不同时保存非 null requestedDurationDays。
+数据库 / workspace / Map 的完整 Provider geometry 没有被删除：当前 8 条 route 中 6 ready、2 attention，6 条仍有 geometry。
 
 ---
 
-# 5. 当前五步合同不变
+# 5. Latest Real Step 5 Failure
+
+Repair #6 后新的 Step 5 Action：
+
+```text
+Action: cbd32abf-42f8-4a13-bcc6-03be608933e2
+Task: action:5cc26843-89fe-46c2-a763-089daa769812
+```
+
+AI 已真实执行约 149 秒，但输出在准备保存时失败：
+
+```text
+详细行程引用未知或已排除 Candidate：15a30b03-dbed-47ab-9c8d-c32c3499c3bc2
+```
+
+没有写入部分 Detailed Day：
+
+```text
+0 ready
+0 needs_review
+0 stops
+canonical generation 仍为 13
+```
+
+Milford Sound 仍保持合法 Core Visit，但因 Step 5 整体未保存，尚未进入 Day Stop。
+
+根因不是 canonical 校验过严，而是校验发生得太晚：
+
+```text
+Output JSON Schema 只知道 candidateId 是字符串
+→ Structured AI 认为输出合法
+→ result 返回 runtime
+→ applyDetailedUpdatesPhase5V3 才检查 canonical Candidate
+→ 此时已离开 Structured AI repair 机制
+```
+
+---
+
+# 6. Repair #7 — Detailed Semantic Repair Gate
+
+新增：
+
+```text
+apps/server/ai-action-state-validation-v3.ts
+apps/server/ai-action-state-validation-v3.test.ts
+```
+
+`StagedTravelAiV3.startAction()` 现在会在 Structured AI 接受 `itinerary.detail.generate` / `itinerary.detail.update` 输出前，使用本轮 state 做语义校验。
+
+校验包括：
+
+```text
+baseGeneration 必须匹配
+必须恰好返回 targetDayIds
+增量 affectedDayIds 必须匹配 target scope
+Stop candidateId 必须来自本轮 candidates 白名单
+Stop Candidate 必须 resolved=true
+unavailable Candidate 不得成为 Stop
+Candidate 必须属于该 Day 起点/终点对应的停留区域
+unscheduledCandidates 必须属于本轮 scope
+must_go 不得进入 unscheduledCandidates
+required must-go 必须实际排入
+priority Core 未排入时必须说明 unscheduled 原因
+```
+
+任何错误都会由 `validateResult` 抛回 Structured AI Runner，因此可触发现有最多 2 次 structured repair。
+
+最终 canonical 持久化校验仍保留，Repair #7 没有放宽或删除：
+
+```text
+applyDetailedUpdatesPhase5V3
+validateItineraryReferences
+validateDetailedSchedulingOutcomeV3
+```
+
+因此这是“提前反馈给模型”，不是“自动吞掉坏数据”。
+
+## Action-wide timeout
+
+真实 20 天第一次输出用了约 149 秒；旧默认总预算只有 180 秒，几乎没有 structured repair 时间。
+
+Repair #7 仅为：
+
+```text
+itinerary.detail.generate
+```
+
+提供 420 秒 Action-wide budget，使第一次完整输出失败后至少有实际修正空间。
+
+其他 Action timeout 规则不变。
+
+---
+
+# 7. 五步合同不变
 
 ```text
 1 旅行需求
@@ -200,30 +321,28 @@ Step 5 incremental affected days
 PRAGMA user_version = 3
 ```
 
-无 DB migration，无 Provider 权限扩大。
+无 DB migration，无 Provider 边界变化。
 
 ---
 
-# 6. Next Step
+# 8. Next Step
 
-继续使用已经保留的真实测试旅行：
+继续使用同一真实测试旅行：
 
 ```text
 d028c5f7-906e-4027-8fa1-faab7a3b7d71
 ```
 
-不要新建第二个测试旅行。
+不要重新执行 Step 1–4，不创建新旅行。
 
-先通过正常 Step 1 对话再次确认：
+下一轮：
 
-```text
-旅行时长仍然是20天。
-```
+1. 对 Repair #7 新增语义 validator + Structured AI integration 做 targeted tests / typecheck。
+2. fresh restart backend。
+3. 当前 generation 13 上重新点击 Step 5“生成每日行程”。
+4. 记录新 Action / Task。
+5. 如果第一次输出再次使用无效 Candidate，应看到 `turn:repair` / “AI 结果校验失败，正在自动修正”。
+6. 只有修正后的完整 20 Day Detailed 行程成功写入后，继续 Milford、Detail→Core、scoped impact、incremental update、Map regression。
+7. 任何新的核心失败都停止并保留证据，不现场改代码或手工修改数据库。
 
-验证 `requestedDurationDays = 20` 后，回 Step 2 正常重新运行 `destination.generate`。
-
-如果 Step 2 成功保存 Planning Areas + Core Visits，则继续原真实 E2E 的 Step 3–5、Provider、Detail→Core 和 incremental update。
-
-如果再次出现真实失败，不修改代码，记录当前数据与错误后 STOP。
-
-只有真实五步 E2E 完整通过后，才能把专项状态标记为最终 PASS 并准备合并 main。
+只有真实五步 E2E 完整通过后，才能标记最终 PASS 并准备合并 main。
