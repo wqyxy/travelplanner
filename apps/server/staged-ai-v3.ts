@@ -52,6 +52,56 @@ const actionInstructions = [
   "只输出指定 JSON Schema。",
 ].join("\n");
 
+function compactRouteForAi(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const route = value as Record<string, unknown>;
+  const legs = Array.isArray(route.legs) ? route.legs.flatMap((legValue) => {
+    if (!legValue || typeof legValue !== "object" || Array.isArray(legValue)) return [];
+    const leg = legValue as Record<string, unknown>;
+    return [{
+      fromPlaceId: leg.fromPlaceId ?? null,
+      toPlaceId: leg.toPlaceId ?? null,
+      mode: leg.mode ?? null,
+      status: leg.status ?? null,
+      distanceKm: leg.distanceKm ?? null,
+      durationMinutes: leg.durationMinutes ?? null,
+      warning: leg.warning ?? null,
+    }];
+  }) : [];
+  return {
+    status: route.status ?? null,
+    distanceKm: route.distanceKm ?? null,
+    durationMinutes: route.durationMinutes ?? null,
+    warnings: Array.isArray(route.warnings) ? route.warnings.slice(0, 20) : [],
+    legs,
+  };
+}
+
+function compactRouteStatesForAi(value: unknown) {
+  if (!Array.isArray(value)) return value;
+  return value.flatMap((stateValue) => {
+    if (!stateValue || typeof stateValue !== "object" || Array.isArray(stateValue)) return [];
+    const state = stateValue as Record<string, unknown>;
+    return [{
+      dayId: state.dayId ?? null,
+      ...(typeof state.routeId === "string" ? { routeId: state.routeId } : {}),
+      ...(typeof state.required === "boolean" ? { required: state.required } : {}),
+      dirty: Boolean(state.dirty),
+      route: compactRouteForAi(state.route),
+    }];
+  });
+}
+
+export function compactActionStateForAiV3(actionType: AiActionType, stateValue: unknown) {
+  if (!actionType.startsWith("itinerary.") || !stateValue || typeof stateValue !== "object" || Array.isArray(stateValue)) return stateValue;
+  const state = stateValue as Record<string, unknown>;
+  return {
+    ...state,
+    ...(Object.prototype.hasOwnProperty.call(state, "routeStates") ? { routeStates: compactRouteStatesForAi(state.routeStates) } : {}),
+    ...(Object.prototype.hasOwnProperty.call(state, "macroRouteStates") ? { macroRouteStates: compactRouteStatesForAi(state.macroRouteStates) } : {}),
+  };
+}
+
 function wrapFallback<T>(primary: StructuredAiRun<T>, fallbackFactory: (error: Error) => Promise<StructuredAiRun<T> | null>): StagedAiHandle<T> {
   let active = primary;
   let threadId = primary.threadId;
@@ -212,7 +262,7 @@ export class StagedTravelAiV3 {
     const webSearch = registration.web === "required" || (registration.web === "allowed" && input.allowWeb !== false) ? "live" : "disabled";
     return this.start<T>({
       promptId,
-      state: input.state,
+      state: compactActionStateForAiV3(input.actionType, input.state),
       schema,
       developerInstructions: actionInstructions,
       threadSource: `ai-travel-action-${input.actionType}-v3`,
