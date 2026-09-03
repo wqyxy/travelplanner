@@ -23,6 +23,19 @@ function workspaceWithDetailCandidate() {
   return value;
 }
 
+function workspaceWithMacroAreas() {
+  const value = workspace();
+  value.trip.plan.places = [
+    { id: "queenstown-place", nameZh: "皇后镇", nameLocal: "Queenstown", nameEn: "Queenstown", kind: "city", city: "Queenstown", region: null, country: "New Zealand", countryCode: "NZ", approximate: false },
+    { id: "wanaka-place", nameZh: "瓦纳卡", nameLocal: "Wānaka", nameEn: "Wanaka", kind: "city", city: "Wanaka", region: null, country: "New Zealand", countryCode: "NZ", approximate: false },
+  ];
+  value.trip.plan.candidates = [
+    { id: "queenstown", placeId: "queenstown-place", planningAreaCandidateId: null, planningRole: "planning_area", preference: "want_to_go", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: null, tags: [] },
+    { id: "wanaka", placeId: "wanaka-place", planningAreaCandidateId: null, planningRole: "planning_area", preference: "optional", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: null, tags: [] },
+  ];
+  return value;
+}
+
 describe("Phase 6 workflow UI helpers", () => {
   it("uses the final five user-facing steps", () => {
     expect(WORKFLOW_STEPS_V3.map((item) => [item.number, item.label, item.optional ?? false])).toEqual([
@@ -101,6 +114,22 @@ describe("Phase 6 workflow UI helpers", () => {
     expect(conversationRouteForWorkflowStepV3(value, "detail", { type: "stop", id: "stop" }, "今天晚一点出发")).toEqual({
       stage: "itinerary",
       selection: { type: "stop", id: "stop" },
+    });
+  });
+
+  it("routes an explicit Step 5 planning-area day change back to the Step 3 conversation", () => {
+    const value = workspaceWithMacroAreas();
+    expect(conversationRouteForWorkflowStepV3(value, "detail", { type: "trip", id: null }, "我想把瓦纳卡多留一天，皇后镇少一天，总天数仍然保持20天。")).toEqual({
+      stage: "destinations",
+      selection: { type: "trip", id: null },
+    });
+  });
+
+  it("does not route ordinary detailed-itinerary discussion just because a planning area and day count are mentioned", () => {
+    const value = workspaceWithMacroAreas();
+    expect(conversationRouteForWorkflowStepV3(value, "detail", { type: "trip", id: null }, "皇后镇住两天的话，每天怎么玩比较合适？")).toEqual({
+      stage: "itinerary",
+      selection: { type: "trip", id: null },
     });
   });
 });
