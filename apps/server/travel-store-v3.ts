@@ -22,6 +22,7 @@ import {
 } from "./ai-stage-contracts-v3.js";
 import { actionRegistration } from "./ai-registries-v3.js";
 import { parseActionParametersV3 } from "./ai-action-input-contracts-v3.js";
+import { normalizeRequirementsCtaParametersV3 } from "./requirements-duration-v3.js";
 
 type SqliteModule = typeof import("node:sqlite");
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as SqliteModule;
@@ -526,7 +527,7 @@ export class TravelStoreV3 {
     this.requireTrip(input.tripId);
     const timestamp = now();
     this.db.prepare("INSERT INTO stage_conversation_threads(trip_id,stage,thread_id,prompt_hash,prompt_version,context_generation,turn_count,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(trip_id,stage) DO UPDATE SET thread_id=excluded.thread_id,prompt_hash=excluded.prompt_hash,prompt_version=excluded.prompt_version,context_generation=excluded.context_generation,turn_count=excluded.turn_count,updated_at=excluded.updated_at").run(input.tripId, input.stage, input.threadId, input.promptHash, input.promptVersion, input.contextGeneration, input.turnCount, timestamp, timestamp);
-    return this.getStageThread(input.tripId, input.stage)!;
+    return this.getStageThread(input.tripId, stage)!;
   }
 
   incrementStageThreadTurn(tripId: string, stage: ConversationStage, threadId: string, contextGeneration: number) {
@@ -565,9 +566,10 @@ export class TravelStoreV3 {
   createAction(value: unknown, requestKey: string | null = null) {
     const parsed = AiActionRecordSchema.parse(value);
     const registration = actionRegistration(parsed.actionType);
-    const parameters = parseActionParametersV3(parsed.actionType, registration.inputContract, parsed.origin, parsed.parameters);
+    const parsedParameters = parseActionParametersV3(parsed.actionType, registration.inputContract, parsed.origin, parsed.parameters);
+    const trip = this.requireTrip(parsed.tripId);
+    const parameters = normalizeRequirementsCtaParametersV3(trip.plan, parsed.actionType, parsedParameters);
     const action = AiActionRecordSchema.parse({ ...parsed, parameters });
-    const trip = this.requireTrip(action.tripId);
     if (action.baseGeneration !== trip.contentGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
     if (requestKey) {
       const existing = this.db.prepare("SELECT * FROM ai_actions WHERE trip_id=? AND request_key=?").get(action.tripId, requestKey) as Row | undefined;
