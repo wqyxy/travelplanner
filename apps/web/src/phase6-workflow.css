@@ -42,12 +42,13 @@
 .phase6-candidate-meta .blocking { color: #a35f16; font-weight: 800; }
 .phase6-candidate-controls { display: flex; min-width: 138px; flex-direction: column; align-items: stretch; gap: 6px; }
 .phase6-preference-actions,
-.phase6-location-actions { display: flex; gap: 4px; }
+.phase6-candidate-management-actions,
+.phase6-location-editor-actions { display: flex; gap: 4px; }
 .phase6-preference-actions button,
-.phase6-location-actions button,
+.phase6-edit,
 .phase6-remove { padding: 5px 7px; border: 1px solid var(--border); border-radius: 7px; color: var(--muted); background: var(--control); font-size: 9px; }
 .phase6-preference-actions button.active { border-color: var(--primary); color: var(--primary); background: var(--primary-soft); }
-.phase6-location-actions button,
+.phase6-edit,
 .phase6-remove { display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
 .phase6-remove { color: #a53f35; }
 .phase6-context-details { padding: 9px 11px; border: 1px solid var(--border); border-radius: 10px; color: var(--muted); background: var(--surface-subtle); font-size: 10px; }
@@ -70,6 +71,19 @@
 .phase6-dialog label { display: grid; gap: 5px; color: var(--muted); font-size: 10px; font-weight: 750; }
 .phase6-dialog input,
 .phase6-dialog select { width: 100%; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--control); }
+.phase6-dialog > footer { display: flex; justify-content: flex-end; gap: 7px; }
+.phase6-candidate-edit-dialog { width: min(490px, 100%); }
+.phase6-candidate-edit-dialog header > div { display: grid; gap: 2px; }
+.phase6-candidate-edit-dialog header small,
+.phase6-location-editor > div > small { color: var(--muted); font-size: 9px; }
+.phase6-location-editor { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-subtle); }
+.phase6-location-editor > div:first-child { display: grid; gap: 2px; }
+.phase6-location-editor-actions { flex-wrap: wrap; }
+.phase6-google-preview { display: grid; gap: 4px; padding: 8px; border-radius: 8px; background: var(--surface); font-size: 10px; }
+.phase6-google-preview span,
+.phase6-google-preview small { color: var(--muted); }
+.phase6-google-preview small.warning { color: #985b17; }
+.phase6-google-preview button { justify-self: start; margin-top: 2px; }
 
 .phase6-day-balance { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 14px; padding: 9px 11px; border-radius: 10px; font-size: 10px; }
 .phase6-day-balance.ready { color: #156d56; background: rgba(27,127,100,.08); }

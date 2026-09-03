@@ -58,6 +58,15 @@ describe("travel API v3", () => {
     expect(commit?.data).toMatchObject({ generation: 2 });
   });
 
+  it("passes an explicit re-location request through to the resolver retry path", async () => {
+    const dependencies = deps();
+    const calls: unknown[][] = [];
+    (dependencies.runtime as any).retryResolutions = (...args: unknown[]) => { calls.push(args); return []; };
+    const result = await dispatchTravelApiV3("POST", "/api/trips/trip-1/resolutions/retry", new URLSearchParams(), { expectedGeneration: 4, placeIds: ["place-1"], force: true }, dependencies);
+    expect(result).toEqual({ status: 200, data: { results: [] } });
+    expect(calls).toEqual([["trip-1", ["place-1"], 4, true]]);
+  });
+
   it("exposes separate Macro Route recalculation endpoints", async () => {
     const one = await dispatchTravelApiV3("POST", "/api/trips/trip-1/macro-routes/day-2/recalculate", new URLSearchParams(), { expectedGeneration: 7 }, deps());
     expect(one?.data).toMatchObject({ route: { tripId: "trip-1", dayId: "macro:day-2", generation: 7 } });

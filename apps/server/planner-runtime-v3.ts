@@ -1368,8 +1368,8 @@ export class TravelPlannerRuntimeV3 {
     return { ...applied, plan, trip: written.trip, generation: written.generation, version: written.version };
   }
 
-  async retryResolutions(tripId: string, placeIds: string[], expectedGeneration: number) {
-    return this.options.resolver.resolveMany(tripId, placeIds, expectedGeneration, undefined, this.resolutionProgress(tripId));
+  async retryResolutions(tripId: string, placeIds: string[], expectedGeneration: number, force = false) {
+    return this.options.resolver.resolveMany(tripId, placeIds, expectedGeneration, undefined, this.resolutionProgress(tripId), force);
   }
   searchResolutionCandidates(tripId: string, placeId: string, expectedGeneration: number) { return this.options.resolver.searchCandidates(tripId, placeId, expectedGeneration); }
   selectResolution(tripId: string, placeId: string, input: unknown) { return (this.options.resolver as any).selectCandidate(tripId, placeId, input); }

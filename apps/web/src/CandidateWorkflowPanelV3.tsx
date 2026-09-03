@@ -1,4 +1,4 @@
-import { ArrowRight, MapPin, Plus, RefreshCw, Sparkles, Trash2, WandSparkles } from "lucide-react";
+import { ArrowRight, Link, MapPin, Pencil, Plus, RefreshCw, Sparkles, Trash2, WandSparkles } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { CandidatePreference, PlanningRole, Workspace } from "./v2-types";
 import { candidateRows, effectiveCandidatePlanningRole, formatDuration, resolutionStatus } from "./workspace-v2";
@@ -9,6 +9,36 @@ export type WorkflowCandidateDraftV3 = {
   planningRole: PlanningRole;
   planningAreaCandidateId: string | null;
   suggestedDurationMinutes: number | null;
+};
+
+export type WorkflowPlaceEditChangesV3 = {
+  nameZh: string;
+  nameLocal: string | null;
+  nameEn: string | null;
+};
+
+export type GoogleMapsPreviewV3 = {
+  name: string | null;
+  latitude: number;
+  longitude: number;
+  address: string | null;
+  city: string | null;
+  region: string | null;
+  country: string | null;
+  countryCode: string | null;
+  warning: string | null;
+};
+
+type CandidateEditState = {
+  placeId: string;
+  displayName: string;
+  nameZh: string;
+  nameLocal: string;
+  nameEn: string;
+  googleUrl: string;
+  googleLoading: boolean;
+  googlePreview: GoogleMapsPreviewV3 | null;
+  error: string;
 };
 
 function PreferenceButtons({ value, busy, onChange }: { value: CandidatePreference; busy: boolean; onChange: (value: CandidatePreference) => void }) {
@@ -28,6 +58,9 @@ export function CandidateWorkflowPanelV3({
   onSetPreference,
   onDiscover,
   onAddCandidate,
+  onUpdatePlace,
+  onPreviewGoogleMapsLink,
+  onApplyGoogleMapsLink,
   onRemoveCandidate,
   onContinue,
   onGoToSkeleton,
@@ -43,10 +76,13 @@ export function CandidateWorkflowPanelV3({
   onSetPreference: (candidateIds: string[], preference: CandidatePreference) => Promise<void>;
   onDiscover: () => Promise<void>;
   onAddCandidate: (draft: WorkflowCandidateDraftV3) => Promise<void>;
+  onUpdatePlace: (placeId: string, changes: WorkflowPlaceEditChangesV3) => Promise<boolean>;
+  onPreviewGoogleMapsLink: (placeId: string, url: string) => Promise<GoogleMapsPreviewV3>;
+  onApplyGoogleMapsLink: (placeId: string, url: string, changes: WorkflowPlaceEditChangesV3) => Promise<boolean>;
   onRemoveCandidate: (candidateId: string, cascade: boolean) => Promise<void>;
   onContinue: () => Promise<void>;
   onGoToSkeleton: () => void;
-  onRetry: (placeIds: string[]) => Promise<void>;
+  onRetry: (placeIds: string[], force?: boolean) => Promise<boolean>;
   onBeginMapPick: (placeId: string) => void;
 }) {
   const rows = useMemo(() => candidateRows(workspace), [workspace]);
@@ -65,6 +101,7 @@ export function CandidateWorkflowPanelV3({
   const [parentId, setParentId] = useState("");
   const [duration, setDuration] = useState("");
   const [addError, setAddError] = useState("");
+  const [editing, setEditing] = useState<CandidateEditState | null>(null);
 
   const submitAdd = async () => {
     if (!adding || !name.trim()) return;
@@ -75,6 +112,62 @@ export function CandidateWorkflowPanelV3({
     setAddError("");
     await onAddCandidate({ nameZh: name.trim(), planningRole: adding, planningAreaCandidateId: needsParent ? parentId : null, suggestedDurationMinutes: parsed });
     setAdding(null); setName(""); setParentId(""); setDuration("");
+  };
+
+  const openEdit = (row: typeof rows[number]) => {
+    setEditing({
+      placeId: row.place.id,
+      displayName: placeNamePresentation(row.place, workspace.trip.planLanguage).primary,
+      nameZh: row.place.nameZh,
+      nameLocal: row.place.nameLocal ?? "",
+      nameEn: row.place.nameEn ?? "",
+      googleUrl: "",
+      googleLoading: false,
+      googlePreview: null,
+      error: "",
+    });
+  };
+  const placeChanges = (value: CandidateEditState): WorkflowPlaceEditChangesV3 => ({
+    nameZh: value.nameZh.trim(),
+    nameLocal: value.nameLocal.trim() || null,
+    nameEn: value.nameEn.trim() || null,
+  });
+  const saveNames = async () => {
+    if (!editing) return;
+    const changes = placeChanges(editing);
+    if (!changes.nameZh) { setEditing({ ...editing, error: "请输入地点中文名称。" }); return; }
+    try {
+      if (!await onUpdatePlace(editing.placeId, changes)) { setEditing({ ...editing, error: "无法保存地点名称。" }); return; }
+      setEditing(null);
+    } catch (error) { setEditing({ ...editing, error: error instanceof Error ? error.message : "无法保存地点名称。" }); }
+  };
+  const previewGoogleMapsLink = async () => {
+    if (!editing) return;
+    const url = editing.googleUrl.trim();
+    if (!url) { setEditing({ ...editing, error: "请粘贴单个地点的 Google Maps 分享链接。" }); return; }
+    setEditing({ ...editing, googleLoading: true, googlePreview: null, error: "" });
+    try {
+      const preview = await onPreviewGoogleMapsLink(editing.placeId, url);
+      setEditing((current) => current?.placeId === editing.placeId ? { ...current, googleLoading: false, googlePreview: preview, error: "" } : current);
+    } catch (error) {
+      setEditing((current) => current?.placeId === editing.placeId ? { ...current, googleLoading: false, googlePreview: null, error: error instanceof Error ? error.message : "无法解析 Google Maps 链接。" } : current);
+    }
+  };
+  const applyGoogleMapsLink = async () => {
+    if (!editing?.googlePreview) return;
+    const changes = placeChanges(editing);
+    if (!changes.nameZh) { setEditing({ ...editing, error: "请输入地点中文名称。" }); return; }
+    try {
+      if (!await onApplyGoogleMapsLink(editing.placeId, editing.googleUrl, changes)) { setEditing({ ...editing, error: "无法通过 Google Maps 链接保存地点。" }); return; }
+      setEditing(null);
+    } catch (error) { setEditing({ ...editing, error: error instanceof Error ? error.message : "无法通过 Google Maps 链接保存地点。" }); }
+  };
+  const forceRelocate = async () => {
+    if (!editing) return;
+    try {
+      if (!await onRetry([editing.placeId], true)) { setEditing({ ...editing, error: "无法重新定位地点。" }); return; }
+      setEditing(null);
+    } catch (error) { setEditing({ ...editing, error: error instanceof Error ? error.message : "无法重新定位地点。" }); }
   };
 
   const confirmRemoval = (row: typeof rows[number], role: PlanningRole) => {
@@ -105,8 +198,10 @@ export function CandidateWorkflowPanelV3({
       </div>
       <div className="phase6-candidate-controls" onClick={(event) => event.stopPropagation()}>
         <PreferenceButtons value={row.candidate.preference} busy={busy} onChange={(value) => void onSetPreference([row.candidate.id], value)}/>
-        {status !== "resolved" && <div className="phase6-location-actions"><button type="button" disabled={busy} onClick={() => void onRetry([row.place.id])}><RefreshCw size={13}/>重新识别</button><button type="button" disabled={busy} onClick={() => onBeginMapPick(row.place.id)}><MapPin size={13}/>地图点选</button></div>}
-        <button type="button" className="phase6-remove" disabled={busy} onClick={() => { if (confirmRemoval(row, role)) void onRemoveCandidate(row.candidate.id, role === "planning_area"); }}><Trash2 size={13}/>移除</button>
+        <div className="phase6-candidate-management-actions">
+          <button type="button" className="phase6-edit" disabled={busy} onClick={() => openEdit(row)}><Pencil size={13}/>编辑</button>
+          <button type="button" className="phase6-remove" disabled={busy} onClick={() => { if (confirmRemoval(row, role)) void onRemoveCandidate(row.candidate.id, role === "planning_area"); }}><Trash2 size={13}/>移除</button>
+        </div>
       </div>
     </article>;
   };
@@ -136,5 +231,25 @@ export function CandidateWorkflowPanelV3({
     </footer>
 
     {adding && <div className="phase6-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setAdding(null); }}><section className="phase6-dialog"><header><strong>{adding === "planning_area" ? "添加停留地点" : adding === "core_visit" ? "添加重要游览地" : "添加普通景点"}</strong><button type="button" onClick={() => setAdding(null)}>×</button></header><label>地点名称<input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：蒂阿瑙 / 米尔福德峡湾"/></label>{adding !== "planning_area" && <label>所属停留地点<select value={parentId} onChange={(event) => setParentId(event.target.value)}>{(mode === "interests" ? adoptedAreas : planningAreas).map((area) => <option value={area.candidate.id} key={area.candidate.id}>{area.place.nameZh}</option>)}</select></label>}<label>预计停留分钟（可选）<input type="number" min="0" max="10080" value={duration} onChange={(event) => setDuration(event.target.value)} placeholder="例如 180"/></label>{addError && <p className="inline-error">{addError}</p>}<button className="button primary" type="button" disabled={busy || !name.trim()} onClick={() => void submitAdd()}>添加</button></section></div>}
+    {editing && <div className="phase6-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setEditing(null); }}>
+      <section className="phase6-dialog phase6-candidate-edit-dialog" aria-label={`编辑${editing.displayName}`}>
+        <header><div><strong>编辑地点</strong><small>{editing.displayName}</small></div><button type="button" aria-label="关闭编辑" onClick={() => setEditing(null)}>×</button></header>
+        <label>中文名称<input autoFocus value={editing.nameZh} onChange={(event) => setEditing({ ...editing, nameZh: event.target.value, error: "" })}/></label>
+        <label>本地名称（可选）<input value={editing.nameLocal} onChange={(event) => setEditing({ ...editing, nameLocal: event.target.value, error: "" })}/></label>
+        <label>英文名称（可选）<input value={editing.nameEn} onChange={(event) => setEditing({ ...editing, nameEn: event.target.value, error: "" })}/></label>
+        <section className="phase6-location-editor">
+          <div><strong>更新位置</strong><small>名称保存与位置更新互不覆盖。</small></div>
+          <div className="phase6-location-editor-actions">
+            <button className="button small" type="button" disabled={busy} onClick={() => void forceRelocate()}><RefreshCw size={13}/>重新定位</button>
+            <button className="button small" type="button" disabled={busy} onClick={() => { const placeId = editing.placeId; setEditing(null); onBeginMapPick(placeId); }}><MapPin size={13}/>地图点选</button>
+          </div>
+          <label>Google Maps 分享链接<input value={editing.googleUrl} onChange={(event) => setEditing({ ...editing, googleUrl: event.target.value, googlePreview: null, error: "" })} placeholder="https://maps.google.com/..."/></label>
+          <button className="button small" type="button" disabled={busy || editing.googleLoading} onClick={() => void previewGoogleMapsLink()}><Link size={13}/>{editing.googleLoading ? "正在解析…" : "预览链接"}</button>
+          {editing.googlePreview && <div className="phase6-google-preview"><strong>{editing.googlePreview.name || "已读取地点坐标"}</strong><span>{editing.googlePreview.latitude.toFixed(6)}, {editing.googlePreview.longitude.toFixed(6)}</span>{editing.googlePreview.address && <small>{editing.googlePreview.address}</small>}{editing.googlePreview.warning && <small className="warning">{editing.googlePreview.warning}</small>}<button className="button small primary" type="button" disabled={busy} onClick={() => void applyGoogleMapsLink()}>使用此链接定位</button></div>}
+        </section>
+        {editing.error && <p className="inline-error">{editing.error}</p>}
+        <footer><button className="button" type="button" disabled={busy} onClick={() => setEditing(null)}>取消</button><button className="button primary" type="button" disabled={busy} onClick={() => void saveNames()}>保存名称</button></footer>
+      </section>
+    </div>}
   </section>;
 }

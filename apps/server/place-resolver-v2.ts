@@ -326,10 +326,10 @@ export class PlaceResolverV2 {
     return resolution;
   }
 
-  async resolve(tripId: string, placeId: string, expectedGeneration: number, signal?: AbortSignal, onStatus?: (resolution: PlaceResolution) => void): Promise<PlaceResolutionResult> {
+  async resolve(tripId: string, placeId: string, expectedGeneration: number, signal?: AbortSignal, onStatus?: (resolution: PlaceResolution) => void, force = false): Promise<PlaceResolutionResult> {
     const place = this.place(tripId, placeId, expectedGeneration);
     const existing = this.options.store.listPlaceResolutions(tripId).find((item) => item.placeId === placeId);
-    if (existing?.status === "resolved" && resolutionIsCurrent(place, existing)) {
+    if (!force && existing?.status === "resolved" && resolutionIsCurrent(place, existing)) {
       notifyResolution(onStatus, existing);
       return { resolution: existing, candidates: [] };
     }
@@ -370,6 +370,7 @@ export class PlaceResolverV2 {
     expectedGeneration: number,
     signal?: AbortSignal,
     onProgress?: (progress: PlaceResolutionBatchProgress) => void,
+    force = false,
   ) {
     const ids = [...new Set(placeIds)];
     if (!ids.length) return [];
@@ -394,7 +395,7 @@ export class PlaceResolverV2 {
         if (index >= ids.length) return;
         const placeId = ids[index];
         try {
-          values[index] = await this.resolve(tripId, placeId, expectedGeneration, signal, (resolution) => report(placeId, resolution));
+          values[index] = await this.resolve(tripId, placeId, expectedGeneration, signal, (resolution) => report(placeId, resolution), force);
         } catch (error) {
           fatal = true;
           throw error;

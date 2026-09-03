@@ -248,6 +248,21 @@ describe("PlaceResolverV2", () => {
     store.close();
   });
 
+  it("forces a fresh Provider search when the user explicitly re-locates an already resolved Place", async () => {
+    const { store, tripId, generation } = seededStore();
+    let searches = 0;
+    const resolver = new PlaceResolverV2({
+      store,
+      maps: { search: async () => { searches += 1; return [candidate()]; }, reverse: async () => null },
+      assist: async () => choose("provider-1"),
+    });
+    await resolver.resolve(tripId, "p-1", generation);
+    const searchesAfterFirstResolution = searches;
+    await resolver.resolve(tripId, "p-1", generation, undefined, undefined, true);
+    expect(searches).toBe(searchesAfterFirstResolution * 2);
+    store.close();
+  });
+
   it("accepts a named whole route after a bounded supplemental search", async () => {
     const { store, tripId, generation } = seededStore(coastalTrack);
     const queries: string[] = [];

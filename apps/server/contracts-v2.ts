@@ -436,6 +436,7 @@ export type DirectPlaceResolutionInput = z.infer<typeof DirectPlaceResolutionInp
 export const PlaceResolutionRetryInputSchema = z.object({
   expectedGeneration: z.number().int().min(0),
   placeIds: z.array(IdSchema).min(1).max(200),
+  force: z.boolean().optional().default(false),
 }).strict();
 export type PlaceResolutionRetryInput = z.infer<typeof PlaceResolutionRetryInputSchema>;
 

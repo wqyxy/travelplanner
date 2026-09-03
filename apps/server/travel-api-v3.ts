@@ -133,7 +133,7 @@ export async function dispatchTravelApiV3(
   match = /^\/api\/trips\/([^/]+)\/resolutions\/retry$/.exec(pathname);
   if (method === "POST" && match) {
     const input = PlaceResolutionRetryInputSchema.parse(body);
-    return { status: 200, data: { results: await deps.runtime.retryResolutions(decode(match[1]), input.placeIds, input.expectedGeneration) } };
+    return { status: 200, data: { results: await deps.runtime.retryResolutions(decode(match[1]), input.placeIds, input.expectedGeneration, input.force) } };
   }
   match = /^\/api\/trips\/([^/]+)\/resolutions\/([^/]+)\/candidates$/.exec(pathname);
   if (method === "GET" && match) {
