@@ -72,7 +72,17 @@ export function validateBackboneDraftBatch(
 
   for (const [index, candidate] of value.candidates.entries()) {
     const parent = candidate.parentCandidateRef;
-    if (candidate.planningRole !== "core_visit" || !parent || parent.type !== "generated") continue;
+    if (candidate.planningRole !== "core_visit" || !parent) continue;
+    if (parent.type === "existing") {
+      if (candidatesById.has(parent.candidateId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["candidates", index, "parentCandidateRef"],
+          message: "existing parent 不得引用本轮 temporaryId；本轮生成的 Planning Area 必须使用 generated parent。",
+        });
+      }
+      continue;
+    }
     const generatedParent = candidatesById.get(parent.temporaryCandidateId);
     if (!generatedParent || generatedParent.temporaryId === candidate.temporaryId || generatedParent.planningRole !== "planning_area") {
       context.addIssue({
