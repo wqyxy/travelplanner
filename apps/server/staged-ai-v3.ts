@@ -1,6 +1,7 @@
 import type { ZodType } from "zod";
 import { actionRegistration, promptRegistration } from "./ai-registries-v3.js";
 import { OUTPUT_CONTRACT_SCHEMAS_V3 } from "./ai-action-contracts-v3.js";
+import { validateAiActionOutputAgainstStateV3 } from "./ai-action-state-validation-v3.js";
 import {
   StageDialogueOutputSchema,
   WebDialogueOutputSchema,
@@ -260,6 +261,10 @@ export class StagedTravelAiV3 {
     const schema = OUTPUT_CONTRACT_SCHEMAS_V3[registration.outputContract as keyof typeof OUTPUT_CONTRACT_SCHEMAS_V3] as unknown as ZodType<T> | undefined;
     if (!schema) throw new Error(`Action 缺少输出 Schema：${registration.outputContract}`);
     const webSearch = registration.web === "required" || (registration.web === "allowed" && input.allowWeb !== false) ? "live" : "disabled";
+    const validateResult = (value: T) => {
+      const semantic = validateAiActionOutputAgainstStateV3(input.actionType, input.state, value);
+      return input.validateResult ? input.validateResult(semantic) : semantic;
+    };
     return this.start<T>({
       promptId,
       state: compactActionStateForAiV3(input.actionType, input.state),
@@ -271,8 +276,8 @@ export class StagedTravelAiV3 {
       webSearch,
       effort: registration.reasoning,
       reasoningSummary: registration.reasoningSummary,
-      timeoutMs: registration.timeoutMs ?? (registration.web === "required" ? 300_000 : 180_000),
-      validateResult: input.validateResult,
+      timeoutMs: registration.timeoutMs ?? (input.actionType === "itinerary.detail.generate" ? 420_000 : registration.web === "required" ? 300_000 : 180_000),
+      validateResult,
       onProgress: input.onProgress,
     });
   }
