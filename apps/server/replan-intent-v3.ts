@@ -79,12 +79,12 @@ function tailAfterName(request: string, name: string) {
 
 function parseInstruction(tail: string) {
   const separator = "^[\\s，,：:]*";
-  const increase = new RegExp(`${separator}(?:多留|多住|增加(?:停留)?|加|延长)\\s*${NUMBER_TOKEN}\\s*天`, "u").exec(tail);
+  const increase = new RegExp(`${separator}(?:多留|多住|增加(?:停留)?|多|加|延长)\\s*${NUMBER_TOKEN}\\s*天`, "u").exec(tail);
   if (increase) {
     const days = parseCount(increase[1]);
     return Number.isSafeInteger(days) ? { kind: "delta" as const, deltaDays: days } : null;
   }
-  const decrease = new RegExp(`${separator}(?:少留|少住|减少(?:停留)?|减|缩短)\\s*${NUMBER_TOKEN}\\s*天`, "u").exec(tail);
+  const decrease = new RegExp(`${separator}(?:少留|少住|减少(?:停留)?|少|减|缩短)\\s*${NUMBER_TOKEN}\\s*天`, "u").exec(tail);
   if (decrease) {
     const days = parseCount(decrease[1]);
     return Number.isSafeInteger(days) ? { kind: "delta" as const, deltaDays: -days } : null;
