@@ -18,7 +18,7 @@ export function normalizeDetailDayCtaActionV3(
   if (!dayIds.length) return actionType;
 
   const days = dayIds.map((dayId) => plan.days.find((day) => day.id === dayId));
-  if (days.some((day) => day && (day.detailLevel !== "detailed" || day.detailStatus === "needs_review" || day.stops.length === 0))) {
+  if (days.some((day) => day && (day.detailLevel !== "detailed" || day.detailStatus !== "ready" || day.stops.length === 0))) {
     return "itinerary.detail.update";
   }
   return actionType;
