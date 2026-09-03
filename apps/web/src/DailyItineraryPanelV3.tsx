@@ -36,8 +36,7 @@ export function DailyItineraryPanelV3({
   const places = useMemo(() => new Map(workspace.trip.plan.places.map((place) => [place.id, place])), [workspace.trip.plan.places]);
 
   return <section className="phase6-daily-panel">
-    <header className="phase6-step-intro"><div><p className="eyebrow">STEP 5</p><h2>每日行程</h2><p>这里是最终按天安排。路线和停留天数保持不变，只调整每天去哪里、先后顺序和时间。</p></div>{dirtyRoutes.length > 0 && <button className="button small" type="button" disabled={busy} onClick={() => void onRecalculateDirty()}><RefreshCw size={14}/>更新 {dirtyRoutes.length} 天地图路线</button>}</header>
-    <nav className="itinerary-map-scope-v3 itinerary-map-scope-detail-v3" aria-label="每日行程范围"><button type="button" className={selectedDayId === null ? "active" : ""} onClick={onSelectAll}>全部日期</button>{workspace.trip.plan.days.map((day) => <button type="button" className={selectedDayId === day.id ? "active" : ""} key={day.id} onClick={() => onSelectDay(day.id)}>Day {day.dayNumber}</button>)}</nav>
+    <header className="phase6-step-intro"><div><p className="eyebrow">STEP 5</p><h2>每日行程</h2><p>这里是最终按天安排。路线和停留天数保持不变，只调整每天去哪里、先后顺序和时间。</p></div><div className="phase6-intro-actions"><button className={`button small ${selectedDayId === null ? "primary" : ""}`} type="button" onClick={onSelectAll}>全部日期</button>{dirtyRoutes.length > 0 && <button className="button small" type="button" disabled={busy} onClick={() => void onRecalculateDirty()}><RefreshCw size={14}/>更新 {dirtyRoutes.length} 天地图路线</button>}</div></header>
     <div className="phase6-daily-list">
       {workspace.trip.plan.days.map((day) => {
         const state = routeStateForDay(workspace.routeStates, day.id);

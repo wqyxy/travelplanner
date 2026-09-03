@@ -104,8 +104,12 @@
 .phase6-detail-step { gap: 10px; }
 .phase6-generate-detail { display: grid; min-height: 180px; place-items: center; align-content: center; gap: 14px; text-align: center; }
 .phase6-generate-detail p { max-width: 580px; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.phase6-detail-step.has-daily-itinerary { overflow: hidden; }
+.phase6-detail-step.has-daily-itinerary > .phase6-daily-panel { height: auto; min-height: 0; flex: 1 1 auto; overflow: hidden; }
 .phase6-daily-panel { padding: 0; overflow: visible; }
-.phase6-daily-list { padding-bottom: 10px; }
+.phase6-daily-panel > .phase6-step-intro,
+.phase6-daily-panel > .itinerary-map-scope-detail-v3 { flex: 0 0 auto; }
+.phase6-daily-list { flex: 1 1 auto; min-height: 0; grid-auto-rows: max-content; align-content: start; padding: 0 2px 10px 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .phase6-day-card { overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
 .phase6-day-card.selected { border-color: var(--primary); }
 .phase6-day-card > header { display: grid; grid-template-columns: auto minmax(0,1fr) auto; gap: 9px; align-items: center; padding: 10px 11px; background: var(--surface-subtle); }
