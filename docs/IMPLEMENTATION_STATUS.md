@@ -1,13 +1,13 @@
 # TravelPlanner Implementation Status
 
 > 更新时间：2026-09-03
-> 当前状态：**五步重构 Phase 1–6 已逐阶段通过；Final Regression 已执行三次。第三次除 production Browser MapLibre marker 外，其余可执行 Gate 全部通过。该 Map 集成问题已做最小 Repair #3，当前等待第四次 Final Regression Rerun。**
+> 当前状态：**五步重构所有隔离测试、typecheck、full suite、build、production Browser Map Gate 已通过；第一次真实 private_data + Real AI 五步 E2E 在 Step 2 暴露 parent reference 问题。Repair #4 已实施，等待使用保留测试旅行继续真实 E2E。**
 
 ---
 
 # 1. Current Gate
 
-当前分支：
+分支：
 
 ```text
 feature/five-step-workflow-refactor
@@ -19,184 +19,165 @@ feature/five-step-workflow-refactor
 b048c1980247443b5d6568ddd4302c41c9ce832b
 ```
 
-Phase 6 PASS HEAD：
+Production Map 修复后、第一次真实 E2E 的 HEAD：
 
 ```text
-0f8cdd2bdb58b248cc39aefbd05c8cdfd0ce2ae7
+0cd5037114c12c1ae0b0cbfe4492a18cf95fafd3
 ```
 
-第一次 Final Regression HEAD：
+第一次真实测试旅行：
 
 ```text
-eb8ea96e54805284633fd429fc5f1d071ff5309b
+Trip ID: d028c5f7-906e-4027-8fa1-faab7a3b7d71
+Title: [五步E2E测试-保留] 新西兰20天南北岛自驾
 ```
 
-第二次 Final Regression HEAD：
-
-```text
-bed89c96b2bad6b456a924d45c35150f232fced4
-```
-
-第三次 Final Regression HEAD：
-
-```text
-eeaa4390f754b49944624f0939575c1b01828b6c
-```
-
-三次最终回归结论均为：
-
-```text
-FINAL FIVE-STEP REGRESSION: FAIL
-```
-
-第三次失败只剩 production Browser MapLibre marker / GeoJSON rendered-feature 集成问题。Repair #3 已实施，但尚未重新验收，因此当前仍不能宣称专项最终完成，也不能直接合并 `main`。
+测试数据按用户要求保留，不清理。
 
 ---
 
-# 2. Phase History
+# 2. 已通过的综合 Gate
+
+在 `0cd5037...` 上已经验证：
 
 ```text
-Phase 0 Read-only Gap Review                  DONE
-Phase 1 Role + Contract Foundation            PASS
-Phase 2 Skeleton + Impact Consumer Foundation PASS
-Phase 3 Backbone Producer                     PASS
-Phase 4 Capacity-Aware Interests              PASS
-Phase 5 Detailed Itinerary                    PASS
-Phase 6 UI / Map + Complexity Downshift       PASS
-Phase 7 Final Regression #1                   FAIL
-Phase 7 Repair #1                             IMPLEMENTED
-Phase 7 Final Regression #2                   FAIL
-Phase 7 Repair #2                             IMPLEMENTED
-Phase 7 Final Regression #3                   FAIL
-Phase 7 Repair #3                             IMPLEMENTED / AWAITING RERUN
+git diff --check PASS
+typecheck PASS
+69 test files / 406 tests PASS
+build PASS
+fresh dist/web production MapLibre worker PASS
+candidate marker render/click/popup PASS
+itinerary GeoJSON / routes PASS
+five-step mounted Browser smoke PASS
+Provider boundary PASS
+security/private-data isolated checks PASS
 ```
 
-第三次 Final Regression 已确认以下项目在当时 HEAD 全部通过：Repair targeted、Phase 1–6 targeted、typecheck、full Vitest、build、F1–F14、Detailed Itinerary、Provider 边界和安全审计。唯一真实 FAIL 是 production Browser marker click。
+因此当前没有已知 Map、Provider、build、typecheck 或普通 regression 问题。
 
 ---
 
-# 3. Final Regression #1 的问题与修复
+# 3. Real Private-Data E2E #1
 
-## 3.1 OpenAI structured output / stayBlockId
-
-canonical `Day.stayBlockId` 保持 optional；Structured AI transport 对该字段使用 required + nullable bridge，`null` 在进入 canonical 前归一为字段缺省。
-
-## 3.2 Detail → Core
-
-用户在 Step 4 / Step 5 对当前普通景点说：
+真实测试明确授权使用：
 
 ```text
-这个地方很重要，要单独留一天
+private_data/travel-v2.sqlite3
+真实 AI
+真实 Provider
+真实产品 UI
+真实数据库写入
 ```
 
-受控链路：
+测试只新增并操作 `[五步E2E测试-保留]` 旅行，没有修改或删除其他旅行。
+
+## Step 1
+
+UI 需求保存成功，但发现一个 warning：
 
 ```text
-自动路由到 Step 2 destinations
-→ 保留当前普通景点 selection
-→ destination.edit
-→ request = promote_to_core
-→ pending_confirmation
-→ 用户确认
-→ detail_interest → core_visit
-→ 保留 planningAreaCandidateId
-→ Macro dependency dirty
-→ 所属区域 Detailed Day needs_review
+brief.duration = "20天"
+requestedDurationDays = null
 ```
 
-CTA、generic command 和普通 destination.edit 都不能绕过这条确认路径。
+原因：原“旅行需求对话”Prompt 只要求把时长写入 `changes.brief.duration`；数字时长没有同步写入 `changes.dates.requestedDurationDays`。CTA 路径虽有 normalization，但真实 conversation Action 不经过该入口。
 
-## 3.3 Step 4 / public text / Resolver / diff hygiene
+## Step 2
 
-Repair #1 同时完成：
+真实 `destination.generate` 连续两次失败，未保存任何 Candidate。
+
+错误：
 
 ```text
-Step 4 stop-after-save fixture 与 current Skeleton readiness 对齐
-Proposal / error / task 共用 public-text 防泄漏边界
-Picton city country-scope query 保持 provider-friendly English name
-git diff --check trailing whitespace 清理
+Core Visit 引用无效 Planning Area Candidate：candidate-auckland
+Core Visit 引用无效 Planning Area Candidate：tmp-candidate-rotorua
 ```
+
+真实 AI 在同一批次同时生成 Planning Area 和 Core Visit 时，把本轮 Planning Area 的 `temporaryId` 错放进：
+
+```json
+{ "type": "existing", "candidateId": "...temporaryId..." }
+```
+
+正确形式应为：
+
+```json
+{ "type": "generated", "temporaryCandidateId": "...temporaryId..." }
+```
+
+由于旧 contract 只校验 `generated` ref 的同批关系，该错误能通过 Structured AI parse，直到正式化/落库前才失败，因此没有利用已有 structured-output 自动修正机会。
+
+Step 3–5 因 Step 2 无 Candidate 合法 BLOCKED。
 
 ---
 
-# 4. Final Regression #2 的问题与 Repair #2
+# 4. Repair #4
 
-## 4.1 TripCandidate OpenAI transport
+## 4.1 Step 2 parent reference 前移校验
 
-`TripCandidateSchema.planningRole?` 是 canonical 旧数据兼容字段，不能通过第二个 nullable bridge 解决。
-
-Repair #2：
+`apps/server/backbone-contracts-v3.ts` 现在额外拒绝：
 
 ```text
-stayBlockId 仍是唯一 nullable bridge
-planningRole 不允许 null
-仅当 object 完整匹配 TripCandidate shape 且唯一 optional 字段是 planningRole
-OpenAI transport 才要求 planningRole 为 required enum
-其他 mixed required/optional object 继续 fail closed
+Core Visit 的 parentCandidateRef.type = existing
+且 candidateId 同时等于本轮任意 Candidate temporaryId
 ```
 
-## 4.2 Detail → Core fixture 外键
+错误会在 `DestinationGenerateOutputSchema.parse()` 阶段出现：
 
-测试改为通过 `TravelStoreV3.createUserMessage()` 建立真实 conversation message，再创建 Action；所有 SQLite fixture 使用 `try/finally` 关闭。
+```text
+existing parent 不得引用本轮 temporaryId；本轮生成的 Planning Area 必须使用 generated parent。
+```
 
-第三次 Final Regression 已验证：Repair Targeted 9/9、Phase Targeted 32/32、full suite 69 files / 406 tests、typecheck 和 build 全部通过。
+这会进入现有 Structured AI 自动修正机制，而不是等到准备写 canonical plan 时整批失败。
+
+安全边界没有放宽：
+
+```text
+真正 existing parent 仍必须引用当前 canonical Planning Area
+真正 generated parent 仍必须引用本轮 planning_area temporaryId
+不存在的 parent 仍拒绝
+reparent 仍拒绝
+```
+
+新增回归测试：
+
+```text
+apps/server/real-ai-step2-parent-ref-regression-v3.test.ts
+```
+
+覆盖真实出现的 `candidate-auckland` 型错误与正确 `generated` 写法。
+
+## 4.2 Step 2 Prompt 加硬
+
+`prompts/actions/destinations/生成目的地建议.md` 明确：
+
+```text
+existing.candidateId 只能从输入当前 Backbone 原样复制
+本轮 temporaryId 无论长得多像正式 ID 都不得写入 existing
+同批父级必须使用 generated.temporaryCandidateId
+```
+
+## 4.3 Step 1 数字时长同步
+
+`prompts/dialogues/旅行需求对话.md` 现在要求：
+
+```text
+20天 / 20 天左右 / 2周 / 7 days
+→ 保留 brief.duration 原话
+→ 同步 dates.requestedDurationDays
+```
+
+没有精确日期时不得编造日期，例如：
+
+```json
+{ "start": null, "end": null, "requestedDurationDays": 20 }
+```
+
+已有完整 start+end 时精确日期优先，不同时保存非 null requestedDurationDays。
 
 ---
 
-# 5. Final Regression #3 的问题与 Repair #3
-
-## 5.1 现象
-
-第三次 Final Regression 使用 `dist/web` production build + 纯内存 API fixture 时：
-
-```text
-页面显示“已定位地点 N”
-GeoJSON point 数据存在
-MapLibre canvas 正常创建
-但 rendered marker feature = 0
-点击地图没有 candidate selection，也没有 popup
-```
-
-相同 `WorkspaceMapV2` 在 Phase 6 的 Vite dev Browser Gate 曾通过，因此问题被定位为 dev 与 production bundling 的 MapLibre worker 差异，而不是 candidate/popup 业务逻辑回退。
-
-## 5.2 Repair #3
-
-按 MapLibre v6 的 Vite bundler要求，在应用入口显式配置 production worker：
-
-```text
-import { setWorkerUrl } from "maplibre-gl"
-import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url"
-setWorkerUrl(workerUrl)
-```
-
-同时导入官方 MapLibre CSS，并增加标准 `vite/client` 类型声明。
-
-Repair #3 只修改：
-
-```text
-apps/web/src/main.tsx
-apps/web/src/vite-env.d.ts
-```
-
-未修改：
-
-```text
-WorkspaceMapV2 marker click / selection / popup 业务逻辑
-candidatePointFeatures / itineraryPointFeatures
-Provider / Resolver
-后端
-数据库
-Prompt
-canonical plan
-```
-
-本轮必须重点用 **fresh production build (`npm run build`) 的 `dist/web`** 重新验证 marker rendered feature、selection 和只读 popup；不能只用 Vite dev 证明通过。
-
----
-
-# 6. 当前五步合同
-
-用户流程：
+# 5. 当前五步合同不变
 
 ```text
 1 旅行需求
@@ -206,83 +187,43 @@ canonical plan
 5 每日行程
 ```
 
-内部核心保持：
+内部继续保持：
 
 ```text
 PlanningRole = planning_area | core_visit | detail_interest
 Core Visit 不成为 Macro Anchor
-同一 Planning Area 可有多个稳定 Stay Block
-Day.stayBlockId? backward-compatible
-macroDirty 运行时派生
+Planning Area 可以重复 Stay Block
+Day.stayBlockId optional backward-compatible
 Step 3 原子 Skeleton save
-Step 4 可完全跳过
-Step 5 只更新真实 affectedDayIds
-Detailed update sticky baseline / minimal diff
+Step 4 可跳过
+Step 5 incremental affected days
 PRAGMA user_version = 3
 ```
 
-不做 v3 → v4 migration，不自动 rewrite 私人数据库。
+无 DB migration，无 Provider 权限扩大。
 
 ---
 
-# 7. UI / Map 合同
+# 6. Next Step
 
-地图 / 时间轴只负责：
-
-```text
-展示
-选择
-聚焦
-```
-
-Marker click 只改变 selection 并显示只读 popup，不产生业务 mutation；右侧控制台仍是唯一业务入口。
-
-Map coordinate repair 只能由右侧地点卡先发起。
-
----
-
-# 8. Private Data / Security
-
-继续保持：
+继续使用已经保留的真实测试旅行：
 
 ```text
-private_data/ 不进入 Git
-不使用真实私人旅行做 Browser E2E
-不新增凭据
-不扩大 AI / Codex 权限
-不让 AI 产生可信 Provider facts
+d028c5f7-906e-4027-8fa1-faab7a3b7d71
 ```
 
----
+不要新建第二个测试旅行。
 
-# 9. Current Next Step
-
-下一步是第四次 Final Regression Rerun。
-
-由于第三次回归除 Map production Browser 外其余 Gate 已全部通过，本轮可以先做 Repair #3 快速 Gate，但最终仍应在当前 HEAD 至少重新执行：
+先通过正常 Step 1 对话再次确认：
 
 ```text
-git diff --check
-npm run typecheck
-npm test
-npm run build
-production dist/web isolated Browser marker test
-必要的五步 Browser smoke
-Provider / private-data boundary check
+旅行时长仍然是20天。
 ```
 
-重点硬 Gate：
+验证 `requestedDurationDays = 20` 后，回 Step 2 正常重新运行 `destination.generate`。
 
-```text
-fresh npm run build
-→ serve fresh dist/web
-→ memory API fixture
-→ GeoJSON candidate marker 实际可见 / queryRenderedFeatures 可命中
-→ marker click 只 selection
-→ popup 只读
-→ 无 API mutation
-```
+如果 Step 2 成功保存 Planning Areas + Core Visits，则继续原真实 E2E 的 Step 3–5、Provider、Detail→Core 和 incremental update。
 
-如果仍 FAIL，不宣称完成；继续只回 Phase 6 Map Integration 做最小修复。
+如果再次出现真实失败，不修改代码，记录当前数据与错误后 STOP。
 
-如果所有可执行硬 Gate PASS，仅 Real AI smoke 因没有安全临时 v3 路径而 BLOCKED，则按最终 Gate 规则报告 PARTIAL，由用户决定是否接受该环境未验证项。
+只有真实五步 E2E 完整通过后，才能把专项状态标记为最终 PASS 并准备合并 main。
