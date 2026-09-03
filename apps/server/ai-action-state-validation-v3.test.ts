@@ -35,6 +35,41 @@ function output(candidateId = "candidate-museum") {
   };
 }
 
+function replanState() {
+  return {
+    baseGeneration: 16,
+    parameters: { request: "我想把瓦纳卡多留一天，皇后镇少一天，总天数仍然保持20天。" },
+    currentStays: [
+      { planningAreaCandidateId: "area-auckland", stayDays: 18 },
+      { planningAreaCandidateId: "area-queenstown", stayDays: 2 },
+    ],
+    planningAreas: [
+      { id: "area-wanaka", place: { nameZh: "瓦纳卡", nameLocal: "Wānaka", nameEn: "Wanaka" } },
+      { id: "area-queenstown", place: { nameZh: "皇后镇", nameLocal: "Queenstown", nameEn: "Queenstown" } },
+      { id: "area-auckland", place: { nameZh: "奥克兰", nameLocal: "Auckland", nameEn: "Auckland" } },
+    ],
+  };
+}
+
+function replanOutput(wanakaDays: number, queenstownDays: number, omitWanaka = false) {
+  return {
+    schemaVersion: 1,
+    baseGeneration: 16,
+    result: {
+      type: "success",
+      assistantMessage: "done",
+      title: "更新路线",
+      explanation: "按明确天数调整",
+      stays: [
+        { planningAreaCandidateId: "area-auckland", stayDays: 18, transferModeFromPrevious: "none" },
+        ...(wanakaDays > 0 ? [{ planningAreaCandidateId: "area-wanaka", stayDays: wanakaDays, transferModeFromPrevious: "drive" }] : []),
+        ...(queenstownDays > 0 ? [{ planningAreaCandidateId: "area-queenstown", stayDays: queenstownDays, transferModeFromPrevious: "drive" }] : []),
+      ],
+      omittedPlanningAreas: omitWanaka ? [{ candidateId: "area-wanaka", reason: "optional" }] : [],
+    },
+  };
+}
+
 describe("detailed itinerary AI semantic validation", () => {
   it("accepts only current resolved candidates and scoped unscheduled core visits", () => {
     const value = output();
@@ -56,6 +91,18 @@ describe("detailed itinerary AI semantic validation", () => {
     value.result.dayUpdates = [];
     expect(() => validateAiActionOutputAgainstStateV3("itinerary.detail.generate", state(), value))
       .toThrow(/恰好返回本轮 targetDayIds/);
+  });
+});
+
+describe("itinerary replan AI semantic validation", () => {
+  it("rejects a replan that omits Wanaka and leaves Queenstown unchanged despite explicit +1/-1 instructions", () => {
+    expect(() => validateAiActionOutputAgainstStateV3("itinerary.replan", replanState(), replanOutput(0, 2, true)))
+      .toThrow(/瓦纳卡.*应为 1 天/);
+  });
+
+  it("accepts a replan that applies Wanaka +1 and Queenstown -1 exactly", () => {
+    const value = replanOutput(1, 1);
+    expect(validateAiActionOutputAgainstStateV3("itinerary.replan", replanState(), value)).toBe(value);
   });
 
   it("leaves unrelated action outputs unchanged", () => {
