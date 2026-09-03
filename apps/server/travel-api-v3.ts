@@ -40,7 +40,7 @@ export async function dispatchTravelApiV3(
   let match = /^\/api\/trips\/([^/]+)$/.exec(pathname);
   if (match) {
     const tripId = decode(match[1]);
-    if (method === "GET") return { status: 200, data: { trip: deps.store.requireTrip(tripId) };
+    if (method === "GET") return { status: 200, data: { trip: deps.store.requireTrip(tripId) } };
     if (method === "PATCH") {
       let trip = deps.store.requireTrip(tripId);
       if (body.title !== undefined) trip = deps.store.rename(tripId, String(body.title));
@@ -179,7 +179,7 @@ export async function dispatchTravelApiV3(
   match = /^\/api\/trips\/([^/]+)\/ai-tasks$/.exec(pathname);
   if (method === "GET" && match) return { status: 200, data: { tasks: deps.store.listAiTasks(decode(match[1])) } };
   match = /^\/api\/trips\/([^/]+)\/ai-tasks\/([^/]+)\/stop$/.exec(pathname);
-  if (method === "POST" && match) return { status: 200, data: deps.runtime.stopTask(decode(match[1]), decode(match[2]), body) };
+  if (method === "POST" && match) return { status: 200, data: deps.runtime.stopTask(decode(match[1]), decode(match[2])) };
 
   return null;
 }
