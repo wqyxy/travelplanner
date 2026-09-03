@@ -527,7 +527,7 @@ export class TravelStoreV3 {
     this.requireTrip(input.tripId);
     const timestamp = now();
     this.db.prepare("INSERT INTO stage_conversation_threads(trip_id,stage,thread_id,prompt_hash,prompt_version,context_generation,turn_count,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(trip_id,stage) DO UPDATE SET thread_id=excluded.thread_id,prompt_hash=excluded.prompt_hash,prompt_version=excluded.prompt_version,context_generation=excluded.context_generation,turn_count=excluded.turn_count,updated_at=excluded.updated_at").run(input.tripId, input.stage, input.threadId, input.promptHash, input.promptVersion, input.contextGeneration, input.turnCount, timestamp, timestamp);
-    return this.getStageThread(input.tripId, stage)!;
+    return this.getStageThread(input.tripId, input.stage)!;
   }
 
   incrementStageThreadTurn(tripId: string, stage: ConversationStage, threadId: string, contextGeneration: number) {
