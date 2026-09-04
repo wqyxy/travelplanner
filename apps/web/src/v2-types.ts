@@ -53,6 +53,7 @@ export type DayStop = {
   placeId: string;
   activity: string;
   period: Period | null;
+  scheduleText?: string | null;
   startTime: string | null;
   endTime: string | null;
   durationMinutes: number | null;
@@ -68,6 +69,7 @@ export type Day = {
   date: string | null;
   title: string;
   stayBlockId?: string;
+  transferMode: TransportMode;
   detailLevel: "planned" | "detailed";
   detailStatus: "ready" | "needs_review" | null;
   startAnchor: DayAnchor;
@@ -207,7 +209,7 @@ export type PlanCommand =
   | { type: "move_day_stop"; stopId: string; targetDayId: string; targetIndex: number }
   | { type: "remove_day_stop"; stopId: string }
   | { type: "move_day"; dayId: string; targetIndex: number }
-  | { type: "update_day"; dayId: string; changes: Partial<Pick<Day, "title" | "date">> };
+  | { type: "update_day"; dayId: string; changes: Partial<Pick<Day, "title" | "date" | "transferMode">> };
 export type AiProposal = {
   id: string;
   tripId: string;
