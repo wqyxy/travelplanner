@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,93 +50,77 @@ const node = (id: string, placeId: string, patch: Partial<FinalRouteNode> = {}):
   ...patch,
 });
 
-function legacyDayPlan() {
+function routePlan() {
   const base = emptyTravelPlan();
   return TravelPlanDocumentSchema.parse({
     ...base,
     trip: { ...base.trip, originPlaceId: "a" },
     places: [place("a"), place("x"), place("b")],
-    candidates: [{ id: "cx", placeId: "x", planningAreaCandidateId: null, preference: "want_to_go", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: null, tags: [] }],
-    finalRoute: { version: 0, nodes: [] },
-    days: [{
-      id: "legacy-day", dayNumber: 1, date: null, title: "旧行程", transferMode: "drive", detailLevel: "detailed", detailStatus: "ready",
-      startAnchor: { id: "legacy-start", placeId: "a", label: null, notes: null },
-      stops: [{ id: "legacy-stop", candidateId: "cx", placeId: "x", activity: "X", period: null, scheduleText: null, startTime: null, endTime: null, durationMinutes: null, transportFromPrevious: null, scheduleVerification: null, costNote: null, costVerification: null, notes: null }],
-      endAnchor: { id: "legacy-end", placeId: "b", label: null, notes: null },
-    }],
+    finalRoute: {
+      version: 1,
+      nodes: [node("x-node", "x"), node("b-node", "b", { endsDay: true })],
+    },
   });
 }
 
-describe("TravelStoreV3 final-route compatibility", () => {
-  it("keeps an intentionally empty new final route empty even when old Candidate data remains", () => {
+describe("TravelStoreV3 final-route storage", () => {
+  it("stores the final route and rebuilds Days from it instead of trusting submitted Day edits", () => {
     const store = new TravelStoreV3(databasePath());
     const created = store.createTrip();
-    const base = emptyTravelPlan();
-    const plan = TravelPlanDocumentSchema.parse({
-      ...base,
-      places: [place("x")],
-      candidates: [{ id: "cx", placeId: "x", planningAreaCandidateId: null, preference: "want_to_go", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: null, tags: [] }],
-      finalRoute: { version: 1, nodes: [] },
-    });
-    const written = store.writePlan(created.id, plan, 0, { source: "test", summary: "intentional empty route" });
-    expect(written.trip.plan.finalRoute).toEqual({ version: 1, nodes: [] });
-    expect(store.requireTrip(created.id).plan.finalRoute).toEqual({ version: 1, nodes: [] });
+    const plan = routePlan();
+    const deliberatelyStale = TravelPlanDocumentSchema.parse({ ...plan, days: [] });
+
+    const written = store.writePlan(created.id, deliberatelyStale, 0, { source: "test", summary: "route write" });
+
+    expect(written.trip.plan.finalRoute.nodes.map((item) => item.id)).toEqual(["x-node", "b-node"]);
+    expect(written.trip.plan.days).toHaveLength(1);
+    expect(written.trip.plan.days[0].startAnchor.placeId).toBe("a");
+    expect(written.trip.plan.days[0].endAnchor.placeId).toBe("b");
     store.close();
   });
-  it("derives final route from old current JSON and old revision JSON, then restores without rewriting history", () => {
+
+  it("keeps Revision / restore for new-format plans only", () => {
+    const store = new TravelStoreV3(databasePath());
+    const created = store.createTrip();
+    const first = store.writePlan(created.id, routePlan(), 0, { source: "test", summary: "route v1" });
+    const next = structuredClone(first.trip.plan);
+    next.finalRoute.nodes[0].status = "tentative";
+    const second = store.writePlan(created.id, next, first.generation, { source: "test", summary: "route v2" });
+
+    expect(store.getRevision(created.id, first.version)?.plan.finalRoute.nodes[0].status).toBe("normal");
+    const restored = store.restoreRevision(created.id, first.version);
+    expect(restored.trip.plan.finalRoute.nodes[0].status).toBe("normal");
+    expect(restored.generation).toBe(second.generation + 1);
+    store.close();
+  });
+
+  it("rejects old-format plan JSON instead of deriving a final route from it", () => {
     const filename = databasePath();
     let store = new TravelStoreV3(filename);
     const created = store.createTrip();
-    const seeded = store.writePlan(created.id, legacyDayPlan(), 0, { source: "test", summary: "legacy fixture" });
-    expect(seeded.trip.plan.finalRoute.nodes.map((item) => item.id)).toEqual(["legacy-stop", "legacy-end"]);
     store.close();
 
     const raw = new DatabaseSync(filename);
-    const stripFinalRoute = (json: string) => {
-      const value = JSON.parse(json) as Record<string, unknown>;
-      delete value.finalRoute;
-      return JSON.stringify(value);
-    };
-    const current = raw.prepare("SELECT current_plan_json FROM trips WHERE id=?").get(created.id) as { current_plan_json: string };
-    raw.prepare("UPDATE trips SET current_plan_json=? WHERE id=?").run(stripFinalRoute(current.current_plan_json), created.id);
-    const revision = raw.prepare("SELECT plan_json FROM plan_revisions WHERE trip_id=? AND version=2").get(created.id) as { plan_json: string };
-    raw.prepare("UPDATE plan_revisions SET plan_json=? WHERE trip_id=? AND version=2").run(stripFinalRoute(revision.plan_json), created.id);
+    const row = raw.prepare("SELECT current_plan_json FROM trips WHERE id=?").get(created.id) as { current_plan_json: string };
+    const oldPlan = JSON.parse(row.current_plan_json) as Record<string, any>;
+    oldPlan.places = [place("old-place")];
+    oldPlan.candidates = [{
+      id: "old-candidate",
+      placeId: "old-place",
+      planningAreaCandidateId: null,
+      preference: "want_to_go",
+      source: "user",
+      aiReason: null,
+      aiScore: null,
+      suggestedDurationMinutes: null,
+      tags: [],
+    }];
+    delete oldPlan.finalRoute;
+    raw.prepare("UPDATE trips SET current_plan_json=? WHERE id=?").run(JSON.stringify(oldPlan), created.id);
     raw.close();
 
     store = new TravelStoreV3(filename);
-    expect(store.requireTrip(created.id).plan.finalRoute.nodes.map((item) => item.id)).toEqual(["legacy-stop", "legacy-end"]);
-    expect(store.getRevision(created.id, 2)?.plan.finalRoute.nodes.map((item) => item.id)).toEqual(["legacy-stop", "legacy-end"]);
-
-    const restored = store.restoreRevision(created.id, 2);
-    expect(restored.trip.plan.finalRoute.nodes.map((item) => item.id)).toEqual(["legacy-stop", "legacy-end"]);
-    expect(restored.generation).toBe(2);
-    store.close();
-
-    const check = new DatabaseSync(filename);
-    const oldRevision = check.prepare("SELECT plan_json FROM plan_revisions WHERE trip_id=? AND version=2").get(created.id) as { plan_json: string };
-    expect(Object.hasOwn(JSON.parse(oldRevision.plan_json), "finalRoute")).toBe(false);
-    const newRevision = check.prepare("SELECT plan_json FROM plan_revisions WHERE trip_id=? AND version=3").get(created.id) as { plan_json: string };
-    expect(Object.hasOwn(JSON.parse(newRevision.plan_json), "finalRoute")).toBe(true);
-    check.close();
-  });
-
-  it("keeps the final route synchronized while legacy Day editors still write during the transition", () => {
-    const store = new TravelStoreV3(databasePath());
-    const created = store.createTrip();
-    const seeded = store.writePlan(created.id, legacyDayPlan(), 0, { source: "test", summary: "seed legacy day" });
-    expect(seeded.trip.plan.finalRoute.nodes.map((item) => item.placeId)).toEqual(["x", "b"]);
-
-    const edited = structuredClone(seeded.trip.plan);
-    edited.places.push(place("y"));
-    edited.days[0].stops.push({
-      id: "legacy-stop-y", candidateId: null, placeId: "y", activity: "Y", period: null, scheduleText: null,
-      startTime: null, endTime: null, durationMinutes: null, transportFromPrevious: null, scheduleVerification: null,
-      costNote: null, costVerification: null, notes: null,
-    });
-    const written = store.writePlan(created.id, edited, seeded.generation, { source: "test", summary: "legacy detail edit" });
-
-    expect(written.trip.plan.finalRoute.nodes.map((item) => item.placeId)).toEqual(["x", "y", "b"]);
-    expect(written.trip.plan.finalRoute.nodes.map((item) => item.id)).toEqual(["legacy-stop", "legacy-stop-y", "legacy-end"]);
+    expect(() => store.requireTrip(created.id)).toThrow(/OLD_TEST_PLAN_UNSUPPORTED/);
     store.close();
   });
 
@@ -149,7 +132,7 @@ describe("TravelStoreV3 final-route compatibility", () => {
       ...base,
       trip: { ...base.trip, originPlaceId: "a" },
       places: [place("a"), place("x"), place("b")],
-      finalRoute: { nodes: [node("x-node", "x", { status: "tentative" }), node("b-node", "b")] },
+      finalRoute: { version: 1, nodes: [node("x-node", "x", { status: "tentative" }), node("b-node", "b")] },
     });
     const seeded = store.writePlan(created.id, plan, 0, { source: "test", summary: "route fixture" });
     const timestamp = new Date().toISOString();
