@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { buildPlanningAreaContext } from "./planning-areas-v2.js";
 
 const datePattern = /^\d{4}-\d{2}-\d{2}$/;
 const timePattern = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -64,20 +63,13 @@ export type Place = z.infer<typeof PlaceSchema>;
 const TripDatesSchema = z.object({
   start: DateSchema.nullable(),
   end: DateSchema.nullable(),
-  requestedDurationDays: z.number().int().min(1).max(90).nullable(),
-}).strict().superRefine((value, context) => {
-  if (value.start && value.end && value.start > value.end) {
-    context.addIssue({ code: "custom", path: ["end"], message: "结束日期不能早于开始日期。" });
-  }
-  if (value.start && value.end && value.requestedDurationDays !== null) {
-    context.addIssue({ code: "custom", path: ["requestedDurationDays"], message: "完整日期范围存在时不得重复保存 requestedDurationDays。" });
-  }
-});
+  requestedDurationDays: z.number().int().min(1).nullable(),
+}).strict();
 
 const TravelersSchema = z.object({
   summary: z.string().max(500),
-  adults: z.number().int().min(0).max(30).nullable(),
-  children: z.number().int().min(0).max(30).nullable(),
+  adults: z.number().int().min(0).nullable(),
+  children: z.number().int().min(0).nullable(),
 }).strict();
 
 const BudgetSchema = z.object({
@@ -108,7 +100,7 @@ export const TripFactsSchema = z.object({
   // in memory and never triggers an automatic database rewrite.
   brief: TripBriefSchema.default({ destination: "", origin: "", departureTime: "", duration: "", travelers: "", transport: "", additionalRequirements: "" }),
   originPlaceId: IdSchema.nullable(),
-  destinationPlaceIds: z.array(IdSchema).max(30),
+  destinationPlaceIds: z.array(IdSchema),
   dates: TripDatesSchema,
   travelers: TravelersSchema,
   budget: BudgetSchema,
@@ -152,9 +144,10 @@ const DayStopObjectSchema = z.object({
   placeId: IdSchema,
   activity: TextSchema,
   period: PeriodSchema.nullable(),
+  scheduleText: z.string().trim().min(1).max(2000).nullable().optional(),
   startTime: TimeSchema.nullable(),
   endTime: TimeSchema.nullable(),
-  durationMinutes: z.number().int().min(0).max(1440).nullable(),
+  durationMinutes: z.number().int().min(0).nullable(),
   transportFromPrevious: TransportSchema.nullable(),
   scheduleVerification: VerificationSchema.nullable(),
   costNote: z.string().max(1000).nullable(),
@@ -162,27 +155,12 @@ const DayStopObjectSchema = z.object({
   notes: z.string().max(2000).nullable(),
 }).strict();
 
-function validateDayStop(value: z.infer<typeof DayStopObjectSchema>, context: z.RefinementCtx) {
-  if ((value.startTime === null) !== (value.endTime === null)) {
-    context.addIssue({ code: "custom", path: ["endTime"], message: "开始和结束时间必须同时提供或同时为空。" });
-  }
-  if (value.startTime && value.endTime && value.endTime <= value.startTime) {
-    context.addIssue({ code: "custom", path: ["endTime"], message: "结束时间必须晚于开始时间。" });
-  }
-  if (value.startTime && value.endTime && value.durationMinutes !== null) {
-    const minutes = (time: string) => Number(time.slice(0, 2)) * 60 + Number(time.slice(3));
-    if (minutes(value.endTime) - minutes(value.startTime) !== value.durationMinutes) {
-      context.addIssue({ code: "custom", path: ["durationMinutes"], message: "停留时长必须等于开始和结束时间之差。" });
-    }
-  }
-}
-
-export const DayStopSchema = DayStopObjectSchema.superRefine(validateDayStop);
+export const DayStopSchema = DayStopObjectSchema;
 export type DayStop = z.infer<typeof DayStopSchema>;
 
 const DayObjectSchema = z.object({
   id: IdSchema,
-  dayNumber: z.number().int().min(1).max(90),
+  dayNumber: z.number().int().min(1),
   date: DateSchema.nullable(),
   title: TextSchema.max(300),
   stayBlockId: IdSchema.optional(),
@@ -190,25 +168,15 @@ const DayObjectSchema = z.object({
   detailLevel: z.enum(["planned", "detailed"]),
   detailStatus: z.enum(["ready", "needs_review"]).nullable(),
   startAnchor: DayAnchorSchema,
-  stops: z.array(DayStopSchema).max(80),
+  stops: z.array(DayStopSchema),
   endAnchor: DayAnchorSchema,
 }).strict();
 
-function validateDetailedDay(day: z.infer<typeof DayObjectSchema>, context: z.RefinementCtx) {
-  if (day.detailLevel !== "detailed") return;
-  for (const [index, stop] of day.stops.entries()) {
-    if (!stop.startTime || !stop.endTime || stop.durationMinutes === null || !stop.scheduleVerification) {
-      context.addIssue({ code: "custom", path: ["stops", index], message: "detailed Stop 必须提供时间、停留时长和日程核验状态。" });
-    }
-  }
-}
-
-export const DaySchema = DayObjectSchema.superRefine(validateDetailedDay);
+export const DaySchema = DayObjectSchema;
 export const DetailedDaySchema = DayObjectSchema.superRefine((day, context) => {
   if (day.detailLevel !== "detailed") {
     context.addIssue({ code: "custom", path: ["detailLevel"], message: "细化批次只能返回 detailed Day。" });
   }
-  validateDetailedDay(day, context);
 });
 export type Day = z.infer<typeof DaySchema>;
 
@@ -232,7 +200,6 @@ function addDocumentIssues(value: {
     placeIds.add(place.id);
   }
 
-  const placesById = new Map(value.places.map((place) => [place.id, place]));
   const candidateIds = new Set<string>();
   const candidatePlaces = new Set<string>();
   const candidates = new Map<string, TripCandidate>();
@@ -246,32 +213,28 @@ function addDocumentIssues(value: {
   }
 
   for (const [index, candidate] of value.candidates.entries()) {
-    const ownPlace = placesById.get(candidate.placeId);
-    const explicitRole = candidate.planningRole;
-    const effectiveRole = explicitRole ?? (ownPlace?.kind === "city" ? "planning_area" : "detail_interest");
-
-    if (explicitRole === "planning_area") {
-      if (ownPlace?.kind !== "city") context.addIssue({ code: "custom", path: ["candidates", index, "planningRole"], message: "planning_area 必须引用 kind=city 的 Place。" });
-      if (candidate.planningAreaCandidateId !== null) context.addIssue({ code: "custom", path: ["candidates", index, "planningAreaCandidateId"], message: "planning_area 不得存在父 Planning Area。" });
-    }
-    if (explicitRole === "core_visit" || explicitRole === "detail_interest") {
-      if (ownPlace?.kind === "city") context.addIssue({ code: "custom", path: ["candidates", index, "planningRole"], message: `${explicitRole} 不得使用 kind=city。` });
-      if (!candidate.planningAreaCandidateId) context.addIssue({ code: "custom", path: ["candidates", index, "planningAreaCandidateId"], message: `${explicitRole} 必须绑定 Planning Area。` });
-    }
-
     if (!candidate.planningAreaCandidateId) continue;
-    const parent = candidates.get(candidate.planningAreaCandidateId);
-    const parentPlace = parent ? placesById.get(parent.placeId) : null;
-    if (!parent || parent.id === candidate.id) {
-      context.addIssue({ code: "custom", path: ["candidates", index, "planningAreaCandidateId"], message: "Micro Candidate 必须引用另一条已存在的 Macro Candidate。" });
+    if (candidate.planningAreaCandidateId === candidate.id) {
+      context.addIssue({ code: "custom", path: ["candidates", index, "planningAreaCandidateId"], message: "Candidate 不得把自己设为父级。" });
       continue;
     }
-    const parentRole = parent.planningRole ?? (parentPlace?.kind === "city" ? "planning_area" : "detail_interest");
-    if (parentPlace?.kind !== "city" || parentRole !== "planning_area") {
-      context.addIssue({ code: "custom", path: ["candidates", index, "planningAreaCandidateId"], message: "planningAreaCandidateId 必须指向 Planning Area Candidate。" });
+    if (!candidates.has(candidate.planningAreaCandidateId)) {
+      context.addIssue({ code: "custom", path: ["candidates", index, "planningAreaCandidateId"], message: `Candidate 引用未知父 Candidate：${candidate.planningAreaCandidateId}` });
     }
-    if (ownPlace?.kind === "city" || effectiveRole === "planning_area") {
-      context.addIssue({ code: "custom", path: ["candidates", index, "planningAreaCandidateId"], message: "Planning Area Candidate 不得再归属于其他 Planning Area Candidate。" });
+  }
+
+  for (const [index, candidate] of value.candidates.entries()) {
+    const seen = new Set<string>([candidate.id]);
+    let current = candidate;
+    while (current.planningAreaCandidateId) {
+      const parent = candidates.get(current.planningAreaCandidateId);
+      if (!parent) break;
+      if (seen.has(parent.id)) {
+        context.addIssue({ code: "custom", path: ["candidates", index, "planningAreaCandidateId"], message: "Candidate 父级关系不得形成循环。" });
+        break;
+      }
+      seen.add(parent.id);
+      current = parent;
     }
   }
 
@@ -283,11 +246,9 @@ function addDocumentIssues(value: {
 
   const dayIds = new Set<string>();
   const nodeIds = new Set<string>();
-  const scheduledCandidateIds = new Set<string>();
   for (const [dayIndex, day] of value.days.entries()) {
     if (dayIds.has(day.id)) context.addIssue({ code: "custom", path: ["days", dayIndex, "id"], message: "Day ID 不能重复。" });
     dayIds.add(day.id);
-    if (day.dayNumber !== dayIndex + 1) context.addIssue({ code: "custom", path: ["days", dayIndex, "dayNumber"], message: "dayNumber 必须从 1 连续递增。" });
 
     for (const [anchorName, anchor] of [["startAnchor", day.startAnchor], ["endAnchor", day.endAnchor]] as const) {
       if (nodeIds.has(anchor.id)) context.addIssue({ code: "custom", path: ["days", dayIndex, anchorName, "id"], message: "Anchor/Stop ID 必须全局唯一。" });
@@ -302,37 +263,8 @@ function addDocumentIssues(value: {
       if (stop.candidateId) {
         const candidate = candidates.get(stop.candidateId);
         if (!candidate) context.addIssue({ code: "custom", path: ["days", dayIndex, "stops", stopIndex, "candidateId"], message: `Stop 引用未知 Candidate：${stop.candidateId}` });
-        else {
-          if (candidate.placeId !== stop.placeId) context.addIssue({ code: "custom", path: ["days", dayIndex, "stops", stopIndex, "placeId"], message: "Stop 的 Candidate 与 Place 必须一致。" });
-          if (candidate.preference === "excluded") context.addIssue({ code: "custom", path: ["days", dayIndex, "stops", stopIndex, "candidateId"], message: "excluded Candidate 不得出现在行程中。" });
-          scheduledCandidateIds.add(candidate.id);
-        }
+        else if (candidate.placeId !== stop.placeId) context.addIssue({ code: "custom", path: ["days", dayIndex, "stops", stopIndex, "placeId"], message: "Stop 的 Candidate 与 Place 必须一致。" });
       }
-    }
-  }
-
-  const areaContext = buildPlanningAreaContext({ places: value.places, candidates: value.candidates });
-
-  if (value.stage !== "place_selection" && !value.days.length) {
-    context.addIssue({ code: "custom", path: ["days"], message: "行程规划和细化阶段必须有 Day。" });
-  }
-  if (value.stage !== "place_selection") {
-    for (const [index, candidate] of value.candidates.entries()) {
-      if (areaContext.suppressedCandidateIds.has(candidate.id) && scheduledCandidateIds.has(candidate.id)) {
-        context.addIssue({ code: "custom", path: ["candidates", index], message: "所属城市已标记为不去，该 Candidate 不得排入行程。" });
-      }
-    }
-  }
-
-  if (value.trip.dates.start) {
-    const start = Date.parse(`${value.trip.dates.start}T00:00:00Z`);
-    value.days.forEach((day, index) => {
-      const expected = new Date(start + index * 86_400_000).toISOString().slice(0, 10);
-      if (day.date !== expected) context.addIssue({ code: "custom", path: ["days", index, "date"], message: "Day 日期必须从开始日期连续递增。" });
-    });
-    if (value.trip.dates.end) {
-      const total = Math.floor((Date.parse(`${value.trip.dates.end}T00:00:00Z`) - start) / 86_400_000) + 1;
-      if (value.days.length && value.days.length !== total) context.addIssue({ code: "custom", path: ["days"], message: "Day 数量必须覆盖完整日期范围。" });
     }
   }
 }
@@ -341,9 +273,9 @@ export const TravelPlanDocumentSchema = z.object({
   schemaVersion: z.literal(2),
   stage: TripStageSchema,
   trip: TripFactsSchema,
-  places: z.array(PlaceSchema).max(1800),
-  candidates: z.array(TripCandidateSchema).max(1800),
-  days: z.array(DaySchema).max(90),
+  places: z.array(PlaceSchema),
+  candidates: z.array(TripCandidateSchema),
+  days: z.array(DaySchema),
   planningState: PlanningStateSchema.optional(),
   warnings: z.array(TextSchema.max(700)).max(100),
 }).strict().superRefine(addDocumentIssues);
@@ -515,9 +447,10 @@ const DayStopChangesSchema = z.object({
   placeId: IdSchema.optional(),
   activity: TextSchema.optional(),
   period: PeriodSchema.nullable().optional(),
+  scheduleText: z.string().trim().min(1).max(2000).nullable().optional(),
   startTime: TimeSchema.nullable().optional(),
   endTime: TimeSchema.nullable().optional(),
-  durationMinutes: z.number().int().min(0).max(1440).nullable().optional(),
+  durationMinutes: z.number().int().min(0).nullable().optional(),
   transportFromPrevious: TransportSchema.nullable().optional(),
   scheduleVerification: VerificationSchema.nullable().optional(),
   costNote: z.string().max(1000).nullable().optional(),
@@ -540,11 +473,11 @@ export const PlanCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("update_candidate"), candidateId: IdSchema, changes: CandidateChangesSchema }).strict(),
   z.object({ type: z.literal("update_place"), placeId: IdSchema, changes: PlaceSemanticChangesSchema }).strict(),
   z.object({ type: z.literal("set_day_anchor"), dayId: IdSchema, anchor: z.enum(["start", "end"]), placeId: IdSchema.nullable(), label: z.string().trim().min(1).max(300).nullable(), notes: z.string().max(2000).nullable() }).strict(),
-  z.object({ type: z.literal("add_day_stop"), dayId: IdSchema, index: z.number().int().min(0).max(80), stop: DayStopSchema }).strict(),
+  z.object({ type: z.literal("add_day_stop"), dayId: IdSchema, index: z.number().int().min(0), stop: DayStopSchema }).strict(),
   z.object({ type: z.literal("update_day_stop"), stopId: IdSchema, changes: DayStopChangesSchema }).strict(),
-  z.object({ type: z.literal("move_day_stop"), stopId: IdSchema, targetDayId: IdSchema, targetIndex: z.number().int().min(0).max(80) }).strict(),
+  z.object({ type: z.literal("move_day_stop"), stopId: IdSchema, targetDayId: IdSchema, targetIndex: z.number().int().min(0) }).strict(),
   z.object({ type: z.literal("remove_day_stop"), stopId: IdSchema }).strict(),
-  z.object({ type: z.literal("move_day"), dayId: IdSchema, targetIndex: z.number().int().min(0).max(89) }).strict(),
+  z.object({ type: z.literal("move_day"), dayId: IdSchema, targetIndex: z.number().int().min(0) }).strict(),
   z.object({ type: z.literal("update_day"), dayId: IdSchema, changes: DayChangesSchema }).strict(),
 ]);
 export type PlanCommand = z.infer<typeof PlanCommandSchema>;
@@ -566,7 +499,7 @@ export const ProposalDiffSchema = z.object({
   commandSummaries: z.array(TextSchema.max(500)).max(100),
   affectedCandidateIds: z.array(IdSchema).max(1800),
   affectedPlaceIds: z.array(IdSchema).max(1800),
-  affectedDayIds: z.array(IdSchema).max(90),
+  affectedDayIds: z.array(IdSchema),
 }).strict();
 export type ProposalDiff = z.infer<typeof ProposalDiffSchema>;
 
@@ -589,7 +522,7 @@ export type AiProposal = z.infer<typeof AiProposalSchema>;
 export const TripFactCommandSchema = z.discriminatedUnion("field", [
   z.object({ type: z.literal("set_trip_fact"), field: z.literal("title"), value: TextSchema.max(200) }).strict(),
   z.object({ type: z.literal("set_trip_fact"), field: z.literal("originPlaceId"), value: IdSchema.nullable() }).strict(),
-  z.object({ type: z.literal("set_trip_fact"), field: z.literal("destinationPlaceIds"), value: z.array(IdSchema).max(30) }).strict(),
+  z.object({ type: z.literal("set_trip_fact"), field: z.literal("destinationPlaceIds"), value: z.array(IdSchema) }).strict(),
   z.object({ type: z.literal("set_trip_fact"), field: z.literal("dates"), value: TripDatesSchema }).strict(),
   z.object({ type: z.literal("set_trip_fact"), field: z.literal("travelers"), value: TravelersSchema }).strict(),
   z.object({ type: z.literal("set_trip_fact"), field: z.literal("budget"), value: BudgetSchema }).strict(),
@@ -694,11 +627,11 @@ export const MicroCandidateDiscoveryOutputSchema = z.object({
   assistantMessage: TextSchema.max(12000),
   areaTargets: z.array(z.object({
     planningAreaCandidateId: IdSchema,
-    targetCount: z.number().int().min(1).max(9),
+    targetCount: z.number().int().min(0).max(9),
     reason: TextSchema.max(1000),
   }).strict()).length(1),
-  places: z.array(PlaceSchema).min(1).max(9),
-  candidates: z.array(MicroCandidateDiscoveryItemSchema).min(1).max(9),
+  places: z.array(PlaceSchema).max(9),
+  candidates: z.array(MicroCandidateDiscoveryItemSchema).max(9),
 }).strict().superRefine(validateDiscoveryReferences);
 export type MicroCandidateDiscoveryOutput = z.infer<typeof MicroCandidateDiscoveryOutputSchema>;
 
@@ -710,7 +643,7 @@ export const PlanGenerationOutputSchema = z.object({
   baseGeneration: z.number().int().min(0),
   assistantMessage: TextSchema.max(12000),
   newPlaces: z.array(PlaceSchema).max(100),
-  days: z.array(DaySchema).min(1).max(90),
+  days: z.array(DaySchema).min(1),
   unscheduledCandidates: z.array(z.object({ candidateId: IdSchema, reason: TextSchema.max(1000) }).strict()).max(1800),
 }).strict();
 export type PlanGenerationOutput = z.infer<typeof PlanGenerationOutputSchema>;
