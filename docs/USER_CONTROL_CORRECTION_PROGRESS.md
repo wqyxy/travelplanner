@@ -68,4 +68,4 @@ PR 自带的 `v3 branch CI` 会在 push 时自动触发。它曾帮助暴露并�
 
 ## 当前结论
 
-User Control Correction 的代码与文档收口已完成，分支继续保持 Draft，不合并 main。下一步由用户在 Codex 执行完整 Gate；若测试失败，必须先区分真实回归、旧测试仍断言已废止规则、以及环境问题，不能为了让测试变绿重新引入 city-only、unresolved blocker、must-go blocker、excluded auto-delete 等旧规则。
+2026-09-04 最终审查已执行专项 Gate（7 files / 48 tests）、typecheck 和 build，均通过。完整 Vitest 第二轮为 448/455 通过；剩余 7 个失败来自 3 个仍等待已废止 blocker 状态的 runtime/discovery 测试，并伴随 Windows 临时 SQLite 清理 `EPERM`。路线排序对无 parent Candidate 的分组回归已修复，多个旧断言已迁移；Browser 与真实 AI/private_data E2E 没有执行。分支继续保持 Draft，不合并 main。

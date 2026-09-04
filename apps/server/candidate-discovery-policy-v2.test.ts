@@ -74,16 +74,16 @@ describe("candidate discovery resource policy", () => {
     expect(() => validateMicroCandidateDiscovery(mismatched, ["area-a"], [{ planningAreaCandidateId: "area-a", targetCount: 9 }])).toThrow(/targetCount/);
   });
 
-  it("filters semantic Core Visit duplicates before ordinary Detail discovery is persisted", () => {
+  it("preserves semantic Core Visit duplicates for advisory review", () => {
     const plan = planWithAreas();
     plan.places.push({ id: "core-place", nameZh: "A1 地标", nameLocal: null, nameEn: "A1 Landmark", kind: "attraction", city: "Large City", region: "North", country: "Test", countryCode: "TT", approximate: false });
     plan.candidates.push({ id: "core-candidate", placeId: "core-place", planningAreaCandidateId: "area-a", planningRole: "core_visit", preference: "must_go", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: 240, tags: [] });
 
     const filtered = filterCoreVisitDuplicatesV3(plan, microOutput());
-    expect(filtered.skippedCoreDuplicateCount).toBe(1);
-    expect(filtered.output.places.map((place) => place.id)).toEqual(["p-a2", "p-a3"]);
-    expect(filtered.output.candidates.map((candidate) => candidate.temporaryId)).toEqual(["c-a2", "c-a3"]);
-    expect(filtered.output.areaTargets[0].targetCount).toBe(2);
+    expect(filtered.skippedCoreDuplicateCount).toBe(0);
+    expect(filtered.output.places.map((place) => place.id)).toEqual(["p-a1", "p-a2", "p-a3"]);
+    expect(filtered.output.candidates.map((candidate) => candidate.temporaryId)).toEqual(["c-a1", "c-a2", "c-a3"]);
+    expect(filtered.output.areaTargets[0].targetCount).toBe(3);
     expect(plan.candidates.find((candidate) => candidate.id === "core-candidate")).toMatchObject({ planningRole: "core_visit", preference: "must_go", source: "user" });
   });
 

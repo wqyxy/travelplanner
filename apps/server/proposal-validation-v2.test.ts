@@ -51,7 +51,7 @@ describe("validateAdjustmentProposal", () => {
     )).toThrow("新增 Candidate 必须引用同一命令中的 Place 临时 ID");
   });
 
-  it("rejects semantic duplicates already present in the canonical plan", () => {
+  it("allows semantic duplicates already present in the canonical plan", () => {
     const plan = emptyTravelPlan();
     plan.places.push({ id: "formal-taupo", nameZh: "陶波", nameLocal: "Taupō", nameEn: "Taupō", kind: "city", city: "Taupō", region: "Waikato", country: "New Zealand", countryCode: "NZ", approximate: false });
 
@@ -59,6 +59,6 @@ describe("validateAdjustmentProposal", () => {
       plan,
       { type: "candidate_pool", id: null },
       proposal(),
-    )).toThrow("地点已存在：陶波");
+    )).not.toThrow();
   });
 });

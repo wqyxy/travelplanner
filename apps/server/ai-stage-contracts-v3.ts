@@ -168,7 +168,7 @@ const DialogueCandidateChangesSchema = z.object({
 export const DialogueActionParametersSchema = z.object({
   request: z.string().trim().min(1).max(4000).nullable(),
   candidateId: z.string().trim().min(1).max(160).nullable(),
-  candidateIds: z.array(z.string().trim().min(1).max(160)).max(200),
+  candidateIds: z.array(z.string().trim().min(1).max(160)),
   preference: z.enum(["must_go", "want_to_go", "optional", "excluded"]).nullable(),
   dayId: z.string().trim().min(1).max(160).nullable(),
   dayIds: z.array(z.string().trim().min(1).max(160)),
@@ -194,7 +194,7 @@ const ActionDialogueResultSchema = z.object({
   assistantMessage: z.string().trim().min(1).max(12000),
   actionType: AiActionTypeSchema,
   parameters: DialogueActionParametersSchema,
-  targetIds: z.array(z.string().trim().min(1).max(160)).max(200),
+  targetIds: z.array(z.string().trim().min(1).max(160)),
   impactSummary: z.string().trim().min(1).max(2000),
 }).strict();
 

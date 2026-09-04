@@ -25,8 +25,8 @@ describe("planning areas", () => {
       ],
       candidates: [
         candidate("city-c", "queenstown", "must_go"),
-        candidate("skyline-c", "skyline", "optional"),
-        candidate("gardens-c", "gardens", "optional"),
+        candidate("skyline-c", "skyline", "optional", "city-c"),
+        candidate("gardens-c", "gardens", "optional", "city-c"),
       ],
     });
     expect(context.areas).toHaveLength(1);
@@ -35,20 +35,20 @@ describe("planning areas", () => {
     expect(fulfilledMacroCityCandidateIds(context, new Set(["skyline-c"])).has("city-c")).toBe(true);
   });
 
-  it("suppresses a city's children when the city is excluded", () => {
+  it("does not suppress a Planning Area's children when that area is excluded", () => {
     const context = buildPlanningAreaContext({
       places: [place("dunedin", "但尼丁", "city", "Dunedin"), place("station", "但尼丁火车站", "attraction", "Dunedin")],
-      candidates: [candidate("city-c", "dunedin", "excluded"), candidate("station-c", "station", "optional")],
+      candidates: [candidate("city-c", "dunedin", "excluded"), candidate("station-c", "station", "optional", "city-c")],
     });
-    expect(context.participatingCandidateIds.size).toBe(0);
-    expect(context.suppressedCandidateIds).toEqual(new Set(["city-c", "station-c"]));
+    expect(context.participatingCandidateIds).toEqual(new Set(["station-c"]));
+    expect(context.suppressedCandidateIds).toEqual(new Set(["city-c"]));
     expect(context.conflicts).toEqual([]);
   });
 
   it("reports a conflict when an excluded city contains a must-go child", () => {
     const context = buildPlanningAreaContext({
       places: [place("dunedin", "但尼丁", "city", "Dunedin"), place("station", "但尼丁火车站", "attraction", "Dunedin")],
-      candidates: [candidate("city-c", "dunedin", "excluded"), candidate("station-c", "station", "must_go")],
+      candidates: [candidate("city-c", "dunedin", "excluded"), candidate("station-c", "station", "must_go", "city-c")],
     });
     expect(context.conflicts).toHaveLength(1);
     expect(context.conflicts[0]).toContain("但尼丁火车站");

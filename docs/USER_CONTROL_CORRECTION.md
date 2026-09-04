@@ -140,6 +140,8 @@ Canonical 只保证数据可以被可靠保存、引用和恢复，不保证旅�
 
 ## 验证结果
 
+2026-09-04 最终审查已运行专项 Gate、完整 typecheck、生产 build 和两次完整 Vitest。专项 Gate（7 files / 48 tests）通过；typecheck 与 build 通过。完整 Vitest 经本轮旧断言迁移后达到 448/455 通过；剩余 7 个失败都来自 3 个仍等待已废止 blocker 状态的 runtime/discovery 测试，并附带 Windows 临时 SQLite 清理 `EPERM`。本轮已迁移 canonical、Planning Area、PlanCommand、Proposal、Skeleton、规划上下文、路线排序等测试；Browser 与真实 AI/private_data E2E 未执行，不能标记 PASS。
+
 2026-09-04 已执行 User Control 专项轻量 Gate，以下测试通过：
 
 - `apps/server/user-control-correction-v3.test.ts`

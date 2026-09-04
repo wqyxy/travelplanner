@@ -145,7 +145,7 @@ export function ItineraryPanelV2({
   const [dragStopId, setDragStopId] = useState<string | null>(null);
   const [addPlaceByDay, setAddPlaceByDay] = useState<Record<string, string>>({});
   const stopCards = useRef(new Map<string, HTMLElement>());
-  const addableCandidates = plan.candidates.filter((candidate) => candidate.preference !== "excluded" && places.get(candidate.placeId)?.kind !== "city");
+  const addableCandidates = plan.candidates;
   const dirtyStates = workspace.routeStates.filter((state) => state.dirty);
   const pendingDetailDays = plan.days.filter((day) => day.detailLevel !== "detailed" || day.detailStatus === "needs_review");
 

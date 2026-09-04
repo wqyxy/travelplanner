@@ -66,7 +66,7 @@ const Empty = z.object({}).strict();
 const RequirementsCapture = z.object({ additionalRequirements: z.string().trim().min(1).max(4000) }).strict();
 const Intent = z.object({ request: Request.optional(), allowWeb: z.boolean().optional() }).strict();
 const CandidateTarget = z.object({ candidateId: Id.optional() }).strict();
-const PreferenceInput = z.object({ candidateId: Id.optional(), candidateIds: z.array(Id).max(200).optional(), preference: Preference }).strict();
+const PreferenceInput = z.object({ candidateId: Id.optional(), candidateIds: z.array(Id).optional(), preference: Preference }).strict();
 const CandidateEdit = z.object({ candidateId: Id.optional(), placeChanges: PlaceChanges.optional(), candidateChanges: CandidateChanges.optional() }).strict().refine((value) => Boolean(value.placeChanges || value.candidateChanges), "编辑动作至少需要 placeChanges 或 candidateChanges。");
 const DestinationConversationEdit = z.object({
   candidateId: Id.optional(),

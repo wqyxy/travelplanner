@@ -70,23 +70,21 @@ describe("Phase 6 skeleton edit API", () => {
     db.close();
   });
 
-  it("rejects an incomplete allocation without partially writing the plan", async () => {
+  it("saves an incomplete allocation so the user can continue adjusting later", async () => {
     const db = store();
     const created = db.createTrip();
     db.writePlan(created.id, planningFixture(created.plan), 0, { source: "test", summary: "fixture" });
     const { runtime } = runtimeMock();
-    const before = structuredClone(db.requireTrip(created.id).plan);
-
-    await expect(saveSkeletonEditDraftV3(db, runtime, created.id, {
+    const result = await saveSkeletonEditDraftV3(db, runtime, created.id, {
       expectedGeneration: 1,
       draft: {
         stays: [{ planningAreaCandidateId: "area-a", stayDays: 2, transferModeFromPrevious: "none" }],
         omittedPlanningAreas: [{ candidateId: "area-b", reason: "这版先不去" }],
       },
-    })).rejects.toThrow(/当前分配 2 天/);
+    });
 
-    expect(db.requireTrip(created.id).contentGeneration).toBe(1);
-    expect(db.requireTrip(created.id).plan).toEqual(before);
+    expect(result.trip.plan.days).toHaveLength(2);
+    expect(db.requireTrip(created.id).contentGeneration).toBe(2);
     db.close();
   });
 

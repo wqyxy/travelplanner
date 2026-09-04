@@ -12,7 +12,7 @@ import { PasswordDrawer } from "./PasswordDrawer";
 import { VersionDrawerV2 } from "./VersionDrawerV2";
 import { WorkspaceAssistantV3 } from "./WorkspaceAssistantV3";
 import { WorkspaceMapV2 } from "./WorkspaceMapV2";
-import type { AppSettings, CandidatePreference, PlanCommand, ProviderPlaceCandidate, Trip, TripFacts, WorkspaceSelection } from "./v2-types";
+import type { AppSettings, CandidatePreference, PlanCommand, ProviderPlaceCandidate, Trip, TripFacts, WorkspaceSelection, TripCandidate, Place } from "./v2-types";
 import type { AiAction, AiActionType, ConversationStage, PlannerStepV3, WorkspaceV3 } from "./v3-types";
 
 type User = { id: string; username: string };
@@ -28,11 +28,15 @@ function conversationStage(step: PlannerStepV3): ConversationStage {
   return step === "detail" ? "itinerary" : step;
 }
 
+function candidatePlanningRole(candidate: TripCandidate, place: Place | undefined) {
+  return candidate.planningRole ?? (place?.kind === "city" ? "planning_area" : "detail_interest");
+}
+
 function defaultWorkspaceStep(workspace: WorkspaceV3): PlannerStepV3 {
   if (workspace.trip.plan.days.some((day) => day.detailLevel === "detailed")) return "detail";
   if (workspace.trip.plan.days.length) return "itinerary";
   const places = new Map(workspace.trip.plan.places.map((place) => [place.id, place]));
-  if (workspace.trip.plan.candidates.some((candidate) => places.get(candidate.placeId)?.kind !== "city")) return "interests";
+  if (workspace.trip.plan.candidates.some((candidate) => candidatePlanningRole(candidate, places.get(candidate.placeId)) !== "planning_area")) return "interests";
   if (workspace.trip.plan.candidates.length) return "destinations";
   return "requirements";
 }
@@ -188,7 +192,7 @@ export default function AppV3() {
   const runPlanCommand = async (command: PlanCommand) => { if (!trip) return; await runAction(async () => { await api(`/api/trips/${trip.id}/commands`, { method: "POST", body: JSON.stringify(buildPlanCommandBatchRequest(trip.contentGeneration, command)) }); await loadTrip(trip.id, false); await refreshTrips(false); }, "无法编辑旅行计划。"); };
   const addCandidate = async (draft: NewCandidateDraft) => {
     const placeId = `tmp-place-${crypto.randomUUID()}`; const candidateId = `tmp-candidate-${crypto.randomUUID()}`;
-    await runPlanCommand({ type: "add_candidate", place: { id: placeId, nameZh: draft.nameZh.trim(), nameLocal: draft.nameLocal.trim() || null, nameEn: draft.nameEn.trim() || null, kind: draft.kind, city: draft.city.trim() || null, region: draft.region.trim() || null, country: draft.country.trim() || null, countryCode: draft.countryCode.trim() ? draft.countryCode.trim().toUpperCase() : null, approximate: false }, candidate: { id: candidateId, placeId, preference: "optional", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: draft.suggestedDurationMinutes, tags: draft.tags, planningAreaCandidateId: draft.kind === "city" ? null : draft.planningAreaCandidateId } });
+    await runPlanCommand({ type: "add_candidate", place: { id: placeId, nameZh: draft.nameZh.trim(), nameLocal: draft.nameLocal.trim() || null, nameEn: draft.nameEn.trim() || null, kind: draft.kind, city: draft.city.trim() || null, region: draft.region.trim() || null, country: draft.country.trim() || null, countryCode: draft.countryCode.trim() ? draft.countryCode.trim().toUpperCase() : null, approximate: false }, candidate: { id: candidateId, placeId, preference: "optional", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: draft.suggestedDurationMinutes, tags: draft.tags, planningAreaCandidateId: draft.planningAreaCandidateId, planningRole: draft.planningRole } });
   };
   const updatePlace = async (placeId: string, changes: PlaceEditChanges) => runPlanCommand({ type: "update_place", placeId, changes });
   const previewGoogleMapsLink = async (placeId: string, url: string) => {
@@ -246,7 +250,7 @@ export default function AppV3() {
       ...workspace.trip,
       plan: {
         ...workspace.trip.plan,
-        candidates: workspace.trip.plan.candidates.filter((candidate) => workspace.trip.plan.places.find((place) => place.id === candidate.placeId)?.kind === "city"),
+        candidates: workspace.trip.plan.candidates.filter((candidate) => candidatePlanningRole(candidate, workspace.trip.plan.places.find((place) => place.id === candidate.placeId)) === "planning_area"),
         days: workspace.trip.plan.days.map((day) => ({ ...day, stops: [] })),
       },
     },
@@ -256,7 +260,7 @@ export default function AppV3() {
   const detailNeedsUpdate = workspace?.itineraryUpdateState.detail.status === "needs_update";
   const detailAffectedDayIds = workspace?.itineraryUpdateState.detail.affectedDayIds ?? [];
   const hasDetailedDays = Boolean(workspace?.trip.plan.days.some((day) => day.detailLevel === "detailed"));
-  const macroCandidates = workspace ? workspace.trip.plan.candidates.filter((candidate) => workspace.trip.plan.places.find((place) => place.id === candidate.placeId)?.kind === "city" && candidate.preference !== "excluded") : [];
+  const macroCandidates = workspace ? workspace.trip.plan.candidates.filter((candidate) => candidatePlanningRole(candidate, workspace.trip.plan.places.find((place) => place.id === candidate.placeId)) === "planning_area") : [];
 
   return <main className={`app-shell app-shell-v3 ${sidebar ? "sidebar-open" : "sidebar-closed"}`}>
     <aside className={`sidebar ${sidebar ? "open" : ""}`}>
@@ -273,15 +277,15 @@ export default function AppV3() {
         </div>
       </header>
       <div className="main-workspace main-workspace-v3"><div className={`travel-workspace travel-workspace-v3 ${focus ? `focus-${focus}` : ""}`} ref={workspaceElement} style={{ gridTemplateColumns: `${settings.ui.workspaceSplitRatio}fr 10px ${1 - settings.ui.workspaceSplitRatio}fr` }}>
-        {workspace ? <WorkspaceMapV2 workspace={mapWorkspace as any} view={(step === "itinerary" || step === "detail") ? "itinerary" : "candidates"} selectedCandidateId={selectedCandidateId} selectedDayId={(step === "itinerary" || step === "detail") ? selectedDayId : null} selectedStopId={step === "detail" ? selectedStopId : null} mapPickPlaceId={mapPickPlaceId} fullscreen={focus === "map"} onSelectCandidate={(candidateId) => { const candidate = workspace.trip.plan.candidates.find((item) => item.id === candidateId); const place = candidate ? workspace.trip.plan.places.find((item) => item.id === candidate.placeId) : null; setSelection({ type: "candidate", id: candidateId }); setStep(place?.kind === "city" ? "destinations" : "interests"); }} onSelectStop={(stopId) => { setSelection({ type: "stop", id: stopId }); setStep("detail"); }} onMapPick={(placeId, latitude, longitude) => void setManualResolution(placeId, latitude, longitude, null, "map_pick")} onToggleFullscreen={() => setFocus((current) => current === "map" ? null : "map")}/> : <section className="workspace-map-v2 no-trip"><div className="map-empty-overlay"><span className="brand-mark">✦</span><strong>地图只展示规划结果</strong><span>所有旅行操作都从右侧开始</span></div></section>}
+        {workspace ? <WorkspaceMapV2 workspace={mapWorkspace as any} view={(step === "itinerary" || step === "detail") ? "itinerary" : "candidates"} selectedCandidateId={selectedCandidateId} selectedDayId={(step === "itinerary" || step === "detail") ? selectedDayId : null} selectedStopId={step === "detail" ? selectedStopId : null} mapPickPlaceId={mapPickPlaceId} fullscreen={focus === "map"} onSelectCandidate={(candidateId) => { const candidate = workspace.trip.plan.candidates.find((item) => item.id === candidateId); const place = candidate ? workspace.trip.plan.places.find((item) => item.id === candidate.placeId) : undefined; setSelection({ type: "candidate", id: candidateId }); setStep(candidate && candidatePlanningRole(candidate, place) === "planning_area" ? "destinations" : "interests"); }} onSelectStop={(stopId) => { setSelection({ type: "stop", id: stopId }); setStep("detail"); }} onMapPick={(placeId, latitude, longitude) => void setManualResolution(placeId, latitude, longitude, null, "map_pick")} onToggleFullscreen={() => setFocus((current) => current === "map" ? null : "map")}/> : <section className="workspace-map-v2 no-trip"><div className="map-empty-overlay"><span className="brand-mark">✦</span><strong>地图只展示规划结果</strong><span>所有旅行操作都从右侧开始</span></div></section>}
         <div className="splitter" onPointerDown={resize}/>
         <div className="workspace-side-v3">{workspace ? <>
           <header className="workspace-flow-head-v3"><nav className="workspace-flow-nav-v3" aria-label="旅行规划步骤">
             <button type="button" className={step === "requirements" ? "active" : ""} onClick={() => { setStep("requirements"); setSelection({ type: "trip", id: null }); }}><span>1</span>需求</button>
             <button type="button" className={step === "destinations" ? "active" : ""} onClick={() => { setStep("destinations"); setSelection({ type: "candidate_pool", id: null }); }}><span>2</span>目的地</button>
-            <button type="button" className={step === "interests" ? "active" : ""} disabled={!workspace.trip.plan.candidates.length} onClick={() => { setStep("interests"); setSelection({ type: "candidate_pool", id: null }); }}><span>3</span>兴趣点</button>
-            <button type="button" className={step === "itinerary" ? "active" : ""} disabled={!macroCandidates.length} onClick={() => { setStep("itinerary"); setSelection({ type: "trip", id: null }); }}><span>4</span>概览{workspace.itineraryUpdateState.macro.status === "needs_update" ? <em>需更新</em> : null}</button>
-            <button type="button" className={step === "detail" ? "active" : ""} disabled={!workspace.trip.plan.days.length} onClick={() => { setStep("detail"); setSelection({ type: "trip", id: null }); }}><span>5</span>行程{detailNeedsUpdate ? <em>需更新</em> : null}</button>
+            <button type="button" className={step === "interests" ? "active" : ""} onClick={() => { setStep("interests"); setSelection({ type: "candidate_pool", id: null }); }}><span>3</span>兴趣点</button>
+            <button type="button" className={step === "itinerary" ? "active" : ""} onClick={() => { setStep("itinerary"); setSelection({ type: "trip", id: null }); }}><span>4</span>概览{workspace.itineraryUpdateState.macro.status === "needs_update" ? <em>需更新</em> : null}</button>
+            <button type="button" className={step === "detail" ? "active" : ""} onClick={() => { setStep("detail"); setSelection({ type: "trip", id: null }); }}><span>5</span>行程{detailNeedsUpdate ? <em>需更新</em> : null}</button>
           </nav></header>
           <div className="workspace-step-content-v3">
             {step === "requirements" ? <RequirementsPanelV3 facts={workspace.trip.plan.trip} busy={working} onSave={saveBrief} onGenerate={async () => { setStep("destinations"); setSelection({ type: "candidate_pool", id: null }); await startCta("destinations", "destination.generate"); }}/>
@@ -290,7 +294,7 @@ export default function AppV3() {
             : step === "itinerary" ? <MacroItineraryPanelV3 workspace={workspace} busy={working} previewedDayId={null} focusedDayId={null} onPreviewDay={() => {}} onToggleFocusDay={() => {}} onSelectAll={() => setSelection({ type: "trip", id: null })} onGenerate={() => startCta("itinerary", "itinerary.generate")} onUpdate={() => startCta("itinerary", "itinerary.replan")} onRecalculate={recalculateMacroRoute} onRecalculateDirty={recalculateDirtyMacroRoutes} onContinue={async () => { setStep("detail"); setSelection({ type: "trip", id: null }); if (!hasDetailedDays) await startCta("itinerary", "itinerary.detail.generate"); }}/>
             : <section className="workspace-detail-step-v3">
                 {detailNeedsUpdate && <div className="workspace-warning-v3"><TriangleAlert size={16}/><div><b>每日详细行程需更新</b><p>{detailAffectedDayIds.length} 天受到第二/三/四步修改影响。其他日期保持原样。</p><button className="button primary small" type="button" disabled={working} onClick={() => void startCta("itinerary", "itinerary.detail.update", { dayIds: detailAffectedDayIds }, detailAffectedDayIds)}><Sparkles size={14}/>只更新这 {detailAffectedDayIds.length} 天</button></div></div>}
-                {!hasDetailedDays && <section className="workspace-requirements-v3"><div><p className="eyebrow">STEP 5</p><h2>每日详细行程</h2><p>第四步骨架已经固定。现在才会选择具体兴趣点、安排时间和每天的详细线路。</p></div><button className="button primary workspace-primary-cta-v3" type="button" disabled={working || workspace.itineraryUpdateState.macro.status === "needs_update"} onClick={() => void startCta("itinerary", "itinerary.detail.generate")}><Sparkles size={15}/>生成每日详细行程</button></section>}
+                {!hasDetailedDays && <section className="workspace-requirements-v3"><div><p className="eyebrow">STEP 5</p><h2>每日详细行程</h2><p>可在当前路线基础上选择具体兴趣点、安排时间和每天的详细线路；上游提醒不会锁住编辑。</p></div><button className="button primary workspace-primary-cta-v3" type="button" disabled={working} onClick={() => void startCta("itinerary", "itinerary.detail.generate")}><Sparkles size={15}/>生成每日详细行程</button></section>}
                 {hasDetailedDays && <ItineraryPanelV2 workspace={legacyWorkspace} selectedDayId={selectedDayId} selectedStopId={selectedStopId} busy={working} onSelectAll={() => setSelection({ type: "trip", id: null })} onSelectDay={(dayId) => setSelection({ type: "day", id: dayId })} onSelectStop={(stopId) => setSelection({ type: "stop", id: stopId })} onRecalculate={recalculateRoute} onRecalculateDirty={recalculateDirtyRoutes} onRefine={refine} onCommand={runPlanCommand}/>}
               </section>}
           </div>

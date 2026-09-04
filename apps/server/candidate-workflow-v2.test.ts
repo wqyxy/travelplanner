@@ -210,21 +210,21 @@ describe("Plan generation", () => {
     expect(result.scheduledCandidateIds).toEqual(expect.arrayContaining(plan.candidates.map((candidate) => candidate.id)));
   });
 
-  it("requires every selected Candidate to be scheduled or explicitly explained", () => {
+  it("allows selected Candidates to remain unscheduled as advisory-only planning choices", () => {
     const plan = selectedPlan();
     const output = generationOutput(plan);
     output.days[0].stops = [output.days[0].stops[0]];
-    expect(() => applyPlanGeneration(plan, output)).toThrow(/缺少排程或未排程说明/);
+    expect(() => applyPlanGeneration(plan, output)).not.toThrow();
     output.unscheduledCandidates = [{ candidateId: plan.candidates[1].id, reason: "一天时间不足" }];
     expect(applyPlanGeneration(plan, output).unscheduledCandidateIds).toEqual([plan.candidates[1].id]);
   });
 
-  it("never permits a must_go Candidate in the unscheduled list", () => {
+  it("allows must_go Candidates in an unscheduled explanation", () => {
     const plan = selectedPlan();
     const output = generationOutput(plan);
     output.days[0].stops = [output.days[0].stops[1]];
     output.unscheduledCandidates = [{ candidateId: plan.candidates[0].id, reason: "时间不足" }];
-    expect(() => applyPlanGeneration(plan, output)).toThrow(/must_go Candidate 不得未排程/);
+    expect(() => applyPlanGeneration(plan, output)).not.toThrow();
   });
 
   it("only runs before Days exist and persists the generated plan atomically", () => {

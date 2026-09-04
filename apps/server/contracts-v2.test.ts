@@ -37,7 +37,7 @@ describe("TravelPlanDocument v2", () => {
     expect(TravelPlanDocumentSchema.safeParse(value).success).toBe(false);
   });
 
-  it("rejects an excluded Candidate in a Day", () => {
+  it("allows an excluded Candidate in a Day", () => {
     const value = emptyTravelPlan();
     value.stage = "itinerary_planning";
     value.places.push(place("p1"));
@@ -48,7 +48,7 @@ describe("TravelPlanDocument v2", () => {
       stops: [{ id: "s1", candidateId: "c1", placeId: "p1", activity: "参观", period: "morning", startTime: null, endTime: null, durationMinutes: 90, transportFromPrevious: null, scheduleVerification: null, costNote: null, costVerification: null, notes: null }],
       endAnchor: { id: "a2", placeId: null, label: null, notes: null },
     });
-    expect(TravelPlanDocumentSchema.safeParse(value).success).toBe(false);
+    expect(TravelPlanDocumentSchema.safeParse(value).success).toBe(true);
   });
 
   it("allows must_go POIs to remain unscheduled in the Macro stage", () => {
@@ -91,21 +91,21 @@ describe("TravelPlanDocument v2", () => {
     expect(TravelPlanDocumentSchema.safeParse(value).success).toBe(true);
   });
 
-  it("rejects illegal explicit role and parent combinations", () => {
+  it("allows nontraditional explicit roles and missing parents", () => {
     const areaAsAttraction = emptyTravelPlan();
     areaAsAttraction.places.push(place("p1"));
     areaAsAttraction.candidates.push({ ...candidate("c1", "p1"), planningRole: "planning_area" });
-    expect(TravelPlanDocumentSchema.safeParse(areaAsAttraction).success).toBe(false);
+    expect(TravelPlanDocumentSchema.safeParse(areaAsAttraction).success).toBe(true);
 
     const coreWithoutParent = emptyTravelPlan();
     coreWithoutParent.places.push(place("p1"));
     coreWithoutParent.candidates.push({ ...candidate("c1", "p1"), planningRole: "core_visit" });
-    expect(TravelPlanDocumentSchema.safeParse(coreWithoutParent).success).toBe(false);
+    expect(TravelPlanDocumentSchema.safeParse(coreWithoutParent).success).toBe(true);
 
     const detailOnCity = emptyTravelPlan();
     detailOnCity.places.push(city("p1"));
     detailOnCity.candidates.push({ ...candidate("c1", "p1"), planningRole: "detail_interest" });
-    expect(TravelPlanDocumentSchema.safeParse(detailOnCity).success).toBe(false);
+    expect(TravelPlanDocumentSchema.safeParse(detailOnCity).success).toBe(true);
   });
 
   it("keeps stayBlockId optional and accepts it when present", () => {

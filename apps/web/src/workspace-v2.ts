@@ -36,7 +36,9 @@ const normalizeArea = (value: string | null | undefined) => (value ?? "")
   .replace(/[\p{P}\p{S}\s]+/gu, "");
 
 export function candidateAreaGroups(rows: CandidateRow[]): CandidateAreaGroup[] {
-  const cityRows = rows.filter((row) => row.place.kind === "city");
+  // New documents identify an area by PlanningRole, not PlaceKind.  The
+  // effective-role helper retains the city fallback only for legacy records.
+  const cityRows = rows.filter((row) => effectiveCandidatePlanningRole(row) === "planning_area");
   const rowsByCandidateId = new Map(rows.map((row) => [row.candidate.id, row]));
   const aliases = new Map<string, CandidateRow | null>();
   for (const row of cityRows) {
@@ -53,13 +55,13 @@ export function candidateAreaGroups(rows: CandidateRow[]): CandidateAreaGroup[] 
     let key: string;
     let label: string;
     let cityRow: CandidateRow | null = null;
-    if (row.place.kind === "city") {
+    if (effectiveCandidatePlanningRole(row) === "planning_area") {
       key = `city:${row.place.id}`;
       label = row.place.nameZh;
       cityRow = row;
     } else {
       const explicitParent = row.candidate.planningAreaCandidateId ? rowsByCandidateId.get(row.candidate.planningAreaCandidateId) ?? null : null;
-      if (explicitParent?.place.kind === "city") {
+      if (explicitParent && effectiveCandidatePlanningRole(explicitParent) === "planning_area") {
         key = `city:${explicitParent.place.id}`;
         label = explicitParent.place.nameZh;
         cityRow = explicitParent;
@@ -94,7 +96,7 @@ export function candidateAreaGroups(rows: CandidateRow[]): CandidateAreaGroup[] 
   return [...groups.values()]
     .map((group) => ({
       ...group,
-      rows: [...group.rows].sort((left, right) => Number(right.place.kind === "city") - Number(left.place.kind === "city")
+      rows: [...group.rows].sort((left, right) => Number(effectiveCandidatePlanningRole(right) === "planning_area") - Number(effectiveCandidatePlanningRole(left) === "planning_area")
         || preferenceOrder[left.candidate.preference] - preferenceOrder[right.candidate.preference]
         || (right.candidate.aiScore ?? -1) - (left.candidate.aiScore ?? -1)
         || left.place.nameZh.localeCompare(right.place.nameZh, "zh-CN")),

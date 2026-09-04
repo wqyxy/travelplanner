@@ -16,7 +16,6 @@ import {
 } from "./ai-action-contracts-v3.js";
 import { AiLedMicroCandidateDiscoveryOutputSchema } from "./ai-led-micro-contract-v2.js";
 import { semanticPlaceKey } from "./plan-commands-v2.js";
-import { buildPlanningAreaContext, fulfilledMacroCityCandidateIds } from "./planning-areas-v2.js";
 import { effectivePlanningRole } from "./planning-roles-v3.js";
 import type { TravelStoreV2, TripDetailV2 } from "./travel-store-v2.js";
 
@@ -419,38 +418,16 @@ export function applyPlanGeneration(current: TravelPlanDocument, value: unknown)
     if (start) day.date = new Date(Date.parse(`${start}T00:00:00Z`) + index * 86_400_000).toISOString().slice(0, 10);
   });
 
-  const candidates = new Map(plan.candidates.map((candidate) => [candidate.id, candidate]));
-  const places = new Map(plan.places.map((place) => [place.id, place]));
-  const areaContext = buildPlanningAreaContext(plan);
   const scheduledCandidateIds = new Set(plan.days.flatMap((day) => day.stops.map((stop) => stop.candidateId).filter((id): id is string => Boolean(id))));
+  const candidates = new Map(plan.candidates.map((candidate) => [candidate.id, candidate]));
 
-  for (const candidateId of scheduledCandidateIds) {
-    const candidate = candidates.get(candidateId);
-    const place = candidate ? places.get(candidate.placeId) : null;
-    if (place?.kind === "city") throw new Error(`城市级 Candidate 不应直接作为 Day Stop：${place.nameZh}。请排入该城市内具体地点。`);
-    if (areaContext.suppressedCandidateIds.has(candidateId)) throw new Error(`所属城市已标记为“不去”，Candidate 不得排程：${candidateId}`);
-  }
-
-  const fulfilledMacroCities = fulfilledMacroCityCandidateIds(areaContext, scheduledCandidateIds);
   const unscheduledIds = new Set<string>();
   for (const item of output.unscheduledCandidates) {
     const candidate = candidates.get(item.candidateId);
     if (!candidate) throw new Error(`未排程原因引用未知 Candidate：${item.candidateId}`);
-    if (candidate.preference === "excluded" || areaContext.suppressedCandidateIds.has(candidate.id)) throw new Error("不参与规划的 Candidate 不需要进入未排程说明。");
-    if (fulfilledMacroCities.has(candidate.id)) throw new Error(`城市级 Candidate 已由城市内具体地点满足，不应同时标记未排程：${candidate.id}`);
-    if (candidate.preference === "must_go") throw new Error(`must_go Candidate 不得未排程：${candidate.id}`);
     if (scheduledCandidateIds.has(candidate.id)) throw new Error(`Candidate 不能同时已排程和未排程：${candidate.id}`);
     if (unscheduledIds.has(candidate.id)) throw new Error(`Candidate 未排程说明重复：${candidate.id}`);
     unscheduledIds.add(candidate.id);
-  }
-
-  for (const candidate of plan.candidates) {
-    if (candidate.preference === "excluded" || areaContext.suppressedCandidateIds.has(candidate.id)) {
-      if (scheduledCandidateIds.has(candidate.id)) throw new Error(`不参与规划的 Candidate 不得排程：${candidate.id}`);
-      continue;
-    }
-    if (fulfilledMacroCities.has(candidate.id)) continue;
-    if (!scheduledCandidateIds.has(candidate.id) && !unscheduledIds.has(candidate.id)) throw new Error(`参与规划的 Candidate 缺少排程或未排程说明：${candidate.id}`);
   }
 
   const parsed = TravelPlanDocumentSchema.parse(plan);

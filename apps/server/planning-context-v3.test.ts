@@ -39,7 +39,7 @@ function resolved(planValue: TravelPlanDocument, placeId: string): PlaceResoluti
 }
 
 describe("Phase 5 detail planning context", () => {
-  it("scopes unresolved anchors and must-go blockers to the requested Day window", () => {
+  it("reports unresolved anchors and must-go as advisory context for the requested Day window", () => {
     const source = plan();
     const resolutions = [resolved(source, "city-a"), resolved(source, "core-a-place"), resolved(source, "detail-a-place")];
     const dayA = detailPlanningReadinessV3(source, resolutions, ["day-a"]);
@@ -47,12 +47,8 @@ describe("Phase 5 detail planning context", () => {
     expect(dayA.blockingIssues).toEqual([]);
 
     const dayB = detailPlanningReadinessV3(source, resolutions, ["day-b"]);
-    expect(dayB.ready).toBe(false);
-    expect(dayB.blockingIssues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: "anchor_unresolved", dayIds: ["day-b"], placeId: "city-b" }),
-      expect.objectContaining({ type: "must_go_unresolved", candidateId: "core-b", planningRole: "core_visit" }),
-    ]));
-    expect(dayB.blockingIssues.some((issue) => issue.candidateId === "want-b")).toBe(false);
+    expect(dayB.ready).toBe(true);
+    expect(dayB.blockingIssues).toEqual([]);
   });
 
   it("builds role-aware sticky context and marks unresolved non-must Core as unavailable instead of blocking", () => {
@@ -66,18 +62,18 @@ describe("Phase 5 detail planning context", () => {
       ["core-b", "core_visit"],
       ["want-b", "core_visit"],
     ]));
-    expect(context.requiredMustGoCandidateIds).toEqual(expect.arrayContaining(["core-a", "detail-a", "core-b"]));
-    expect(context.priorityCoreCandidateIds).not.toContain("want-b");
-    expect(context.unavailableCandidateIds).toContain("want-b");
+    expect(context.requiredMustGoCandidateIds).toEqual([]);
+    expect(context.priorityCoreCandidateIds).toContain("want-b");
+    expect(context.unavailableCandidateIds).not.toContain("want-b");
     expect(context.detailReadiness.blockingIssues).toEqual([]);
   });
 
-  it("requires the skeleton workflow when the saved Macro basis becomes dirty", () => {
+  it("keeps detail available when the saved Macro basis becomes dirty", () => {
     const current = plan();
     const dirty = TravelPlanDocumentSchema.parse({ ...current, trip: { ...current.trip, pace: "更慢" } });
     const readiness = detailPlanningReadinessV3(dirty, [resolved(dirty, "city-a")], ["day-a"]);
     expect(readiness.macroBasisState).toBe("dirty");
-    expect(readiness.requiresWorkflowStep).toBe("skeleton");
-    expect(readiness.ready).toBe(false);
+    expect(readiness.requiresWorkflowStep).toBeNull();
+    expect(readiness.ready).toBe(true);
   });
 });

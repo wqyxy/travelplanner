@@ -24,7 +24,11 @@ function stopForDraft(trip: TripDetailV3, _day: Day, draft: DetailedDayUpdate["s
     placeId: candidate.placeId,
     activity: draft.activity,
     period: draft.period,
-    scheduleText: (draft as DetailedDayUpdate["stops"][number] & { scheduleText?: string | null }).scheduleText ?? existing?.scheduleText ?? null,
+    // `null` is an explicit AI instruction to clear a legacy natural-language
+    // schedule.  Only an omitted field inherits the sticky value.
+    scheduleText: Object.hasOwn(draft, "scheduleText")
+      ? draft.scheduleText ?? null
+      : existing?.scheduleText ?? null,
     startTime: draft.startTime,
     endTime: draft.endTime,
     durationMinutes: draft.durationMinutes,

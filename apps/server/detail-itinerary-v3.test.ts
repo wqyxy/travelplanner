@@ -52,22 +52,24 @@ function stickyUpdate(source: TravelPlanDocument): DetailedDayUpdate {
 }
 
 describe("Phase 5 detailed itinerary policy", () => {
-  it("requires resolved must-go Core and Detail in the affected owner area but not an unrelated area's must-go", () => {
+  it("allows an affected area to omit must-go candidates while keeping other days unchanged", () => {
     const source = plan();
     const missingDetail: DetailedDayUpdate = { dayId: "day-a", stops: [stickyUpdate(source).stops[0]] };
-    expect(() => applyDetailedUpdatesPhase5V3(trip(source), [missingDetail], false)).toThrow(/甲必去/);
+    const omitted = applyDetailedUpdatesPhase5V3(trip(source), [missingDetail], false);
+    expect(omitted.days.find((day) => day.id === "day-a")?.stops).toHaveLength(1);
 
     const unchanged = applyDetailedUpdatesPhase5V3(trip(source), [stickyUpdate(source)], false);
     expect(unchanged.days.find((day) => day.id === "day-a")?.detailStatus).toBe("ready");
     expect(unchanged.days.find((day) => day.id === "day-b")?.stops).toEqual([]);
   });
 
-  it("requires a reason only for an available want-to-go Core Visit that is not scheduled", () => {
+  it("treats unscheduled candidate explanations as optional planning context, while preserving bookkeeping integrity", () => {
     const source = plan();
-    expect(() => validateDetailedSchedulingOutcomeV3(source, [], ["day-a"])).toThrow(/想去的重要游览地/);
+    expect(() => validateDetailedSchedulingOutcomeV3(source, [], ["day-a"])).not.toThrow();
     expect(() => validateDetailedSchedulingOutcomeV3(source, [], ["day-a"], ["want-a"])).not.toThrow();
     expect(() => validateDetailedSchedulingOutcomeV3(source, [{ candidateId: "want-a", reason: "当天已有两处必去，继续加入会超过轻松节奏容量。" }], ["day-a"])).not.toThrow();
-    expect(() => validateDetailedSchedulingOutcomeV3(source, [{ candidateId: "core-a", reason: "放不下" }], ["day-a"])).toThrow(/必去地点不得作为未安排结果/);
+    expect(() => validateDetailedSchedulingOutcomeV3(source, [{ candidateId: "core-b", reason: "本轮只编辑 Day 1" }], ["day-a"])).not.toThrow();
+    expect(() => validateDetailedSchedulingOutcomeV3(source, [{ candidateId: "unknown", reason: "不存在" }], ["day-a"])).toThrow(/未知 Candidate/);
   });
 
   it("keeps sticky Stop identity and emits no commands when affected content is unchanged", () => {
@@ -78,6 +80,21 @@ describe("Phase 5 detailed itinerary policy", () => {
     expect(result.plan.days.find((day) => day.id === "day-a")?.startAnchor).toEqual(source.days[0].startAnchor);
     expect(result.plan.days.find((day) => day.id === "day-a")?.endAnchor).toEqual(source.days[0].endAnchor);
     expect(result.plan.days.find((day) => day.id === "day-a")?.stayBlockId).toBe("block-a");
+  });
+
+  it("treats legacy scheduleText omission and null as equivalent, while allowing explicit null to clear text", () => {
+    const source = plan();
+    delete (source.days[0].stops[0] as { scheduleText?: string | null }).scheduleText;
+    const unchanged = detailedReplacementCommandsPhase5V3(trip(source), [stickyUpdate(source)]);
+    expect(unchanged.commands).toEqual([]);
+
+    source.days[0].stops[0].scheduleText = "上午";
+    const clearing = detailedReplacementCommandsPhase5V3(trip(source), [{
+      ...stickyUpdate(source),
+      stops: stickyUpdate(source).stops.map((stop, index) => index === 0 ? { ...stop, scheduleText: null } : stop),
+    }]);
+    expect(clearing.plan.days[0].stops[0].scheduleText).toBeNull();
+    expect(clearing.commands).toContainEqual(expect.objectContaining({ type: "update_day_stop", changes: { scheduleText: null } }));
   });
 
   it("uses move/update instead of remove-add when the same Candidates are reordered or retimed", () => {

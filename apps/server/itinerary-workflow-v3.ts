@@ -497,7 +497,11 @@ function stopForDraft(trip: TripDetailV3, _day: Day, draft: DetailedDayUpdate["s
     placeId: candidate.placeId,
     activity: draft.activity,
     period: draft.period,
-    scheduleText: draft.scheduleText ?? existing?.scheduleText ?? null,
+    // Transport makes optional scheduleText nullable.  Preserve an explicit
+    // null so an AI update can clear legacy text; only omission is sticky.
+    scheduleText: Object.hasOwn(draft, "scheduleText")
+      ? draft.scheduleText ?? null
+      : existing?.scheduleText ?? null,
     startTime: draft.startTime,
     endTime: draft.endTime,
     durationMinutes: draft.durationMinutes,

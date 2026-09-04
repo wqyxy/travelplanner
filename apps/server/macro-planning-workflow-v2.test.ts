@@ -73,9 +73,9 @@ describe("macro city plan generation", () => {
     expect(result.scheduledCandidateIds).toEqual(["skyline-c"]);
   });
 
-  it("rejects using the city candidate itself as a route stop", () => {
+  it("allows a city candidate itself as a route stop when the user or AI returns it", () => {
     const value = output("queenstown-c", "queenstown");
     value.unscheduledCandidates = [{ candidateId: "skyline-c", reason: "本次不安排" }];
-    expect(() => applyPlanGeneration(plan, value)).toThrow(/城市级 Candidate 不应直接作为 Day Stop/);
+    expect(() => applyPlanGeneration(plan, value)).not.toThrow();
   });
 });

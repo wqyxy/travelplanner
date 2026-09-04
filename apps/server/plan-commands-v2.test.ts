@@ -96,12 +96,12 @@ describe("applyPlanCommands", () => {
     }])).toThrow("新增实体临时 ID 覆盖正式 ID：p-kyoto（commands[0].place.id）");
   });
 
-  it("removes scheduled Stops atomically when a Candidate becomes excluded", () => {
+  it("keeps scheduled Stops when a Candidate becomes excluded", () => {
     const applied = applyPlanCommands(plan(), [{ type: "set_candidate_preference", candidateId: "c-osaka", preference: "excluded" }]);
     expect(applied.plan.candidates.find((candidate) => candidate.id === "c-osaka")?.preference).toBe("excluded");
-    expect(applied.plan.days[1].stops).toEqual([]);
-    expect(applied.effects.changedDayIds).toContain("d-2");
-    expect(applied.effects.routeDirtyDayIds).toContain("d-2");
+    expect(applied.plan.days[1].stops.map((stop) => stop.id)).toEqual(["s-osaka"]);
+    expect(applied.effects.changedDayIds).not.toContain("d-2");
+    expect(applied.effects.routeDirtyDayIds).not.toContain("d-2");
   });
 
   it("moves a Stop across Days without changing its stable ID", () => {
@@ -139,12 +139,12 @@ describe("applyPlanCommands", () => {
     expect(new Set(applied.effects.removedCandidateIds)).toEqual(new Set(["c-macro", "c-osaka"]));
   });
 
-  it("rejects duplicate semantic Places instead of silently creating aliases", () => {
+  it("allows semantic duplicates while preserving exact ID integrity", () => {
     expect(() => applyPlanCommands(plan(), [{
       type: "add_candidate",
       place: { id: "new-place", nameZh: "清水寺", nameLocal: null, nameEn: "Kiyomizu-dera", kind: "attraction", city: "京都", region: null, country: "日本", countryCode: "JP", approximate: false },
       candidate: { id: "new-candidate", placeId: "new-place", planningAreaCandidateId: null, preference: "optional", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: null, tags: [] },
-    }])).toThrow(/地点已存在/);
+    }])).not.toThrow();
   });
 
   it("keeps Proposal commands inside their declared Scope", () => {

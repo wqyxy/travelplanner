@@ -101,11 +101,13 @@ describe("Phase 2 skeleton workflow", () => {
         { candidateId: "macro-c", reason: "可选" },
       ],
     } satisfies SkeletonPlanDraft;
-    expect(inspectSkeletonEditDraftV3(source, invalid).canSave).toBe(false);
-    expect(() => applySkeletonPlanV3(tripDetail(source), invalid)).toThrow(/必去/);
+    const invalidInspection = inspectSkeletonEditDraftV3(source, invalid);
+    expect(invalidInspection.canSave).toBe(true);
+    expect(invalidInspection.advisoryIssues.join(" ")).toMatch(/必去/);
+    expect(() => applySkeletonPlanV3(tripDetail(source), invalid)).not.toThrow();
   });
 
-  it("keeps an incomplete 19/20 day edit as an unsavable draft with one day remaining", () => {
+  it("keeps an incomplete 19/20 day edit saveable with a duration advisory", () => {
     const source = basePlan(20);
     const draft = {
       stays: [
@@ -118,8 +120,9 @@ describe("Phase 2 skeleton workflow", () => {
     expect(inspection.allocatedDays).toBe(19);
     expect(inspection.expectedDays).toBe(20);
     expect(inspection.remainingDays).toBe(1);
-    expect(inspection.canSave).toBe(false);
-    expect(() => applySkeletonPlanV3(tripDetail(source), draft)).toThrow(/19 天.*20 天/);
+    expect(inspection.canSave).toBe(true);
+    expect(inspection.advisoryIssues.join(" ")).toMatch(/不一致/);
+    expect(applySkeletonPlanV3(tripDetail(source), draft).plan.days).toHaveLength(19);
   });
 
   it("allows an over-allocated Skeleton with a visible duration warning", () => {
@@ -223,7 +226,7 @@ describe("detail compatibility after Skeleton save", () => {
     const macroPlan = TravelPlanDocumentSchema.parse({ ...skeleton, places: [...skeleton.places, poi], candidates: [...skeleton.candidates, micro] });
     const macroTrip = tripDetail(macroPlan, 1);
     const emptyUpdates = macroPlan.days.map((day) => ({ dayId: day.id, stops: [] }));
-    expect(() => applyDetailedUpdatesV3(macroTrip, emptyUpdates, true)).toThrow(/必去/);
+    expect(() => applyDetailedUpdatesV3(macroTrip, emptyUpdates, true)).not.toThrow();
 
     const updates = emptyUpdates.map((update, index) => index === 0 ? { ...update, stops: [{ candidateId: micro.id, activity: "参观", period: "morning" as const, startTime: "09:00", endTime: "10:00", durationMinutes: 60, transportFromPrevious: null, scheduleVerification: { status: "estimated" as const, checkedAt: null }, costNote: null, costVerification: null, notes: null }] } : update);
     const detailed = applyDetailedUpdatesV3(macroTrip, updates, true);

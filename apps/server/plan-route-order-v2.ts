@@ -77,7 +77,13 @@ export function optimizeGeneratedSightseeingOrder(
   const places = new Map(trip.places.map((place) => [place.id, place]));
   const resolutionByPlace = new Map(resolutions.map((resolution) => [resolution.placeId, resolution]));
 
-  const stopAreaKey = (stop: DayStop) => stop.candidateId ? areas.areaKeyByCandidateId.get(stop.candidateId) ?? null : null;
+  // An unparented Candidate is valid canonical data.  Treat unparented
+  // sightseeing stops in the same Day as one local block so route ordering
+  // remains best-effort instead of silently disabling itself.
+  const stopAreaKey = (stop: DayStop) => {
+    const key = stop.candidateId ? areas.areaKeyByCandidateId.get(stop.candidateId) : null;
+    return !key || key.startsWith("unassigned:") ? "unassigned" : key;
+  };
   const eligible = (stop: DayStop) => {
     if (!stop.candidateId || !pointFor(stop.placeId, resolutionByPlace) || !LOCAL_ROUTE_MODES.has(routeMode(stop))) return false;
     const candidate = candidates.get(stop.candidateId);

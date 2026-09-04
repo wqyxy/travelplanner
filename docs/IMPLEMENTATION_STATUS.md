@@ -252,8 +252,10 @@ Provider / realtime fact boundary
 
 ```text
 User Control Correction code/docs closeout = COMPLETE
-targeted regression gate                = PASS
-full suite/typecheck/build/browser/E2E  = NOT RUN
+targeted regression gate                = PASS (7 files / 48 tests)
+typecheck/build                         = PASS
+full suite                              = 448/455; 7 runtime/discovery stale assertions remain
+browser/real AI/private_data E2E        = NOT RUN
 Draft PR #5                              = KEEP DRAFT
 merge main                               = NO
 ```

@@ -8,6 +8,7 @@ import {
   candidateRows,
   filterCandidateRows,
   formatDuration,
+  effectiveCandidatePlanningRole,
   resolutionStatus,
   selectedUnresolvedRows,
   step4CoreRows,
@@ -65,6 +66,7 @@ export type NewCandidateDraft = {
   suggestedDurationMinutes: number | null;
   tags: string[];
   planningAreaCandidateId: string | null;
+  planningRole: "planning_area" | "detail_interest";
 };
 
 const emptyCandidateForm = (kind: PlaceKind = "attraction"): NewCandidateForm => ({
@@ -121,9 +123,9 @@ export function CandidatePanel({
   const allRows = useMemo(() => candidateRows(workspace), [workspace]);
   const isMacro = view === "macro";
   const coreRows = useMemo(() => isMacro ? [] : step4CoreRows(allRows), [allRows, isMacro]);
-  const rows = useMemo(() => isMacro ? allRows.filter((row) => row.place.kind === "city") : step4DetailRows(allRows), [allRows, isMacro]);
+  const rows = useMemo(() => isMacro ? allRows.filter((row) => effectiveCandidatePlanningRole(row) === "planning_area") : step4DetailRows(allRows), [allRows, isMacro]);
   const counts = useMemo(() => candidateCounts(rows, allRows), [rows, allRows]);
-  const macroRows = useMemo(() => allRows.filter((row) => row.place.kind === "city" && row.candidate.preference !== "excluded"), [allRows]);
+  const macroRows = useMemo(() => allRows.filter((row) => effectiveCandidatePlanningRole(row) === "planning_area"), [allRows]);
   const coverageByMacroId = useMemo(() => new Map(workspace.coverage.map((item) => [item.macroCandidateId, item])), [workspace.coverage]);
   const [filter, setFilter] = useState<CandidateFilter>("all");
   const [query, setQuery] = useState("");
@@ -238,7 +240,6 @@ export function CandidatePanel({
     const duration = newCandidate.duration.trim() ? Number(newCandidate.duration) : null;
     const countryCode = newCandidate.countryCode.trim().toUpperCase();
     if (!nameZh) { setNewCandidateError("请输入具体地点名称。"); return; }
-    if (!isMacro && !newCandidate.planningAreaCandidateId) { setNewCandidateError("请选择这个兴趣点所属的目的地。"); return; }
     if (duration !== null && (!Number.isInteger(duration) || duration < 0 || duration > 10080)) {
       setNewCandidateError("建议停留时间必须是 0–10080 的整数分钟。");
       return;
@@ -260,6 +261,7 @@ export function CandidatePanel({
         suggestedDurationMinutes: duration,
         tags: [...new Set(newCandidate.tags.split(/[，,]/u).map((tag) => tag.trim()).filter(Boolean))].slice(0, 30),
         planningAreaCandidateId: isMacro ? null : newCandidate.planningAreaCandidateId,
+        planningRole: isMacro ? "planning_area" : "detail_interest",
       });
       setNewCandidate(null);
     } catch (error) {
@@ -339,7 +341,7 @@ export function CandidatePanel({
   const renderCandidate = (row: CandidateRow, areaExcluded: boolean) => {
     const status = resolutionStatus(row);
     const selected = selectedCandidateId === row.candidate.id;
-    const macroCity = row.place.kind === "city";
+    const macroCity = effectiveCandidatePlanningRole(row) === "planning_area";
     const displayName = placeNamePresentation(row.place, workspace.trip.planLanguage);
     return <article
       ref={(node) => { if (node) cards.current.set(row.candidate.id, node); else cards.current.delete(row.candidate.id); }}
@@ -350,7 +352,7 @@ export function CandidatePanel({
       <label className="candidate-check" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={checked.has(row.candidate.id)} onChange={() => toggleChecked(row.candidate.id)}/><span/></label>
       <div className="candidate-main">
         <div className="candidate-title-line"><span className="candidate-mark">{preferenceMarks[row.candidate.preference]}</span><div><h3>{displayName.primary}{macroCity && <em className="candidate-area-badge">宏观规划</em>}</h3>{displayName.secondary && <small>{displayName.secondary}</small>}</div>{row.candidate.aiScore !== null && <b className="candidate-score" title="AI 推荐度，不是地图平台用户评分">{Math.round(row.candidate.aiScore)}</b>}</div>
-        <p>{areaExcluded && !macroCity ? "所属目的地已标记为不去，生成时该地点不会参与规划。" : row.candidate.aiReason || "用户添加地点"}</p>
+        <p>{areaExcluded && !macroCity ? "所属停留区域标记为不去；保留此地点与现有行程，后续安排由用户决定。" : row.candidate.aiReason || "用户添加地点"}</p>
         <div className="candidate-meta"><span>{macroCity ? "目的地规划节点" : row.place.city || row.place.region || row.place.country || "区域待确认"}</span>{formatDuration(row.candidate.suggestedDurationMinutes) && <span>{formatDuration(row.candidate.suggestedDurationMinutes)}</span>}{row.candidate.tags.slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}</div>
         <div className={`resolution-line ${status}`}>{status === "resolved" ? <><Check size={14}/><span>{macroCity ? "目的地位置已定位" : "已定位"}</span><small>{row.resolution?.address || `${row.resolution?.latitude?.toFixed(5)}, ${row.resolution?.longitude?.toFixed(5)}`}</small></> : status === "resolving" ? <><RefreshCw className="spin" size={14}/><span>定位中</span></> : <><MapPin size={14}/><span>{macroCity ? "目的地位置未定位" : "未定位"}</span><small>{row.resolution?.errorMessage || "生成时会自动尝试定位"}</small></>}</div>
         <div className="resolution-actions" onClick={(event) => event.stopPropagation()}>{status === "unresolved" && <><button disabled={busy} onClick={() => void onRetry([row.place.id])}><RefreshCw size={13}/>重新识别</button><button disabled={busy} onClick={() => void openChoices(row.place.id)}><LocateFixed size={13}/>选择地点</button><button disabled={busy} onClick={() => onBeginMapPick(row.place.id)}><MapPin size={13}/>地图点选</button></>}<button className="candidate-edit-action" disabled={busy} onClick={() => { setEditError(""); setGoogleLink({ url: "", loading: false, preview: null, error: "" }); setEdit({ id: row.place.id, nameZh: row.place.nameZh, nameLocal: row.place.nameLocal, nameEn: row.place.nameEn, kind: row.place.kind, city: row.place.city, region: row.place.region, country: row.place.country, countryCode: row.place.countryCode }); }}><Pencil size={13}/>编辑</button><button className="candidate-edit-action danger" disabled={busy} onClick={() => beginDelete(row)}><Trash2 size={13}/>删除</button></div>
@@ -375,7 +377,7 @@ export function CandidatePanel({
       <label className="candidate-search"><Search size={15}/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索"/></label>
       <div className="candidate-compact-actions">
         {visible.length > 0 && <button className="button small ghost" type="button" onClick={toggleVisible}>{allVisibleChecked ? "取消全选" : "全选"}</button>}
-        <button className="button small" type="button" disabled={busy} onClick={() => setNewCandidate(emptyCandidateForm(isMacro ? "city" : "attraction"))}><Plus size={15}/>添加</button>
+        <button className="button small" type="button" disabled={busy} onClick={() => setNewCandidate(emptyCandidateForm(isMacro ? "attraction" : "attraction"))}><Plus size={15}/>添加</button>
       </div>
     </div>
 
@@ -404,8 +406,8 @@ export function CandidatePanel({
 
     <footer className="candidate-footer candidate-footer-flow-v3">
       <div>{!isMacro && unresolvedSelected.length > 0 && <button className="button" type="button" disabled={busy} onClick={() => void onRetry(unresolvedSelected.map((row) => row.place.id))}><RefreshCw size={14}/>批量重新定位 {unresolvedSelected.length} 个</button>}<button className="button" type="button" disabled={busy} onClick={() => void onDiscover()}><WandSparkles size={15}/>{isMacro ? (rows.length ? "重新生成" : "生成目的地建议") : "补充景点"}</button></div>
-      {!isMacro && unresolvedSelected.length > 0 && <small className="candidate-generation-warning">{unresolvedMustGo.length ? `${unresolvedMustGo.length} 个“必去”地点未定位，请先编辑或定位` : `${unresolvedSelected.length} 个未定位地点不会进入按天行程`}</small>}
-      <button className="button primary generate-plan" type="button" disabled={busy || (isMacro && !counts.selected)} onClick={() => void onContinue()}><Sparkles size={15}/>{isMacro ? "继续" : "下一步：每日行程"}</button>
+      {!isMacro && unresolvedSelected.length > 0 && <small className="candidate-generation-warning">{unresolvedMustGo.length ? `${unresolvedMustGo.length} 个“必去”地点未定位，仍可继续安排；路线会显示待核验提醒。` : `${unresolvedSelected.length} 个未定位地点仍可进入行程；路线计算可能需要补充定位。`}</small>}
+      <button className="button primary generate-plan" type="button" disabled={busy} onClick={() => void onContinue()}><Sparkles size={15}/>{isMacro ? "继续" : "下一步：每日行程"}</button>
     </footer>
 
     {choice && <div className="candidate-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setChoice(null); }}><section className="candidate-dialog choice-location-dialog"><header><div><strong>选择地点</strong><small>从地图 Provider 候选中选择，或粘贴 Google Maps 分享链接</small></div><button className="icon-button" onClick={() => setChoice(null)}><X size={18}/></button></header><div className="choice-google-link">
@@ -437,8 +439,8 @@ export function CandidatePanel({
       <label className="wide">地点名称（必填）<input value={newCandidate.nameZh} onChange={(event) => setNewCandidate({ ...newCandidate, nameZh: event.target.value })} placeholder="例如：京都铁道博物馆"/></label>
       <label>本地名称<input value={newCandidate.nameLocal} onChange={(event) => setNewCandidate({ ...newCandidate, nameLocal: event.target.value })} placeholder="例如：Piopiotahi"/></label>
       <label>英文名称<input value={newCandidate.nameEn} onChange={(event) => setNewCandidate({ ...newCandidate, nameEn: event.target.value })} placeholder="例如：Milford Sound"/></label>
-      {!isMacro && <label className="wide">所属目的地<select value={newCandidate.planningAreaCandidateId} onChange={(event) => setNewCandidate({ ...newCandidate, planningAreaCandidateId: event.target.value })}><option value="">请选择目的地</option>{macroRows.map((row) => <option key={row.candidate.id} value={row.candidate.id}>{placeNamePresentation(row.place, workspace.trip.planLanguage).combined}</option>)}</select></label>}
-      <label>类型<select value={newCandidate.kind} disabled={isMacro} onChange={(event) => setNewCandidate({ ...newCandidate, kind: event.target.value as PlaceKind })}>{(Object.keys(kindLabels) as PlaceKind[]).filter((kind) => isMacro ? kind === "city" : kind !== "city").map((kind) => <option value={kind} key={kind}>{kindLabels[kind]}</option>)}</select></label>
+      {!isMacro && <label className="wide">所属停留区域（可选）<select value={newCandidate.planningAreaCandidateId} onChange={(event) => setNewCandidate({ ...newCandidate, planningAreaCandidateId: event.target.value })}><option value="">暂不归属停留区域</option>{macroRows.map((row) => <option key={row.candidate.id} value={row.candidate.id}>{placeNamePresentation(row.place, workspace.trip.planLanguage).combined}</option>)}</select></label>}
+      <label>类型<select value={newCandidate.kind} onChange={(event) => setNewCandidate({ ...newCandidate, kind: event.target.value as PlaceKind })}>{(Object.keys(kindLabels) as PlaceKind[]).map((kind) => <option value={kind} key={kind}>{kindLabels[kind]}</option>)}</select></label>
       <label>城市<input value={newCandidate.city} onChange={(event) => setNewCandidate({ ...newCandidate, city: event.target.value })} placeholder="京都"/></label>
       <label>区域<input value={newCandidate.region} onChange={(event) => setNewCandidate({ ...newCandidate, region: event.target.value })} placeholder="京都府"/></label>
       <label>国家<input value={newCandidate.country} onChange={(event) => setNewCandidate({ ...newCandidate, country: event.target.value })} placeholder="日本"/></label>

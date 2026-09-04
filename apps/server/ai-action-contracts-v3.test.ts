@@ -50,14 +50,14 @@ describe("V3 action contracts", () => {
     expect(DestinationGenerateOutputSchema.safeParse(existingParent).success).toBe(true);
   });
 
-  it("rejects invalid Backbone roles and generated parent references", () => {
+  it("keeps structural parent reference checks while allowing PlanningRole and PlaceKind combinations", () => {
     const missingParent = mixedBackboneOutput();
     missingParent.candidates[1] = { ...missingParent.candidates[1], parentCandidateRef: null } as any;
-    expect(DestinationGenerateOutputSchema.safeParse(missingParent).success).toBe(false);
+    expect(DestinationGenerateOutputSchema.safeParse(missingParent).success).toBe(true);
 
     const coreAsCity = mixedBackboneOutput();
     coreAsCity.places[1] = { ...coreAsCity.places[1], kind: "city" } as any;
-    expect(DestinationGenerateOutputSchema.safeParse(coreAsCity).success).toBe(false);
+    expect(DestinationGenerateOutputSchema.safeParse(coreAsCity).success).toBe(true);
 
     const generatedParentIsCore = mixedBackboneOutput();
     generatedParentIsCore.candidates[1] = {
@@ -71,7 +71,7 @@ describe("V3 action contracts", () => {
     expect(DestinationGenerateOutputSchema.safeParse(detailRole).success).toBe(false);
   });
 
-  it("rejects source URLs, city Places and mismatched Macro parents from interest discovery", () => {
+  it("rejects source URLs and mismatched generated parents while allowing city interests", () => {
     const valid = interestOutput();
     expect(InterestDiscoverOutputSchema.safeParse(valid).success).toBe(true);
 
@@ -81,7 +81,7 @@ describe("V3 action contracts", () => {
 
     const city = structuredClone(valid);
     city.places[0].kind = "city" as any;
-    expect(InterestDiscoverOutputSchema.safeParse(city).success).toBe(false);
+    expect(InterestDiscoverOutputSchema.safeParse(city).success).toBe(true);
 
     const wrongParent = structuredClone(valid);
     wrongParent.candidates[0].planningAreaCandidateId = "macro-2";

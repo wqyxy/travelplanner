@@ -67,6 +67,14 @@ describe("OpenAI structured output adapter", () => {
     expect(dayLike.parse(normalized)).toEqual({ id: "day-1" });
   });
 
+  it("keeps scheduleText null so an AI result can clear legacy natural-time text", () => {
+    const stopLike = z.object({ id: z.string(), scheduleText: z.string().optional().nullable() }).strict();
+    const converted = buildOpenAiStructuredOutputSchema(stopLike) as any;
+    expect(converted.required).toEqual(["id", "scheduleText"]);
+    expect(converted.properties.scheduleText.anyOf).toEqual(expect.arrayContaining([{ type: "null" }]));
+    expect(normalizeStructuredOutputTransport({ id: "stop-1", scheduleText: null })).toEqual({ id: "stop-1", scheduleText: null });
+  });
+
   it("requires planningRole for the exact TripCandidate transport shape without adding a nullable bridge", () => {
     const candidateLike = z.object({
       id: z.string(),
