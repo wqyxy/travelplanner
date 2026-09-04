@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DetailedDayUpdateSchema } from "./ai-action-contracts-v3.js";
 import { parseActionParametersV3 } from "./ai-action-input-contracts-v3.js";
+import { AiLedMicroCandidateDiscoveryOutputSchema } from "./ai-led-micro-contract-v2.js";
 import { PlanCommandSchema, emptyTravelPlan } from "./contracts-v2.js";
 import { buildBackboneContextV3 } from "./planning-context-v3.js";
 
@@ -46,6 +47,30 @@ describe("User Control Correction size and read-context boundaries", () => {
       type: "bulk_set_candidate_preference",
       candidateIds,
       preference: "optional",
+    })).not.toThrow();
+  });
+
+  it("allows city-kind Place output from detail-interest discovery", () => {
+    expect(() => AiLedMicroCandidateDiscoveryOutputSchema.parse({
+      schemaVersion: 1,
+      baseGeneration: 1,
+      assistantMessage: "ok",
+      areaTargets: [{ planningAreaCandidateId: "area", targetCount: 1, reason: "用户需求匹配" }],
+      places: [{ id: "place-city", nameZh: "城市内活动", nameLocal: null, nameEn: null, kind: "city", city: "城市", region: null, country: null, countryCode: null, approximate: true }],
+      candidates: [{
+        temporaryId: "candidate-city",
+        placeTemporaryId: "place-city",
+        planningAreaCandidateId: "area",
+        aiReason: "适合作为普通兴趣点候选",
+        aiScore: 80,
+        suggestedDurationMinutes: 120,
+        tags: [],
+        defaultPreference: "optional",
+        prominence: "supporting",
+        experienceTypes: ["heritage_architecture"],
+        visitPointType: "landmark",
+        researchBasis: ["user_theme_match"],
+      }],
     })).not.toThrow();
   });
 
