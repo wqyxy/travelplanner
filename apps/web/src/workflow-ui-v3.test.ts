@@ -5,7 +5,7 @@ import type { WorkspaceV3 } from "./v3-types";
 function workspace(): WorkspaceV3 {
   return {
     trip: { id: "trip", title: "测试", state: "active", updatedAt: "2026-09-02T00:00:00Z", planLanguage: "zh", contentGeneration: 1, plan: { schemaVersion: 2, stage: "place_selection", trip: {} as any, places: [], candidates: [], days: [], warnings: [] } },
-    resolutions: [], routes: [], proposals: [], actions: [], routeStates: [], macroRouteStates: [], itineraryUpdateState: { macro: { status: "ready" }, detail: { status: "ready", affectedDayIds: [] } }, messages: { requirements: [], destinations: [], interests: [], itinerary: [] }, tasks: [], revisions: [], coverage: [],
+    resolutions: [], routes: [], proposals: [], actions: [], routeStates: [], macroRouteStates: [], itineraryUpdateState: { macro: { status: "ready" }, detail: { status: "ready", affectedDayIds: [] } }, messages: { requirements: [], destinations: [], interests: [], itinerary: [] }, tasks: [], revisions: [], coverage: [], advisories: [],
   } as WorkspaceV3;
 }
 
