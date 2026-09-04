@@ -12,15 +12,28 @@ import type { PlaceResolverV2 } from "./place-resolver-v2.js";
 import type { DayRouteServiceV2 } from "./day-route-v2.js";
 import { TravelPlanDocumentSchema, type TravelPlanDocument } from "./contracts-v2.js";
 import { computeMacroDependencyFingerprintV3 } from "./planning-state-v3.js";
+import { derivePlanningAdvisoriesV3 } from "./planning-advisories-v3.js";
+import { effectivePlanningRole } from "./planning-roles-v3.js";
 
 const roots: string[] = [];
-afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
+const stores = new Set<TravelStoreV3>();
+afterEach(() => {
+  for (const store of [...stores]) store.close();
+  while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+});
+
+function trackStore(store: TravelStoreV3) {
+  const close = store.close.bind(store);
+  store.close = () => { if (stores.delete(store)) close(); };
+  stores.add(store);
+  return store;
+}
 
 function db() {
   const root = mkdtempSync(path.join(tmpdir(), "interest-discovery-v3-"));
   roots.push(root);
   const filename = path.join(root, "travel-v3.sqlite3");
-  const store = new TravelStoreV3(filename);
+  const store = trackStore(new TravelStoreV3(filename));
   installRuntimeInvariantsV3(filename);
   return store;
 }
@@ -225,17 +238,20 @@ describe("interest discovery v3 orchestration", () => {
     store.close();
   });
 
-  it("rejects an omitted Planning Area before starting AI", async () => {
+  it("allows explicit discovery for an omitted but structurally valid Planning Area", async () => {
     const store = db();
     const created = store.createTrip();
     store.writePlan(created.id, withReadySkeleton(macroPlan(created.plan, 3), ["macro-1", "macro-2"]), 0, { source: "test", summary: "omitted fixture" });
-    let calls = 0;
-    const rt = runtime(store, async () => { calls += 1; return immediateRun(zeroOutput("macro-3")); });
+    const states: any[] = [];
+    const rt = runtime(store, async (input) => { states.push(input.state); return immediateRun(zeroOutput("macro-3")); });
 
     const started = rt.createCtaAction({ tripId: created.id, stage: "interests", actionType: "interest.supplement", parameters: {}, targetIds: ["macro-3"], requestKey: "reject-omitted" });
-    await waitFor(() => store.getAction(started.action.id)?.status === "failed");
-    expect(calls).toBe(0);
-    expect(store.getAction(started.action.id)?.errorSummary).toMatch(/已采用的停留区域/);
+    await waitFor(() => store.getAction(started.action.id)?.status === "completed");
+    expect(states).toHaveLength(1);
+    expect(states[0].planningArea.id).toBe("macro-3");
+    expect(states[0].planningAreaAdopted).toBe(false);
+    expect(store.requireTrip(created.id).contentGeneration).toBe(1);
+    expect(store.requireTrip(created.id).plan.candidates.some((candidate) => candidate.id === "macro-3")).toBe(true);
     store.close();
   });
 
@@ -259,23 +275,26 @@ describe("interest discovery v3 orchestration", () => {
     store.close();
   });
 
-  it("blocks capacity-aware discovery when the saved Skeleton basis is dirty", async () => {
+  it("continues capacity-aware discovery when the saved Skeleton basis is dirty", async () => {
     const store = db();
     const created = store.createTrip();
     const ready = withReadySkeleton(macroPlan(created.plan, 1), ["macro-1"]);
     ready.candidates[0] = { ...ready.candidates[0], preference: "must_go" };
     store.writePlan(created.id, TravelPlanDocumentSchema.parse(ready), 0, { source: "test", summary: "dirty skeleton fixture" });
-    let calls = 0;
-    const rt = runtime(store, async () => { calls += 1; return immediateRun(zeroOutput("macro-1")); });
+    const before = structuredClone(store.requireTrip(created.id).plan);
+    const states: any[] = [];
+    const rt = runtime(store, async (input) => { states.push(input.state); return immediateRun(zeroOutput("macro-1")); });
 
     const started = rt.createCtaAction({ tripId: created.id, stage: "interests", actionType: "interest.discover", parameters: {}, targetIds: [], requestKey: "dirty-skeleton" });
-    await waitFor(() => store.getAction(started.action.id)?.status === "failed");
-    expect(calls).toBe(0);
-    expect(store.getAction(started.action.id)?.errorSummary).toMatch(/更新并确认路线和天数/);
+    await waitFor(() => store.getAction(started.action.id)?.status === "completed");
+    expect(states).toHaveLength(1);
+    expect(states[0].macroBasisState).toBe("dirty");
+    expect(store.requireTrip(created.id).plan).toEqual(before);
+    expect(rt.workspace(created.id).itineraryUpdateState.macro.status).toBe("needs_update");
     store.close();
   });
 
-  it("filters a semantic Core Visit duplicate instead of creating an ordinary Detail duplicate", async () => {
+  it("preserves a semantic Core Visit duplicate as a separate Detail Candidate with an advisory", async () => {
     const store = db();
     const created = store.createTrip();
     const source = withReadySkeleton(planWithCoreAndDetail(created.plan), ["macro-1", "macro-2"]);
@@ -285,11 +304,18 @@ describe("interest discovery v3 orchestration", () => {
     const started = rt.createCtaAction({ tripId: created.id, stage: "interests", actionType: "interest.supplement", parameters: {}, targetIds: ["macro-2"], requestKey: "core-duplicate" });
     await waitFor(() => store.getAction(started.action.id)?.status === "completed");
     const trip = store.requireTrip(created.id);
-    expect(trip.contentGeneration).toBe(1);
-    expect(trip.plan.candidates.filter((candidate) => candidate.placeId === "core-place")).toHaveLength(1);
+    expect(trip.contentGeneration).toBe(2);
+    const duplicatePlaces = trip.plan.places.filter((place) => place.nameZh === "核心景点");
+    expect(duplicatePlaces).toHaveLength(2);
+    expect(new Set(duplicatePlaces.map((place) => place.id)).size).toBe(2);
+    const duplicateCandidates = trip.plan.candidates.filter((candidate) => duplicatePlaces.some((place) => place.id === candidate.placeId));
+    expect(duplicateCandidates).toHaveLength(2);
     expect(trip.plan.candidates.find((candidate) => candidate.id === "core-1")).toMatchObject({ planningRole: "core_visit", preference: "must_go", source: "user" });
-    expect(store.getAction(started.action.id)?.resultRef).toMatch(/coreSkipped=1/);
-    expect(store.getAction(started.action.id)?.resultRef).toMatch(/added=0/);
+    const discovered = duplicateCandidates.find((candidate) => candidate.id !== "core-1")!;
+    expect(discovered).toMatchObject({ planningAreaCandidateId: "macro-2", preference: "optional", source: "ai" });
+    expect(effectivePlanningRole(discovered, trip.plan.places.find((place) => place.id === discovered.placeId)!)).toBe("detail_interest");
+    expect(store.getAction(started.action.id)?.resultRef).toMatch(/added=1;merged=0;coreSkipped=0/);
+    expect(derivePlanningAdvisoriesV3(trip.plan).some((item) => item.code === "POSSIBLE_DUPLICATE_PLACE" && item.objectRefs.every((ref) => duplicatePlaces.some((place) => place.id === ref.id)))).toBe(true);
     store.close();
   });
 
@@ -542,7 +568,7 @@ describe("interest discovery v3 orchestration", () => {
     store.close();
   });
 
-  it("treats a canonical duplicate no-op as success without bumping generation", async () => {
+  it("preserves a semantic rediscovery instead of silently merging it", async () => {
     const store = db();
     const created = store.createTrip();
     store.writePlan(created.id, withReadySkeleton(planWithExistingInterest(created.plan)), 0, { source: "test", summary: "duplicate fixture" });
@@ -550,13 +576,17 @@ describe("interest discovery v3 orchestration", () => {
 
     const started = rt.createCtaAction({ tripId: created.id, stage: "interests", actionType: "interest.supplement", parameters: {}, targetIds: ["macro-1"], requestKey: "duplicate-noop" });
     await waitFor(() => store.getAction(started.action.id)?.status === "completed");
-    expect(store.requireTrip(created.id).contentGeneration).toBe(1);
+    const trip = store.requireTrip(created.id);
+    expect(trip.contentGeneration).toBe(2);
+    expect(trip.plan.places.filter((place) => place.nameZh === "景点1")).toHaveLength(2);
+    expect(trip.plan.candidates.filter((candidate) => trip.plan.places.find((place) => place.id === candidate.placeId)?.nameZh === "景点1")).toHaveLength(2);
     expect(store.getAction(started.action.id)?.resultRef).toMatch(/areas=1\/1;failed=0/);
-    expect(store.getAction(started.action.id)?.resultRef).toMatch(/added=0;merged=1/);
+    expect(store.getAction(started.action.id)?.resultRef).toMatch(/added=1;merged=0/);
+    expect(derivePlanningAdvisoriesV3(trip.plan).map((item) => item.code)).toContain("POSSIBLE_DUPLICATE_PLACE");
     store.close();
   });
 
-  it("rejects a duplicate Place already owned by another Macro without reparenting it", async () => {
+  it("preserves same-name Places under different Planning Areas without reparenting", async () => {
     const store = db();
     const created = store.createTrip();
     store.writePlan(created.id, withReadySkeleton(planWithExistingInterest(created.plan, 2)), 0, { source: "test", summary: "cross-macro fixture" });
@@ -565,14 +595,16 @@ describe("interest discovery v3 orchestration", () => {
     const rt = runtime(store, async (input) => immediateRun(input.validateResult(crossMacro)));
 
     const started = rt.createCtaAction({ tripId: created.id, stage: "interests", actionType: "interest.supplement", parameters: {}, targetIds: ["macro-2"], requestKey: "cross-macro-duplicate" });
-    await waitFor(() => store.getAction(started.action.id)?.status === "failed");
-    expect(store.getAction(started.action.id)?.errorSummary).toMatch(/所有兴趣点研究区域均失败/);
-    expect(store.requireTrip(created.id).plan.candidates.find((candidate) => candidate.id === "existing-candidate")?.planningAreaCandidateId).toBe("macro-1");
-    expect(store.requireTrip(created.id).contentGeneration).toBe(1);
+    await waitFor(() => store.getAction(started.action.id)?.status === "completed");
+    const trip = store.requireTrip(created.id);
+    expect(trip.plan.candidates.find((candidate) => candidate.id === "existing-candidate")?.planningAreaCandidateId).toBe("macro-1");
+    expect(trip.plan.candidates.some((candidate) => candidate.id !== "existing-candidate" && candidate.planningAreaCandidateId === "macro-2" && trip.plan.places.find((place) => place.id === candidate.placeId)?.nameZh === "景点1")).toBe(true);
+    expect(trip.contentGeneration).toBe(2);
+    expect(derivePlanningAdvisoriesV3(trip.plan).map((item) => item.code)).toContain("POSSIBLE_DUPLICATE_PLACE");
     store.close();
   });
 
-  it("keeps UI option A semantics: added counts only new Candidates while location denominator covers all canonical mappings", async () => {
+  it("counts every preserved semantic duplicate as a new Candidate and location target", async () => {
     const store = db();
     const created = store.createTrip();
     store.writePlan(created.id, withReadySkeleton(planWithExistingInterest(created.plan)), 0, { source: "test", summary: "mixed duplicate fixture" });
@@ -581,8 +613,8 @@ describe("interest discovery v3 orchestration", () => {
     const started = rt.createCtaAction({ tripId: created.id, stage: "interests", actionType: "interest.supplement", parameters: {}, targetIds: ["macro-1"], requestKey: "option-a-stats" });
     await waitFor(() => store.getAction(started.action.id)?.status === "completed");
     const resultRef = store.getAction(started.action.id)?.resultRef ?? "";
-    expect(resultRef).toMatch(/added=1/);
-    expect(resultRef).toMatch(/merged=1/);
+    expect(resultRef).toMatch(/added=2/);
+    expect(resultRef).toMatch(/merged=0/);
     expect(resultRef).toMatch(/resolved=0;pending=2/);
     expect(store.requireTrip(created.id).contentGeneration).toBe(2);
     store.close();

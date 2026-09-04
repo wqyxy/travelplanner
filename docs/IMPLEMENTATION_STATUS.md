@@ -3,7 +3,7 @@
 > 更新时间：2026-09-04
 > 当前分支：`codex/user-control-correction`
 > 当前最高优先级：**User Control Correction / 用户控制权修正**
-> 当前状态：**代码与专项文档已收口；Draft PR #5 暂不合并 main。专项 targeted Gate 已通过，完整综合 Gate 待用户确认。**
+> 当前状态：**最终本地综合 Gate PASS；Draft PR #5 保持 Draft，暂不合并 main，等待用户决定。**
 
 ---
 
@@ -201,17 +201,23 @@ apps/server/replan-intent-v3.test.ts
 
 ---
 
-# 5. 尚未执行的完整综合 Gate
+# 5. 最终综合 Gate
 
-按仓库约定，以下检查**尚未执行**：
+2026-09-04 已在用户明确授权后完成：
 
-- 全量 `npm test`；
-- 完整 `npm run typecheck`；
-- 完整 `npm run build`；
-- Browser E2E；
-- 真实 AI / private_data E2E。
+- 剩余 runtime/discovery 定向测试：3 files / 32 tests PASS；
+- User Control targeted：7 files / 48 tests PASS；
+- OpenAI Structured Output：8/8 PASS；
+- 完整 `npm run typecheck`：PASS；
+- 全量 `npm test`：79 files / 455 tests PASS，0 failed；
+- 完整 `npm run build`：PASS；
+- `git diff --check`：PASS。
 
-这些属于最终综合验收。执行前需要先明确范围与成本，并取得用户确认。
+剩余旧测试已迁移为 advisory-first 语义；active V3 micro discovery 的 semantic duplicate 静默合并回归已修复。测试夹具会在异常路径关闭 SQLite，并用有限重试清理 Windows 临时目录，未再出现 `EPERM`。
+
+Browser smoke：NOT RUN。服务端路径固定指向项目 `private_data`，本轮不启动可能接触真实私人数据的实例，由用户人工检查 UI。
+
+真实 AI smoke：NOT RUN。项目没有可安全覆盖 `scheduleText` 生成、保存及 null 清除的现成真实 AI smoke，未伪造 PASS，也未发明收费调用。
 
 ---
 
@@ -252,12 +258,15 @@ Provider / realtime fact boundary
 
 ```text
 User Control Correction code/docs closeout = COMPLETE
-targeted regression gate                = PASS (7 files / 48 tests)
-typecheck/build                         = PASS
-full suite                              = 448/455; 7 runtime/discovery stale assertions remain
-browser/real AI/private_data E2E        = NOT RUN
-Draft PR #5                              = KEEP DRAFT
-merge main                               = NO
+target runtime tests                       = PASS (3 files / 32 tests)
+targeted regression gate                   = PASS (7 files / 48 tests)
+OpenAI Structured Output                   = PASS (8/8)
+typecheck/build                            = PASS
+full suite                                 = PASS (79 files / 455 tests, 0 failed)
+git diff --check                           = PASS
+browser/real AI smoke                      = NOT RUN
+Draft PR #5                                = KEEP DRAFT
+merge main                                 = NO
 ```
 
-下一步只有在用户明确确认后，才进入完整综合 Gate；若完整 Gate 发现回归，再按本专项原则修复。
+当前本地结果为 MERGE-READY；是否标记 PR Ready 或合并仍由用户决定，本轮不执行。

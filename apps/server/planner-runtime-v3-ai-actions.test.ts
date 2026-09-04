@@ -13,14 +13,26 @@ import { placeGeoFingerprint } from "./place-resolver-v2.js";
 import type { DayRouteServiceV2 } from "./day-route-v2.js";
 import { TravelPlanDocumentSchema, type Day, type PlaceResolution, type TravelPlanDocument } from "./contracts-v2.js";
 import { computeMacroDependencyFingerprintV3 } from "./planning-state-v3.js";
+import { derivePlanningAdvisoriesV3 } from "./planning-advisories-v3.js";
 
 const roots: string[] = [];
-afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
+const stores = new Set<TravelStoreV3>();
+afterEach(() => {
+  for (const store of [...stores]) store.close();
+  while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+});
+
+function trackStore(store: TravelStoreV3) {
+  const close = store.close.bind(store);
+  store.close = () => { if (stores.delete(store)) close(); };
+  stores.add(store);
+  return store;
+}
 
 function db() {
   const root = mkdtempSync(path.join(tmpdir(), "planner-runtime-ai-v3-")); roots.push(root);
   const filename = path.join(root, "travel-v3.sqlite3");
-  const store = new TravelStoreV3(filename); installRuntimeInvariantsV3(filename); return store;
+  const store = trackStore(new TravelStoreV3(filename)); installRuntimeInvariantsV3(filename); return store;
 }
 async function waitFor(check: () => boolean) { for (let i = 0; i < 100; i += 1) { if (check()) return; await new Promise((resolve) => setTimeout(resolve, 5)); } throw new Error("condition timeout"); }
 function prompts(): LoadedPromptRegistryV3 {
@@ -174,13 +186,20 @@ describe("TravelPlannerRuntimeV3 AI action regressions", () => {
     store.close();
   });
 
-  it("rejects Detailed generation that introduces an unresolved concrete Place", async () => {
+  it("keeps an unresolved concrete Place in Detailed generation and exposes route/map attention", async () => {
     const store = db(); const created = store.createTrip(); store.writePlan(created.id, itineraryPlan(created.plan, 1, true), 0, { source: "test", summary: "resolution fixture" }); resolveAB(store, created.id, 1);
     const rt = runtime(store, async () => run({ schemaVersion: 1, baseGeneration: 1, result: { type: "success", assistantMessage: "加入 C", dayUpdates: [{ dayId: "day-1", stops: [{ candidateId: "candidate-c", activity: "C", period: "morning", startTime: "09:00", endTime: "10:00", durationMinutes: 60, transportFromPrevious: null, scheduleVerification: { status: "estimated", checkedAt: null }, costNote: null, costVerification: null, notes: null }] }], unscheduledCandidates: [] } }));
     const started = rt.createCtaAction({ tripId: created.id, stage: "itinerary", actionType: "itinerary.detail.generate", parameters: {}, targetIds: [], requestKey: "detail-unresolved" });
-    await waitFor(() => store.getAction(started.action.id)?.status === "failed");
+    await waitFor(() => store.getAction(started.action.id)?.status === "completed");
+    const trip = store.requireTrip(created.id);
+    expect(trip.contentGeneration).toBe(2);
+    expect(trip.plan.days[0].stops).toEqual([expect.objectContaining({ candidateId: "candidate-c", placeId: "place-c" })]);
     expect(store.listProposals(created.id)).toHaveLength(0);
-    expect(store.getAction(started.action.id)?.errorSummary).toMatch(/未定位地点不得进入行程/);
+    expect(store.listPlaceResolutions(created.id).find((item) => item.placeId === "place-c")).toBeUndefined();
+    const unresolved = derivePlanningAdvisoriesV3(trip.plan, store.listPlaceResolutions(created.id))
+      .filter((item) => item.code === "PLACE_UNRESOLVED");
+    expect(unresolved.some((item) => item.objectRefs.some((ref) => ref.type === "stop" && ref.id === trip.plan.days[0].stops[0].id))).toBe(true);
+    expect(unresolved.some((item) => item.objectRefs.some((ref) => ref.type === "place" && ref.id === "place-c") && item.affectedCapabilities.includes("route"))).toBe(true);
     store.close();
   });
 

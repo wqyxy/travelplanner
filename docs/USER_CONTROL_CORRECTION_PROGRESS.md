@@ -2,7 +2,7 @@
 
 > 分支：`codex/user-control-correction`
 > PR：Draft PR #5
-> 状态：代码收口完成，暂不合并 main；完整 Gate 由用户在 Codex 执行
+> 状态：最终本地综合 Gate PASS，暂不合并 main；Draft PR #5 等待用户决定
 
 ## 已完成
 
@@ -54,18 +54,22 @@ PR 自带的 `v3 branch CI` 会在 push 时自动触发。它曾帮助暴露并�
 - Workspace fixture 缺 `advisories`；
 - Server legacy command guard 未处理 `days` Scope。
 
-最后一次分支 CI 因本 PR 中临时 workflow 变更被 GitHub 标记为 `action_required`，没有实际执行 job。因此最终完整验证仍应由用户在 Codex 环境执行。
+最后一次分支 CI 因本 PR 中临时 workflow 变更被 GitHub 标记为 `action_required`，没有实际执行 job。因此最终完整验证改由用户明确授权的 Codex 环境执行，并已在下节记录结果。
 
-## 仍需由 Codex 完整验证
+## 最终综合 Gate
 
-- `git diff --check`
-- 完整 `typecheck`
-- 全量 test suite
-- production build
-- Browser E2E
-- 真实 AI / private_data E2E（仅在环境与授权可用时）
-- 隐藏旧规则残留扫描与测试语义审核
+2026-09-04 最终收尾已完成：
+
+- 剩余 3 个 runtime/discovery 测试文件：32/32 PASS；
+- User Control targeted：7 files / 48 tests PASS；
+- OpenAI Structured Output：8/8 PASS；
+- 完整 typecheck：PASS；
+- 全量 Vitest：79 files / 455 tests PASS，0 failed；
+- production build：PASS；
+- `git diff --check`：PASS。
+
+真实 AI smoke 未运行：现有项目只有通用协议 smoke，没有可安全覆盖 `scheduleText` 生成、保存与 null 清除的现成真实 AI 场景，且不为本次验收发明收费调用。Browser smoke 未运行：当前服务端数据路径固定指向项目 `private_data`，本轮不启动会接触真实私人数据库的实例，由用户人工检查 UI。
 
 ## 当前结论
 
-2026-09-04 最终审查已执行专项 Gate（7 files / 48 tests）、typecheck 和 build，均通过。完整 Vitest 第二轮为 448/455 通过；剩余 7 个失败来自 3 个仍等待已废止 blocker 状态的 runtime/discovery 测试，并伴随 Windows 临时 SQLite 清理 `EPERM`。路线排序对无 parent Candidate 的分组回归已修复，多个旧断言已迁移；Browser 与真实 AI/private_data E2E 没有执行。分支继续保持 Draft，不合并 main。
+2026-09-04 最终收尾已把剩余 7 个旧失败迁移为 User Control 新语义，并修复 active V3 micro discovery 仍会静默合并 semantic duplicate 的真实回归。三个测试文件现在会在异常路径先关闭 SQLite，再以有限重试清理临时目录，Windows `EPERM` 已消失。最终本地综合 Gate 为 455/455 tests、typecheck、build 与 `git diff --check` 全部 PASS；Browser 与真实 AI smoke 如上记为 NOT RUN。分支继续保持 Draft，不合并 main。

@@ -1090,7 +1090,7 @@ export class TravelPlannerRuntimeV3 {
           const normalized = normalizeCandidateDiscoveryOutput(output, "micro");
           const filtered = filterCoreVisitDuplicatesV3(current.plan, normalized);
           skippedCoreDuplicateCount += filtered.skippedCoreDuplicateCount;
-          const applied = applyCandidateDiscovery(current.plan, filtered.output);
+          const applied = applyCandidateDiscovery(current.plan, filtered.output, { preserveSemanticDuplicates: true });
           actualAddedCount += applied.addedCandidateIds.length;
           mergedDuplicateCount += applied.mergedDuplicateCount;
           for (const candidate of filtered.output.candidates) {

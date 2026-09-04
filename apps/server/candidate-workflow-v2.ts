@@ -29,6 +29,10 @@ export type CandidateDiscoveryApplyResult = {
   mergedDuplicateCount: number;
 };
 
+export type CandidateDiscoveryApplyOptions = {
+  preserveSemanticDuplicates?: boolean;
+};
+
 export type BackboneDiscoveryApplyResult = {
   plan: TravelPlanDocument;
   output: DestinationGenerateOutput;
@@ -242,7 +246,11 @@ function parseCandidateDiscoveryOutput(value: unknown): CandidateDiscoveryOutput
   return CandidateDiscoveryOutputSchema.parse(value);
 }
 
-export function applyCandidateDiscovery(current: TravelPlanDocument, value: unknown): CandidateDiscoveryApplyResult {
+export function applyCandidateDiscovery(
+  current: TravelPlanDocument,
+  value: unknown,
+  options: CandidateDiscoveryApplyOptions = {},
+): CandidateDiscoveryApplyResult {
   const backbone = normalizedBackboneInput(value);
   if (backbone) return applyBackboneDiscoveryV3(current, backbone);
 
@@ -260,7 +268,7 @@ export function applyCandidateDiscovery(current: TravelPlanDocument, value: unkn
     const source = placesById.get(temporaryPlaceId);
     if (!source) throw new Error(`Candidate Discovery 引用未知临时 Place：${temporaryPlaceId}`);
     const key = semanticPlaceKey(source);
-    const existing = canonicalPlaceByKey.get(key);
+    const existing = options.preserveSemanticDuplicates ? undefined : canonicalPlaceByKey.get(key);
     if (existing) {
       idMappings.set(temporaryPlaceId, existing.id);
       if (!existingPlaceByKey.has(key)) mergedDuplicateCount += 1;

@@ -13,15 +13,27 @@ import type { DayRouteServiceV2 } from "./day-route-v2.js";
 import { TravelPlanDocumentSchema, type PlaceResolution, type TravelPlanDocument } from "./contracts-v2.js";
 import { computeMacroDependencyFingerprintV3 } from "./planning-state-v3.js";
 import { placeGeoFingerprint } from "./place-resolver-v2.js";
+import { derivePlanningAdvisoriesV3 } from "./planning-advisories-v3.js";
 
 const roots: string[] = [];
-afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
+const stores = new Set<TravelStoreV3>();
+afterEach(() => {
+  for (const store of [...stores]) store.close();
+  while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+});
+
+function trackStore(store: TravelStoreV3) {
+  const close = store.close.bind(store);
+  store.close = () => { if (stores.delete(store)) close(); };
+  stores.add(store);
+  return store;
+}
 
 function db() {
   const root = mkdtempSync(path.join(tmpdir(), "planner-runtime-detail-phase5-"));
   roots.push(root);
   const filename = path.join(root, "travel-v3.sqlite3");
-  const store = new TravelStoreV3(filename);
+  const store = trackStore(new TravelStoreV3(filename));
   installRuntimeInvariantsV3(filename);
   return store;
 }
@@ -141,7 +153,8 @@ describe("Phase 5 detailed itinerary runtime", () => {
     const after = store.requireTrip(created.id).plan;
     expect(states).toHaveLength(1);
     expect(states[0].candidates.map((candidate: any) => [candidate.id, candidate.planningRole])).toEqual([["core-a", "core_visit"]]);
-    expect(states[0].requiredMustGoCandidateIds).toEqual(["core-a"]);
+    expect(states[0].preferredMustGoCandidateIds).toEqual(["core-a"]);
+    expect(states[0].requiredMustGoCandidateIds).toEqual([]);
     expect(after.days[0].stops.map((stop) => stop.candidateId)).toEqual(["core-a"]);
     expect(after.days[0].detailStatus).toBe("ready");
     expect(after.days[0].startAnchor.placeId).toBe("city-a");
@@ -173,42 +186,62 @@ describe("Phase 5 detailed itinerary runtime", () => {
     store.close();
   });
 
-  it("blocks a related unresolved Anchor or must-go before starting the AI child", async () => {
+  it("continues a related unresolved Anchor and must-go through Proposal and Apply", async () => {
     const store = db();
     const created = store.createTrip();
     store.writePlan(created.id, twoAreaPlan(created.plan), 0, { source: "test", summary: "related unresolved fixture" });
     saveResolved(store, created.id, 1, ["city-a", "core-a-place"]);
-    let calls = 0;
-    const rt = runtime(store, async () => { calls += 1; return run({}); });
+    const states: any[] = [];
+    const rt = runtime(store, async (input) => {
+      states.push(input.state);
+      return run({ schemaVersion: 1, baseGeneration: 1, result: {
+        type: "success", assistantMessage: "安排乙核心", title: "更新乙城", explanation: "保留未定位地点并等待地图能力恢复", affectedDayIds: ["day-b"],
+        dayUpdates: [{ dayId: "day-b", stops: [{ candidateId: "core-b", activity: "乙核心", period: "afternoon", startTime: null, endTime: null, durationMinutes: 120, transportFromPrevious: null, scheduleVerification: null, costNote: null, costVerification: null, notes: null }] }],
+        unscheduledCandidates: [],
+      } });
+    });
 
     const started = rt.createCtaAction({ tripId: created.id, stage: "itinerary", actionType: "itinerary.detail.update", parameters: { dayIds: ["day-b"] }, targetIds: ["day-b"], requestKey: "blocked-day-b" });
-    await waitFor(() => store.getAction(started.action.id)?.status === "failed");
-    expect(calls).toBe(0);
-    expect(store.getAction(started.action.id)?.errorSummary).toMatch(/起点或终点|必去地点/);
-    expect(store.requireTrip(created.id).contentGeneration).toBe(1);
+    await waitFor(() => store.getAction(started.action.id)?.status === "awaiting_apply");
+    expect(states).toHaveLength(1);
+    expect(states[0].detailReadiness.blockingIssues).toEqual([]);
+    expect(states[0].detailReadiness.advisoryIssues.map((item: any) => item.type)).toEqual(expect.arrayContaining(["anchor_unresolved", "must_go_unresolved"]));
+    expect(states[0].unresolvedCandidateIds).toContain("core-b");
+    expect(states[0].unavailableCandidateIds).toEqual([]);
+    const proposal = store.getProposal(store.getAction(started.action.id)!.proposalId!)!;
+    await rt.applyProposal(created.id, proposal.id);
+    const trip = store.requireTrip(created.id);
+    expect(trip.plan.days.find((day) => day.id === "day-b")?.stops).toEqual([expect.objectContaining({ candidateId: "core-b", placeId: "core-b-place" })]);
+    expect(store.listPlaceResolutions(created.id).filter((item) => ["city-b", "core-b-place"].includes(item.placeId))).toEqual([]);
+    const advisories = derivePlanningAdvisoriesV3(trip.plan, store.listPlaceResolutions(created.id));
+    expect(advisories.some((item) => item.code === "PLACE_UNRESOLVED" && item.objectRefs.some((ref) => ref.id === "core-b-place"))).toBe(true);
+    expect(advisories.some((item) => item.code === "MUST_GO_NOT_SCHEDULED" && item.objectRefs.some((ref) => ref.id === "core-b"))).toBe(false);
+    await waitForMapTasks(store, created.id);
     store.close();
   });
 
-  it("lets a dirty Macro basis return requiresWorkflowStep=skeleton without mutating canonical data", async () => {
+  it("continues Detailed generation on a dirty Macro basis while keeping stale state visible", async () => {
     const store = db();
     const created = store.createTrip();
     const current = oneAreaPlan(created.plan);
     const dirty = TravelPlanDocumentSchema.parse({ ...current, trip: { ...current.trip, pace: "更慢" } });
     store.writePlan(created.id, dirty, 0, { source: "test", summary: "dirty detail fixture" });
     saveResolved(store, created.id, 1, ["city-a", "core-a-place"]);
-    const before = structuredClone(store.requireTrip(created.id).plan);
     const states: any[] = [];
     const rt = runtime(store, async (input) => {
       states.push(input.state);
-      return run({ schemaVersion: 1, baseGeneration: 1, result: { type: "requires_workflow_step", requiresWorkflowStep: "skeleton", assistantMessage: "请先更新路线和天数", reason: "Macro basis 已变化" } });
+      return run({ schemaVersion: 1, baseGeneration: 1, result: { type: "success", assistantMessage: "继续生成每日行程", dayUpdates: [{ dayId: "day-a", stops: [coreDraft] }], unscheduledCandidates: [] } });
     });
 
     const started = rt.createCtaAction({ tripId: created.id, stage: "itinerary", actionType: "itinerary.detail.generate", parameters: {}, targetIds: [], requestKey: "dirty-to-skeleton" });
     await waitFor(() => store.getAction(started.action.id)?.status === "completed");
-    expect(states[0].detailReadiness.requiresWorkflowStep).toBe("skeleton");
-    expect(store.getAction(started.action.id)?.resultRef).toBe("requiresWorkflowStep:skeleton");
-    expect(store.requireTrip(created.id).contentGeneration).toBe(1);
-    expect(store.requireTrip(created.id).plan).toEqual(before);
+    expect(states[0].detailReadiness.macroBasisState).toBe("dirty");
+    expect(states[0].detailReadiness.requiresWorkflowStep).toBeNull();
+    expect(store.getAction(started.action.id)?.resultRef).toMatch(/^generation:2;/);
+    expect(store.requireTrip(created.id).contentGeneration).toBe(2);
+    expect(store.requireTrip(created.id).plan.days[0].stops).toEqual([expect.objectContaining({ candidateId: "core-a" })]);
+    expect(rt.workspace(created.id).itineraryUpdateState.macro.status).toBe("needs_update");
+    await waitForMapTasks(store, created.id);
     store.close();
   });
 
