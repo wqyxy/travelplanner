@@ -1,32 +1,64 @@
-name: UC scheduleText compatibility patch
+name: Remove temporary v3 implementation workflows
 
 on:
   push:
-    branches: [codex/user-control-correction]
+    branches:
+      - codex/v3-runtime-ui-completion
+    paths:
+      - .github/workflows/v3-remove-temporary-workflows.yml
 
 permissions:
   contents: write
 
+concurrency:
+  group: travelplanner-v3-temporary-workflow-cleanup
+  cancel-in-progress: false
+
 jobs:
-  patch:
+  cleanup:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Apply static compatibility fixes
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Remove temporary workflow files
         shell: bash
         run: |
           set -euo pipefail
-          python -c 'from pathlib import Path; p=Path("apps/server/structured-ai-v2.ts"); t=p.read_text(); t=t.replace("const NULLABLE_REQUIRED_TRANSPORT_FIELDS = new Set([\"stayBlockId\"]);", "const NULLABLE_REQUIRED_TRANSPORT_FIELDS = new Set([\"stayBlockId\", \"scheduleText\"]);\nconst OMIT_NULL_TRANSPORT_FIELDS = new Set([\"stayBlockId\"]);"); t=t.replace("if (NULLABLE_REQUIRED_TRANSPORT_FIELDS.has(key) && item === null) continue;", "if (OMIT_NULL_TRANSPORT_FIELDS.has(key) && item === null) continue;"); p.write_text(t)'
-          python -c 'from pathlib import Path; p=Path("apps/server/planner-runtime-v3.ts"); t=p.read_text(); t=t.replace("function same(left: unknown, right: unknown) { return JSON.stringify(left) === JSON.stringify(right); }", "function same(left: unknown, right: unknown) { return JSON.stringify(left ?? null) === JSON.stringify(right ?? null); }"); p.write_text(t)'
-          python -c 'from pathlib import Path; p=Path("apps/server/detail-itinerary-v3.ts"); t=p.read_text(); old="if (JSON.stringify(current[key]) !== JSON.stringify(desired[key])) changes[key] = structuredClone(desired[key]);"; assert old in t; t=t.replace(old, "if (JSON.stringify(current[key] ?? null) !== JSON.stringify(desired[key] ?? null)) changes[key] = structuredClone(desired[key]);"); p.write_text(t)'
-          python -c 'from pathlib import Path; p=Path("apps/server/itinerary-workflow-v3.ts"); t=p.read_text(); old="if (JSON.stringify(current[key]) !== JSON.stringify(desired[key])) changes[key] = structuredClone(desired[key]);"; assert old in t; t=t.replace(old, "if (JSON.stringify(current[key] ?? null) !== JSON.stringify(desired[key] ?? null)) changes[key] = structuredClone(desired[key]);"); p.write_text(t)'
-          git fetch origin main
-          git checkout origin/main -- .github/workflows/v3-remove-temporary-workflows.yml
+          test -f docs/FINAL_ACCEPTANCE.md
+          test -f scripts/check-v3.mjs
+          rm -f \
+            .github/workflows/phase5-candidate-workbench.yml \
+            .github/workflows/phase6-deterministic-editing.yml \
+            .github/workflows/phase7-proposals.yml \
+            .github/workflows/phase8-refinement.yml \
+            .github/workflows/phase9-final-review.yml \
+            .github/workflows/final-v3-acceptance.yml \
+            .github/workflows/recover-and-complete-v3.yml \
+            .github/workflows/v3-final-hardening.yml \
+            .github/workflows/v3-remove-temporary-workflows.yml
+      - run: npm run check:v3
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: git diff --check
+      - name: Commit cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -A
+          git diff --cached --check
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add apps/server/structured-ai-v2.ts apps/server/planner-runtime-v3.ts apps/server/detail-itinerary-v3.ts apps/server/itinerary-workflow-v3.ts .github/workflows/v3-remove-temporary-workflows.yml
-          git diff --cached --check
-          git commit -m 'UC: fix scheduleText transport compatibility'
-          git push origin HEAD:codex/user-control-correction
+          if git diff --cached --quiet; then
+            echo 'No temporary workflows remain.'
+          else
+            git commit -m 'Chore: remove temporary v3 implementation workflows'
+            git push origin HEAD:codex/v3-runtime-ui-completion
+          fi

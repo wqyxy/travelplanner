@@ -548,7 +548,7 @@ export function detailedReplacementCommandsV3(trip: TripDetailV3, updates: Detai
         const current = working[index];
         const changes: Record<string, unknown> = {};
         for (const key of ["activity", "period", "scheduleText", "startTime", "endTime", "durationMinutes", "transportFromPrevious", "scheduleVerification", "costNote", "costVerification", "notes"] as const) {
-          if (JSON.stringify(current[key]) !== JSON.stringify(desired[key])) changes[key] = structuredClone(desired[key]);
+          if (JSON.stringify(current[key] ?? null) !== JSON.stringify(desired[key] ?? null)) changes[key] = structuredClone(desired[key]);
         }
         if (Object.keys(changes).length) commands.push(PlanCommandSchema.parse({ type: "update_day_stop", stopId: current.id, changes }));
       } else {

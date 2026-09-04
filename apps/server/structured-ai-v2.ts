@@ -59,7 +59,8 @@ const FORBIDDEN_SCHEMA_KEYS = new Set(["allOf", "not", "if", "then", "else", "de
 // Canonical Day keeps stayBlockId optional so old v3 documents remain readable.
 // OpenAI structured output does not accept mixed required/optional objects, so the
 // transport schema requires this one field as nullable and normalization removes null.
-const NULLABLE_REQUIRED_TRANSPORT_FIELDS = new Set(["stayBlockId"]);
+const NULLABLE_REQUIRED_TRANSPORT_FIELDS = new Set(["stayBlockId", "scheduleText"]);
+const OMIT_NULL_TRANSPORT_FIELDS = new Set(["stayBlockId"]);
 const TRIP_CANDIDATE_TRANSPORT_KEYS = [
   "id",
   "placeId",
@@ -184,7 +185,7 @@ export function normalizeStructuredOutputTransport(value: unknown): unknown {
   }
   const result: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value)) {
-    if (NULLABLE_REQUIRED_TRANSPORT_FIELDS.has(key) && item === null) continue;
+    if (OMIT_NULL_TRANSPORT_FIELDS.has(key) && item === null) continue;
     result[key] = normalizeStructuredOutputTransport(item);
   }
   return result;

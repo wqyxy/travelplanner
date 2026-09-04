@@ -106,7 +106,7 @@ type InterestFailure = { targetId: string; errorSummary: string };
 type DetailPlanningContextV3 = ReturnType<typeof buildDetailPlanningContextV3>;
 
 function now() { return new Date().toISOString(); }
-function same(left: unknown, right: unknown) { return JSON.stringify(left) === JSON.stringify(right); }
+function same(left: unknown, right: unknown) { return JSON.stringify(left ?? null) === JSON.stringify(right ?? null); }
 function stringifySize(value: unknown) { return Buffer.byteLength(JSON.stringify(value), "utf8"); }
 
 function hasTravelRequirements(plan: TravelPlanDocument) {
