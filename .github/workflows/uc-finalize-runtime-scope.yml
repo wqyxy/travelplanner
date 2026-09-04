@@ -1,0 +1,107 @@
+name: UC Finalize Runtime Scope
+
+on:
+  push:
+    branches:
+      - codex/user-control-correction
+    paths:
+      - .github/workflows/uc-finalize-runtime-scope.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/user-control-correction
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Apply narrow User Control patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          app = Path('apps/web/src/AppWorkflowV3.tsx')
+          text = app.read_text()
+          old = 'kind: draft.planningRole === "planning_area" ? "city" : "attraction"'
+          if old in text:
+              text = text.replace(old, 'kind: draft.placeKind', 1)
+          elif 'kind: draft.placeKind' not in text:
+              raise SystemExit('AppWorkflow placeKind target not found')
+          app.write_text(text)
+
+          runtime = Path('apps/server/planner-runtime-v3.ts')
+          text = runtime.read_text()
+          start = text.index('function actionScope(')
+          end = text.index('\nfunction proposalDiff', start)
+          action_scope = '''function dayMutationScope(dayIds: string[]): ProposalScope {
+            const ids = [...new Set(dayIds.filter(Boolean))];
+            if (!ids.length) throw new Error("局部行程 Action 缺少目标 Day，不能自动扩大为整趟 Scope。");
+            return ids.length === 1 ? { type: "day", id: ids[0] } : { type: "days", ids };
+          }
+
+          function actionScope(actionType: AiActionType, targetIds: string[], parameters: Record<string, unknown>): ProposalScope {
+            if (actionType.startsWith("requirements.")) return { type: "trip", id: null };
+            if (actionType.startsWith("destination.") || actionType.startsWith("interest.")) return { type: "candidate_pool", id: null };
+            if (actionType === "itinerary.day.optimize") {
+              const parameterIds = Array.isArray(parameters.dayIds) ? parameters.dayIds.filter((value): value is string => typeof value === "string") : [];
+              const id = targetIds[0] || (typeof parameters.dayId === "string" ? parameters.dayId : parameterIds.length === 1 ? parameterIds[0] : "");
+              if (!id) throw new Error("单日优化缺少目标 Day，不能自动扩大为整趟 Scope。");
+              return { type: "day", id };
+            }
+            if (actionType === "itinerary.refine" || actionType === "itinerary.detail.update") {
+              const parameterIds = Array.isArray(parameters.dayIds) ? parameters.dayIds.filter((value): value is string => typeof value === "string") : [];
+              return dayMutationScope([...targetIds, ...parameterIds, ...(typeof parameters.dayId === "string" ? [parameters.dayId] : [])]);
+            }
+            return { type: "trip", id: null };
+          }
+          '''
+          text = text[:start] + action_scope + text[end:]
+
+          pattern = re.compile(
+              r'const scope(?:: ProposalScope)? = (?P<ids>[A-Za-z0-9_.]+)\.length === 1\s*'
+              r'\?\s*\{ type: "day"(?: as const)?, id: (?P=ids)\[0\] \}\s*'
+              r':\s*\{ type: "trip"(?: as const)?, id: null \};'
+          )
+          text, count = pattern.subn(lambda m: f'const scope = dayMutationScope({m.group("ids")});', text)
+
+          # Known formatted variants from the current runtime.
+          variants = {
+              'const scope = result.affectedDayIds.length === 1 ? { type: "day" as const, id: result.affectedDayIds[0] } : { type: "trip" as const, id: null };':
+                  'const scope = dayMutationScope(result.affectedDayIds);',
+              'const scope = result.dayIds.length === 1 ? { type: "day" as const, id: result.dayIds[0] } : { type: "trip" as const, id: null };':
+                  'const scope = dayMutationScope(result.dayIds);',
+              'const scope = affectedDayIds.length === 1 ? { type: "day" as const, id: affectedDayIds[0] } : { type: "trip" as const, id: null };':
+                  'const scope = dayMutationScope(affectedDayIds);',
+              'const scope = dayIds.length === 1 ? { type: "day" as const, id: dayIds[0] } : { type: "trip" as const, id: null };':
+                  'const scope = dayMutationScope(dayIds);',
+          }
+          for old_value, new_value in variants.items():
+              if old_value in text:
+                  text = text.replace(old_value, new_value)
+                  count += 1
+
+          if 'type: "days"' not in text:
+              raise SystemExit('runtime days scope was not installed')
+          runtime.write_text(text)
+          print(f'updated runtime scope assignments: {count}')
+          PY
+          git diff --check
+      - name: Commit patch
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name "OpenAI"
+          git config user.email "noreply@openai.com"
+          git add apps/server/planner-runtime-v3.ts apps/web/src/AppWorkflowV3.tsx
+          git commit -m "UC5: narrow multi-day runtime scope and preserve place kind"
+          git push origin codex/user-control-correction
