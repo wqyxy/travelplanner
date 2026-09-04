@@ -44,7 +44,7 @@ const CHINESE_DIGITS: Record<string, number> = {
   "九": 9,
   "十": 10,
 };
-const NUMBER_TOKEN = "(\\d{1,2}|[零一二两三四五六七八九十])";
+const NUMBER_TOKEN = "(\\d+|[零一二两三四五六七八九十])";
 
 function asRecord(value: unknown): RecordValue | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as RecordValue : null;
@@ -94,7 +94,7 @@ function parseInstruction(tail: string) {
     const days = parseCount(absolute[1]);
     return Number.isSafeInteger(days) ? { kind: "absolute" as const, expectedDays: days } : null;
   }
-  const signed = new RegExp(`${separator}([+-])\\s*(\\d{1,2})\\s*(?:天|days?)`, "iu").exec(tail);
+  const signed = new RegExp(`${separator}([+-])\\s*(\\d+)\\s*(?:天|days?)`, "iu").exec(tail);
   if (signed) {
     const days = Number(signed[2]);
     return Number.isSafeInteger(days) ? { kind: "delta" as const, deltaDays: signed[1] === "+" ? days : -days } : null;
@@ -163,8 +163,8 @@ export function deriveExplicitReplanStayConstraintsV3(stateValue: unknown): Expl
     if (!instruction) continue;
     const baselineDays = baselineByArea.get(area.id) ?? 0;
     const expectedDays = instruction.kind === "delta" ? baselineDays + instruction.deltaDays : instruction.expectedDays;
-    if (!Number.isSafeInteger(expectedDays) || expectedDays < 0 || expectedDays > 90) {
-      throw new Error(`用户对${matchedName}的明确停留天数调整无法形成 0–90 天的有效结果。`);
+    if (!Number.isSafeInteger(expectedDays) || expectedDays < 0) {
+      throw new Error(`用户对${matchedName}的明确停留天数调整无法形成非负整数天数。`);
     }
     constraints.push({
       candidateId: area.id,
