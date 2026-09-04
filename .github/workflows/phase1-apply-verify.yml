@@ -1,0 +1,70 @@
+name: Phase 1 apply and verify
+
+on:
+  push:
+    branches:
+      - codex/final-route-phase1
+
+permissions:
+  contents: write
+
+concurrency:
+  group: final-route-phase1-apply
+  cancel-in-progress: false
+
+jobs:
+  apply-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect patch
+        id: patch
+        shell: bash
+        run: |
+          if [[ -f .github/phase1.patch.gz.b64 ]]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@v4
+        if: steps.patch.outputs.present == 'true'
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Apply patch
+        if: steps.patch.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 --decode .github/phase1.patch.gz.b64 > /tmp/phase1.patch.gz
+          gzip -dc /tmp/phase1.patch.gz > /tmp/phase1.patch
+          git apply --check /tmp/phase1.patch
+          git apply /tmp/phase1.patch
+          rm .github/phase1.patch.gz.b64
+      - name: Install dependencies
+        if: steps.patch.outputs.present == 'true'
+        run: npm ci
+      - name: Typecheck
+        if: steps.patch.outputs.present == 'true'
+        run: npm run typecheck
+      - name: Tests
+        if: steps.patch.outputs.present == 'true'
+        run: npm test
+      - name: Production build
+        if: steps.patch.outputs.present == 'true'
+        run: npm run build
+      - name: Commit verified Phase 1
+        if: steps.patch.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/phase1-apply-verify.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'feat: add final route foundation'
+          git push origin HEAD:codex/final-route-phase1
