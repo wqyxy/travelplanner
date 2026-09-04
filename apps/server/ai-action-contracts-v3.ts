@@ -6,6 +6,7 @@ import {
   MapResolutionAssistOutputSchema,
   PeriodSchema,
   PlaceSchema,
+  PlanningRoleSchema,
   TextSchema,
   TimeSchema,
   TransportModeSchema,
@@ -48,6 +49,7 @@ const CandidateDraftSchema = z.object({
   temporaryId: IdSchema,
   placeTemporaryId: IdSchema,
   planningAreaCandidateId: IdSchema.nullable(),
+  planningRole: PlanningRoleSchema,
   aiReason: TextSchema.max(1000),
   aiScore: z.number().int().min(0).max(100),
   suggestedDurationMinutes: z.number().int().min(0).max(10080).nullable(),
@@ -91,35 +93,19 @@ const SingleCandidateProposalBaseSchema = z.object({
   candidates: z.array(CandidateDraftSchema).length(1),
 }).strict();
 
-export const DestinationAddOutputSchema = SingleCandidateProposalBaseSchema.superRefine((value, context) => {
-  validateCandidateDrafts(value, context);
-  if (value.places[0]?.kind !== "city") context.addIssue({ code: "custom", path: ["places", 0, "kind"], message: "新增目的地必须保持 Macro kind=city。" });
-  if (value.candidates[0]?.planningAreaCandidateId !== null) context.addIssue({ code: "custom", path: ["candidates", 0, "planningAreaCandidateId"], message: "Macro Candidate 不得存在父 Macro。" });
-});
+export const DestinationAddOutputSchema = SingleCandidateProposalBaseSchema.superRefine(validateCandidateDrafts);
 export type DestinationAddOutput = z.infer<typeof DestinationAddOutputSchema>;
 
-export const DestinationReplaceOutputSchema = SingleCandidateProposalBaseSchema.extend({ replaceCandidateId: IdSchema }).strict().superRefine((value, context) => {
-  validateCandidateDrafts(value, context);
-  if (value.places[0]?.kind !== "city") context.addIssue({ code: "custom", path: ["places", 0, "kind"], message: "替换目的地必须保持 Macro kind=city。" });
-  if (value.candidates[0]?.planningAreaCandidateId !== null) context.addIssue({ code: "custom", path: ["candidates", 0, "planningAreaCandidateId"], message: "Macro Candidate 不得存在父 Macro。" });
-});
+export const DestinationReplaceOutputSchema = SingleCandidateProposalBaseSchema.extend({ replaceCandidateId: IdSchema }).strict().superRefine(validateCandidateDrafts);
 export type DestinationReplaceOutput = z.infer<typeof DestinationReplaceOutputSchema>;
 
 export const InterestDiscoverOutputSchema = AiLedMicroCandidateDiscoveryOutputSchema;
 export const InterestSupplementOutputSchema = AiLedMicroCandidateDiscoveryOutputSchema;
 
-export const InterestAddOutputSchema = SingleCandidateProposalBaseSchema.superRefine((value, context) => {
-  validateCandidateDrafts(value, context);
-  if (value.places[0]?.kind === "city") context.addIssue({ code: "custom", path: ["places", 0, "kind"], message: "兴趣点不得使用 kind=city。" });
-  if (!value.candidates[0]?.planningAreaCandidateId) context.addIssue({ code: "custom", path: ["candidates", 0, "planningAreaCandidateId"], message: "兴趣点必须绑定现有 Macro Candidate。" });
-});
+export const InterestAddOutputSchema = SingleCandidateProposalBaseSchema.superRefine(validateCandidateDrafts);
 export type InterestAddOutput = z.infer<typeof InterestAddOutputSchema>;
 
-export const InterestReplaceOutputSchema = SingleCandidateProposalBaseSchema.extend({ replaceCandidateId: IdSchema }).strict().superRefine((value, context) => {
-  validateCandidateDrafts(value, context);
-  if (value.places[0]?.kind === "city") context.addIssue({ code: "custom", path: ["places", 0, "kind"], message: "兴趣点不得使用 kind=city。" });
-  if (!value.candidates[0]?.planningAreaCandidateId) context.addIssue({ code: "custom", path: ["candidates", 0, "planningAreaCandidateId"], message: "兴趣点必须绑定现有 Macro Candidate。" });
-});
+export const InterestReplaceOutputSchema = SingleCandidateProposalBaseSchema.extend({ replaceCandidateId: IdSchema }).strict().superRefine(validateCandidateDrafts);
 export type InterestReplaceOutput = z.infer<typeof InterestReplaceOutputSchema>;
 
 const RequiresInterestsSchema = z.object({
