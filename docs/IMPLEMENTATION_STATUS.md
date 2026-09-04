@@ -1,323 +1,56 @@
 # TravelPlanner Implementation Status
 
-> 更新时间：2026-09-03
-> 当前状态：**五步重构的隔离综合 Gate 已通过；真实 private_data + Real AI E2E 已真实跑通 Step 1–5、Milford、Detail→Core 与 scoped impact。最新唯一核心失败位于 Step 3 增量 replan：跨步骤新增 Wanaka 后，通用“更新受影响安排”丢失了用户原始 +1/-1 天数要求。Repair #8 已实现“因果意图续传 + 明确天数硬约束 + Structured repair”，等待同一保留旅行继续真实验证。**
+> 更新时间：2026-09-04
+> 当前分支：`codex/user-control-correction`
+> 当前最高优先级：**User Control Correction / 用户控制权修正**
+> 当前状态：**施工中，暂不合并 main；原五步最终综合 Gate 暂缓，待本专项收口后重新定义。**
 
 ---
 
-# 1. Current Gate
+# 1. 为什么插入 User Control Correction
 
-分支：
-
-```text
-feature/five-step-workflow-refactor
-```
-
-实施前 `main` / merge-base：
+五步规划流程此前已经完成大量实现与真实 E2E，但运行中暴露出一个更底层的产品问题：
 
 ```text
-b048c1980247443b5d6568ddd4302c41c9ce832b
+系统把“旅行计划是否合理”
+当成了
+“数据是否允许保存”
 ```
 
-保留真实 E2E 旅行：
+这会导致：
+
+- 未定位地点无法继续规划；
+- `excluded` 一旦出现在 Day 中就失败或被自动删除；
+- must-go 未覆盖会阻止保存；
+- Planning Area 被强制等同于 `Place.kind=city`；
+- 时间不完整、重叠、跨夜、天数不一致会被当成非法数据；
+- AI / 代码会为了满足规则自动修正用户已经接受的内容。
+
+现已确认新的产品原则：
 
 ```text
-Trip ID: d028c5f7-906e-4027-8fa1-faab7a3b7d71
-Title: [五步E2E测试-保留] 新西兰20天南北岛自驾
+Canonical = 用户当前已经接受的旅行方案
+Advisory  = 系统发现的规划问题或能力限制
+Proposal  = AI 建议发生的修改
+Scope     = AI 本轮被允许修改的范围
 ```
 
-当前真实数据按用户要求继续保留，不清理历史失败 Action / Task。
+Canonical 只保证：
+
+```text
+数据可以可靠保存
+引用可以可靠解析
+权限与安全边界没有被突破
+Provider / 实时事实没有被伪造
+```
+
+Canonical **不再负责保证旅行计划合理**。
 
 ---
 
-# 2. 已通过的综合 Gate
+# 2. 历史五步结果
 
-历史隔离验证：
-
-```text
-git diff --check PASS
-typecheck PASS
-69 test files / 406 tests PASS
-build PASS
-fresh dist/web production MapLibre PASS
-candidate marker render/click/popup PASS
-itinerary GeoJSON / routes PASS
-F1–F14 PASS
-Provider boundary PASS
-security/private-data isolated checks PASS
-```
-
-后续 Repair #4–#7 的专项测试与 typecheck 也均由用户侧 Codex Gate 通过。
-
----
-
-# 3. Real Private-Data E2E — 已通过部分
-
-真实授权范围：
-
-```text
-private_data/travel-v2.sqlite3
-真实 AI
-真实 Provider
-真实产品 UI
-真实数据库写入
-```
-
-## Step 1 — PASS
-
-Repair #5 已证明共享 Action normalization 可以把：
-
-```text
-brief.duration = "20天"
-```
-
-确定性保存为：
-
-```text
-dates.requestedDurationDays = 20
-```
-
-fresh runtime 实测 generation `3 → 4`，新旧 Action ID 已区分。
-
-## Step 2 — PASS
-
-真实结果：
-
-```text
-17 Candidates
-8 Planning Areas
-9 Core Visits
-```
-
-Milford Sound：
-
-```text
-core_visit
-parent = Te Anau
-```
-
-同批 Planning Area / Core parent ref repair 已真实通过，canonical 无 temporary parent ID。
-
-## Step 3 初始 Skeleton — PASS
-
-```text
-20 Days
-remainingDays = 0
-Auckland Day 1 / Day 20 为不同 stayBlockId
-Te Anau = Day 14–17
-```
-
-## Step 4 — PASS
-
-进入 Step 4 无自动 discovery。
-
-真实数据曾达到：
-
-```text
-38 Candidates
-38 Places
-32 resolved
-6 unresolved
-```
-
-## Step 5 — PASS after Repair #6/#7
-
-Repair #6 消除了真实 1 MB route geometry transport failure：
-
-```text
-large fixture beforeBytes = 7,611,991
-afterBytes = 621
-```
-
-完整 Provider geometry 仍保留在 DB / Map，只从 AI transport 移除。
-
-Repair #7 将 Detailed Candidate / Day scope 语义校验前移到 Structured AI `validateResult`。
-
-真实 Step 5：
-
-```text
-Action: fa5089e3-8b1a-4c1a-b7ee-4fcc8745bf7e
-Task: action:1668cc0c-4078-42f2-9726-5776013c2c92
-baseGeneration: 13
-```
-
-首轮真实出现：
-
-```text
-turn:repair
-AI 结果校验失败，正在自动修正（1/2）
-```
-
-第二轮成功：
-
-```text
-generation = 14
-20 / 20 Days detailed/ready
-14 Stops
-时间正序，无 overlap
-Candidate scope / resolution 全部合法
-```
-
-Milford Sound 保持 `core_visit` + Te Anau parent，并实际进入 Day 16 Stop。
-
-## Detail → Core — PASS
-
-“蒂阿瑙萤火虫洞”真实升级链：
-
-```text
-Step 5/4 语境
-→ 自动回 Step 2
-→ pending confirmation
-→ 确认前 generation 14 不变
-→ 确认后 generation 15
-→ 同一 Candidate / Place / parent
-→ planningRole = core_visit
-```
-
-Scoped impact：
-
-```text
-仅 Te Anau Day 14–17 needs_review
-其他 16 天继续 ready
-```
-
----
-
-# 4. Latest Real Failure — Incremental Replan Intent Loss
-
-用户通过正常 UI 输入：
-
-```text
-我想把瓦纳卡多留一天，皇后镇少一天，总天数仍然保持20天。
-```
-
-系统先正确要求新增 Wanaka，并成功保存：
-
-```text
-Wanaka Candidate: e17e8094-8789-4235-951d-56cf004b190d
-generation = 16
-```
-
-随后 Step 3 的“更新受影响安排”执行：
-
-```text
-Action: a6095de6-d9cb-46df-b7a0-9c8b9794b48e
-Task: action:88875215-0cd5-4622-84a2-13cf51ec20f8
-baseGeneration: 16
-resultRef: generation:17;affected:0;omitted:1
-```
-
-错误结果：
-
-```text
-Queenstown 仍 2 天
-Wanaka 仍 0 天 / omitted
-总天数仍 20
-```
-
-没有 structured repair，也没有 validation error，因为当时 AI 实际拿到的是通用空参数 replan。
-
-## 根因
-
-Web Step 3 目前的通用按钮是：
-
-```text
-onUpdate={() => startCta("destinations", "itinerary.replan")}
-```
-
-即 `parameters = {}`。
-
-原始用户请求先触发 `destination.add`，等 Wanaka Candidate 创建完成后，后续 generic `itinerary.replan` 不再携带：
-
-```text
-Wanaka +1
-Queenstown -1
-总天数仍 20
-```
-
-因此旧 Prompt 按正常 `optional` 规则省略 Wanaka，在当时输入下属于“合法但违背原用户意图”的结果。
-
----
-
-# 5. Repair #8 — Cross-Step Replan Intent + Hard Day Constraints
-
-## 5.1 因果用户意图续传
-
-新增：
-
-```text
-apps/server/replan-intent-v3.ts
-apps/server/replan-intent-v3.test.ts
-```
-
-当 generic CTA 创建 `itinerary.replan` 且 `parameters.request` 为空时：
-
-1. 找到最近一次成功 `itinerary.generate` / `itinerary.replan` Skeleton 基线；
-2. 查看该基线之后已成功应用、真正改变 Macro 输入的 `requirements.*` / `destination.*` Action；
-3. 通过 `sourceMessageId` 找到最新因果用户消息；
-4. 把该用户原话恢复为当前 `itinerary.replan.parameters.request`。
-
-如果 CTA 已显式带 `request`，绝不覆盖。
-
-不新增 DB 字段，不迁移 Schema。
-
-## 5.2 明确 +N / -N 天数变成硬约束
-
-同一模块会从：
-
-```text
-parameters.request
-planningAreas
-currentStays
-```
-
-派生本轮明确 Stay Day 约束。
-
-当前真实例子：
-
-```text
-Wanaka baseline 0 + 1 => expected 1
-Queenstown baseline 2 - 1 => expected 1
-```
-
-支持中文“多留 / 多住 / 增加 / 少留 / 少住 / 减少 / 改为 N 天”等基础表达。
-
-## 5.3 Structured AI semantic repair
-
-`ai-action-state-validation-v3.ts` 现在也覆盖：
-
-```text
-itinerary.replan
-```
-
-如果 AI 输出：
-
-```text
-Wanaka = 0
-Queenstown = 2
-```
-
-或把明确要求正数天数的 Wanaka 放进 `omittedPlanningAreas`，会在保存前抛出语义校验错误，进入既有：
-
-```text
-turn:repair
-```
-
-不会静默修改 AI 输出，也没有放宽最终 `applySkeletonPlanV3` / canonical 校验。
-
-## 5.4 Prompt
-
-`prompts/actions/itinerary/重新规划行程.md` 已明确：
-
-```text
-parameters.request 可能来自跨步骤恢复
-明确数字天数要求高于 optional 一般省略规则
-先满足用户硬约束，再执行最小修改原则
-```
-
----
-
-# 6. 五步合同与边界保持不变
+以下历史成果继续保留，不回滚：
 
 ```text
 1 旅行需求
@@ -327,51 +60,209 @@ parameters.request 可能来自跨步骤恢复
 5 每日行程
 ```
 
-继续保持：
+历史已实现能力包括：
 
-```text
-PlanningRole = planning_area | core_visit | detail_interest
-Core Visit 不成为 Macro Anchor
-Planning Area 可重复 Stay Block
-Step 3 原子 Skeleton save
-Step 4 可跳过
-Step 5 scoped incremental update
-PRAGMA user_version = 3
-Provider geometry 不进入 AI transport，但完整保留给 DB / Map
-```
+- 五步 WorkflowStep 与四 ConversationStage 映射；
+- PlanningRole；
+- Step 3 Skeleton；
+- Step 4 optional interest discovery；
+- Step 5 detailed itinerary；
+- scoped downstream impact / needs_review；
+- Proposal / Apply / Undo；
+- generation CAS；
+- Route Provider 与 Resolution；
+- Provider geometry 不进入 AI transport；
+- Repair #8 跨步骤 replan 用户意图恢复；
+- private_data 边界与 fresh-v3 fail-closed。
 
-无 DB migration。
+此前真实新西兰 20 天旅行的 E2E 证据继续作为历史验证记录保留，不删除 private_data，也不清理历史 Action / Task。
+
+但旧的“最终综合 Gate”中包含正在被本专项主动废止的规划硬约束，因此旧 Gate **不能直接作为当前验收标准**。
 
 ---
 
-# 7. Next Gate
+# 3. User Control Correction 当前已实施
 
-当前保留旅行已经到 generation 17，错误 replan 记录必须继续保留。
-
-下一轮：
-
-1. 对 Repair #8 的 intent recovery / day constraint / semantic replan validator 做 targeted tests + typecheck。
-2. fresh restart backend。
-3. 不重跑 Step 1–5。
-4. 通过正常 UI 再发送同一明确请求：
+详细施工记录见：
 
 ```text
-我想把瓦纳卡多留一天，皇后镇少一天，总天数仍然保持20天。
+docs/USER_CONTROL_CORRECTION.md
+docs/USER_CONTROL_CORRECTION_PROGRESS.md
 ```
 
-5. 因 Wanaka Candidate 已存在，不应再创建重复 Candidate。
-6. 新 `itinerary.replan` 必须最终得到：
+当前已完成的核心变化：
+
+## Canonical / Structural
+
+- 日期反向、天数不一致、时间不完整、跨夜、duration mismatch、overlap 等不再作为 canonical blocker。
+- `scheduleText` 已进入 DayStop。
+- PlanningRole 与 PlaceKind 已解耦。
+- Candidate 可以暂时没有 Planning Area parent。
+- semantic duplicate 允许保存并交给 Advisory。
+- exact same canonical Place ID 仍只能对应一个 Candidate。
+- 未知引用、重复 ID、父引用缺失/自引用/循环、Stop Candidate/Place 不一致仍硬失败。
+
+## Advisory
+
+新增纯派生：
 
 ```text
-Wanaka = 1 天
-Queenstown = 1 天
-总天数 = 20
+apps/server/planning-advisories-v3.ts
 ```
 
-7. 如果模型第一轮未遵守，应出现 `turn:repair`；修正后再保存。
-8. `affectedDayIds` 必须真实非空，相关 Detailed Days 进入 needs_review；无关 Days 尽量保持。
-9. 通过后完成 Map regression、Public UI、最终 DB 统计。
+Advisory 不写 canonical、不写 Revision、不持久化 ignored 状态；workspace 每次根据当前 plan / resolution 重新计算。
 
-任何新的核心失败继续 STOP 并保留证据。
+## Candidate / Planning Area
 
-只有真实五步 E2E 最终完整 PASS 后才准备合并 main。
+- Planning Area helper 改为 planningRole 驱动；
+- legacy 缺失 planningRole 时仍使用历史 city fallback；
+- semantic duplicate 不再静默过滤；
+- `excluded` 不再意味着不可见或不可排入。
+
+## Itinerary / PlanCommand
+
+- Detailed apply 不再因为 unresolved / excluded / city Stop / area membership / overlap / must-go coverage 拒绝。
+- preference 改成 `excluded` 不再自动删除已经排入的 Stop。
+- 普通 PlanCommand 不再自动重写 Day 日期。
+- semantic duplicate add_candidate 不再被 PlanCommand 层拒绝。
+
+## UI
+
+- 五步导航始终可以进入；
+- Advisory 在右侧步骤区域统一显示；
+- Step 3 的天数不一致、must-go 省略、excluded 等改为提醒而非保存门槛；
+- Step 4 可继续研究/补充，不再要求 Step 3 完全 ready；
+- Step 5 未定位、上游需更新等不再隐藏生成入口；
+- 自然时间 / 部分时间已可展示；
+- 保持“地图/时间轴展示 + 右侧唯一操作入口”的 UI 原则，不做布局重构。
+
+## AI Scope
+
+已增加：
+
+```text
+{ type: "days", ids: [...] }
+```
+
+用于表达多日局部写 Scope；Scope Policy 已能拒绝范围外 Day / Stop 修改和局部 Scope 下的整趟 Day 重排。
+
+## Repair #8
+
+继续保留用户明确数字指令的语义约束，并移除旧 90 天业务上限：
+
+```text
+120 天
++120 天
+```
+
+可以表达；导致负数 stayDays 的指令仍因结构无法成立而拒绝。
+
+---
+
+# 4. 当前剩余收口项
+
+## 4.1 Runtime 多日 Scope
+
+`planner-runtime-v3.ts` 还需把多日：
+
+```text
+itinerary.detail.update
+itinerary.refine
+```
+
+从兼容的 Trip Scope 改为：
+
+```text
+1 Day  -> { type: "day", id }
+N Days -> { type: "days", ids }
+```
+
+读取相邻上下文可以继续更宽，但写入必须只覆盖明确 Day。
+
+整趟首次 generate、用户明确整体 replan、显式全局 repair 可以继续使用 Trip Scope。
+
+## 4.2 手工 PlaceKind 接线
+
+`CandidateWorkflowPanelV3` 已允许用户独立选择：
+
+```text
+planningRole
+Place.kind
+```
+
+`AppWorkflowV3` 的手工 addCandidate 还需确保直接使用：
+
+```text
+draft.placeKind
+```
+
+而不是继续按 planningRole 自动映射 city/attraction。
+
+---
+
+# 5. 当前测试策略
+
+按项目约定，本专项施工阶段：
+
+- 不自动运行完整 test；
+- 不自动运行完整 typecheck；
+- 不自动 build；
+- 不运行 Browser E2E；
+- 不运行真实 AI / private_data E2E。
+
+已经新增 targeted regression test 文件，用来固定：
+
+- canonical structural / advisory 边界；
+- excluded scheduled preservation；
+- semantic duplicate preservation；
+- Day 日期不被普通 command 自动重写；
+- 多 Day Proposal Scope；
+- Repair #8 多位数字天数。
+
+完整 Gate 要等上述剩余接线完成后重新列出，再由用户确认是否执行。
+
+---
+
+# 6. 不得回归的边界
+
+后续 Agent 不得重新引入：
+
+```text
+planning_area 必须 kind=city
+未定位不得进入行程
+excluded 不得排入 Day
+must_go 未覆盖则 canonical reject
+时间重叠则 canonical reject
+Day 数不等于旅行天数则 canonical reject
+为了“合理”自动删用户内容
+因为 source=ai/user 而产生字段权限差异
+```
+
+继续严格保留：
+
+```text
+fresh-v3 / PRAGMA user_version = 3
+private_data 不迁移、不删除
+CAS
+Proposal Apply / Undo
+Scope Policy
+有效 ID / 引用 / 无 cycle
+Provider / realtime fact boundary
+登录与安全边界
+```
+
+---
+
+# 7. 下一 Gate
+
+当前下一步只做代码收口：
+
+1. runtime 多日 Action 使用 `days` Scope；
+2. App 层手工新增使用真实 `draft.placeKind`；
+3. 对残留旧 blocker / city-only / max90 规则做只读搜索审核；
+4. 更新 PR 状态；
+5. 列出 targeted Gate 与完整 Gate 成本。
+
+在这五项完成前：
+
+> **Draft PR 保持 Draft，不合并 main。**
