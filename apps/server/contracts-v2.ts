@@ -38,7 +38,7 @@ export const TransportModeSchema = z.enum(["walk", "drive", "bike", "transit", "
 export type TransportMode = z.infer<typeof TransportModeSchema>;
 export const TransportSchema = z.object({
   mode: TransportModeSchema,
-  durationMinutes: z.number().int().min(0).max(10080).nullable(),
+  durationMinutes: z.number().int().min(0).nullable(),
   note: z.string().max(1000).nullable(),
   verification: VerificationSchema,
 }).strict();
@@ -125,7 +125,7 @@ export const TripCandidateSchema = z.object({
   source: z.enum(["ai", "user"]),
   aiReason: z.string().trim().min(1).max(1000).nullable(),
   aiScore: z.number().finite().min(0).max(100).nullable(),
-  suggestedDurationMinutes: z.number().int().min(0).max(10080).nullable(),
+  suggestedDurationMinutes: z.number().int().min(0).nullable(),
   tags: z.array(TextSchema.max(120)).max(30),
 }).strict();
 export type TripCandidate = z.infer<typeof TripCandidateSchema>;
@@ -439,7 +439,7 @@ export type GoogleMapsLinkCommitInput = z.infer<typeof GoogleMapsLinkCommitInput
 const CandidateChangesSchema = z.object({
   aiReason: z.string().trim().min(1).max(1000).nullable().optional(),
   aiScore: z.number().finite().min(0).max(100).nullable().optional(),
-  suggestedDurationMinutes: z.number().int().min(0).max(10080).nullable().optional(),
+  suggestedDurationMinutes: z.number().int().min(0).nullable().optional(),
   tags: z.array(TextSchema.max(120)).max(30).optional(),
 }).strict().refine((value) => Object.keys(value).length > 0, "至少修改一个 Candidate 字段。");
 
@@ -583,7 +583,7 @@ const CandidateDiscoveryFieldsSchema = z.object({
   planningAreaCandidateId: IdSchema.nullable(),
   aiReason: TextSchema.max(1000),
   aiScore: z.number().int().min(0).max(100),
-  suggestedDurationMinutes: z.number().int().min(0).max(10080).nullable(),
+  suggestedDurationMinutes: z.number().int().min(0).nullable(),
   tags: z.array(TextSchema.max(120)).max(30),
   defaultPreference: z.literal("optional"),
 }).strict();

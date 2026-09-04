@@ -35,7 +35,7 @@ const item = z.object({
   planningAreaCandidateId: IdSchema.nullable(),
   aiReason: TextSchema.max(1000),
   aiScore: z.number().int().min(0).max(100),
-  suggestedDurationMinutes: z.number().int().min(0).max(10080).nullable(),
+  suggestedDurationMinutes: z.number().int().min(0).nullable(),
   tags: z.array(TextSchema.max(120)).max(30),
   defaultPreference: z.literal("optional"),
   prominence,
