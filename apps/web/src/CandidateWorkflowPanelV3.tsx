@@ -1,11 +1,12 @@
 import { ArrowRight, Link, MapPin, Pencil, Plus, RefreshCw, Sparkles, Trash2, WandSparkles } from "lucide-react";
 import { useMemo, useState } from "react";
-import type { CandidatePreference, PlanningRole, Workspace } from "./v2-types";
+import type { CandidatePreference, PlaceKind, PlanningRole, Workspace } from "./v2-types";
 import { candidateRows, effectiveCandidatePlanningRole, formatDuration, resolutionStatus } from "./workspace-v2";
 import { placeNamePresentation } from "./place-name-presentation";
 
 export type WorkflowCandidateDraftV3 = {
   nameZh: string;
+  placeKind: PlaceKind;
   planningRole: PlanningRole;
   planningAreaCandidateId: string | null;
   suggestedDurationMinutes: number | null;
@@ -15,6 +16,7 @@ export type WorkflowPlaceEditChangesV3 = {
   nameZh: string;
   nameLocal: string | null;
   nameEn: string | null;
+  kind: PlaceKind;
 };
 
 export type GoogleMapsPreviewV3 = {
@@ -35,11 +37,28 @@ type CandidateEditState = {
   nameZh: string;
   nameLocal: string;
   nameEn: string;
+  kind: PlaceKind;
   googleUrl: string;
   googleLoading: boolean;
   googlePreview: GoogleMapsPreviewV3 | null;
   error: string;
 };
+
+const placeKindLabels: Record<PlaceKind, string> = {
+  city: "城市",
+  attraction: "景点 / 景区",
+  lodging: "住宿",
+  meal: "餐饮",
+  airport: "机场",
+  station: "车站",
+  port: "港口",
+  stop: "停靠点",
+  waypoint: "途经点",
+};
+
+function defaultKindForRole(role: PlanningRole): PlaceKind {
+  return role === "planning_area" ? "city" : "attraction";
+}
 
 function PreferenceButtons({ value, busy, onChange }: { value: CandidatePreference; busy: boolean; onChange: (value: CandidatePreference) => void }) {
   return <div className="phase6-preference-actions" aria-label="地点偏好">
@@ -97,6 +116,7 @@ export function CandidateWorkflowPanelV3({
   const coreRows = rows.filter((row) => effectiveCandidatePlanningRole(row) === "core_visit");
   const [adding, setAdding] = useState<null | "planning_area" | "core_visit" | "detail_interest">(null);
   const [name, setName] = useState("");
+  const [placeKind, setPlaceKind] = useState<PlaceKind>("attraction");
   const [parentId, setParentId] = useState("");
   const [duration, setDuration] = useState("");
   const [addError, setAddError] = useState("");
@@ -107,7 +127,7 @@ export function CandidateWorkflowPanelV3({
     const parsed = duration.trim() ? Number(duration) : null;
     if (parsed !== null && (!Number.isInteger(parsed) || parsed < 0 || parsed > 10080)) { setAddError("停留时间请输入分钟整数。"); return; }
     setAddError("");
-    await onAddCandidate({ nameZh: name.trim(), planningRole: adding, planningAreaCandidateId: adding === "planning_area" ? null : (parentId || null), suggestedDurationMinutes: parsed });
+    await onAddCandidate({ nameZh: name.trim(), placeKind, planningRole: adding, planningAreaCandidateId: adding === "planning_area" ? null : (parentId || null), suggestedDurationMinutes: parsed });
     setAdding(null); setName(""); setParentId(""); setDuration("");
   };
 
@@ -118,6 +138,7 @@ export function CandidateWorkflowPanelV3({
       nameZh: row.place.nameZh,
       nameLocal: row.place.nameLocal ?? "",
       nameEn: row.place.nameEn ?? "",
+      kind: row.place.kind,
       googleUrl: "",
       googleLoading: false,
       googlePreview: null,
@@ -128,15 +149,16 @@ export function CandidateWorkflowPanelV3({
     nameZh: value.nameZh.trim(),
     nameLocal: value.nameLocal.trim() || null,
     nameEn: value.nameEn.trim() || null,
+    kind: value.kind,
   });
   const saveNames = async () => {
     if (!editing) return;
     const changes = placeChanges(editing);
     if (!changes.nameZh) { setEditing({ ...editing, error: "请输入地点中文名称。" }); return; }
     try {
-      if (!await onUpdatePlace(editing.placeId, changes)) { setEditing({ ...editing, error: "无法保存地点名称。" }); return; }
+      if (!await onUpdatePlace(editing.placeId, changes)) { setEditing({ ...editing, error: "无法保存地点信息。" }); return; }
       setEditing(null);
-    } catch (error) { setEditing({ ...editing, error: error instanceof Error ? error.message : "无法保存地点名称。" }); }
+    } catch (error) { setEditing({ ...editing, error: error instanceof Error ? error.message : "无法保存地点信息。" }); }
   };
   const previewGoogleMapsLink = async () => {
     if (!editing) return;
@@ -191,7 +213,7 @@ export function CandidateWorkflowPanelV3({
         <div className="phase6-candidate-title"><strong>{nameText.primary}</strong><span>{roleLabel}</span>{row.candidate.preference === "must_go" ? <em>★ 必去</em> : row.candidate.preference === "want_to_go" ? <em>♡ 想去</em> : row.candidate.preference === "excluded" ? <em>不考虑</em> : null}</div>
         {nameText.secondary && <small>{nameText.secondary}</small>}
         <p>{row.candidate.aiReason || (role === "planning_area" ? "用于安排住宿和路线顺序" : role === "core_visit" ? "会明显占用半天或全天，需要提前留时间" : "可按当天容量安排")}</p>
-        <div className="phase6-candidate-meta">{parent ? <span>属于 {parent.place.nameZh}</span> : role !== "planning_area" ? <span>尚未归入路线区域</span> : null}{formatDuration(row.candidate.suggestedDurationMinutes) && <span>建议 {formatDuration(row.candidate.suggestedDurationMinutes)}</span>}<span className={status === "resolved" ? "ready" : "muted"}>{status === "resolved" ? "已定位" : "尚未定位 · 仍可继续规划"}</span></div>
+        <div className="phase6-candidate-meta"><span>{placeKindLabels[row.place.kind]}</span>{parent ? <span>属于 {parent.place.nameZh}</span> : role !== "planning_area" ? <span>尚未归入路线区域</span> : null}{formatDuration(row.candidate.suggestedDurationMinutes) && <span>建议 {formatDuration(row.candidate.suggestedDurationMinutes)}</span>}<span className={status === "resolved" ? "ready" : "muted"}>{status === "resolved" ? "已定位" : "尚未定位 · 仍可继续规划"}</span></div>
       </div>
       <div className="phase6-candidate-controls" onClick={(event) => event.stopPropagation()}>
         <PreferenceButtons value={row.candidate.preference} busy={busy} onChange={(value) => void onSetPreference([row.candidate.id], value)}/>
@@ -203,11 +225,11 @@ export function CandidateWorkflowPanelV3({
     </article>;
   };
 
-  const startAdd = (role: "planning_area" | "core_visit" | "detail_interest") => { setAdding(role); setAddError(""); setName(""); setDuration(""); setParentId(planningAreas[0]?.candidate.id ?? ""); };
+  const startAdd = (role: "planning_area" | "core_visit" | "detail_interest") => { setAdding(role); setPlaceKind(defaultKindForRole(role)); setAddError(""); setName(""); setDuration(""); setParentId(planningAreas[0]?.candidate.id ?? ""); };
 
   return <section className="phase6-candidate-panel">
     <header className="phase6-step-intro">
-      <div><p className="eyebrow">STEP {mode === "backbone" ? "2" : "4"}</p><h2>{mode === "backbone" ? "想去哪些地方" : "补充景点"}{mode === "interests" && <span className="phase6-optional-badge">可选</span>}</h2><p>{mode === "backbone" ? "先做愿望清单：选出想考虑的停留地点和重要游览地。下一步再根据总天数安排路线。" : "这里是可选的景点补充区。路线未确认、地点未定位或暂时没有父区域，都不影响你继续添加、研究或进入每日行程。"}</p></div>
+      <div><p className="eyebrow">STEP {mode === "backbone" ? "2" : "4"}</p><h2>{mode === "backbone" ? "想去哪些地方" : "补充景点"}{mode === "interests" && <span className="phase6-optional-badge">可选</span>}</h2><p>{mode === "backbone" ? "先做愿望清单：选出想考虑的停留地点和重要游览地。地点类型和它在旅行里的规划角色彼此独立。" : "这里是可选的景点补充区。路线未确认、地点未定位或暂时没有父区域，都不影响你继续添加、研究或进入每日行程。"}</p></div>
       <div className="phase6-intro-actions">{mode === "backbone" ? <><button className="button small" type="button" disabled={busy} onClick={() => startAdd("planning_area")}><Plus size={14}/>添加停留地点</button><button className="button small" type="button" disabled={busy} onClick={() => startAdd("core_visit")}><Plus size={14}/>添加重要游览地</button></> : <button className="button small" type="button" disabled={busy} onClick={() => startAdd("detail_interest")}><Plus size={14}/>添加普通景点</button>}</div>
     </header>
 
@@ -228,15 +250,16 @@ export function CandidateWorkflowPanelV3({
       {mode === "backbone" ? <button className="button primary" type="button" disabled={busy} onClick={() => void onContinue()}><ArrowRight size={15}/>下一步：路线和天数</button> : <button className="button primary" type="button" disabled={busy} onClick={() => void onContinue()}><ArrowRight size={15}/>下一步：每日行程</button>}
     </footer>
 
-    {adding && <div className="phase6-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setAdding(null); }}><section className="phase6-dialog"><header><strong>{adding === "planning_area" ? "添加停留地点" : adding === "core_visit" ? "添加重要游览地" : "添加普通景点"}</strong><button type="button" onClick={() => setAdding(null)}>×</button></header><label>地点名称<input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：蒂阿瑙 / 米尔福德峡湾"/></label>{adding !== "planning_area" && <label>所属停留地点（可选）<select value={parentId} onChange={(event) => setParentId(event.target.value)}><option value="">暂不归类</option>{planningAreas.map((area) => <option value={area.candidate.id} key={area.candidate.id}>{area.place.nameZh}{area.candidate.preference === "excluded" ? " · 不考虑" : ""}</option>)}</select></label>}<label>预计停留分钟（可选）<input type="number" min="0" max="10080" value={duration} onChange={(event) => setDuration(event.target.value)} placeholder="例如 180"/></label>{addError && <p className="inline-error">{addError}</p>}<button className="button primary" type="button" disabled={busy || !name.trim()} onClick={() => void submitAdd()}>添加</button></section></div>}
+    {adding && <div className="phase6-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setAdding(null); }}><section className="phase6-dialog"><header><strong>{adding === "planning_area" ? "添加停留地点" : adding === "core_visit" ? "添加重要游览地" : "添加普通景点"}</strong><button type="button" onClick={() => setAdding(null)}>×</button></header><label>地点名称<input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：蒂阿瑙 / 米尔福德峡湾"/></label><label>地点类型<select value={placeKind} onChange={(event) => setPlaceKind(event.target.value as PlaceKind)}>{Object.entries(placeKindLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><small>地点类型描述现实世界中的地点，不决定它在旅行中扮演的规划角色。</small></label>{adding !== "planning_area" && <label>所属停留地点（可选）<select value={parentId} onChange={(event) => setParentId(event.target.value)}><option value="">暂不归类</option>{planningAreas.map((area) => <option value={area.candidate.id} key={area.candidate.id}>{area.place.nameZh}{area.candidate.preference === "excluded" ? " · 不考虑" : ""}</option>)}</select></label>}<label>预计停留分钟（可选）<input type="number" min="0" max="10080" value={duration} onChange={(event) => setDuration(event.target.value)} placeholder="例如 180"/></label>{addError && <p className="inline-error">{addError}</p>}<button className="button primary" type="button" disabled={busy || !name.trim()} onClick={() => void submitAdd()}>添加</button></section></div>}
     {editing && <div className="phase6-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setEditing(null); }}>
       <section className="phase6-dialog phase6-candidate-edit-dialog" aria-label={`编辑${editing.displayName}`}>
         <header><div><strong>编辑地点</strong><small>{editing.displayName}</small></div><button type="button" aria-label="关闭编辑" onClick={() => setEditing(null)}>×</button></header>
         <label>中文名称<input autoFocus value={editing.nameZh} onChange={(event) => setEditing({ ...editing, nameZh: event.target.value, error: "" })}/></label>
         <label>本地名称（可选）<input value={editing.nameLocal} onChange={(event) => setEditing({ ...editing, nameLocal: event.target.value, error: "" })}/></label>
         <label>英文名称（可选）<input value={editing.nameEn} onChange={(event) => setEditing({ ...editing, nameEn: event.target.value, error: "" })}/></label>
+        <label>地点类型<select value={editing.kind} onChange={(event) => setEditing({ ...editing, kind: event.target.value as PlaceKind, error: "" })}>{Object.entries(placeKindLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><small>修改地点类型不会改变 Candidate 的 planningRole。</small></label>
         <section className="phase6-location-editor">
-          <div><strong>更新位置</strong><small>名称保存与位置更新互不覆盖。</small></div>
+          <div><strong>更新位置</strong><small>地点信息保存与位置更新互不覆盖。</small></div>
           <div className="phase6-location-editor-actions">
             <button className="button small" type="button" disabled={busy} onClick={() => void forceRelocate()}><RefreshCw size={13}/>重新定位</button>
             <button className="button small" type="button" disabled={busy} onClick={() => { const placeId = editing.placeId; setEditing(null); onBeginMapPick(placeId); }}><MapPin size={13}/>地图点选</button>
@@ -246,7 +269,7 @@ export function CandidateWorkflowPanelV3({
           {editing.googlePreview && <div className="phase6-google-preview"><strong>{editing.googlePreview.name || "已读取地点坐标"}</strong><span>{editing.googlePreview.latitude.toFixed(6)}, {editing.googlePreview.longitude.toFixed(6)}</span>{editing.googlePreview.address && <small>{editing.googlePreview.address}</small>}{editing.googlePreview.warning && <small className="warning">{editing.googlePreview.warning}</small>}<button className="button small primary" type="button" disabled={busy} onClick={() => void applyGoogleMapsLink()}>使用此链接定位</button></div>}
         </section>
         {editing.error && <p className="inline-error">{editing.error}</p>}
-        <footer><button className="button" type="button" disabled={busy} onClick={() => setEditing(null)}>取消</button><button className="button primary" type="button" disabled={busy} onClick={() => void saveNames()}>保存名称</button></footer>
+        <footer><button className="button" type="button" disabled={busy} onClick={() => setEditing(null)}>取消</button><button className="button primary" type="button" disabled={busy} onClick={() => void saveNames()}>保存地点信息</button></footer>
       </section>
     </div>}
   </section>;
