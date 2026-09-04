@@ -87,8 +87,10 @@
 
 状态：尚未由用户本地验证。
 
-Test Branch：`__TEST_BRANCH__`  
-Test HEAD：`__TEST_HEAD__`
+Test Branch：`test/plan-phase1-final-route-20260905`  
+Test HEAD：`b751f0dff0c475419c54bf657a8cc541343443ac`
+
+测试分支已冻结，不再修改。`main` 后续只写入测试基线元数据，不改变上述待测提交。
 
 ---
 
