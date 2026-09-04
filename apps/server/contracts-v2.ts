@@ -407,6 +407,7 @@ export const ProposalScopeSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("candidate"), id: IdSchema }).strict(),
   z.object({ type: z.literal("place"), id: IdSchema }).strict(),
   z.object({ type: z.literal("day"), id: IdSchema }).strict(),
+  z.object({ type: z.literal("days"), ids: z.array(IdSchema).min(1).max(200) }).strict(),
   z.object({ type: z.literal("trip"), id: z.null() }).strict(),
 ]);
 export type ProposalScope = z.infer<typeof ProposalScopeSchema>;
