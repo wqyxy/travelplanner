@@ -43,8 +43,7 @@ export function validateBackboneDraftBatch(
     if (candidatesById.has(candidate.temporaryId)) {
       context.addIssue({ code: "custom", path: ["candidates", index, "temporaryId"], message: "临时 Candidate ID 不能重复。" });
     }
-    const place = placesById.get(candidate.placeTemporaryId);
-    if (!place) {
+    if (!placesById.has(candidate.placeTemporaryId)) {
       context.addIssue({ code: "custom", path: ["candidates", index, "placeTemporaryId"], message: "Candidate 必须引用本轮 Place。" });
     }
     if (referencedPlaceIds.has(candidate.placeTemporaryId)) {
@@ -52,44 +51,54 @@ export function validateBackboneDraftBatch(
     }
     referencedPlaceIds.add(candidate.placeTemporaryId);
     candidatesById.set(candidate.temporaryId, candidate);
-
-    if (candidate.planningRole === "planning_area") {
-      if (place && place.kind !== "city") {
-        context.addIssue({ code: "custom", path: ["candidates", index, "planningRole"], message: "Planning Area 必须使用 kind=city 的 Place。" });
-      }
-      if (candidate.parentCandidateRef !== null) {
-        context.addIssue({ code: "custom", path: ["candidates", index, "parentCandidateRef"], message: "Planning Area 不得存在父 Candidate。" });
-      }
-    } else {
-      if (place?.kind === "city") {
-        context.addIssue({ code: "custom", path: ["candidates", index, "planningRole"], message: "Core Visit 不得使用 kind=city。" });
-      }
-      if (!candidate.parentCandidateRef) {
-        context.addIssue({ code: "custom", path: ["candidates", index, "parentCandidateRef"], message: "Core Visit 必须绑定 Planning Area。" });
-      }
-    }
   }
 
   for (const [index, candidate] of value.candidates.entries()) {
     const parent = candidate.parentCandidateRef;
-    if (candidate.planningRole !== "core_visit" || !parent) continue;
+    if (!parent) continue;
     if (parent.type === "existing") {
       if (candidatesById.has(parent.candidateId)) {
         context.addIssue({
           code: "custom",
           path: ["candidates", index, "parentCandidateRef"],
-          message: "existing parent 不得引用本轮 temporaryId；本轮生成的 Planning Area 必须使用 generated parent。",
+          message: "existing parent 不得引用本轮 temporaryId；本轮生成的父 Candidate 必须使用 generated parent。",
         });
       }
       continue;
     }
-    const generatedParent = candidatesById.get(parent.temporaryCandidateId);
-    if (!generatedParent || generatedParent.temporaryId === candidate.temporaryId || generatedParent.planningRole !== "planning_area") {
+    if (parent.temporaryCandidateId === candidate.temporaryId) {
       context.addIssue({
         code: "custom",
         path: ["candidates", index, "parentCandidateRef"],
-        message: "generated parent 必须引用本轮生成的 Planning Area Candidate。",
+        message: "Candidate 不得把自己设为父级。",
       });
+      continue;
+    }
+    if (!candidatesById.has(parent.temporaryCandidateId)) {
+      context.addIssue({
+        code: "custom",
+        path: ["candidates", index, "parentCandidateRef"],
+        message: "generated parent 必须引用本轮存在的 Candidate。",
+      });
+    }
+  }
+
+  for (const [index, candidate] of value.candidates.entries()) {
+    const seen = new Set<string>([candidate.temporaryId]);
+    let current: BackboneCandidateDraft | undefined = candidate;
+    while (current?.parentCandidateRef?.type === "generated") {
+      const parentId = current.parentCandidateRef.temporaryCandidateId;
+      if (seen.has(parentId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["candidates", index, "parentCandidateRef"],
+          message: "Candidate 父级关系不得形成循环。",
+        });
+        break;
+      }
+      seen.add(parentId);
+      current = candidatesById.get(parentId);
+      if (!current) break;
     }
   }
 }
