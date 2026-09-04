@@ -63,6 +63,15 @@ export type ItineraryUpdateStateV3 = {
   macro: { status: "ready" | "needs_update" };
   detail: { status: "ready" | "needs_update"; affectedDayIds: string[] };
 };
+export type PlanningAdvisoryV3 = {
+  id: string;
+  code: string;
+  severity: "info" | "warning";
+  workflowStep: WorkflowStepV3;
+  message: string;
+  objectRefs: Array<{ type: "trip" | "place" | "candidate" | "day" | "stop"; id: string }>;
+  affectedCapabilities: Array<"map" | "route" | "schedule" | "coverage" | "planning_area" | "date_alignment">;
+};
 export type WorkspaceV3 = {
   trip: Trip;
   resolutions: PlaceResolution[];
@@ -76,5 +85,6 @@ export type WorkspaceV3 = {
   tasks: AiTaskV3[];
   revisions: Revision[];
   coverage: PlanningAreaCoverage[];
+  advisories: PlanningAdvisoryV3[];
 };
 export type WorkspaceSelectionV3 = WorkspaceSelection;
