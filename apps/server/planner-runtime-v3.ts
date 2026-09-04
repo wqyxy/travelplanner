@@ -158,6 +158,12 @@ function dayMutationScope(dayIds: string[]): ProposalScope {
   return ids.length === 1 ? { type: "day", id: ids[0] } : { type: "days", ids };
 }
 
+function dayMutationScope(dayIds: string[]): ProposalScope {
+  const ids = [...new Set(dayIds.filter(Boolean))];
+  if (!ids.length) throw new Error("局部行程 Action 缺少目标 Day，不能自动扩大为整趟 Scope。");
+  return ids.length === 1 ? { type: "day", id: ids[0] } : { type: "days", ids };
+}
+
 function actionScope(actionType: AiActionType, targetIds: string[], parameters: Record<string, unknown>): ProposalScope {
   if (actionType.startsWith("requirements.")) return { type: "trip", id: null };
   if (actionType.startsWith("destination.") || actionType.startsWith("interest.")) return { type: "candidate_pool", id: null };

@@ -55,3 +55,16 @@
 全部修改完成后，先一次性列出建议运行的测试、覆盖范围与成本，并询问用户是否执行；获得明确确认前不得运行完整 Vitest、typecheck、build、真实 Codex smoke 或浏览器 E2E。若当前专项施工图定义了更严格的 Phase Gate，以施工图为准。
 
 交付时说明变更内容、涉及的私人数据或安全影响、已执行的检查及结果，以及仍需用户确认的事项。
+
+
+## User Control Correction（最高优先级产品约束）
+
+当前 canonical 只保证数据结构、引用、安全、CAS、Scope 与 Provider 事实边界，不保证旅行方案“合理”。
+
+- 用户是旅行方案的唯一决策者；canonical 中的内容均视为用户已接受，不按 source 区分权限。
+- PlanningRole 与 PlaceKind 独立；`planning_area` 不再要求 `kind=city`。旧数据缺 planningRole 时才使用 city→planning_area、其他→detail_interest 的兼容推断。
+- 未定位、semantic duplicate、excluded 已排入、must-go 未覆盖、父 Planning Area 缺失、天数不一致、时间不完整/重叠/跨夜/duration mismatch 都属于 Planning Advisory，不得作为 canonical 写入 blocker。
+- 同一 canonical Place ID 仍只能有一个 Candidate；未知引用、重复 ID、self/cycle、无效 enum/shape 仍硬失败。
+- AI 默认只修改用户本轮明确目标；读取上下文可以更宽。多日局部修改使用 `days` Scope，只有显式整趟 Action 才能获得 Trip Scope。
+- 不得为了“更合理”静默删除、移动、缩短、改期或替换用户内容。
+- `docs/USER_CONTROL_CORRECTION.md` 与 `docs/USER_CONTROL_CORRECTION_PROGRESS.md` 是本专项实施依据；与旧 city-only / planning blocker 文档冲突时，以本节和这两份文档为准。

@@ -278,3 +278,8 @@ private_data/public-data-cache.sqlite3
 - AI 修改必须遵守 Scope / generation / Proposal 边界；
 - Route Dirty / itinerary needs_update 由依赖与输入 Diff 派生；
 - AI 不能自行读写文件、执行 Shell、调用 MCP、创建子 Agent；服务端是唯一调度者。
+
+
+## User Control Correction（2026-09-04）
+
+当前产品原则已调整为“用户为主、AI 为辅”：canonical 保存用户当前接受的旅行方案；旅行合理性问题改由 Advisory + AI Proposal 处理，不再由代码硬拦。PlanningRole 与 PlaceKind 独立，未定位地点也可以进入行程；五步导航始终可进入。AI 的修改继续受到 Proposal、Scope、generation CAS 和 Provider 事实边界约束。详见 `docs/USER_CONTROL_CORRECTION.md`。

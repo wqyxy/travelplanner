@@ -1,3 +1,6 @@
+> **2026-09-04 User Control Correction 覆盖说明**
+> 本文件保留五步重构的历史设计与实施依据；其中 `planning_area 必须 kind=city`、未定位/必去/天数/时间等作为硬阻塞的旧规则，已由 `docs/USER_CONTROL_CORRECTION.md` 覆盖。当前最终综合 Gate 暂缓，待 User Control Correction 完成后重新定义。
+
 # TravelPlanner 五步规划流程重构实施方案
 
 > 状态：**已确认的文档设计，尚未实施**  
