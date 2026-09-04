@@ -266,7 +266,7 @@ export const AiActionRecordSchema = z.object({
   origin: AiActionOriginSchema,
   sourceMessageId: z.string().trim().min(1).max(160).nullable(),
   parameters: z.record(z.string(), z.unknown()),
-  targetIds: z.array(z.string().trim().min(1).max(160)).max(200),
+  targetIds: z.array(z.string().trim().min(1).max(160)),
   scope: z.record(z.string(), z.unknown()),
   baseGeneration: z.number().int().min(0),
   status: AiActionStatusSchema,

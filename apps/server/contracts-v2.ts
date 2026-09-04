@@ -367,7 +367,7 @@ export type DirectPlaceResolutionInput = z.infer<typeof DirectPlaceResolutionInp
 
 export const PlaceResolutionRetryInputSchema = z.object({
   expectedGeneration: z.number().int().min(0),
-  placeIds: z.array(IdSchema).min(1).max(200),
+  placeIds: z.array(IdSchema).min(1),
   force: z.boolean().optional().default(false),
 }).strict();
 export type PlaceResolutionRetryInput = z.infer<typeof PlaceResolutionRetryInputSchema>;
@@ -407,7 +407,7 @@ export const ProposalScopeSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("candidate"), id: IdSchema }).strict(),
   z.object({ type: z.literal("place"), id: IdSchema }).strict(),
   z.object({ type: z.literal("day"), id: IdSchema }).strict(),
-  z.object({ type: z.literal("days"), ids: z.array(IdSchema).min(1).max(200) }).strict(),
+  z.object({ type: z.literal("days"), ids: z.array(IdSchema).min(1) }).strict(),
   z.object({ type: z.literal("trip"), id: z.null() }).strict(),
 ]);
 export type ProposalScope = z.infer<typeof ProposalScopeSchema>;

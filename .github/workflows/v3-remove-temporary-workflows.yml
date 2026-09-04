@@ -1,30 +1,64 @@
-name: UC residual cap patch
+name: Remove temporary v3 implementation workflows
 
 on:
   push:
-    branches: [codex/user-control-correction]
+    branches:
+      - codex/v3-runtime-ui-completion
+    paths:
+      - .github/workflows/v3-remove-temporary-workflows.yml
 
 permissions:
   contents: write
 
+concurrency:
+  group: travelplanner-v3-temporary-workflow-cleanup
+  cancel-in-progress: false
+
 jobs:
-  patch:
+  cleanup:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Apply two static contract fixes
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Remove temporary workflow files
         shell: bash
         run: |
           set -euo pipefail
-          sed -i 's/z\.array(IdSchema)\.min(1)\.max(200)/z.array(IdSchema).min(1)/' apps/server/contracts-v2.ts
-          python -c 'from pathlib import Path; p=Path("apps/server/ai-stage-contracts-v3.ts"); t=p.read_text(); s=t.index("export const AiActionRecordSchema = z.object({"); old="targetIds: z.array(z.string().trim().min(1).max(160)).max(200),"; i=t.index(old,s); p.write_text(t[:i]+old.replace(".max(200)","")+t[i+len(old):])'
-          git fetch origin main
-          git checkout origin/main -- .github/workflows/v3-remove-temporary-workflows.yml
+          test -f docs/FINAL_ACCEPTANCE.md
+          test -f scripts/check-v3.mjs
+          rm -f \
+            .github/workflows/phase5-candidate-workbench.yml \
+            .github/workflows/phase6-deterministic-editing.yml \
+            .github/workflows/phase7-proposals.yml \
+            .github/workflows/phase8-refinement.yml \
+            .github/workflows/phase9-final-review.yml \
+            .github/workflows/final-v3-acceptance.yml \
+            .github/workflows/recover-and-complete-v3.yml \
+            .github/workflows/v3-final-hardening.yml \
+            .github/workflows/v3-remove-temporary-workflows.yml
+      - run: npm run check:v3
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: git diff --check
+      - name: Commit cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -A
+          git diff --cached --check
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add apps/server/contracts-v2.ts apps/server/ai-stage-contracts-v3.ts .github/workflows/v3-remove-temporary-workflows.yml
-          git diff --cached --check
-          git commit -m 'UC: remove residual local scope caps'
-          git push origin HEAD:codex/user-control-correction
+          if git diff --cached --quiet; then
+            echo 'No temporary workflows remain.'
+          else
+            git commit -m 'Chore: remove temporary v3 implementation workflows'
+            git push origin HEAD:codex/v3-runtime-ui-completion
+          fi
