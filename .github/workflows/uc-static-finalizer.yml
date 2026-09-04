@@ -19,8 +19,9 @@ jobs:
           ref: codex/user-control-correction
           fetch-depth: 0
       - name: Apply static User Control fixes
-        shell: python {0}
+        shell: bash
         run: |
+          python - <<'PY'
           from pathlib import Path
 
           contracts = Path("apps/server/contracts-v2.ts")
@@ -74,7 +75,9 @@ jobs:
           text = text.replace('const scope = dayMutationScope(result.affectedDayIds);', 'const scope = dayMutationScope(result.affectedDayIds, trip.plan);', 1)
           text = text.replace('const scope = dayMutationScope(result.dayIds);', 'const scope = dayMutationScope(result.dayIds, trip.plan);', 1)
           runtime.write_text(text)
+          PY
       - name: Remove one-shot workflow and commit
+        shell: bash
         run: |
           rm .github/workflows/uc-static-finalizer.yml
           git config user.name "OpenAI"
