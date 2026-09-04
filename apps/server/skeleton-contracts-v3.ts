@@ -3,7 +3,7 @@ import { IdSchema, TextSchema, TransportModeSchema } from "./contracts-v2.js";
 
 export const SkeletonStayDraftSchema = z.object({
   planningAreaCandidateId: IdSchema,
-  stayDays: z.number().int().min(1).max(90),
+  stayDays: z.number().int().min(1),
   transferModeFromPrevious: TransportModeSchema,
 }).strict();
 export type SkeletonStayDraft = z.infer<typeof SkeletonStayDraftSchema>;
@@ -15,7 +15,7 @@ export const OmittedPlanningAreaSchema = z.object({
 export type OmittedPlanningArea = z.infer<typeof OmittedPlanningAreaSchema>;
 
 export const SkeletonPlanDraftSchema = z.object({
-  stays: z.array(SkeletonStayDraftSchema).min(1).max(90),
+  stays: z.array(SkeletonStayDraftSchema).min(1),
   omittedPlanningAreas: z.array(OmittedPlanningAreaSchema).max(1800),
 }).strict().superRefine((value, context) => {
   const omittedIds = value.omittedPlanningAreas.map((item) => item.candidateId);
@@ -25,8 +25,7 @@ export const SkeletonPlanDraftSchema = z.object({
 });
 export type SkeletonPlanDraft = z.infer<typeof SkeletonPlanDraftSchema>;
 
-// Phase 2 establishes the shared validation contract. Phase 6 can keep this as
-// UI-only working state and only submit it once inspectSkeletonEditDraftV3 says
-// the whole allocation is valid.
+// Working-state parsing is structural only. Planning completeness and total-day
+// alignment are advisory concerns and must not be used as save gates.
 export const SkeletonEditDraftSchema = SkeletonPlanDraftSchema;
 export type SkeletonEditDraft = SkeletonPlanDraft;
