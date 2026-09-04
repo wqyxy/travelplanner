@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { TravelPlanDocumentSchema, emptyTravelPlan, type TravelPlanDocument } from "./contracts-v2.js";
+import { applyPlanCommands } from "./plan-commands-v2.js";
 import { derivePlanningAdvisoriesV3 } from "./planning-advisories-v3.js";
 
 function plan(): TravelPlanDocument {
@@ -73,6 +74,46 @@ describe("User Control Correction canonical boundary", () => {
     value.days = [day("d1", 1, [{ id: "s1", candidateId: "ca", placeId: "a", activity: "A", period: null, startTime: null, endTime: null, durationMinutes: null, transportFromPrevious: null, scheduleVerification: null, costNote: null, costVerification: null, notes: null }])];
     expect(() => TravelPlanDocumentSchema.parse(value)).not.toThrow();
     expect(derivePlanningAdvisoriesV3(value).map((item) => item.code)).toContain("EXCLUDED_CANDIDATE_SCHEDULED");
+  });
+
+  it("changing a scheduled candidate to excluded keeps the stop", () => {
+    const value = plan();
+    value.places = [place("a")];
+    value.candidates = [candidate("ca", "a")];
+    value.days = [day("d1", 1, [{ id: "s1", candidateId: "ca", placeId: "a", activity: "A", period: null, startTime: null, endTime: null, durationMinutes: null, transportFromPrevious: null, scheduleVerification: null, costNote: null, costVerification: null, notes: null }])];
+    const applied = applyPlanCommands(value, [{ type: "set_candidate_preference", candidateId: "ca", preference: "excluded" }]);
+    expect(applied.plan.days[0].stops.map((stop) => stop.id)).toEqual(["s1"]);
+    expect(applied.plan.candidates[0].preference).toBe("excluded");
+  });
+
+  it("allows semantic duplicates while preserving exact Place identity rules", () => {
+    const value = plan();
+    value.places = [place("a")];
+    value.candidates = [candidate("ca", "a")];
+    const duplicatePlace = { ...place("tmp-place"), nameZh: "a" };
+    const applied = applyPlanCommands(value, [{
+      type: "add_candidate",
+      place: duplicatePlace,
+      candidate: candidate("tmp-candidate", "tmp-place"),
+    }]);
+    expect(applied.plan.candidates).toHaveLength(2);
+    expect(derivePlanningAdvisoriesV3(applied.plan).map((item) => item.code)).toContain("POSSIBLE_DUPLICATE_PLACE");
+  });
+
+  it("does not rewrite Day dates after unrelated commands and allows direct date edits", () => {
+    const value = plan();
+    value.trip.dates = { start: "2026-10-01", end: "2026-10-10", requestedDurationDays: 10 };
+    value.places = [place("a")];
+    value.candidates = [candidate("ca", "a")];
+    value.days = [day("d1", 1), day("d2", 2)];
+    value.days[0].date = "2026-10-03";
+    value.days[1].date = "2026-10-08";
+
+    const preference = applyPlanCommands(value, [{ type: "set_candidate_preference", candidateId: "ca", preference: "want_to_go" }]);
+    expect(preference.plan.days.map((item) => item.date)).toEqual(["2026-10-03", "2026-10-08"]);
+
+    const dateEdit = applyPlanCommands(preference.plan, [{ type: "update_day", dayId: "d2", changes: { date: "2026-10-09" } }]);
+    expect(dateEdit.plan.days[1].date).toBe("2026-10-09");
   });
 
   it("still rejects duplicate canonical Place identity across candidates", () => {
