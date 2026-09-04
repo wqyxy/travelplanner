@@ -122,6 +122,21 @@ describe("Phase 2 skeleton workflow", () => {
     expect(() => applySkeletonPlanV3(tripDetail(source), draft)).toThrow(/19 天.*20 天/);
   });
 
+  it("allows an over-allocated Skeleton with a visible duration warning", () => {
+    const source = basePlan(20);
+    const draft = {
+      stays: [
+        { planningAreaCandidateId: "macro-a", stayDays: 11, transferModeFromPrevious: "none" },
+        { planningAreaCandidateId: "macro-b", stayDays: 10, transferModeFromPrevious: "drive" },
+      ],
+      omittedPlanningAreas: [{ candidateId: "macro-c", reason: "可选区域暂不采用。" }],
+    } satisfies SkeletonPlanDraft;
+    const inspection = inspectSkeletonEditDraftV3(source, draft);
+    expect(inspection.remainingDays).toBe(-1);
+    expect(inspection.canSave).toBe(true);
+    expect(applySkeletonPlanV3(tripDetail(source), draft).plan.days).toHaveLength(21);
+  });
+
   it("atomically expands a 90 day Skeleton without PlanCommand batching", () => {
     const source = basePlan(90);
     const draft = {

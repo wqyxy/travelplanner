@@ -1,5 +1,5 @@
-import { ArrowRight, GripVertical, Plus, RefreshCw, Save, Sparkles, Trash2, TriangleAlert } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowRight, Bike, BusFront, Car, Footprints, GripVertical, Plane, Plus, RefreshCw, Route, Save, ShipWheel, Sparkles, TrainFront, Trash2, TriangleAlert } from "lucide-react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { TransportMode } from "./v2-types";
 import type { WorkspaceV3 } from "./v3-types";
 import { candidateRows, effectiveCandidatePlanningRole } from "./workspace-v2";
@@ -13,6 +13,29 @@ const dragThreshold = 4;
 type DragSnapshot = { stays: SkeletonEditDraftV3["stays"]; uiIds: string[] };
 type PointerDrag = DragSnapshot & { pointerId: number; uiId: string; startX: number; startY: number; x: number; y: number; active: boolean };
 type KeyboardDrag = DragSnapshot & { uiId: string };
+
+function TransferIcon({ mode }: { mode: TransportMode }) {
+  const Icon = mode === "walk" ? Footprints
+    : mode === "drive" ? Car
+      : mode === "bike" ? Bike
+        : mode === "transit" ? BusFront
+          : mode === "rail" ? TrainFront
+            : mode === "flight" ? Plane
+              : mode === "ferry" ? ShipWheel
+                : Route;
+  return <Icon size={15}/>;
+}
+
+function formatRouteMetrics(route: WorkspaceV3["macroRouteStates"][number]["route"]) {
+  if (!route) return null;
+  const distance = route.distanceKm == null ? null : `${route.distanceKm < 10 ? route.distanceKm.toFixed(1) : Math.round(route.distanceKm)} km`;
+  const roundedMinutes = route.durationMinutes == null ? null : Math.max(0, Math.round(route.durationMinutes));
+  const duration = roundedMinutes == null ? null : roundedMinutes >= 60
+    ? `预计 ${Math.floor(roundedMinutes / 60)} 小时${roundedMinutes % 60 ? ` ${roundedMinutes % 60} 分钟` : ""}`
+    : `预计 ${roundedMinutes} 分钟`;
+  const metrics = [distance, duration].filter((value): value is string => value !== null);
+  return metrics.length ? metrics.join(" · ") : "地图路线已生成";
+}
 
 export function MacroItineraryPanelV3({ workspace, busy, previewedDayId, focusedDayId, onPreviewDay, onToggleFocusDay, onSelectAll, onGenerate, onUpdate, onSaveDraft, onRecalculate, onRecalculateDirty, onContinue }: {
   workspace: WorkspaceV3;
@@ -73,6 +96,7 @@ export function MacroItineraryPanelV3({ workspace, busy, previewedDayId, focused
   const macroStatus = workspace.itineraryUpdateState.macro.status;
   const routeStates = workspace.macroRouteStates;
   const dirtyRouteCount = routeStates.filter((state) => state.required && state.dirty).length;
+  const origin = plan.trip.originPlaceId ? plan.places.find((place) => place.id === plan.trip.originPlaceId) ?? null : null;
 
   const reorderStay = (uiId: string, insertionIndex: number) => {
     const ids = stayUiIdsRef.current;
@@ -180,14 +204,40 @@ export function MacroItineraryPanelV3({ workspace, busy, previewedDayId, focused
         const routeState = routeDayId ? routeStates.find((state) => state.dayId === routeDayId) : null;
         const highlighted = routeDayId !== null && (focusedDayId === routeDayId || (!focusedDayId && previewedDayId === routeDayId));
         const isDragging = pointerDrag?.uiId === uiId && pointerDrag.active;
-        return <article ref={(node) => { if (node) cardRefs.current.set(uiId, node); else cardRefs.current.delete(uiId); }} className={`phase6-stay-block ${highlighted ? "selected" : ""} ${isDragging ? "dragging" : ""}`} key={uiId} onPointerEnter={() => { if (!focusedDayId && routeDayId) onPreviewDay(routeDayId); }} onPointerLeave={() => { if (!focusedDayId && routeDayId) onPreviewDay(null); }} onClick={() => { if (routeDayId) onToggleFocusDay(routeDayId); }}>
-          <div className="phase6-stay-order"><span>{index + 1}</span><button className="phase6-stay-drag" type="button" aria-label="拖动调整顺序" aria-pressed={keyboardDrag?.uiId === uiId} title="拖动调整顺序" disabled={busy} onClick={(event) => event.stopPropagation()} onPointerDown={(event) => { event.preventDefault(); event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); const nextDrag = { uiId, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, x: event.clientX, y: event.clientY, active: false, stays: draft.stays, uiIds: stayUiIdsRef.current }; pointerDragRef.current = nextDrag; setPointerDrag(nextDrag); }} onPointerMove={updatePointerDrag} onPointerUp={(event) => { if (pointerDragRef.current?.pointerId === event.pointerId) { event.currentTarget.releasePointerCapture(event.pointerId); pointerDragRef.current = null; setPointerDrag(null); } }} onPointerCancel={() => { const currentDrag = pointerDragRef.current; if (currentDrag) restoreSnapshot(currentDrag); pointerDragRef.current = null; setPointerDrag(null); }} onKeyDown={(event) => handleDragKey(event, uiId)}><GripVertical size={15}/></button></div>
-          <div className="phase6-stay-copy"><div><strong>{area?.place.nameZh || stay.planningAreaCandidateId}</strong>{area?.candidate.preference === "must_go" ? <em>★ 必去</em> : area?.candidate.preference === "want_to_go" ? <em>♡ 想去</em> : null}{originalBlock && !originalBlock.resolved && <span>尚未定位</span>}</div><small>{originalBlock ? `当前对应 Day ${originalBlock.firstDayNumber}${originalBlock.lastDayNumber === originalBlock.firstDayNumber ? "" : `–${originalBlock.lastDayNumber}`}` : "保存后会重新对应日期"}</small></div>
-          <label className="phase6-stay-days" onClick={(event) => event.stopPropagation()}><span>停留天数</span><input type="number" min="1" max="90" value={stay.stayDays} disabled={busy} onChange={(event) => updateStay(index, { stayDays: Math.max(1, Math.min(90, Number(event.target.value) || 1)) })}/></label>
-          <label className="phase6-stay-transfer" onClick={(event) => event.stopPropagation()}><span>从上一站怎么来</span><select value={stay.transferModeFromPrevious} disabled={busy || index === 0} onChange={(event) => updateStay(index, { transferModeFromPrevious: event.target.value as TransportMode })}>{Object.entries(transferLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
-          <div className="phase6-stay-route">{index === 0 ? <small>旅程起点</small> : routeState?.route?.durationMinutes != null && !routeState.dirty ? <small>地图预计 {Math.round(routeState.route.durationMinutes)} 分钟</small> : routeState?.dirty ? <small>地图路线需要更新</small> : <small>地图路线待计算</small>}{routeDayId && index > 0 && <button type="button" disabled={busy} onClick={(event) => { event.stopPropagation(); void onRecalculate(routeDayId); }}><RefreshCw size={13}/>更新地图路线</button>}</div>
-          {area?.candidate.preference !== "must_go" && <button className="phase6-stay-remove" type="button" disabled={busy} onClick={(event) => { event.stopPropagation(); removeStay(index); }}><Trash2 size={13}/>暂不安排</button>}
-        </article>;
+        const hasStartConnection = index === 0 && origin !== null && origin.id !== area?.place.id;
+        const hasConnection = index > 0 || hasStartConnection;
+        const routeSummary = changed
+          ? "保存后自动更新"
+          : originalBlock && !originalBlock.resolved
+            ? "地点尚未定位"
+          : routeState?.dirty
+            ? "地图路线需要更新"
+            : routeState?.route?.status === "attention"
+              ? "地图路线待确认"
+              : formatRouteMetrics(routeState?.route ?? null) ?? "地图路线待计算";
+        const mapInteractive = !changed && routeDayId !== null;
+        const connectorHandlers = mapInteractive ? {
+          onPointerEnter: () => { if (!focusedDayId) onPreviewDay(routeDayId); },
+          onPointerLeave: () => { if (!focusedDayId) onPreviewDay(null); },
+          onClick: () => onToggleFocusDay(routeDayId),
+        } : {};
+        return <Fragment key={uiId}>
+          {hasConnection && <div className={`phase6-transfer-connector ${highlighted ? "selected" : ""} ${changed ? "pending" : ""}`} {...connectorHandlers}>
+            <div className="phase6-transfer-rail" aria-hidden="true"><span/><TransferIcon mode={stay.transferModeFromPrevious}/><span/></div>
+            <div className="phase6-transfer-content">
+              {hasStartConnection && <small className="phase6-transfer-origin">从 {origin.nameZh} 出发</small>}
+              <label className="phase6-transfer-control" onClick={(event) => event.stopPropagation()}><span className="sr-only">{hasStartConnection ? "前往首站的交通方式" : "前往下一地点的交通方式"}</span><select value={stay.transferModeFromPrevious} disabled={busy} onChange={(event) => updateStay(index, { transferModeFromPrevious: event.target.value as TransportMode })}>{Object.entries(transferLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
+              <small className="phase6-transfer-metrics">{routeSummary}</small>
+            </div>
+            <button className="phase6-transfer-refresh" type="button" disabled={busy || changed || !routeDayId} title={changed ? "请先保存路线调整" : undefined} onClick={(event) => { event.stopPropagation(); if (routeDayId) void onRecalculate(routeDayId); }}><RefreshCw size={13}/>重新生成</button>
+          </div>}
+          <article ref={(node) => { if (node) cardRefs.current.set(uiId, node); else cardRefs.current.delete(uiId); }} className={`phase6-stay-block ${highlighted ? "selected" : ""} ${isDragging ? "dragging" : ""}`} onPointerEnter={() => { if (!focusedDayId && routeDayId) onPreviewDay(routeDayId); }} onPointerLeave={() => { if (!focusedDayId && routeDayId) onPreviewDay(null); }} onClick={() => { if (routeDayId) onToggleFocusDay(routeDayId); }}>
+            <div className="phase6-stay-order"><span>{index + 1}</span><button className="phase6-stay-drag" type="button" aria-label="拖动调整顺序" aria-pressed={keyboardDrag?.uiId === uiId} title="拖动调整顺序" disabled={busy} onClick={(event) => event.stopPropagation()} onPointerDown={(event) => { event.preventDefault(); event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); const nextDrag = { uiId, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, x: event.clientX, y: event.clientY, active: false, stays: draft.stays, uiIds: stayUiIdsRef.current }; pointerDragRef.current = nextDrag; setPointerDrag(nextDrag); }} onPointerMove={updatePointerDrag} onPointerUp={(event) => { if (pointerDragRef.current?.pointerId === event.pointerId) { event.currentTarget.releasePointerCapture(event.pointerId); pointerDragRef.current = null; setPointerDrag(null); } }} onPointerCancel={() => { const currentDrag = pointerDragRef.current; if (currentDrag) restoreSnapshot(currentDrag); pointerDragRef.current = null; setPointerDrag(null); }} onKeyDown={(event) => handleDragKey(event, uiId)}><GripVertical size={15}/></button></div>
+            <div className="phase6-stay-copy"><div><strong>{area?.place.nameZh || stay.planningAreaCandidateId}</strong>{area?.candidate.preference === "must_go" ? <em>★ 必去</em> : area?.candidate.preference === "want_to_go" ? <em>♡ 想去</em> : null}{originalBlock && !originalBlock.resolved && <span>尚未定位</span>}</div><small>{originalBlock ? `当前对应 Day ${originalBlock.firstDayNumber}${originalBlock.lastDayNumber === originalBlock.firstDayNumber ? "" : `–${originalBlock.lastDayNumber}`}` : "保存后会重新对应日期"}</small></div>
+            <label className="phase6-stay-days" onClick={(event) => event.stopPropagation()}><span>停留天数</span><input type="number" min="1" max="90" value={stay.stayDays} disabled={busy} onChange={(event) => updateStay(index, { stayDays: Math.max(1, Math.min(90, Number(event.target.value) || 1)) })}/></label>
+            {area?.candidate.preference !== "must_go" && <button className="phase6-stay-remove" type="button" disabled={busy} onClick={(event) => { event.stopPropagation(); removeStay(index); }}><Trash2 size={13}/>暂不安排</button>}
+          </article>
+        </Fragment>;
       })}
     </div>
     {pointerDrag?.active && draggedArea && <div className="phase6-stay-drag-preview" style={{ left: pointerDrag.x + 14, top: pointerDrag.y + 14 }}><GripVertical size={16}/><strong>{draggedArea.place.nameZh}</strong><small>{draggedStay?.stayDays} 天</small></div>}

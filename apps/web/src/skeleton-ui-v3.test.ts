@@ -50,7 +50,9 @@ describe("Phase 6 skeleton UI", () => {
   it("uses natural day-balance language rather than engineering draft terms", () => {
     const source = workspace().trip.plan;
     expect(skeletonDayBalanceV3(source, { stays: [{ planningAreaCandidateId: "area-a", stayDays: 19, transferModeFromPrevious: "none" }], omittedPlanningAreas: [] }).message).toBe("还剩 1 天需要安排");
-    expect(skeletonDayBalanceV3(source, { stays: [{ planningAreaCandidateId: "area-a", stayDays: 21, transferModeFromPrevious: "none" }], omittedPlanningAreas: [] }).message).toBe("还需要减少 1 天");
+    const overAllocated = skeletonDayBalanceV3(source, { stays: [{ planningAreaCandidateId: "area-a", stayDays: 21, transferModeFromPrevious: "none" }], omittedPlanningAreas: [] });
+    expect(overAllocated.message).toBe("当前安排多 1 天；可以继续，之后再调整。");
+    expect(overAllocated.canSave).toBe(true);
     expect(skeletonDayBalanceV3(source, { stays: [{ planningAreaCandidateId: "area-a", stayDays: 20, transferModeFromPrevious: "none" }], omittedPlanningAreas: [] }).canSave).toBe(true);
   });
 });

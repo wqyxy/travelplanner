@@ -23,7 +23,7 @@ function workspaceFixture(): Workspace {
     { id: "day-2", dayNumber: 2, date: null, title: "第二天", detailLevel: "detailed", detailStatus: "ready", startAnchor: anchor("a3", "p3"), stops: [stop("s2", "p4", "c4")], endAnchor: anchor("a4", "p1") },
   ];
   const routes = [
-    { tripId: "trip", dayId: "day-1", version: 1, inputFingerprint: "r1", status: "ready", distanceKm: 12.5, durationMinutes: 65, geometry: null, warnings: [], calculatedAt: "2026-09-02T01:00:00.000Z", legs: [{ id: "leg-1", fromNodeId: "a1", toNodeId: "s1", fromPlaceId: "p1", toPlaceId: "p2", mode: "drive", status: "ready", distanceKm: 12.5, durationMinutes: 65, geometry: { type: "LineString", coordinates: [[100, 30], [101, 31]] }, warning: null }] },
+    { tripId: "trip", dayId: "day-1", version: 1, inputFingerprint: "r1", status: "ready", distanceKm: 12.5, durationMinutes: 65, geometry: null, warnings: [], calculatedAt: "2026-09-02T01:00:00.000Z", legs: [{ id: "leg-1", fromNodeId: "a1", toNodeId: "s1", fromPlaceId: "p1", toPlaceId: "p2", mode: "drive", status: "ready", distanceKm: 12.5, durationMinutes: 65, geometry: { type: "LineString", coordinates: [[100, 30], [101, 31]] }, warning: null }, { id: "leg-ferry", fromNodeId: "s1", toNodeId: "a2", fromPlaceId: "p2", toPlaceId: "p3", mode: "ferry", status: "attention", distanceKm: null, durationMinutes: null, geometry: null, warning: "轮渡路段暂不由当前路线服务计算。" }] },
     { tripId: "trip", dayId: "day-2", version: 1, inputFingerprint: "r2", status: "attention", distanceKm: null, durationMinutes: null, geometry: null, warnings: ["路线需更新"], calculatedAt: "2026-09-02T02:00:00.000Z", legs: [{ id: "leg-2", fromNodeId: "a3", toNodeId: "s2", fromPlaceId: "p3", toPlaceId: "p4", mode: "walk", status: "attention", distanceKm: 7.5, durationMinutes: 95, geometry: { type: "LineString", coordinates: [[102, 32], [103, 33]] }, warning: "路线需更新" }] },
   ];
   return {
@@ -81,9 +81,10 @@ describe("workspace map presentation", () => {
   it("shows every provider leg in all view and hides stale metrics for a dirty route", () => {
     const workspace = workspaceFixture();
     const routes = routeGeometryFeatures(workspace, null);
-    expect(routes).toHaveLength(2);
+    expect(routes).toHaveLength(3);
     expect(routes[0]).toMatchObject({ id: "route-leg:day-1:leg-1", properties: { dayNumber: 1, mode: "drive", distanceKm: 12.5, durationMinutes: 65, dirty: false } });
-    expect(routes[1]).toMatchObject({ properties: { dayNumber: 2, mode: "walk", distanceKm: null, durationMinutes: null, dirty: true, warning: "路线需更新" } });
+    expect(routes[1]).toMatchObject({ id: "route-leg:day-1:leg-ferry", geometry: { type: "LineString", coordinates: [[101, 31], [102, 32]] }, properties: { dayNumber: 1, mode: "ferry", straightLine: true, distanceKm: null, durationMinutes: null, dirty: false } });
+    expect(routes[2]).toMatchObject({ properties: { dayNumber: 2, mode: "walk", distanceKm: null, durationMinutes: null, dirty: true, warning: "路线需更新" } });
     expect(routeGeometryFeatures(workspace, "day-2").map((route) => route.properties.dayNumber)).toEqual([2]);
   });
 

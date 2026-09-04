@@ -89,4 +89,26 @@ describe("Phase 6 skeleton edit API", () => {
     expect(db.requireTrip(created.id).plan).toEqual(before);
     db.close();
   });
+
+  it("saves an over-allocated route so the user can continue adjusting later", async () => {
+    const db = store();
+    const created = db.createTrip();
+    db.writePlan(created.id, planningFixture(created.plan), 0, { source: "test", summary: "fixture" });
+    const { runtime } = runtimeMock();
+
+    const result = await saveSkeletonEditDraftV3(db, runtime, created.id, {
+      expectedGeneration: 1,
+      draft: {
+        stays: [
+          { planningAreaCandidateId: "area-a", stayDays: 2, transferModeFromPrevious: "none" },
+          { planningAreaCandidateId: "area-b", stayDays: 2, transferModeFromPrevious: "drive" },
+        ],
+        omittedPlanningAreas: [],
+      },
+    });
+
+    expect(result.generation).toBe(2);
+    expect(result.trip.plan.days).toHaveLength(4);
+    db.close();
+  });
 });

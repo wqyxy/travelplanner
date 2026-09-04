@@ -102,18 +102,24 @@ export function WorkspaceMapV2({
       map.on("load", () => {
         const empty = { type: "FeatureCollection", features: [] };
         map.addSource("v3-routes-current", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-        map.addLayer({ id: "v3-route-halo", type: "line", source: "v3-routes-current", paint: { "line-color": "#ffffff", "line-width": 8, "line-opacity": .82 } });
-        map.addLayer({ id: "v3-routes-current", type: "line", source: "v3-routes-current", paint: { "line-color": ["get", "color"], "line-width": 4, "line-opacity": .9 } });
+        map.addLayer({ id: "v3-route-halo", type: "line", source: "v3-routes-current", filter: ["!=", "straightLine", true], paint: { "line-color": "#ffffff", "line-width": 8, "line-opacity": .82 } });
+        map.addLayer({ id: "v3-routes-current", type: "line", source: "v3-routes-current", filter: ["!=", "straightLine", true], paint: { "line-color": ["get", "color"], "line-width": 4, "line-opacity": .9 } });
+        map.addLayer({ id: "v3-route-direct-halo", type: "line", source: "v3-routes-current", filter: ["==", "straightLine", true], paint: { "line-color": "#ffffff", "line-width": 8, "line-opacity": .82, "line-dasharray": [2, 2] } });
+        map.addLayer({ id: "v3-routes-direct", type: "line", source: "v3-routes-current", filter: ["==", "straightLine", true], paint: { "line-color": ["get", "color"], "line-width": 4, "line-opacity": .9, "line-dasharray": [2, 2] } });
         map.addLayer({ id: "v3-routes-current-hit", type: "line", source: "v3-routes-current", paint: { "line-color": "#000000", "line-width": 18, "line-opacity": 0 } });
         map.addSource("v3-routes-dirty", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
         map.addLayer({ id: "v3-routes-dirty", type: "line", source: "v3-routes-dirty", paint: { "line-color": ["get", "color"], "line-width": 3, "line-opacity": .32, "line-dasharray": [2, 2] } });
         map.addLayer({ id: "v3-routes-dirty-hit", type: "line", source: "v3-routes-dirty", paint: { "line-color": "#000000", "line-width": 18, "line-opacity": 0, "line-dasharray": [2, 2] } });
         map.addSource("v3-route-preview", { type: "geojson", data: empty });
-        map.addLayer({ id: "v3-route-preview-halo", type: "line", source: "v3-route-preview", paint: { "line-color": "#ffffff", "line-width": 12, "line-opacity": .96 } });
-        map.addLayer({ id: "v3-route-preview", type: "line", source: "v3-route-preview", paint: { "line-color": ["get", "color"], "line-width": 7, "line-opacity": 1 } });
+        map.addLayer({ id: "v3-route-preview-halo", type: "line", source: "v3-route-preview", filter: ["!=", "straightLine", true], paint: { "line-color": "#ffffff", "line-width": 12, "line-opacity": .96 } });
+        map.addLayer({ id: "v3-route-preview", type: "line", source: "v3-route-preview", filter: ["!=", "straightLine", true], paint: { "line-color": ["get", "color"], "line-width": 7, "line-opacity": 1 } });
+        map.addLayer({ id: "v3-route-preview-direct-halo", type: "line", source: "v3-route-preview", filter: ["==", "straightLine", true], paint: { "line-color": "#ffffff", "line-width": 12, "line-opacity": .96, "line-dasharray": [2, 2] } });
+        map.addLayer({ id: "v3-route-preview-direct", type: "line", source: "v3-route-preview", filter: ["==", "straightLine", true], paint: { "line-color": ["get", "color"], "line-width": 7, "line-opacity": 1, "line-dasharray": [2, 2] } });
         map.addSource("v3-route-hover", { type: "geojson", data: empty });
-        map.addLayer({ id: "v3-route-hover-halo", type: "line", source: "v3-route-hover", paint: { "line-color": "#ffffff", "line-width": 12, "line-opacity": .95 } });
-        map.addLayer({ id: "v3-route-hover", type: "line", source: "v3-route-hover", paint: { "line-color": ["get", "color"], "line-width": 7, "line-opacity": 1 } });
+        map.addLayer({ id: "v3-route-hover-halo", type: "line", source: "v3-route-hover", filter: ["!=", "straightLine", true], paint: { "line-color": "#ffffff", "line-width": 12, "line-opacity": .95 } });
+        map.addLayer({ id: "v3-route-hover", type: "line", source: "v3-route-hover", filter: ["!=", "straightLine", true], paint: { "line-color": ["get", "color"], "line-width": 7, "line-opacity": 1 } });
+        map.addLayer({ id: "v3-route-hover-direct-halo", type: "line", source: "v3-route-hover", filter: ["==", "straightLine", true], paint: { "line-color": "#ffffff", "line-width": 12, "line-opacity": .95, "line-dasharray": [2, 2] } });
+        map.addLayer({ id: "v3-route-hover-direct", type: "line", source: "v3-route-hover", filter: ["==", "straightLine", true], paint: { "line-color": ["get", "color"], "line-width": 7, "line-opacity": 1, "line-dasharray": [2, 2] } });
         map.addSource("v3-workspace-points", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
         map.addLayer({ id: "v3-point-halo", type: "circle", source: "v3-workspace-points", paint: { "circle-radius": 13, "circle-color": "#ffffff", "circle-opacity": .9 } });
         map.addLayer({

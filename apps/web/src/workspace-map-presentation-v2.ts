@@ -41,6 +41,7 @@ export type WorkspaceMapRouteFeature = {
     warning: string;
     calculatedAt: string;
     color: string;
+    straightLine: boolean;
   };
 };
 
@@ -198,17 +199,24 @@ export function itineraryPointFeatures(workspace: Workspace, selectedDayId: stri
 export function routeGeometryFeatures(workspace: Workspace, selectedDayId: string | null): WorkspaceMapRouteFeature[] {
   const dayNumbers = new Map(workspace.trip.plan.days.map((day) => [day.id, day.dayNumber]));
   const colors = dayRouteColors(workspace.trip.plan.days);
+  const resolutions = resolvedByPlace(workspace);
   return workspace.routeStates.flatMap((state) => {
     if (selectedDayId && state.dayId !== selectedDayId) return [];
     const dayNumber = dayNumbers.get(state.dayId) ?? 0;
     if (dayNumber < 1) return [];
     return state.route?.legs.flatMap((leg) => {
-      if (!leg.geometry) return [];
+      const straightLine = leg.mode === "flight" || leg.mode === "ferry";
+      const from = coordinate(resolutions.get(leg.fromPlaceId));
+      const to = coordinate(resolutions.get(leg.toPlaceId));
+      const geometry = straightLine && from && to
+        ? { type: "LineString" as const, coordinates: [from, to] }
+        : leg.geometry;
+      if (!geometry) return [];
       const id = `route-leg:${state.dayId}:${leg.id}`;
       return [{
         type: "Feature" as const,
         id,
-        geometry: leg.geometry,
+        geometry,
         properties: {
           id,
           dayId: state.dayId,
@@ -221,6 +229,7 @@ export function routeGeometryFeatures(workspace: Workspace, selectedDayId: strin
           warning: leg.warning || "",
           calculatedAt: state.route?.calculatedAt || "",
           color: colors.get(dayNumber) || "#64748b",
+          straightLine,
         },
       }];
     }) ?? [];

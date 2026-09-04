@@ -126,7 +126,7 @@ export function inspectSkeletonEditDraftV3(plan: TravelPlanDocument, draft: Skel
   }
 
   if (expectedDays === null) issues.push("旅行总天数尚未明确。");
-  else if (allocatedDays !== expectedDays) issues.push(`当前分配 ${allocatedDays} 天，旅行总天数为 ${expectedDays} 天。`);
+  else if (allocatedDays < expectedDays) issues.push(`当前分配 ${allocatedDays} 天，旅行总天数为 ${expectedDays} 天。`);
 
   return {
     expectedDays,

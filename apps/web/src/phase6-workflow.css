@@ -90,12 +90,12 @@
 .phase6-day-balance.attention { color: #985b17; background: rgba(185,120,24,.08); }
 .phase6-day-balance b { margin-left: auto; }
 .phase6-stay-blocks { display: grid; gap: 8px; }
-.phase6-stay-block { display: grid; grid-template-columns: 46px minmax(120px,1fr) 88px minmax(150px,.8fr) minmax(120px,.7fr) auto; align-items: center; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.phase6-stay-block { display: grid; grid-template-columns: 46px minmax(120px,1fr) 88px auto; align-items: center; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
 .phase6-stay-block.selected { border-color: var(--primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 8%, transparent); }
 .phase6-stay-order { display: grid; justify-items: center; gap: 2px; }
 .phase6-stay-order > span { text-align: center; font-size: 16px; font-weight: 900; }
 .phase6-stay-order button,
-.phase6-stay-route button,
+.phase6-transfer-refresh,
 .phase6-stay-remove { display: inline-flex; align-items: center; justify-content: center; gap: 3px; padding: 4px 5px; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); background: var(--control); font-size: 8px; }
 .phase6-stay-drag { cursor: grab; }
 .phase6-stay-drag:active { cursor: grabbing; }
@@ -107,11 +107,21 @@
 .phase6-stay-copy em { color: var(--primary); font-size: 9px; font-style: normal; }
 .phase6-stay-copy span,
 .phase6-stay-copy small { color: var(--muted); font-size: 9px; }
-.phase6-stay-days,
-.phase6-stay-transfer { display: grid; gap: 4px; color: var(--muted); font-size: 8px; }
-.phase6-stay-days input,
-.phase6-stay-transfer select { width: 100%; min-width: 0; padding: 6px; border: 1px solid var(--border); border-radius: 7px; color: var(--text); background: var(--control); font-size: 10px; }
-.phase6-stay-route { display: grid; gap: 4px; color: var(--muted); font-size: 9px; }
+.phase6-stay-days { display: grid; gap: 4px; color: var(--muted); font-size: 8px; }
+.phase6-stay-days input { width: 100%; min-width: 0; padding: 6px; border: 1px solid var(--border); border-radius: 7px; color: var(--text); background: var(--control); font-size: 10px; }
+.phase6-transfer-connector { display: grid; grid-template-columns: 34px minmax(0,1fr) auto; align-items: center; min-height: 46px; gap: 8px; padding: 0 9px; color: var(--muted); cursor: pointer; }
+.phase6-transfer-connector.selected { color: var(--primary); background: color-mix(in srgb, var(--primary) 6%, transparent); }
+.phase6-transfer-connector.pending { cursor: default; }
+.phase6-transfer-rail { display: grid; height: 46px; justify-items: center; grid-template-rows: 1fr auto 1fr; color: var(--primary); }
+.phase6-transfer-rail span { width: 1px; min-height: 7px; background: repeating-linear-gradient(to bottom, var(--border) 0 3px, transparent 3px 6px); }
+.phase6-transfer-content { display: flex; min-width: 0; align-items: center; flex-wrap: wrap; gap: 5px 9px; }
+.phase6-transfer-control { display: contents; }
+.phase6-transfer-control select { width: min(150px, 100%); min-width: 112px; padding: 5px 7px; border: 1px solid var(--border); border-radius: 7px; color: var(--text); background: var(--control); font-size: 10px; }
+.phase6-transfer-origin,
+.phase6-transfer-metrics { color: var(--muted); font-size: 9px; white-space: nowrap; }
+.phase6-transfer-origin { flex-basis: 100%; }
+.phase6-transfer-metrics { overflow: hidden; text-overflow: ellipsis; }
+.phase6-transfer-refresh { white-space: nowrap; }
 .phase6-stay-remove { color: #a53f35; }
 .phase6-add-area { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 0; color: var(--muted); font-size: 10px; }
 .phase6-omitted details { padding: 9px 11px; border: 1px dashed var(--border); border-radius: 10px; }
@@ -176,8 +186,7 @@
 .phase6-assistant .assistant-compose-zone-v4 { display: grid; gap: 6px; }
 
 @media (max-width: 1180px) {
-  .phase6-stay-block { grid-template-columns: 42px minmax(140px,1fr) 78px minmax(130px,1fr); }
-  .phase6-stay-route { grid-column: 2 / 4; }
+  .phase6-stay-block { grid-template-columns: 42px minmax(140px,1fr) 78px auto; }
   .phase6-stay-remove { grid-column: 4; }
   .phase6-flow-nav button b { font-size: 10px; }
 }
@@ -192,9 +201,10 @@
   .phase6-candidate-card { grid-template-columns: 1fr; }
   .phase6-candidate-controls { min-width: 0; }
   .phase6-stay-block { grid-template-columns: 42px minmax(0,1fr) 80px; }
-  .phase6-stay-transfer,
-  .phase6-stay-route { grid-column: 2 / 4; }
   .phase6-stay-remove { grid-column: 2 / 4; justify-self: start; }
+  .phase6-transfer-connector { grid-template-columns: 27px minmax(0,1fr) auto; padding: 0 4px; }
+  .phase6-transfer-content { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .phase6-transfer-origin { flex-basis: auto; }
   .phase6-blocking-card,
   .phase6-update-card { grid-template-columns: 1fr; }
   .phase6-update-card > svg { display: none; }
