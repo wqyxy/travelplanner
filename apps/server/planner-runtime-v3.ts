@@ -152,19 +152,24 @@ function interestCompletionSummary(resultRef: string | null | undefined) {
   return `兴趣点研究完成 · ${successful}/${total}${failure} · 新增 ${added} · 已定位 ${resolved}/${resolved + pending}`;
 }
 
+function dayMutationScope(dayIds: string[]): ProposalScope {
+  const ids = [...new Set(dayIds.filter(Boolean))];
+  if (!ids.length) throw new Error("局部行程 Action 缺少目标 Day，不能自动扩大为整趟 Scope。");
+  return ids.length === 1 ? { type: "day", id: ids[0] } : { type: "days", ids };
+}
+
 function actionScope(actionType: AiActionType, targetIds: string[], parameters: Record<string, unknown>): ProposalScope {
   if (actionType.startsWith("requirements.")) return { type: "trip", id: null };
   if (actionType.startsWith("destination.") || actionType.startsWith("interest.")) return { type: "candidate_pool", id: null };
   if (actionType === "itinerary.day.optimize") {
-    const id = targetIds[0] || (typeof parameters.dayId === "string" ? parameters.dayId : "");
-    if (!id) throw new Error("单日 AI Action 缺少目标 Day，不能自动升级为整趟旅行 Scope。");
+    const parameterIds = Array.isArray(parameters.dayIds) ? parameters.dayIds.filter((value): value is string => typeof value === "string") : [];
+    const id = targetIds[0] || (typeof parameters.dayId === "string" ? parameters.dayId : parameterIds.length === 1 ? parameterIds[0] : "");
+    if (!id) throw new Error("单日优化缺少目标 Day，不能自动扩大为整趟 Scope。");
     return { type: "day", id };
   }
   if (actionType === "itinerary.refine" || actionType === "itinerary.detail.update") {
-    const ids = Array.isArray(parameters.dayIds) ? parameters.dayIds.filter((value): value is string => typeof value === "string") : [];
-    const unique = [...new Set([...targetIds, ...ids])];
-    if (unique.length === 1) return { type: "day", id: unique[0] };
-    return { type: "trip", id: null };
+    const parameterIds = Array.isArray(parameters.dayIds) ? parameters.dayIds.filter((value): value is string => typeof value === "string") : [];
+    return dayMutationScope([...targetIds, ...parameterIds, ...(typeof parameters.dayId === "string" ? [parameters.dayId] : [])]);
   }
   return { type: "trip", id: null };
 }
@@ -1238,7 +1243,7 @@ export class TravelPlannerRuntimeV3 {
       this.emit("travel.document.changed", { tripId: action.tripId, generation: written.generation, changedDayIds: result.affectedDayIds });
       return;
     }
-    const scope = result.affectedDayIds.length === 1 ? { type: "day" as const, id: result.affectedDayIds[0] } : { type: "trip" as const, id: null };
+    const scope = dayMutationScope(result.affectedDayIds);
     return this.createProposalForAction(action, result.title, result.explanation, replacement.commands, scope, result.affectedDayIds);
   }
 
