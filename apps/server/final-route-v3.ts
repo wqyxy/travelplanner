@@ -140,17 +140,26 @@ export function ensureFinalRouteV3(plan: TravelPlanDocument): TravelPlanDocument
 }
 
 export function syncFinalRouteForLegacyWriteV3(before: TravelPlanDocument, after: TravelPlanDocument): TravelPlanDocument {
-  if (after.finalRoute.version === 1) return clone(after);
-  if (before.finalRoute.version === 1) {
-    const preserved = TravelPlanDocumentSchema.parse({ ...clone(after), finalRoute: clone(before.finalRoute) });
-    return TravelPlanDocumentSchema.parse({ ...preserved, days: deriveFinalRouteDaysV3(preserved), planningState: undefined });
+  if (before.finalRoute.version === 1 || after.finalRoute.version === 1) {
+    const route = after.finalRoute.version === 1 ? clone(after.finalRoute) : clone(before.finalRoute);
+    const routeOwned = TravelPlanDocumentSchema.parse({
+      ...clone(after),
+      finalRoute: { version: 1, nodes: route.nodes },
+    });
+    return TravelPlanDocumentSchema.parse({
+      ...routeOwned,
+      days: deriveFinalRouteDaysV3(routeOwned),
+      planningState: undefined,
+    });
   }
-  const daysChanged = JSON.stringify(before.days) !== JSON.stringify(after.days);
-  const candidatesChanged = JSON.stringify(before.candidates) !== JSON.stringify(after.candidates);
-  if (!daysChanged && !(before.days.length === 0 && after.days.length === 0 && candidatesChanged)) return materializeLegacyFinalRouteV3(after);
-  return TravelPlanDocumentSchema.parse({
+
+  const legacyBase = TravelPlanDocumentSchema.parse({
     ...clone(after),
-    finalRoute: { version: 0, nodes: deriveFinalRouteNodesFromLegacyContentV3(after) },
+    finalRoute: { version: 0, nodes: [] },
+  });
+  return TravelPlanDocumentSchema.parse({
+    ...legacyBase,
+    finalRoute: { version: 0, nodes: deriveFinalRouteNodesFromLegacyContentV3(legacyBase) },
   });
 }
 
