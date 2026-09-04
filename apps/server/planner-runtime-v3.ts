@@ -216,6 +216,13 @@ function proposalDiff(commands: PlanCommand[], effects: ReturnType<typeof applyP
     if (command.type === "update_place") return `更新 Place：${command.placeId}`;
     if (command.type === "set_candidate_preference") return `调整 Candidate preference：${command.candidateId}`;
     if (command.type === "bulk_set_candidate_preference") return `批量调整 ${command.candidateIds.length} 个 Candidate`;
+    if (command.type === "add_final_route_node") return `最终线路新增节点：${command.node.placeId}`;
+    if (command.type === "remove_final_route_node") return `最终线路移除节点：${command.nodeId}`;
+    if (command.type === "move_final_route_node") return `最终线路移动节点：${command.nodeId}`;
+    if (command.type === "set_final_route_status") return `最终线路调整状态：${command.nodeId}`;
+    if (command.type === "set_final_route_boundary") return `最终线路调整日程分界：${command.nodeId}`;
+    if (command.type === "set_final_route_transport") return `最终线路调整交通：${command.nodeId}`;
+    if (command.type === "add_final_route_night") return `最终线路多一晚：${command.nodeId}`;
     if (command.type === "set_day_anchor") return `设置 Day Anchor：${command.dayId}`;
     if (command.type === "add_day_stop") return `Day ${command.dayId} 新增 Stop`;
     if (command.type === "remove_day_stop") return `删除 Stop：${command.stopId}`;
@@ -1404,7 +1411,21 @@ export class TravelPlannerRuntimeV3 {
     const plan = markImpact(trip.plan, applied.plan);
     const written = this.options.store.writePlan(tripId, plan, expectedGeneration, { source: "command", summary: "编辑旅行计划" });
     this.emit("travel.document.changed", { tripId, generation: written.generation, changedDayIds: applied.effects.changedDayIds });
-    void this.resolveChangedPlaces(tripId, applied.effects.changedPlaceIds, written.generation);
+    const hasFinalRouteMutation = commands.some((command) => command.type.startsWith("set_final_route_")
+      || command.type === "add_final_route_node"
+      || command.type === "remove_final_route_node"
+      || command.type === "move_final_route_node"
+      || command.type === "add_final_route_night");
+    const resolution = this.resolveChangedPlaces(tripId, applied.effects.changedPlaceIds, written.generation);
+    if (hasFinalRouteMutation && applied.effects.routeDirtyDayIds.length) {
+      void resolution.finally(() => {
+        if (this.options.store.requireTrip(tripId).contentGeneration === written.generation) {
+          this.startRouteBatch(tripId, written.generation, applied.effects.routeDirtyDayIds);
+        }
+      });
+    } else {
+      void resolution;
+    }
     return { ...applied, plan, trip: written.trip, generation: written.generation, version: written.version };
   }
 

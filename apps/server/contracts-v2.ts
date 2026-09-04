@@ -44,6 +44,32 @@ export const TransportSchema = z.object({
 }).strict();
 export type Transport = z.infer<typeof TransportSchema>;
 
+export const FinalRouteNodeStatusSchema = z.enum(["normal", "tentative", "no_go"]);
+export type FinalRouteNodeStatus = z.infer<typeof FinalRouteNodeStatusSchema>;
+export const FinalRouteNodeSchema = z.object({
+  id: IdSchema,
+  placeId: IdSchema,
+  status: FinalRouteNodeStatusSchema,
+  endsDay: z.boolean(),
+  transportFromPrevious: TransportSchema.nullable(),
+  activity: z.string().trim().min(1).max(1200).nullable(),
+  period: PeriodSchema.nullable(),
+  scheduleText: z.string().trim().min(1).max(2000).nullable(),
+  startTime: TimeSchema.nullable(),
+  endTime: TimeSchema.nullable(),
+  durationMinutes: z.number().int().min(0).nullable(),
+  scheduleVerification: VerificationSchema.nullable(),
+  costNote: z.string().max(1000).nullable(),
+  costVerification: VerificationSchema.nullable(),
+  notes: z.string().max(2000).nullable(),
+}).strict();
+export type FinalRouteNode = z.infer<typeof FinalRouteNodeSchema>;
+export const FinalRouteSchema = z.object({
+  version: z.union([z.literal(0), z.literal(1)]).default(1),
+  nodes: z.array(FinalRouteNodeSchema).max(1000),
+}).strict();
+export type FinalRoute = z.infer<typeof FinalRouteSchema>;
+
 export const PlaceKindSchema = z.enum(["city", "attraction", "lodging", "meal", "airport", "station", "port", "stop", "waypoint"]);
 export type PlaceKind = z.infer<typeof PlaceKindSchema>;
 export const PlaceSchema = z.object({
@@ -165,6 +191,7 @@ const DayObjectSchema = z.object({
   title: TextSchema.max(300),
   stayBlockId: IdSchema.optional(),
   transferMode: TransportModeSchema.default("none"),
+  endTransportFromPrevious: TransportSchema.nullable().optional(),
   detailLevel: z.enum(["planned", "detailed"]),
   detailStatus: z.enum(["ready", "needs_review"]).nullable(),
   startAnchor: DayAnchorSchema,
@@ -191,6 +218,7 @@ function addDocumentIssues(value: {
   trip: TripFacts;
   places: Place[];
   candidates: TripCandidate[];
+  finalRoute: FinalRoute;
   days: Day[];
   planningState?: PlanningState;
 }, context: z.RefinementCtx) {
@@ -198,6 +226,13 @@ function addDocumentIssues(value: {
   for (const [index, place] of value.places.entries()) {
     if (placeIds.has(place.id)) context.addIssue({ code: "custom", path: ["places", index, "id"], message: "Place ID 不能重复。" });
     placeIds.add(place.id);
+  }
+
+  const finalRouteNodeIds = new Set<string>();
+  for (const [index, node] of value.finalRoute.nodes.entries()) {
+    if (finalRouteNodeIds.has(node.id)) context.addIssue({ code: "custom", path: ["finalRoute", "nodes", index, "id"], message: "最终线路节点 ID 不能重复。" });
+    finalRouteNodeIds.add(node.id);
+    if (!placeIds.has(node.placeId)) context.addIssue({ code: "custom", path: ["finalRoute", "nodes", index, "placeId"], message: `最终线路引用未知 Place：${node.placeId}` });
   }
 
   const candidateIds = new Set<string>();
@@ -275,6 +310,7 @@ export const TravelPlanDocumentSchema = z.object({
   trip: TripFactsSchema,
   places: z.array(PlaceSchema),
   candidates: z.array(TripCandidateSchema),
+  finalRoute: FinalRouteSchema.default({ version: 0, nodes: [] }),
   days: z.array(DaySchema),
   planningState: PlanningStateSchema.optional(),
   warnings: z.array(TextSchema.max(700)).max(100),
@@ -300,6 +336,7 @@ export const emptyTravelPlan = (): TravelPlanDocument => TravelPlanDocumentSchem
   },
   places: [],
   candidates: [],
+  finalRoute: { version: 0, nodes: [] },
   days: [],
   warnings: [],
 });
@@ -473,6 +510,13 @@ export const PlanCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("remove_candidate_tree"), candidateId: IdSchema }).strict(),
   z.object({ type: z.literal("update_candidate"), candidateId: IdSchema, changes: CandidateChangesSchema }).strict(),
   z.object({ type: z.literal("update_place"), placeId: IdSchema, changes: PlaceSemanticChangesSchema }).strict(),
+  z.object({ type: z.literal("add_final_route_node"), index: z.number().int().min(0), node: FinalRouteNodeSchema }).strict(),
+  z.object({ type: z.literal("remove_final_route_node"), nodeId: IdSchema }).strict(),
+  z.object({ type: z.literal("move_final_route_node"), nodeId: IdSchema, targetIndex: z.number().int().min(0) }).strict(),
+  z.object({ type: z.literal("set_final_route_status"), nodeId: IdSchema, status: FinalRouteNodeStatusSchema }).strict(),
+  z.object({ type: z.literal("set_final_route_boundary"), nodeId: IdSchema, endsDay: z.boolean() }).strict(),
+  z.object({ type: z.literal("set_final_route_transport"), nodeId: IdSchema, transportFromPrevious: TransportSchema.nullable() }).strict(),
+  z.object({ type: z.literal("add_final_route_night"), nodeId: IdSchema, newNodeId: IdSchema }).strict(),
   z.object({ type: z.literal("set_day_anchor"), dayId: IdSchema, anchor: z.enum(["start", "end"]), placeId: IdSchema.nullable(), label: z.string().trim().min(1).max(300).nullable(), notes: z.string().max(2000).nullable() }).strict(),
   z.object({ type: z.literal("add_day_stop"), dayId: IdSchema, index: z.number().int().min(0), stop: DayStopSchema }).strict(),
   z.object({ type: z.literal("update_day_stop"), stopId: IdSchema, changes: DayStopChangesSchema }).strict(),

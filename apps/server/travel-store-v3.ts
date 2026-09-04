@@ -23,6 +23,7 @@ import {
 import { actionRegistration } from "./ai-registries-v3.js";
 import { parseActionParametersV3 } from "./ai-action-input-contracts-v3.js";
 import { normalizeRequirementsCtaParametersV3 } from "./requirements-duration-v3.js";
+import { materializeLegacyFinalRouteV3, syncFinalRouteForLegacyWriteV3 } from "./final-route-v3.js";
 
 type SqliteModule = typeof import("node:sqlite");
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as SqliteModule;
@@ -51,7 +52,7 @@ const parse = <T>(value: unknown, fallback: T): T => {
   catch { return fallback; }
 };
 
-const parseTravelPlanJson = (value: unknown) => TravelPlanDocumentSchema.parse(parse(value, null));
+const parseTravelPlanJson = (value: unknown) => materializeLegacyFinalRouteV3(TravelPlanDocumentSchema.parse(parse(value, null)));
 const parseProposalJson = (value: unknown) => AiProposalSchema.parse(parse(value, null));
 
 export type TripStateV3 = "active" | "trashed";
@@ -91,7 +92,7 @@ export type AiTaskSnapshotV3 = { id: string; tripId: string; agent: AiTaskAgentV
 type RevisionInput = { source: string; summary: string };
 type WriteOptions = { keepPendingProposalId?: string; keepActionId?: string };
 type WriteWithinTransactionResult = { generation: number; version: number; updatedAt: string };
-type CanonicalChanges = { trip: boolean; candidateIds: Set<string>; placeIds: Set<string>; dayIds: Set<string> };
+type SavedPlanChanges = { trip: boolean; candidateIds: Set<string>; placeIds: Set<string>; dayIds: Set<string>; finalRouteNodeIds: Set<string> };
 
 function changedIds<T extends { id: string }>(before: T[], after: T[]) {
   const left = new Map(before.map((item) => [item.id, item]));
@@ -100,21 +101,22 @@ function changedIds<T extends { id: string }>(before: T[], after: T[]) {
   return new Set([...ids].filter((id) => stringify(left.get(id) ?? null) !== stringify(right.get(id) ?? null)));
 }
 
-function canonicalChanges(before: TravelPlanDocument, after: TravelPlanDocument): CanonicalChanges {
+function savedPlanChanges(before: TravelPlanDocument, after: TravelPlanDocument): SavedPlanChanges {
   return {
     trip: stringify(before.trip) !== stringify(after.trip),
     candidateIds: changedIds(before.candidates, after.candidates),
     placeIds: changedIds(before.places, after.places),
     dayIds: changedIds(before.days, after.days),
+    finalRouteNodeIds: changedIds(before.finalRoute.nodes, after.finalRoute.nodes),
   };
 }
 
-function scopeConflicts(scope: unknown, changes: CanonicalChanges, before: TravelPlanDocument) {
+function scopeConflicts(scope: unknown, changes: SavedPlanChanges, before: TravelPlanDocument) {
   if (!scope || typeof scope !== "object" || Array.isArray(scope)) return true;
   const value = scope as Record<string, unknown>;
   const type = String(value.type ?? "");
   const id = typeof value.id === "string" ? value.id : null;
-  if (type === "trip") return changes.trip || changes.candidateIds.size > 0 || changes.placeIds.size > 0 || changes.dayIds.size > 0;
+  if (type === "trip") return changes.trip || changes.candidateIds.size > 0 || changes.placeIds.size > 0 || changes.dayIds.size > 0 || changes.finalRouteNodeIds.size > 0;
   if (type === "candidate_pool") return changes.candidateIds.size > 0 || changes.placeIds.size > 0;
   if (type === "candidate") {
     if (!id) return true;
@@ -313,7 +315,7 @@ export class TravelStoreV3 {
 
   private rowToTrip(row: Row): TripSummaryV3 {
     const plan = parseTravelPlanJson(row.current_plan_json);
-    if (String(row.title) !== plan.trip.title) throw new Error("旅行标题索引与 canonical plan 不一致；已停止读取损坏状态。");
+    if (String(row.title) !== plan.trip.title) throw new Error("旅行标题索引与实际保存的计划不一致；已停止读取损坏状态。");
     const planLanguage: PlanLanguageV3 = row.plan_language === "zh" || row.plan_language === "en" || row.plan_language === "bilingual" ? row.plan_language : "bilingual";
     return { id: String(row.id), title: plan.trip.title, state: String(row.state) as TripStateV3, updatedAt: String(row.updated_at), planLanguage, contentGeneration: Number(row.content_generation), plan };
   }
@@ -356,13 +358,13 @@ export class TravelStoreV3 {
     const dayIds = new Set(plan.days.map((day) => day.id));
     for (const row of this.db.prepare("SELECT day_id FROM day_routes WHERE trip_id=?").all(tripId) as Row[]) {
       const routeDayId = String(row.day_id);
-      const canonicalDayId = routeDayId.startsWith("macro:") ? routeDayId.slice("macro:".length) : routeDayId;
-      if (!dayIds.has(canonicalDayId)) this.db.prepare("DELETE FROM day_routes WHERE trip_id=? AND day_id=?").run(tripId, routeDayId);
+      const savedDayId = routeDayId.startsWith("macro:") ? routeDayId.slice("macro:".length) : routeDayId;
+      if (!dayIds.has(savedDayId)) this.db.prepare("DELETE FROM day_routes WHERE trip_id=? AND day_id=?").run(tripId, routeDayId);
     }
   }
 
   private reconcilePendingState(tripId: string, before: TravelPlanDocument, after: TravelPlanDocument, oldGeneration: number, newGeneration: number, options: WriteOptions) {
-    const changes = canonicalChanges(before, after);
+    const changes = savedPlanChanges(before, after);
     const timestamp = now();
     for (const row of this.db.prepare("SELECT * FROM ai_proposals WHERE trip_id=? AND status='pending' AND base_generation=?").all(tripId, oldGeneration) as Row[]) {
       if (String(row.id) === options.keepPendingProposalId) continue;
@@ -391,12 +393,13 @@ export class TravelStoreV3 {
     if (!row) throw new Error("找不到这趟旅行。");
     if (Number(row.content_generation) !== expectedGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
     const before = parseTravelPlanJson(row.current_plan_json);
+    const nextPlan = syncFinalRouteForLegacyWriteV3(before, plan);
     const generation = expectedGeneration + 1;
     const updatedAt = now();
-    this.db.prepare("UPDATE trips SET current_plan_json=?,title=?,content_generation=?,updated_at=? WHERE id=?").run(stringify(plan), plan.trip.title, generation, updatedAt, id);
-    const version = this.insertRevision(id, plan, revision.source, revision.summary, updatedAt);
-    this.cleanupDerivedState(id, plan);
-    this.reconcilePendingState(id, before, plan, expectedGeneration, generation, options);
+    this.db.prepare("UPDATE trips SET current_plan_json=?,title=?,content_generation=?,updated_at=? WHERE id=?").run(stringify(nextPlan), nextPlan.trip.title, generation, updatedAt, id);
+    const version = this.insertRevision(id, nextPlan, revision.source, revision.summary, updatedAt);
+    this.cleanupDerivedState(id, nextPlan);
+    this.reconcilePendingState(id, before, nextPlan, expectedGeneration, generation, options);
     return { generation, version, updatedAt };
   }
 
@@ -691,8 +694,8 @@ export class TravelStoreV3 {
   setDayRoute(tripId: string, value: unknown, expectedGeneration: number) {
     const route = DayRouteSchema.parse(value); const trip = this.requireTrip(tripId);
     if (trip.contentGeneration !== expectedGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
-    const canonicalDayId = route.dayId.startsWith("macro:") ? route.dayId.slice("macro:".length) : route.dayId;
-    if (route.tripId !== tripId || !trip.plan.days.some((day) => day.id === canonicalDayId)) throw new Error("DayRoute 必须引用当前旅行中的 Day。");
+    const savedDayId = route.dayId.startsWith("macro:") ? route.dayId.slice("macro:".length) : route.dayId;
+    if (route.tripId !== tripId || !trip.plan.days.some((day) => day.id === savedDayId)) throw new Error("DayRoute 必须引用当前旅行中的 Day。");
     const prior = this.getDayRoute(tripId, route.dayId); const expectedVersion = prior ? prior.version + 1 : 1;
     if (route.version !== expectedVersion) throw new Error(`DayRoute version 必须为 ${expectedVersion}。`);
     this.db.prepare("INSERT INTO day_routes(trip_id,day_id,version,route_json,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(trip_id,day_id) DO UPDATE SET version=excluded.version,route_json=excluded.route_json,updated_at=excluded.updated_at").run(tripId, route.dayId, route.version, stringify(route), now());

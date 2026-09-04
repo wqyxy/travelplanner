@@ -35,6 +35,7 @@ const trip = {
   },
   places,
   candidates,
+  finalRoute: { version: 1, nodes: [] },
   days: [],
   warnings: [],
 } as TravelPlanDocument;

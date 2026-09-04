@@ -2,7 +2,7 @@ import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { DayRouteServiceV2, routeIsDirty } from "./day-route-v2.js";
+import { DayRouteServiceV2, dayRouteInputFingerprint, routeIsDirty } from "./day-route-v2.js";
 import { TravelStoreV2 } from "./travel-store-v2.js";
 
 const place = (id: string) => ({ id, nameZh: id, nameLocal: null, nameEn: null, kind: "attraction" as const, city: null, region: null, country: null, countryCode: null, approximate: false });
@@ -27,6 +27,20 @@ async function setup() {
 }
 
 describe("DayRouteServiceV2", () => {
+  it("includes the explicit arrival transport of the Day end in the route fingerprint", () => {
+    const day = {
+      id: "d-end-mode", dayNumber: 1, date: null, title: "Day", transferMode: "none" as const, detailLevel: "planned" as const, detailStatus: null,
+      startAnchor: { id: "start", placeId: "p1", label: null, notes: null },
+      stops: [],
+      endAnchor: { id: "end", placeId: "p2", label: null, notes: null },
+      endTransportFromPrevious: { mode: "walk" as const, durationMinutes: null, note: null, verification: { status: "unverified" as const, checkedAt: null } },
+    };
+    const places = new Map([["p1", place("p1")], ["p2", place("p2")]]);
+    const walking = dayRouteInputFingerprint(day, places, []);
+    const driving = dayRouteInputFingerprint({ ...day, endTransportFromPrevious: { ...day.endTransportFromPrevious, mode: "drive" as const } }, places, []);
+    expect(driving).not.toBe(walking);
+  });
+
   it("derives dirty state and stores a route", async () => {
     const { store, trip } = await setup();
     const service = new DayRouteServiceV2({ store, maps: { route: async () => ({ geometry: { type: "LineString", coordinates: [[2, 1], [4, 3]] }, distanceKm: 5, durationMinutes: 10, warning: null }) } });
@@ -60,6 +74,20 @@ describe("DayRouteServiceV2", () => {
     store.upsertPlaceResolution(trip.id, changed, trip.contentGeneration);
     expect(service.workspaceMacroRouteState(trip.id)[0].dirty).toBe(true);
     expect(service.workspaceRouteState(trip.id)[0].dirty).toBe(true);
+    store.close();
+  });
+
+  it("treats an empty same-place detail day as zero travel instead of a missing-mode warning", async () => {
+    const { store, trip } = await setup();
+    const next = structuredClone(trip.plan);
+    next.days[0].stops = [];
+    next.days[0].endAnchor.placeId = "p1";
+    next.days[0].endTransportFromPrevious = null;
+    const written = store.writePlan(trip.id, next, trip.contentGeneration);
+    const service = new DayRouteServiceV2({ store, maps: { route: async () => { throw new Error("provider must not run for a same-place stay day"); } } });
+    const route = await service.recalculate(trip.id, "d1", written.generation);
+    expect(route).toMatchObject({ status: "ready", distanceKm: 0, durationMinutes: 0, warnings: [] });
+    expect(route.legs).toEqual([]);
     store.close();
   });
 
