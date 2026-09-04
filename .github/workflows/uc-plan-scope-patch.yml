@@ -1,0 +1,39 @@
+name: UC Plan Scope Patch
+
+on:
+  push:
+    paths:
+      - '.github/workflows/uc-plan-scope-patch.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/user-control-correction
+          fetch-depth: 0
+      - name: Patch days scope compatibility
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('apps/server/plan-commands-v2.ts')
+          text = path.read_text()
+          old = '''  if (commands.some((command) => !commandTargetsDay(plan, command, scope.id))) throw new Error(`Proposal 命令超出 Day Scope：${scope.id}`);\n  return commands;'''
+          new = '''  if (scope.type === "day") {\n    if (commands.some((command) => !commandTargetsDay(plan, command, scope.id))) throw new Error(`Proposal 命令超出 Day Scope：${scope.id}`);\n    return commands;\n  }\n  const allowedDayIds = new Set(scope.ids);\n  const targetsAllowedDays = (command: PlanCommand) => {\n    if (command.type === "set_day_anchor" || command.type === "add_day_stop" || command.type === "update_day") return allowedDayIds.has(command.dayId);\n    if (command.type === "update_day_stop" || command.type === "remove_day_stop") {\n      const owner = existingStopOwner(plan, command.stopId);\n      return Boolean(owner && allowedDayIds.has(owner));\n    }\n    if (command.type === "move_day_stop") {\n      const owner = existingStopOwner(plan, command.stopId);\n      return Boolean(owner && allowedDayIds.has(owner) && allowedDayIds.has(command.targetDayId));\n    }\n    return false;\n  };\n  if (commands.some((command) => !targetsAllowedDays(command))) throw new Error("Proposal 命令超出 Days Scope。");\n  return commands;'''
+          if old not in text:
+              raise SystemExit('expected scope compatibility block not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          git diff --check
+      - name: Commit patch and remove workflow
+        run: |
+          rm .github/workflows/uc-plan-scope-patch.yml
+          git config user.name "wqyxy"
+          git config user.email "wqyxy@hotmail.com"
+          git add apps/server/plan-commands-v2.ts .github/workflows/uc-plan-scope-patch.yml
+          git commit -m "UC: support days scope in legacy command guard"
+          git push origin HEAD:codex/user-control-correction
