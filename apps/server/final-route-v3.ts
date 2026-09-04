@@ -5,7 +5,6 @@ import {
   type FinalRouteNode,
   type FinalRouteNodeStatus,
   type Transport,
-  type TransportMode,
   type TravelPlanDocument,
 } from "./contracts-v2.js";
 
@@ -25,22 +24,6 @@ function dateAt(plan: TravelPlanDocument, index: number) {
   return plan.trip.dates.start
     ? new Date(Date.parse(`${plan.trip.dates.start}T00:00:00Z`) + index * 86_400_000).toISOString().slice(0, 10)
     : null;
-}
-
-function unverifiedTransport(mode: TransportMode): Transport | null {
-  if (mode === "none") return null;
-  return {
-    mode,
-    durationMinutes: null,
-    note: null,
-    verification: { status: "unverified", checkedAt: null },
-  };
-}
-
-function legacyStatus(preference: TravelPlanDocument["candidates"][number]["preference"]): FinalRouteNodeStatus {
-  if (preference === "optional") return "tentative";
-  if (preference === "excluded") return "no_go";
-  return "normal";
 }
 
 function emptyNode(input: Pick<FinalRouteNode, "id" | "placeId" | "status" | "endsDay"> & Partial<Pick<FinalRouteNode, "transportFromPrevious">>): FinalRouteNode {
@@ -63,108 +46,31 @@ function emptyNode(input: Pick<FinalRouteNode, "id" | "placeId" | "status" | "en
   };
 }
 
-function nodeFromLegacyStop(stop: TravelPlanDocument["days"][number]["stops"][number]): FinalRouteNode {
-  return {
-    id: stop.id,
-    placeId: stop.placeId,
-    status: "normal",
-    endsDay: false,
-    transportFromPrevious: clone(stop.transportFromPrevious),
-    activity: stop.activity,
-    period: stop.period,
-    scheduleText: stop.scheduleText ?? null,
-    startTime: stop.startTime,
-    endTime: stop.endTime,
-    durationMinutes: stop.durationMinutes,
-    scheduleVerification: clone(stop.scheduleVerification),
-    costNote: stop.costNote,
-    costVerification: clone(stop.costVerification),
-    notes: stop.notes,
-  };
-}
+function currentFinalRoutePlanV3(planValue: TravelPlanDocument): TravelPlanDocument {
+  const plan = TravelPlanDocumentSchema.parse(clone(planValue));
+  if (plan.finalRoute.version === 1) return plan;
 
-function deriveFinalRouteNodesFromLegacyContentV3(plan: TravelPlanDocument): FinalRouteNode[] {
-  if (plan.days.length) {
-    const nodes: FinalRouteNode[] = [];
-    const firstDay = plan.days[0];
-    if (firstDay?.startAnchor.placeId && firstDay.startAnchor.placeId !== plan.trip.originPlaceId) {
-      nodes.push(emptyNode({
-        id: firstDay.startAnchor.id,
-        placeId: firstDay.startAnchor.placeId,
-        status: "normal",
-        endsDay: false,
-      }));
-    }
-
-    plan.days.forEach((day, dayIndex) => {
-      for (const stop of day.stops) nodes.push(nodeFromLegacyStop(stop));
-      if (!day.endAnchor.placeId) return;
-      nodes.push(emptyNode({
-        id: day.endAnchor.id,
-        placeId: day.endAnchor.placeId,
-        status: "normal",
-        endsDay: dayIndex < plan.days.length - 1,
-        transportFromPrevious: day.stops.length ? null : unverifiedTransport(day.transferMode),
-      }));
-    });
-    return nodes;
+  const isEmptyBootstrap = plan.finalRoute.nodes.length === 0
+    && plan.places.length === 0
+    && plan.candidates.length === 0
+    && plan.days.length === 0;
+  if (!isEmptyBootstrap) {
+    throw new Error("OLD_TEST_PLAN_UNSUPPORTED: 当前测试数据不再迁移，请清空旧旅行后重新开始。");
   }
 
-  return plan.candidates.map((candidate) => emptyNode({
-    id: candidate.id,
-    placeId: candidate.placeId,
-    status: legacyStatus(candidate.preference),
-    endsDay: false,
-  }));
-}
-
-export function deriveLegacyFinalRouteNodesV3(plan: TravelPlanDocument): FinalRouteNode[] {
-  if (plan.finalRoute.version === 1 || plan.finalRoute.nodes.length) return clone(plan.finalRoute.nodes);
-  return deriveFinalRouteNodesFromLegacyContentV3(plan);
+  return TravelPlanDocumentSchema.parse({
+    ...plan,
+    finalRoute: { version: 1, nodes: [] },
+  });
 }
 
 export function materializeLegacyFinalRouteV3(plan: TravelPlanDocument): TravelPlanDocument {
-  if (plan.finalRoute.version === 1 || plan.finalRoute.nodes.length) return clone(plan);
-  return TravelPlanDocumentSchema.parse({
-    ...clone(plan),
-    finalRoute: { version: 0, nodes: deriveFinalRouteNodesFromLegacyContentV3(plan) },
-  });
-}
-
-export function ensureFinalRouteV3(plan: TravelPlanDocument): TravelPlanDocument {
-  if (plan.finalRoute.version === 1) return clone(plan);
-  return TravelPlanDocumentSchema.parse({
-    ...clone(plan),
-    finalRoute: { version: 1, nodes: deriveLegacyFinalRouteNodesV3(plan) },
-  });
-}
-
-export function syncFinalRouteForLegacyWriteV3(before: TravelPlanDocument, after: TravelPlanDocument): TravelPlanDocument {
-  if (before.finalRoute.version === 1 || after.finalRoute.version === 1) {
-    const route = after.finalRoute.version === 1 ? clone(after.finalRoute) : clone(before.finalRoute);
-    const routeOwned = TravelPlanDocumentSchema.parse({
-      ...clone(after),
-      finalRoute: { version: 1, nodes: route.nodes },
-    });
-    return TravelPlanDocumentSchema.parse({
-      ...routeOwned,
-      days: deriveFinalRouteDaysV3(routeOwned),
-      planningState: undefined,
-    });
-  }
-
-  const legacyBase = TravelPlanDocumentSchema.parse({
-    ...clone(after),
-    finalRoute: { version: 0, nodes: [] },
-  });
-  return TravelPlanDocumentSchema.parse({
-    ...legacyBase,
-    finalRoute: { version: 0, nodes: deriveFinalRouteNodesFromLegacyContentV3(legacyBase) },
-  });
+  // Existing Store call site retained temporarily; old route data is not converted.
+  return currentFinalRoutePlanV3(plan);
 }
 
 export function activeFinalRouteNodesV3(plan: TravelPlanDocument) {
-  return ensureFinalRouteV3(plan).finalRoute.nodes.filter((node) => node.status === "normal");
+  return currentFinalRoutePlanV3(plan).finalRoute.nodes.filter((node) => node.status === "normal");
 }
 
 function placeName(plan: TravelPlanDocument, placeId: string | null) {
@@ -211,7 +117,7 @@ function dayHasDetails(nodes: FinalRouteNode[]) {
 }
 
 export function deriveFinalRouteDaysV3(planValue: TravelPlanDocument): Day[] {
-  const plan = ensureFinalRouteV3(planValue);
+  const plan = currentFinalRoutePlanV3(planValue);
   const active = plan.finalRoute.nodes.filter((node) => node.status === "normal");
   if (!active.length) return [];
 
@@ -273,14 +179,18 @@ export function deriveFinalRouteDaysV3(planValue: TravelPlanDocument): Day[] {
   return result;
 }
 
-export function migrateLegacyPlanToFinalRouteV3(plan: TravelPlanDocument, regenerateDays = true): TravelPlanDocument {
-  const withRoute = ensureFinalRouteV3(plan);
-  if (!regenerateDays) return withRoute;
+export function rebuildFinalRouteDaysV3(plan: TravelPlanDocument): TravelPlanDocument {
+  const base = currentFinalRoutePlanV3(plan);
   return TravelPlanDocumentSchema.parse({
-    ...withRoute,
-    days: deriveFinalRouteDaysV3(withRoute),
+    ...base,
+    days: deriveFinalRouteDaysV3(base),
     planningState: undefined,
   });
+}
+
+export function syncFinalRouteForLegacyWriteV3(_before: TravelPlanDocument, after: TravelPlanDocument): TravelPlanDocument {
+  // Existing Store call site retained temporarily. Old Candidate / Day data is never converted.
+  return rebuildFinalRouteDaysV3(after);
 }
 
 function changedDayIds(before: Day[], after: Day[]) {
@@ -294,7 +204,7 @@ function applyMutation(
   planValue: TravelPlanDocument,
   mutate: (nodes: FinalRouteNode[]) => void,
 ): FinalRouteMutationResultV3 {
-  const plan = ensureFinalRouteV3(planValue);
+  const plan = currentFinalRoutePlanV3(planValue);
   const beforeDays = clone(plan.days);
   const nodes = clone(plan.finalRoute.nodes);
   mutate(nodes);
@@ -302,13 +212,8 @@ function applyMutation(
     ...clone(plan),
     finalRoute: { version: 1, nodes },
   });
-  const days = deriveFinalRouteDaysV3(nextBase);
-  const next = TravelPlanDocumentSchema.parse({
-    ...nextBase,
-    days,
-    planningState: undefined,
-  });
-  return { plan: next, affectedDayIds: changedDayIds(beforeDays, days) };
+  const next = rebuildFinalRouteDaysV3(nextBase);
+  return { plan: next, affectedDayIds: changedDayIds(beforeDays, next.days) };
 }
 
 function requireNode(nodes: FinalRouteNode[], nodeId: string) {
