@@ -1,0 +1,43 @@
+name: UC Targeted Regression Gate
+
+on:
+  push:
+    branches:
+      - codex/user-control-correction
+    paths:
+      - .github/workflows/uc-targeted-tests.yml
+
+permissions:
+  contents: write
+
+jobs:
+  targeted:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/user-control-correction
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Run User Control targeted tests
+        run: >-
+          npx vitest run --config vitest.config.ts
+          apps/server/user-control-correction-v3.test.ts
+          apps/server/user-control-days-scope-v3.test.ts
+          apps/server/user-control-size-context-v3.test.ts
+          apps/server/replan-intent-v3.test.ts
+      - name: Remove one-shot workflow
+        if: success()
+        shell: bash
+        run: |
+          rm .github/workflows/uc-targeted-tests.yml
+          git config user.name "OpenAI"
+          git config user.email "noreply@openai.com"
+          git add .github/workflows/uc-targeted-tests.yml
+          git commit -m "UC7: complete targeted regression gate"
+          git push origin codex/user-control-correction
