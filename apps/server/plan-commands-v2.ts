@@ -12,6 +12,15 @@ import {
   type TripCandidate,
 } from "./contracts-v2.js";
 import type { TravelStoreV2, TripDetailV2 } from "./travel-store-v2.js";
+import {
+  addNightAfterFinalRouteNodeV3,
+  insertFinalRouteNodeV3,
+  moveFinalRouteNodeV3,
+  removeFinalRouteNodeV3,
+  setFinalRouteDayBoundaryV3,
+  setFinalRouteNodeStatusV3,
+  updateFinalRouteTransportV3,
+} from "./final-route-v3.js";
 
 type MutablePlan = TravelPlanDocument & { days: Day[] };
 type CommandRecord = Record<string, unknown>;
@@ -50,6 +59,7 @@ function allIds(plan: TravelPlanDocument) {
   return new Set([
     ...plan.places.map((place) => place.id),
     ...plan.candidates.map((candidate) => candidate.id),
+    ...plan.finalRoute.nodes.map((node) => node.id),
     ...plan.days.flatMap((day) => [day.id, day.startAnchor.id, day.endAnchor.id, ...day.stops.map((stop) => stop.id)]),
   ]);
 }
@@ -85,6 +95,13 @@ function collectTemporaryIds(records: CommandRecord[], mapper: ReturnType<typeof
       const stop = command.stop as Record<string, unknown> | undefined;
       mapper.register(stop?.id, `commands[${index}].stop.id`);
     }
+    if (command.type === "add_final_route_node") {
+      const node = command.node as Record<string, unknown> | undefined;
+      mapper.register(node?.id, `commands[${index}].node.id`);
+    }
+    if (command.type === "add_final_route_night") {
+      mapper.register(command.newNodeId, `commands[${index}].newNodeId`);
+    }
   }
 }
 
@@ -119,6 +136,7 @@ function dayRouteSignature(day: Day) {
     start: day.startAnchor.placeId,
     stops: day.stops.map((stop) => ({ id: stop.id, placeId: stop.placeId, mode: stop.transportFromPrevious?.mode ?? null })),
     end: day.endAnchor.placeId,
+    endMode: day.endTransportFromPrevious?.mode ?? null,
   });
 }
 
@@ -127,13 +145,20 @@ function markDayForReview(day: Day) {
 }
 
 function removeCandidates(plan: MutablePlan, candidateIds: Set<string>) {
-  const placeIds = new Set(plan.candidates.filter((candidate) => candidateIds.has(candidate.id)).map((candidate) => candidate.placeId));
+  const protectedPlaceIds = new Set(plan.finalRoute.nodes.map((node) => node.placeId));
+  const removableCandidates = new Set(plan.candidates
+    .filter((candidate) => candidateIds.has(candidate.id) && !protectedPlaceIds.has(candidate.placeId))
+    .map((candidate) => candidate.id));
+  const placeIds = new Set(plan.candidates.filter((candidate) => removableCandidates.has(candidate.id)).map((candidate) => candidate.placeId));
   const changedDays = new Set<string>();
   for (const day of plan.days) {
-    const nextStops = day.stops.filter((stop) => !(stop.candidateId && candidateIds.has(stop.candidateId)) && !placeIds.has(stop.placeId));
+    const nextStops = day.stops
+      .filter((stop) => !(stop.candidateId && removableCandidates.has(stop.candidateId)) && !placeIds.has(stop.placeId))
+      .map((stop) => stop.candidateId && candidateIds.has(stop.candidateId) ? { ...stop, candidateId: null } : stop);
     const startRemoved = Boolean(day.startAnchor.placeId && placeIds.has(day.startAnchor.placeId));
     const endRemoved = Boolean(day.endAnchor.placeId && placeIds.has(day.endAnchor.placeId));
-    if (nextStops.length === day.stops.length && !startRemoved && !endRemoved) continue;
+    const stopLinksChanged = nextStops.some((stop, index) => stop.candidateId !== day.stops[index]?.candidateId);
+    if (nextStops.length === day.stops.length && !startRemoved && !endRemoved && !stopLinksChanged) continue;
     day.stops = nextStops;
     if (startRemoved) day.startAnchor = { ...day.startAnchor, placeId: null, label: null };
     if (endRemoved) day.endAnchor = { ...day.endAnchor, placeId: null, label: null };
@@ -184,6 +209,7 @@ function clearUnreferencedPlaces(plan: MutablePlan) {
     ...[plan.trip.originPlaceId].filter((id): id is string => Boolean(id)),
     ...plan.trip.destinationPlaceIds,
     ...plan.candidates.map((candidate) => candidate.placeId),
+    ...plan.finalRoute.nodes.map((node) => node.placeId),
     ...plan.days.flatMap((day) => [
       ...[day.startAnchor.placeId, day.endAnchor.placeId].filter((id): id is string => Boolean(id)),
       ...day.stops.map((stop) => stop.placeId),
@@ -228,6 +254,11 @@ function commandTargetsDay(plan: TravelPlanDocument, command: PlanCommand, dayId
   if (command.type === "update_day_stop" || command.type === "remove_day_stop") return existingStopOwner(plan, command.stopId) === dayId;
   if (command.type === "move_day_stop") return existingStopOwner(plan, command.stopId) === dayId && command.targetDayId === dayId;
   return false;
+}
+
+function applyFinalRouteResult(plan: MutablePlan, result: { plan: TravelPlanDocument; affectedDayIds: string[] }, changedDays: Set<string>) {
+  Object.assign(plan, clone(result.plan));
+  for (const dayId of result.affectedDayIds) changedDays.add(dayId);
 }
 
 export function assertCommandsWithinScope(plan: TravelPlanDocument, scopeValue: unknown, commandsValue: unknown) {
@@ -336,6 +367,38 @@ export function applyPlanCommands(current: TravelPlanDocument, commandValues: un
         const id = mapper.resolve(command.placeId);
         Object.assign(requirePlace(plan, id), clone(command.changes));
         explicitChangedPlaces.add(id);
+        break;
+      }
+      case "add_final_route_node": {
+        const routeNode = clone(command.node);
+        routeNode.id = mapper.resolve(routeNode.id);
+        routeNode.placeId = mapper.resolve(routeNode.placeId);
+        requirePlace(plan, routeNode.placeId);
+        applyFinalRouteResult(plan, insertFinalRouteNodeV3(plan, command.index, routeNode), explicitlyChangedDays);
+        break;
+      }
+      case "remove_final_route_node": {
+        applyFinalRouteResult(plan, removeFinalRouteNodeV3(plan, mapper.resolve(command.nodeId)), explicitlyChangedDays);
+        break;
+      }
+      case "move_final_route_node": {
+        applyFinalRouteResult(plan, moveFinalRouteNodeV3(plan, mapper.resolve(command.nodeId), command.targetIndex), explicitlyChangedDays);
+        break;
+      }
+      case "set_final_route_status": {
+        applyFinalRouteResult(plan, setFinalRouteNodeStatusV3(plan, mapper.resolve(command.nodeId), command.status), explicitlyChangedDays);
+        break;
+      }
+      case "set_final_route_boundary": {
+        applyFinalRouteResult(plan, setFinalRouteDayBoundaryV3(plan, mapper.resolve(command.nodeId), command.endsDay), explicitlyChangedDays);
+        break;
+      }
+      case "set_final_route_transport": {
+        applyFinalRouteResult(plan, updateFinalRouteTransportV3(plan, mapper.resolve(command.nodeId), clone(command.transportFromPrevious)), explicitlyChangedDays);
+        break;
+      }
+      case "add_final_route_night": {
+        applyFinalRouteResult(plan, addNightAfterFinalRouteNodeV3(plan, mapper.resolve(command.nodeId), mapper.resolve(command.newNodeId)), explicitlyChangedDays);
         break;
       }
       case "set_day_anchor": {

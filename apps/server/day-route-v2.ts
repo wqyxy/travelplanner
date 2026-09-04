@@ -39,15 +39,20 @@ function hash(value: unknown) {
 
 function nodes(day: Day): RouteNode[] {
   const values: RouteNode[] = [];
-  if (day.startAnchor.placeId) values.push({ id: day.startAnchor.id, placeId: day.startAnchor.placeId, modeFromPrevious: "none" });
-  for (const stop of day.stops) values.push({ id: stop.id, placeId: stop.placeId, modeFromPrevious: stop.transportFromPrevious?.mode ?? "none" });
-  // DayAnchor has no transport field. Reuse only an explicit last-stop mode;
-  // without one this deliberately becomes attention rather than an implicit walk.
+  const push = (node: RouteNode) => {
+    if (values.at(-1)?.placeId === node.placeId) return;
+    values.push(node);
+  };
+  if (day.startAnchor.placeId) push({ id: day.startAnchor.id, placeId: day.startAnchor.placeId, modeFromPrevious: "none" });
+  for (const stop of day.stops) push({ id: stop.id, placeId: stop.placeId, modeFromPrevious: stop.transportFromPrevious?.mode ?? "none" });
+  // New final-route days can carry the explicit mode used to arrive at the end anchor.
+  // Older days keep the previous fallback so existing saved trips remain readable.
   if (day.endAnchor.placeId) {
-    values.push({
+    push({
       id: day.endAnchor.id,
       placeId: day.endAnchor.placeId,
-      modeFromPrevious: day.stops.length ? day.stops.at(-1)?.transportFromPrevious?.mode ?? "none" : day.transferMode,
+      modeFromPrevious: day.endTransportFromPrevious?.mode
+        ?? (day.stops.length ? day.stops.at(-1)?.transportFromPrevious?.mode ?? "none" : day.transferMode),
     });
   }
   return values;

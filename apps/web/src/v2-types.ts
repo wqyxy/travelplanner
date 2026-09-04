@@ -46,6 +46,25 @@ export type TripCandidate = {
 export type Period = "morning" | "afternoon" | "evening" | "night" | "all_day";
 export type TransportMode = "walk" | "drive" | "bike" | "transit" | "rail" | "flight" | "ferry" | "none";
 export type Transport = { mode: TransportMode; durationMinutes: number | null; note: string | null; verification: Verification };
+export type FinalRouteNodeStatus = "normal" | "tentative" | "no_go";
+export type FinalRouteNode = {
+  id: string;
+  placeId: string;
+  status: FinalRouteNodeStatus;
+  endsDay: boolean;
+  transportFromPrevious: Transport | null;
+  activity: string | null;
+  period: Period | null;
+  scheduleText: string | null;
+  startTime: string | null;
+  endTime: string | null;
+  durationMinutes: number | null;
+  scheduleVerification: Verification | null;
+  costNote: string | null;
+  costVerification: Verification | null;
+  notes: string | null;
+};
+export type FinalRoute = { version: 0 | 1; nodes: FinalRouteNode[] };
 export type DayAnchor = { id: string; placeId: string | null; label: string | null; notes: string | null };
 export type DayStop = {
   id: string;
@@ -70,6 +89,7 @@ export type Day = {
   title: string;
   stayBlockId?: string;
   transferMode: TransportMode;
+  endTransportFromPrevious?: Transport | null;
   detailLevel: "planned" | "detailed";
   detailStatus: "ready" | "needs_review" | null;
   startAnchor: DayAnchor;
@@ -86,6 +106,7 @@ export type TravelPlanDocument = {
   trip: TripFacts;
   places: Place[];
   candidates: TripCandidate[];
+  finalRoute?: FinalRoute;
   days: Day[];
   planningState?: PlanningState;
   warnings: string[];
@@ -204,6 +225,13 @@ export type PlanCommand =
   | { type: "remove_candidate_tree"; candidateId: string }
   | { type: "update_candidate"; candidateId: string; changes: Partial<Pick<TripCandidate, "aiReason" | "aiScore" | "suggestedDurationMinutes" | "tags">> }
   | { type: "update_place"; placeId: string; changes: Partial<Omit<Place, "id">> }
+  | { type: "add_final_route_node"; index: number; node: FinalRouteNode }
+  | { type: "remove_final_route_node"; nodeId: string }
+  | { type: "move_final_route_node"; nodeId: string; targetIndex: number }
+  | { type: "set_final_route_status"; nodeId: string; status: FinalRouteNodeStatus }
+  | { type: "set_final_route_boundary"; nodeId: string; endsDay: boolean }
+  | { type: "set_final_route_transport"; nodeId: string; transportFromPrevious: Transport | null }
+  | { type: "add_final_route_night"; nodeId: string; newNodeId: string }
   | { type: "set_day_anchor"; dayId: string; anchor: "start" | "end"; placeId: string | null; label: string | null; notes: string | null }
   | { type: "add_day_stop"; dayId: string; index: number; stop: DayStop }
   | { type: "update_day_stop"; stopId: string; changes: DayStopChanges }

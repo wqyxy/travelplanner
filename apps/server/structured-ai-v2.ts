@@ -56,11 +56,11 @@ const safeError = (value: unknown) => value instanceof Error ? value : new Error
 const PATCH_KEY = "__patch";
 const MAX_STRUCTURED_REPAIRS = 2;
 const FORBIDDEN_SCHEMA_KEYS = new Set(["allOf", "not", "if", "then", "else", "dependentRequired", "dependentSchemas"]);
-// Canonical Day keeps stayBlockId optional so old v3 documents remain readable.
+// Older Day documents may omit compatibility fields that newer saves can carry.
 // OpenAI structured output does not accept mixed required/optional objects, so the
-// transport schema requires this one field as nullable and normalization removes null.
-const NULLABLE_REQUIRED_TRANSPORT_FIELDS = new Set(["stayBlockId", "scheduleText"]);
-const OMIT_NULL_TRANSPORT_FIELDS = new Set(["stayBlockId"]);
+// transport schema requires these fields as nullable and normalization removes null where omission is meaningful.
+const NULLABLE_REQUIRED_TRANSPORT_FIELDS = new Set(["stayBlockId", "scheduleText", "endTransportFromPrevious"]);
+const OMIT_NULL_TRANSPORT_FIELDS = new Set(["stayBlockId", "endTransportFromPrevious"]);
 const TRIP_CANDIDATE_TRANSPORT_KEYS = [
   "id",
   "placeId",
