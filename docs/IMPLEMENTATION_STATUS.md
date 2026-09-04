@@ -3,30 +3,13 @@
 > 更新时间：2026-09-04
 > 当前分支：`codex/user-control-correction`
 > 当前最高优先级：**User Control Correction / 用户控制权修正**
-> 当前状态：**施工中，暂不合并 main；原五步最终综合 Gate 暂缓，待本专项收口后重新定义。**
+> 当前状态：**代码与专项文档已收口；Draft PR #5 暂不合并 main。专项 targeted Gate 已通过，完整综合 Gate 待用户确认。**
 
 ---
 
-# 1. 为什么插入 User Control Correction
+# 1. 当前产品原则
 
-五步规划流程此前已经完成大量实现与真实 E2E，但运行中暴露出一个更底层的产品问题：
-
-```text
-系统把“旅行计划是否合理”
-当成了
-“数据是否允许保存”
-```
-
-这会导致：
-
-- 未定位地点无法继续规划；
-- `excluded` 一旦出现在 Day 中就失败或被自动删除；
-- must-go 未覆盖会阻止保存；
-- Planning Area 被强制等同于 `Place.kind=city`；
-- 时间不完整、重叠、跨夜、天数不一致会被当成非法数据；
-- AI / 代码会为了满足规则自动修正用户已经接受的内容。
-
-现已确认新的产品原则：
+TravelPlanner 已从“系统保证旅行计划合理”调整为：
 
 ```text
 Canonical = 用户当前已经接受的旅行方案
@@ -44,13 +27,11 @@ Canonical 只保证：
 Provider / 实时事实没有被伪造
 ```
 
-Canonical **不再负责保证旅行计划合理**。
+Canonical **不负责保证旅行计划符合系统启发式**。日期、天数、时间、地点归属、must-go、excluded、未定位等规划问题默认允许保存，由 Advisory + AI Proposal 负责提醒和建议，最终取舍属于用户。
 
 ---
 
-# 2. 历史五步结果
-
-以下历史成果继续保留，不回滚：
+# 2. 历史五步成果继续保留
 
 ```text
 1 旅行需求
@@ -60,7 +41,7 @@ Canonical **不再负责保证旅行计划合理**。
 5 每日行程
 ```
 
-历史已实现能力包括：
+历史已实现能力继续保留：
 
 - 五步 WorkflowStep 与四 ConversationStage 映射；
 - PlanningRole；
@@ -75,34 +56,32 @@ Canonical **不再负责保证旅行计划合理**。
 - Repair #8 跨步骤 replan 用户意图恢复；
 - private_data 边界与 fresh-v3 fail-closed。
 
-此前真实新西兰 20 天旅行的 E2E 证据继续作为历史验证记录保留，不删除 private_data，也不清理历史 Action / Task。
+此前真实新西兰 20 天旅行的 E2E 证据继续作为历史记录保留，不删除 private_data，也不清理历史 Action / Task。
 
-但旧的“最终综合 Gate”中包含正在被本专项主动废止的规划硬约束，因此旧 Gate **不能直接作为当前验收标准**。
+旧最终 Gate 中包含正在被本专项主动废止的 planning blocker，因此旧 Gate **不能直接作为当前验收标准**。
 
 ---
 
-# 3. User Control Correction 当前已实施
+# 3. User Control Correction 已完成
 
-详细施工记录见：
+详细设计和实施记录：
 
 ```text
 docs/USER_CONTROL_CORRECTION.md
 docs/USER_CONTROL_CORRECTION_PROGRESS.md
 ```
 
-当前已完成的核心变化：
+## 3.1 Canonical / Structural
 
-## Canonical / Structural
-
-- 日期反向、天数不一致、时间不完整、跨夜、duration mismatch、overlap 等不再作为 canonical blocker。
-- `scheduleText` 已进入 DayStop。
+- 日期反向、日期与天数不一致、Day 数量不一致、时间不完整、疑似跨夜、duration mismatch、overlap 等不再作为 canonical blocker。
+- `scheduleText` 已进入 DayStop / PlanCommand / AI detail contracts / Step 5 UI。
 - PlanningRole 与 PlaceKind 已解耦。
 - Candidate 可以暂时没有 Planning Area parent。
-- semantic duplicate 允许保存并交给 Advisory。
+- semantic/name duplicate 允许保存并由 Advisory 提醒。
 - exact same canonical Place ID 仍只能对应一个 Candidate。
 - 未知引用、重复 ID、父引用缺失/自引用/循环、Stop Candidate/Place 不一致仍硬失败。
 
-## Advisory
+## 3.2 Advisory
 
 新增纯派生：
 
@@ -110,116 +89,129 @@ docs/USER_CONTROL_CORRECTION_PROGRESS.md
 apps/server/planning-advisories-v3.ts
 ```
 
-Advisory 不写 canonical、不写 Revision、不持久化 ignored 状态；workspace 每次根据当前 plan / resolution 重新计算。
+Advisory：
 
-## Candidate / Planning Area
+- 不写 canonical；
+- 不写 Revision；
+- 不持久化 ignored 状态；
+- `/workspace` 每次根据当前 plan / resolution 重新计算；
+- 前端在右侧步骤区域统一消费。
 
-- Planning Area helper 改为 planningRole 驱动；
-- legacy 缺失 planningRole 时仍使用历史 city fallback；
-- semantic duplicate 不再静默过滤；
+## 3.3 Candidate / Planning Area
+
+- Planning Area helper 已改为 planningRole 驱动；
+- legacy 缺失 planningRole 时仍使用 `city -> planning_area / 其他 -> detail_interest` compatibility fallback，但只用于旧数据读取；
+- 新数据的 PlanningRole 与 PlaceKind 完全独立；
+- 手工新增地点会原样保存用户选择的 `draft.placeKind`；
+- semantic duplicate 不再静默过滤或在 PlanCommand 层硬拒绝；
 - `excluded` 不再意味着不可见或不可排入。
 
-## Itinerary / PlanCommand
+## 3.4 Itinerary / PlanCommand / Route
 
-- Detailed apply 不再因为 unresolved / excluded / city Stop / area membership / overlap / must-go coverage 拒绝。
-- preference 改成 `excluded` 不再自动删除已经排入的 Stop。
+- Detailed apply/runtime 不再因为 unresolved / excluded / city Stop / area membership / overlap / must-go coverage 拒绝。
+- preference 改成 `excluded` 不会自动删除已经排入的 Stop。
 - 普通 PlanCommand 不再自动重写 Day 日期。
-- semantic duplicate add_candidate 不再被 PlanCommand 层拒绝。
+- 未定位 Place 仍可进入 Day/Stop；`DayStop.placeId` 仍必须引用真实 canonical Place。
+- Route 保持 best-effort：未定位端点返回 attention/warning，不伪造 Provider 距离、时长、geometry 或 Provider ID。
 
-## UI
+## 3.5 UI
 
 - 五步导航始终可以进入；
-- Advisory 在右侧步骤区域统一显示；
 - Step 3 的天数不一致、must-go 省略、excluded 等改为提醒而非保存门槛；
-- Step 4 可继续研究/补充，不再要求 Step 3 完全 ready；
-- Step 5 未定位、上游需更新等不再隐藏生成入口；
-- 自然时间 / 部分时间已可展示；
+- Step 4 可继续研究/补充，父 Planning Area 可为空，不要求 Step 3 完全 ready；
+- Step 5 在未定位、上游需更新、部分/自然时间情况下仍可继续编辑或生成；
+- `scheduleText` 已展示；
 - 保持“地图/时间轴展示 + 右侧唯一操作入口”的 UI 原则，不做布局重构。
 
-## AI Scope
+## 3.6 AI Scope
 
-已增加：
+已新增：
 
 ```text
 { type: "days", ids: [...] }
 ```
 
-用于表达多日局部写 Scope；Scope Policy 已能拒绝范围外 Day / Stop 修改和局部 Scope 下的整趟 Day 重排。
+当前实现：
 
-## Repair #8
+- 单日 Detail/Refine 使用 Day Scope；
+- 多日 `itinerary.detail.update` / `itinerary.refine` 使用 Days Scope；
+- Scope Policy 会拒绝范围外 Day / Stop 修改；
+- 局部 Stop/Anchor/edit deterministic Action 记录最小 Day Scope；
+- 跨日 Stop move 使用 Days Scope；
+- `itinerary.day.reorder` 因实际改变整条 Day 顺序，保留 Trip Scope；
+- 全局 Generate / 明确 Replan / 全局 Repair / Verify 保留全局语义 Scope。
 
-继续保留用户明确数字指令的语义约束，并移除旧 90 天业务上限：
+Read Context 可以比 Mutation Scope 更宽；excluded 候选仍进入 AI read context，并通过 preference 告诉 AI 默认不要主动采用，而不是从上下文中隐藏。
+
+## 3.7 Repair #8
+
+用户明确数字指令继续作为语义约束：
 
 ```text
 120 天
 +120 天
 ```
 
-可以表达；导致负数 stayDays 的指令仍因结构无法成立而拒绝。
+已支持多位数字并删除旧 90 天业务上限；只有结果无法形成非负整数天数时才作为结构无效拒绝。
+
+## 3.8 旅行规模业务上限
+
+已移除会改变用户旅行表达能力的旧业务上限，包括前置合同中的：
+
+```text
+365 天
+90 Day
+80 Stop
+1800 Candidate / Place
+```
+
+继续保留明确的**单次技术资源保护**，例如：
+
+- 单区域兴趣点单次 0–9；
+- Refine 小批次；
+- Proposal / Verify 单次 100 commands；
+- HTTP/body/string/Provider 等安全与资源边界。
 
 ---
 
-# 4. 当前剩余收口项
+# 4. 已完成的专项轻量 Gate
 
-## 4.1 Runtime 多日 Scope
-
-`planner-runtime-v3.ts` 还需把多日：
+2026-09-04 已通过 User Control targeted regression gate：
 
 ```text
-itinerary.detail.update
-itinerary.refine
+apps/server/user-control-correction-v3.test.ts
+apps/server/user-control-days-scope-v3.test.ts
+apps/server/user-control-size-context-v3.test.ts
+apps/server/replan-intent-v3.test.ts
 ```
 
-从兼容的 Trip Scope 改为：
+覆盖重点：
 
-```text
-1 Day  -> { type: "day", id }
-N Days -> { type: "days", ids }
-```
-
-读取相邻上下文可以继续更宽，但写入必须只覆盖明确 Day。
-
-整趟首次 generate、用户明确整体 replan、显式全局 repair 可以继续使用 Trip Scope。
-
-## 4.2 手工 PlaceKind 接线
-
-`CandidateWorkflowPanelV3` 已允许用户独立选择：
-
-```text
-planningRole
-Place.kind
-```
-
-`AppWorkflowV3` 的手工 addCandidate 还需确保直接使用：
-
-```text
-draft.placeKind
-```
-
-而不是继续按 planningRole 自动映射 city/attraction。
-
----
-
-# 5. 当前测试策略
-
-按项目约定，本专项施工阶段：
-
-- 不自动运行完整 test；
-- 不自动运行完整 typecheck；
-- 不自动 build；
-- 不运行 Browser E2E；
-- 不运行真实 AI / private_data E2E。
-
-已经新增 targeted regression test 文件，用来固定：
-
-- canonical structural / advisory 边界；
+- planning conflicts 可保存；
+- structural corruption 仍拒绝；
 - excluded scheduled preservation；
 - semantic duplicate preservation；
-- Day 日期不被普通 command 自动重写；
-- 多 Day Proposal Scope；
-- Repair #8 多位数字天数。
+- 普通 command 不自动重写 Day 日期；
+- Days Scope 越界拒绝；
+- 120+ 天 / 90+ Day / 80+ Stop / 1800+ Candidate 旧业务上限已移除；
+- excluded 候选仍进入 AI read context；
+- Repair #8 多位数字明确指令。
 
-完整 Gate 要等上述剩余接线完成后重新列出，再由用户确认是否执行。
+施工中的 one-shot patch 同时执行过 `git diff --check`。
+
+---
+
+# 5. 尚未执行的完整综合 Gate
+
+按仓库约定，以下检查**尚未执行**：
+
+- 全量 `npm test`；
+- 完整 `npm run typecheck`；
+- 完整 `npm run build`；
+- Browser E2E；
+- 真实 AI / private_data E2E。
+
+这些属于最终综合验收。执行前需要先明确范围与成本，并取得用户确认。
 
 ---
 
@@ -234,8 +226,9 @@ excluded 不得排入 Day
 must_go 未覆盖则 canonical reject
 时间重叠则 canonical reject
 Day 数不等于旅行天数则 canonical reject
-为了“合理”自动删用户内容
+为了“合理”自动删/移/缩短用户内容
 因为 source=ai/user 而产生字段权限差异
+局部多日 Action 自动升级成 Trip Scope
 ```
 
 继续严格保留：
@@ -253,16 +246,16 @@ Provider / realtime fact boundary
 
 ---
 
-# 7. 下一 Gate
+# 7. 当前 Gate
 
-当前下一步只做代码收口：
+当前状态：
 
-1. runtime 多日 Action 使用 `days` Scope；
-2. App 层手工新增使用真实 `draft.placeKind`；
-3. 对残留旧 blocker / city-only / max90 规则做只读搜索审核；
-4. 更新 PR 状态；
-5. 列出 targeted Gate 与完整 Gate 成本。
+```text
+User Control Correction code/docs closeout = COMPLETE
+targeted regression gate                = PASS
+full suite/typecheck/build/browser/E2E  = NOT RUN
+Draft PR #5                              = KEEP DRAFT
+merge main                               = NO
+```
 
-在这五项完成前：
-
-> **Draft PR 保持 Draft，不合并 main。**
+下一步只有在用户明确确认后，才进入完整综合 Gate；若完整 Gate 发现回归，再按本专项原则修复。
