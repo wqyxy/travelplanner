@@ -51,6 +51,17 @@ describe("User Control Correction canonical boundary", () => {
     expect(codes).toContain("UNASSIGNED_CANDIDATE");
   });
 
+  it("does not report a routed must-go planning area as unscheduled", () => {
+    const value = plan();
+    value.places = [place("area-place", "airport")];
+    value.candidates = [candidate("area", "area-place", { planningRole: "planning_area", preference: "must_go" })];
+    value.days = [day("d1", 1)];
+    value.days[0].startAnchor.placeId = "area-place";
+    value.days[0].endAnchor.placeId = "area-place";
+    const advisories = derivePlanningAdvisoriesV3(value);
+    expect(advisories.some((item) => item.code === "MUST_GO_NOT_SCHEDULED" && item.objectRefs.some((ref) => ref.id === "area"))).toBe(false);
+  });
+
   it("allows partial times, overnight-looking times, duration mismatch and overlap", () => {
     const value = plan();
     value.places = [place("a"), place("b"), place("c")];
@@ -100,7 +111,7 @@ describe("User Control Correction canonical boundary", () => {
     expect(derivePlanningAdvisoriesV3(applied.plan).map((item) => item.code)).toContain("POSSIBLE_DUPLICATE_PLACE");
   });
 
-  it("does not rewrite Day dates after unrelated commands and allows direct date edits", () => {
+  it("does not rewrite Day dates after unrelated commands, allows direct date edits, and advises discontinuity", () => {
     const value = plan();
     value.trip.dates = { start: "2026-10-01", end: "2026-10-10", requestedDurationDays: 10 };
     value.places = [place("a")];
@@ -111,6 +122,7 @@ describe("User Control Correction canonical boundary", () => {
 
     const preference = applyPlanCommands(value, [{ type: "set_candidate_preference", candidateId: "ca", preference: "want_to_go" }]);
     expect(preference.plan.days.map((item) => item.date)).toEqual(["2026-10-03", "2026-10-08"]);
+    expect(derivePlanningAdvisoriesV3(preference.plan).map((item) => item.code)).toContain("DAY_DATE_DISCONTINUITY");
 
     const dateEdit = applyPlanCommands(preference.plan, [{ type: "update_day", dayId: "d2", changes: { date: "2026-10-09" } }]);
     expect(dateEdit.plan.days[1].date).toBe("2026-10-09");
