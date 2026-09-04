@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { emptyTravelPlan, TravelPlanDocumentSchema, type FinalRouteNode, type Transport } from "./contracts-v2.js";
-import { migrateLegacyPlanToFinalRouteV3 } from "./final-route-v3.js";
+import { rebuildFinalRouteDaysV3 } from "./final-route-v3.js";
 import { applyPlanCommands, assertCommandsWithinScope } from "./plan-commands-v2.js";
 
 const place = (id: string) => ({
@@ -52,6 +52,7 @@ function routePlan() {
       { id: "cx", placeId: "x", planningAreaCandidateId: null, preference: "want_to_go", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: null, tags: [] },
     ],
     finalRoute: {
+      version: 1,
       nodes: [
         node("x-node", "x", { transportFromPrevious: transport("drive") }),
         node("b-node", "b", { endsDay: true, transportFromPrevious: transport("walk") }),
@@ -59,12 +60,15 @@ function routePlan() {
       ],
     },
   });
-  return migrateLegacyPlanToFinalRouteV3(plan);
+  return rebuildFinalRouteDaysV3(plan);
 }
 
 describe("final route PlanCommand integration", () => {
   it("formalizes one temporary Place/Candidate and its route node in one atomic batch", () => {
-    const base = emptyTravelPlan();
+    const base = TravelPlanDocumentSchema.parse({
+      ...emptyTravelPlan(),
+      finalRoute: { version: 1, nodes: [] },
+    });
     const applied = applyPlanCommands(base, [
       {
         type: "add_candidate",
@@ -103,7 +107,7 @@ describe("final route PlanCommand integration", () => {
     expect(applied.effects.routeDirtyDayIds).toContain("c-node");
   });
 
-  it("removes an old Candidate without deleting a Place still used by the final route", () => {
+  it("removes a Candidate without deleting a Place still used by the final route", () => {
     const before = routePlan();
     expect(before.days[0].stops.find((stop) => stop.id === "x-node")?.candidateId).toBe("cx");
 
@@ -116,7 +120,7 @@ describe("final route PlanCommand integration", () => {
     expect(applied.effects.removedPlaceIds).not.toContain("x");
   });
 
-  it("keeps new route mutations out of old narrow AI scopes until route-specific scopes exist", () => {
+  it("keeps new route mutations out of narrow AI scopes until route-specific scopes exist", () => {
     const before = routePlan();
     expect(() => assertCommandsWithinScope(before, { type: "candidate_pool", id: null }, [
       { type: "move_final_route_node", nodeId: "c-node", targetIndex: 0 },
