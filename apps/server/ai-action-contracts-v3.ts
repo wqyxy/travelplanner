@@ -139,7 +139,7 @@ const LegacyItineraryGenerateRequiresStageSchema = z.object({
 /** @deprecated Kept only as a compatibility type for Phase 1 callers; new Skeleton output uses SkeletonStayDraft. */
 export const ItineraryMacroVisitSchema = z.object({
   destinationCandidateId: IdSchema,
-  stayDays: z.number().int().min(1).max(90),
+  stayDays: z.number().int().min(1),
   transferMode: TransportModeSchema,
 }).strict();
 export type ItineraryMacroVisit = z.infer<typeof ItineraryMacroVisitSchema>;
@@ -147,7 +147,7 @@ export type ItineraryMacroVisit = z.infer<typeof ItineraryMacroVisitSchema>;
 const ItineraryGenerationSuccessSchema = z.object({
   type: z.literal("success"),
   assistantMessage: TextSchema.max(12000),
-  stays: z.array(SkeletonStayDraftSchema).min(1).max(90),
+  stays: z.array(SkeletonStayDraftSchema).min(1),
   omittedPlanningAreas: z.array(OmittedPlanningAreaSchema).max(1800),
 }).strict().superRefine((value, context) => {
   const omitted = value.omittedPlanningAreas.map((item) => item.candidateId);
@@ -166,7 +166,7 @@ const ItineraryReplacementSuccessSchema = z.object({
   assistantMessage: TextSchema.max(12000),
   title: TextSchema.max(300),
   explanation: TextSchema.max(4000),
-  stays: z.array(SkeletonStayDraftSchema).min(1).max(90),
+  stays: z.array(SkeletonStayDraftSchema).min(1),
   omittedPlanningAreas: z.array(OmittedPlanningAreaSchema).max(1800),
 }).strict().superRefine((value, context) => {
   const omitted = value.omittedPlanningAreas.map((item) => item.candidateId);
@@ -184,27 +184,21 @@ const DetailedStopDraftSchema = z.object({
   candidateId: IdSchema,
   activity: TextSchema,
   period: PeriodSchema.nullable(),
-  startTime: TimeSchema,
-  endTime: TimeSchema,
-  durationMinutes: z.number().int().min(0).max(1440),
+  scheduleText: z.string().trim().min(1).max(2000).nullable().optional(),
+  startTime: TimeSchema.nullable(),
+  endTime: TimeSchema.nullable(),
+  durationMinutes: z.number().int().min(0).nullable(),
   transportFromPrevious: TransportSchema.nullable(),
-  scheduleVerification: VerificationSchema,
+  scheduleVerification: VerificationSchema.nullable(),
   costNote: z.string().max(1000).nullable(),
   costVerification: VerificationSchema.nullable(),
   notes: z.string().max(2000).nullable(),
-}).strict().superRefine((value, context) => {
-  if (value.endTime <= value.startTime) context.addIssue({ code: "custom", path: ["endTime"], message: "结束时间必须晚于开始时间。" });
-  const minutes = (time: string) => Number(time.slice(0, 2)) * 60 + Number(time.slice(3));
-  if (minutes(value.endTime) - minutes(value.startTime) !== value.durationMinutes) context.addIssue({ code: "custom", path: ["durationMinutes"], message: "停留时长必须等于开始和结束时间之差。" });
-});
+}).strict();
 
 export const DetailedDayUpdateSchema = z.object({
   dayId: IdSchema,
   stops: z.array(DetailedStopDraftSchema).max(80),
-}).strict().superRefine((value, context) => {
-  const candidateIds = value.stops.map((stop) => stop.candidateId);
-  if (new Set(candidateIds).size !== candidateIds.length) context.addIssue({ code: "custom", path: ["stops"], message: "同一天不得重复安排同一个 Candidate。" });
-});
+}).strict();
 export type DetailedDayUpdate = z.infer<typeof DetailedDayUpdateSchema>;
 
 export const DetailedUnscheduledCandidateSchema = z.object({
@@ -265,7 +259,7 @@ export const ItineraryRepairOutputSchema = z.object({
   schemaVersion: z.literal(1),
   baseGeneration: z.number().int().min(0),
   result: z.discriminatedUnion("type", [
-    z.object({ type: z.literal("success"), assistantMessage: TextSchema.max(12000), title: TextSchema.max(300), explanation: TextSchema.max(4000), days: z.array(DaySchema).min(1).max(90) }).strict(),
+    z.object({ type: z.literal("success"), assistantMessage: TextSchema.max(12000), title: TextSchema.max(300), explanation: TextSchema.max(4000), days: z.array(DaySchema).min(1) }).strict(),
     RequiresInterestsSchema,
     RequiresWorkflowStepResultSchema,
   ]),
@@ -273,9 +267,10 @@ export const ItineraryRepairOutputSchema = z.object({
 export type ItineraryRepairOutput = z.infer<typeof ItineraryRepairOutputSchema>;
 
 const ItineraryVerificationChangesSchema = z.object({
+  scheduleText: z.string().trim().min(1).max(2000).nullable().optional(),
   startTime: TimeSchema.nullable().optional(),
   endTime: TimeSchema.nullable().optional(),
-  durationMinutes: z.number().int().min(0).max(1440).nullable().optional(),
+  durationMinutes: z.number().int().min(0).nullable().optional(),
   transportFromPrevious: TransportSchema.nullable().optional(),
   scheduleVerification: VerificationSchema.nullable().optional(),
   costNote: z.string().max(1000).nullable().optional(),
@@ -304,19 +299,16 @@ const ItineraryRefineStopSchema = z.object({
   stopId: IdSchema,
   activity: TextSchema,
   period: PeriodSchema.nullable(),
-  startTime: TimeSchema,
-  endTime: TimeSchema,
-  durationMinutes: z.number().int().min(0).max(1440),
+  scheduleText: z.string().trim().min(1).max(2000).nullable().optional(),
+  startTime: TimeSchema.nullable(),
+  endTime: TimeSchema.nullable(),
+  durationMinutes: z.number().int().min(0).nullable(),
   transportFromPrevious: TransportSchema.nullable(),
-  scheduleVerification: VerificationSchema,
+  scheduleVerification: VerificationSchema.nullable(),
   costNote: z.string().max(1000).nullable(),
   costVerification: VerificationSchema.nullable(),
   notes: z.string().max(2000).nullable(),
-}).strict().superRefine((value, context) => {
-  if (value.endTime <= value.startTime) context.addIssue({ code: "custom", path: ["endTime"], message: "结束时间必须晚于开始时间。" });
-  const minutes = (time: string) => Number(time.slice(0, 2)) * 60 + Number(time.slice(3));
-  if (minutes(value.endTime) - minutes(value.startTime) !== value.durationMinutes) context.addIssue({ code: "custom", path: ["durationMinutes"], message: "停留时长必须等于开始和结束时间之差。" });
-});
+}).strict();
 
 const ItineraryRefineDayUpdateSchema = z.object({
   dayId: IdSchema,
