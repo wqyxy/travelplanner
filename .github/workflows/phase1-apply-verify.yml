@@ -24,7 +24,9 @@ jobs:
         id: patch
         shell: bash
         run: |
-          if [[ -f .github/phase1.patch.gz.b64 ]]; then
+          shopt -s nullglob
+          parts=(.github/phase1.patch.part-*)
+          if [[ -f .github/phase1.patch.gz.b64 || ${#parts[@]} -gt 0 ]]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
@@ -39,11 +41,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          base64 --decode .github/phase1.patch.gz.b64 > /tmp/phase1.patch.gz
+          shopt -s nullglob
+          parts=(.github/phase1.patch.part-*)
+          if [[ -f .github/phase1.patch.gz.b64 ]]; then
+            cp .github/phase1.patch.gz.b64 /tmp/phase1.patch.b64
+          elif [[ ${#parts[@]} -gt 0 ]]; then
+            printf '%s\n' "${parts[@]}" | sort | xargs cat > /tmp/phase1.patch.b64
+          else
+            exit 1
+          fi
+          base64 --decode /tmp/phase1.patch.b64 > /tmp/phase1.patch.gz
           gzip -dc /tmp/phase1.patch.gz > /tmp/phase1.patch
           git apply --check /tmp/phase1.patch
           git apply /tmp/phase1.patch
-          rm .github/phase1.patch.gz.b64
+          rm -f .github/phase1.patch.gz.b64 .github/phase1.patch.part-*
       - name: Install dependencies
         if: steps.patch.outputs.present == 'true'
         run: npm ci
