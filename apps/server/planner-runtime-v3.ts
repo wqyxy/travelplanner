@@ -93,8 +93,8 @@ const dialoguePromptIds: Record<ConversationStage, "dialogue.requirements" | "di
   interests: "dialogue.interests",
   itinerary: "dialogue.itinerary",
 };
-const STOP_FIELDS = ["activity", "period", "startTime", "endTime", "durationMinutes", "transportFromPrevious", "scheduleVerification", "costNote", "costVerification", "notes"] as const;
-const VERIFY_STOP_FIELDS = new Set(["startTime", "endTime", "durationMinutes", "transportFromPrevious", "scheduleVerification", "costNote", "costVerification", "notes"]);
+const STOP_FIELDS = ["activity", "period", "scheduleText", "startTime", "endTime", "durationMinutes", "transportFromPrevious", "scheduleVerification", "costNote", "costVerification", "notes"] as const;
+const VERIFY_STOP_FIELDS = new Set(["scheduleText", "startTime", "endTime", "durationMinutes", "transportFromPrevious", "scheduleVerification", "costNote", "costVerification", "notes"]);
 const REQUIREMENT_FIELDS = ["title", "brief", "dates", "travelers", "budget", "pace", "themes", "preferences", "constraints", "assumptions"] as const;
 const REPLACEMENT_COMMAND_LIMIT = 100;
 const INTEREST_DISCOVERY_CONCURRENCY = 4;
@@ -155,10 +155,16 @@ function interestCompletionSummary(resultRef: string | null | undefined) {
 function actionScope(actionType: AiActionType, targetIds: string[], parameters: Record<string, unknown>): ProposalScope {
   if (actionType.startsWith("requirements.")) return { type: "trip", id: null };
   if (actionType.startsWith("destination.") || actionType.startsWith("interest.")) return { type: "candidate_pool", id: null };
-  if (actionType === "itinerary.day.optimize" || actionType === "itinerary.refine" || actionType === "itinerary.detail.update") {
+  if (actionType === "itinerary.day.optimize") {
+    const id = targetIds[0] || (typeof parameters.dayId === "string" ? parameters.dayId : "");
+    if (!id) throw new Error("单日 AI Action 缺少目标 Day，不能自动升级为整趟旅行 Scope。");
+    return { type: "day", id };
+  }
+  if (actionType === "itinerary.refine" || actionType === "itinerary.detail.update") {
     const ids = Array.isArray(parameters.dayIds) ? parameters.dayIds.filter((value): value is string => typeof value === "string") : [];
-    const id = targetIds[0] || (typeof parameters.dayId === "string" ? parameters.dayId : ids.length === 1 ? ids[0] : "");
-    return id ? { type: "day", id } : { type: "trip", id: null };
+    const unique = [...new Set([...targetIds, ...ids])];
+    if (unique.length === 1) return { type: "day", id: unique[0] };
+    return { type: "trip", id: null };
   }
   return { type: "trip", id: null };
 }
@@ -200,40 +206,34 @@ function currentResolvedPlaces(trip: TripDetailV3, resolutions: PlaceResolution[
   return currentPlaceResolutions(trip, resolutions).filter((resolution) => resolution.status === "resolved");
 }
 
-function validateItineraryReferences(trip: TripDetailV3, sourceDays: Day[], resolutions: PlaceResolution[]) {
+function validateItineraryReferences(trip: TripDetailV3, sourceDays: Day[], _resolutions: PlaceResolution[]) {
   const places = new Map(trip.plan.places.map((place) => [place.id, place]));
   const candidates = new Map(trip.plan.candidates.map((candidate) => [candidate.id, candidate]));
-  const resolvedPlaceIds = new Set(currentResolvedPlaces(trip, resolutions).map((resolution) => resolution.placeId));
   const checkPlace = (placeId: string | null) => {
     if (!placeId) return;
     if (!places.has(placeId)) throw new Error(`行程引用未知 Place：${placeId}`);
-    if (!resolvedPlaceIds.has(placeId)) throw new Error(`未定位地点不得进入行程：${placeId}`);
   };
   for (const day of sourceDays) {
     checkPlace(day.startAnchor.placeId);
     checkPlace(day.endAnchor.placeId);
     for (const stop of day.stops) {
       checkPlace(stop.placeId);
-      if (places.get(stop.placeId)?.kind === "city") throw new Error(`详细行程不得把目的地作为 Stop：${stop.placeId}`);
       if (!stop.candidateId) continue;
       const candidate = candidates.get(stop.candidateId);
       if (!candidate) throw new Error(`行程引用未知 Candidate：${stop.candidateId}`);
-      if (candidate.preference === "excluded") throw new Error(`已排除 Candidate 不得进入行程：${candidate.id}`);
       if (candidate.placeId !== stop.placeId) throw new Error(`Stop Candidate 与 Place 不一致：${candidate.id}`);
     }
   }
 }
 
-function assertDetailPlanningBlockers(context: DetailPlanningContextV3) {
-  if (context.detailReadiness.requiresWorkflowStep) return;
-  const issue = context.detailReadiness.blockingIssues[0];
-  if (!issue) return;
-  if (issue.type === "anchor_unresolved") throw new Error(`每日详细行程需要先定位相关起点或终点：${issue.placeId}`);
-  throw new Error(`必去地点尚未定位，无法规划相关日期：${issue.candidateId ?? issue.placeId}`);
+function assertDetailPlanningBlockers(_context: DetailPlanningContextV3) {
+  // Planning readiness is advisory-only. Structural target/reference checks are
+  // performed by the concrete action and canonical schemas.
 }
 
-function assertDetailMacroCurrent(context: DetailPlanningContextV3) {
-  if (context.detailReadiness.requiresWorkflowStep === "skeleton") throw new Error("路线和天数需要先重新确认，再生成每日详细行程。");
+function assertDetailMacroCurrent(_context: DetailPlanningContextV3) {
+  // A dirty upstream skeleton may make the detail plan stale, but it does not
+  // revoke the user's ability to work on the current detailed itinerary.
 }
 
 function normalizeCandidateDiscoveryOutput(output: any, mode: "macro" | "micro") {
@@ -261,6 +261,7 @@ function candidateCommand(output: { places: any[]; candidates: any[] }) {
       id: source.temporaryId,
       placeId: place.id,
       planningAreaCandidateId: source.planningAreaCandidateId,
+      ...(source.planningRole ? { planningRole: source.planningRole } : {}),
       preference: "optional",
       source: "ai",
       aiReason: source.aiReason,
@@ -755,7 +756,7 @@ export class TravelPlannerRuntimeV3 {
         ...base,
         tripFacts: trip.plan.trip,
         stage: trip.plan.stage,
-        candidates: trip.plan.candidates.filter((candidate) => candidate.preference !== "excluded").map(candidateState),
+        candidates: trip.plan.candidates.map(candidateState),
         days: trip.plan.days,
         routeStates: this.options.routes.workspaceRouteState(action.tripId),
         macroRouteStates: this.options.routes.workspaceMacroRouteState(action.tripId),
@@ -870,7 +871,7 @@ export class TravelPlannerRuntimeV3 {
       const dayId = String(p.dayId ?? action.targetIds[0] ?? ""); const item = candidate(String(p.candidateId ?? "")); const place = places.get(item.placeId); if (!place) throw new Error("Candidate 引用未知 Place。");
       const day = trip.plan.days.find((value) => value.id === dayId); if (!day) throw new Error(`未知 Day：${dayId}`);
       const index = p.index == null ? day.stops.length : Number(p.index);
-      const stop: DayStop = { id: `tmp-stop-${randomUUID()}`, candidateId: item.id, placeId: item.placeId, activity: typeof p.activity === "string" && p.activity.trim() ? p.activity.trim() : `游览${place.nameZh}`, period: null, startTime: null, endTime: null, durationMinutes: item.suggestedDurationMinutes, transportFromPrevious: null, scheduleVerification: null, costNote: null, costVerification: null, notes: null };
+      const stop: DayStop = { id: `tmp-stop-${randomUUID()}`, candidateId: item.id, placeId: item.placeId, activity: typeof p.activity === "string" && p.activity.trim() ? p.activity.trim() : `游览${place.nameZh}`, period: null, scheduleText: null, startTime: null, endTime: null, durationMinutes: item.suggestedDurationMinutes, transportFromPrevious: null, scheduleVerification: null, costNote: null, costVerification: null, notes: null };
       return [PlanCommandSchema.parse({ type: "add_day_stop", dayId, index, stop })];
     }
     if (action.actionType === "itinerary.edit") {
@@ -938,15 +939,14 @@ export class TravelPlannerRuntimeV3 {
   private async persistInterestDiscovery(action: AiActionRecord, taskId: string | null = null) {
     const original = this.options.store.requireTrip(action.tripId);
     const readiness = interestDiscoveryReadinessV3(original.plan);
-    if (!readiness.ready) {
-      if (readiness.macroBasisState === "dirty") throw new Error("路线和天数已受前序修改影响，请先更新并确认路线和天数，再补充景点。");
-      throw new Error("请先完成并确认路线和天数，再补充景点。");
-    }
-    const adopted = new Set(readiness.adoptedPlanningAreaIds);
+    const allPlanningAreaIds = new Set(original.plan.candidates.flatMap((candidate) => {
+      const place = original.plan.places.find((item) => item.id === candidate.placeId);
+      return place && effectivePlanningRole(candidate, place) === "planning_area" ? [candidate.id] : [];
+    }));
     const targets = [...new Set(action.targetIds.length ? action.targetIds : readiness.adoptedPlanningAreaIds)];
-    if (!targets.length) throw new Error("当前路线没有可用于兴趣点研究的停留区域。");
+    if (!targets.length) throw new Error("兴趣点研究缺少目标 Planning Area；请选择一个规划区域后重试。");
     for (const targetId of targets) {
-      if (!adopted.has(targetId)) throw new Error(`兴趣点研究只能针对路线中已采用的停留区域：${targetId}`);
+      if (!allPlanningAreaIds.has(targetId)) throw new Error(`兴趣点研究引用未知 Planning Area：${targetId}`);
       buildInterestAreaContextV3(original.plan, targetId);
     }
 
@@ -1422,7 +1422,6 @@ export class TravelPlannerRuntimeV3 {
     const plan = markImpact(trip.plan, applied.plan);
     const place = plan.places.find((item) => item.id === placeId) as Place | undefined;
     if (!place) throw new Error("找不到更新后的 Place。");
-    const generation = parsed.expectedGeneration + 1;
     const resolution: PlaceResolution = {
       tripId, placeId, geoFingerprint: placeGeoFingerprint(place), status: "resolved", method: "google_maps_link",
       provider: null, providerPlaceId: null, latitude: preview.latitude, longitude: preview.longitude,
