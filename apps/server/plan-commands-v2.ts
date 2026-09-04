@@ -248,7 +248,24 @@ export function assertCommandsWithinScope(plan: TravelPlanDocument, scopeValue: 
     if (commands.some((command) => !commandTargetsPlace(plan, command, scope.id))) throw new Error(`Proposal 命令超出 Place Scope：${scope.id}`);
     return commands;
   }
-  if (commands.some((command) => !commandTargetsDay(plan, command, scope.id))) throw new Error(`Proposal 命令超出 Day Scope：${scope.id}`);
+  if (scope.type === "day") {
+    if (commands.some((command) => !commandTargetsDay(plan, command, scope.id))) throw new Error(`Proposal 命令超出 Day Scope：${scope.id}`);
+    return commands;
+  }
+  const allowedDayIds = new Set(scope.ids);
+  const targetsAllowedDays = (command: PlanCommand) => {
+    if (command.type === "set_day_anchor" || command.type === "add_day_stop" || command.type === "update_day") return allowedDayIds.has(command.dayId);
+    if (command.type === "update_day_stop" || command.type === "remove_day_stop") {
+      const owner = existingStopOwner(plan, command.stopId);
+      return Boolean(owner && allowedDayIds.has(owner));
+    }
+    if (command.type === "move_day_stop") {
+      const owner = existingStopOwner(plan, command.stopId);
+      return Boolean(owner && allowedDayIds.has(owner) && allowedDayIds.has(command.targetDayId));
+    }
+    return false;
+  };
+  if (commands.some((command) => !targetsAllowedDays(command))) throw new Error("Proposal 命令超出 Days Scope。");
   return commands;
 }
 
