@@ -1,9 +1,9 @@
-name: Remove temporary v3 implementation workflows
+name: UC scope static finalizer
 
 on:
   push:
     branches:
-      - codex/v3-runtime-ui-completion
+      - codex/user-control-correction
     paths:
       - .github/workflows/v3-remove-temporary-workflows.yml
 
@@ -11,54 +11,85 @@ permissions:
   contents: write
 
 concurrency:
-  group: travelplanner-v3-temporary-workflow-cleanup
+  group: travelplanner-user-control-static-finalizer
   cancel-in-progress: false
 
 jobs:
-  cleanup:
+  finalize:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          cache: npm
-      - run: npm ci
-      - name: Remove temporary workflow files
+      - name: Apply final static User Control fixes
         shell: bash
         run: |
           set -euo pipefail
-          test -f docs/FINAL_ACCEPTANCE.md
-          test -f scripts/check-v3.mjs
-          rm -f \
-            .github/workflows/phase5-candidate-workbench.yml \
-            .github/workflows/phase6-deterministic-editing.yml \
-            .github/workflows/phase7-proposals.yml \
-            .github/workflows/phase8-refinement.yml \
-            .github/workflows/phase9-final-review.yml \
-            .github/workflows/final-v3-acceptance.yml \
-            .github/workflows/recover-and-complete-v3.yml \
-            .github/workflows/v3-final-hardening.yml \
-            .github/workflows/v3-remove-temporary-workflows.yml
-      - run: npm run check:v3
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
-      - run: git diff --check
-      - name: Commit cleanup
+          python - <<'PY'
+          from pathlib import Path
+
+          contracts = Path('apps/server/contracts-v2.ts')
+          text = contracts.read_text(encoding='utf-8')
+          old = 'z.object({ type: z.literal("days"), ids: z.array(IdSchema).min(1).max(200) }).strict(),'
+          new = 'z.object({ type: z.literal("days"), ids: z.array(IdSchema).min(1) }).strict(),'
+          if old not in text:
+              raise SystemExit('ProposalScope days max(200) pattern not found')
+          contracts.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          stage = Path('apps/server/ai-stage-contracts-v3.ts')
+          text = stage.read_text(encoding='utf-8')
+          marker = 'export const AiActionRecordSchema = z.object({'
+          start = text.index(marker)
+          end = text.index('}).strict().superRefine', start)
+          block = text[start:end]
+          old = 'targetIds: z.array(z.string().trim().min(1).max(160)).max(200),'
+          new = 'targetIds: z.array(z.string().trim().min(1).max(160)),'
+          if old not in block:
+              raise SystemExit('AiActionRecord targetIds max(200) pattern not found')
+          block = block.replace(old, new, 1)
+          stage.write_text(text[:start] + block + text[end:], encoding='utf-8')
+
+          runtime = Path('apps/server/planner-runtime-v3.ts')
+          text = runtime.read_text(encoding='utf-8')
+          old = '''function dayMutationScope(dayIds: string[]): ProposalScope {
+  const ids = [...new Set(dayIds.filter(Boolean))];
+  if (!ids.length) throw new Error("局部行程 Action 缺少目标 Day，不能自动扩大为整趟 Scope。");
+  return ids.length === 1 ? { type: "day", id: ids[0] } : { type: "days", ids };
+}'''
+          new = '''function dayMutationScope(dayIds: string[], plan?: TravelPlanDocument): ProposalScope {
+  const ids = [...new Set(dayIds.filter(Boolean))];
+  if (!ids.length) throw new Error("局部行程 Action 缺少目标 Day，不能自动扩大为整趟 Scope。");
+  if (plan) {
+    const knownDayIds = new Set(plan.days.map((day) => day.id));
+    const unknown = ids.filter((id) => !knownDayIds.has(id));
+    if (unknown.length) throw new Error(`局部行程 Action 引用未知 Day：${unknown.join("、")}`);
+  }
+  return ids.length === 1 ? { type: "day", id: ids[0] } : { type: "days", ids };
+}'''
+          if old not in text:
+              raise SystemExit('dayMutationScope function pattern not found')
+          text = text.replace(old, new, 1)
+          text = text.replace('return dayMutationScope([sourceDayId, targetDayId]);', 'return dayMutationScope([sourceDayId, targetDayId], plan);', 1)
+          text = text.replace('return dayMutationScope([...targetIds, ...parameterIds, ...(typeof parameters.dayId === "string" ? [parameters.dayId] : [])]);', 'return dayMutationScope([...targetIds, ...parameterIds, ...(typeof parameters.dayId === "string" ? [parameters.dayId] : [])], plan);', 1)
+          old = 'if (!id) throw new Error("单日优化缺少目标 Day，不能自动扩大为整趟 Scope。");\n    return { type: "day", id };'
+          new = 'if (!id) throw new Error("单日优化缺少目标 Day，不能自动扩大为整趟 Scope。");\n    if (!plan.days.some((day) => day.id === id)) throw new Error(`单日优化引用未知 Day：${id}`);\n    return { type: "day", id };'
+          if old not in text:
+              raise SystemExit('day optimize validation pattern not found')
+          text = text.replace(old, new, 1)
+          text = text.replace('const scope = dayMutationScope(result.affectedDayIds);', 'const scope = dayMutationScope(result.affectedDayIds, trip.plan);', 1)
+          text = text.replace('const scope = dayMutationScope(result.dayIds);', 'const scope = dayMutationScope(result.dayIds, trip.plan);', 1)
+          runtime.write_text(text, encoding='utf-8')
+          PY
+      - name: Commit code and restore permanent workflow
         shell: bash
         run: |
           set -euo pipefail
-          git add -A
+          git fetch origin main
+          git checkout origin/main -- .github/workflows/v3-remove-temporary-workflows.yml
+          git config user.name 'OpenAI'
+          git config user.email 'noreply@openai.com'
+          git add apps/server/contracts-v2.ts apps/server/ai-stage-contracts-v3.ts apps/server/planner-runtime-v3.ts .github/workflows/v3-remove-temporary-workflows.yml
           git diff --cached --check
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          if git diff --cached --quiet; then
-            echo 'No temporary workflows remain.'
-          else
-            git commit -m 'Chore: remove temporary v3 implementation workflows'
-            git push origin HEAD:codex/v3-runtime-ui-completion
-          fi
+          git commit -m 'UC: remove residual local scope caps'
+          git push origin HEAD:codex/user-control-correction
