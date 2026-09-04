@@ -467,7 +467,7 @@ const DayChangesSchema = z.object({
 
 export const PlanCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("set_candidate_preference"), candidateId: IdSchema, preference: CandidatePreferenceSchema }).strict(),
-  z.object({ type: z.literal("bulk_set_candidate_preference"), candidateIds: z.array(IdSchema).min(1).max(1800), preference: CandidatePreferenceSchema }).strict(),
+  z.object({ type: z.literal("bulk_set_candidate_preference"), candidateIds: z.array(IdSchema).min(1), preference: CandidatePreferenceSchema }).strict(),
   z.object({ type: z.literal("add_candidate"), place: PlaceSchema, candidate: TripCandidateSchema }).strict(),
   z.object({ type: z.literal("remove_candidate"), candidateId: IdSchema }).strict(),
   z.object({ type: z.literal("remove_candidate_tree"), candidateId: IdSchema }).strict(),
@@ -498,8 +498,8 @@ export type PlanCommandBatchRequest = z.infer<typeof PlanCommandBatchRequestSche
 export const ProposalDiffSchema = z.object({
   summary: TextSchema.max(1000),
   commandSummaries: z.array(TextSchema.max(500)).max(100),
-  affectedCandidateIds: z.array(IdSchema).max(1800),
-  affectedPlaceIds: z.array(IdSchema).max(1800),
+  affectedCandidateIds: z.array(IdSchema),
+  affectedPlaceIds: z.array(IdSchema),
   affectedDayIds: z.array(IdSchema),
 }).strict();
 export type ProposalDiff = z.infer<typeof ProposalDiffSchema>;
@@ -645,7 +645,7 @@ export const PlanGenerationOutputSchema = z.object({
   assistantMessage: TextSchema.max(12000),
   newPlaces: z.array(PlaceSchema).max(100),
   days: z.array(DaySchema).min(1),
-  unscheduledCandidates: z.array(z.object({ candidateId: IdSchema, reason: TextSchema.max(1000) }).strict()).max(1800),
+  unscheduledCandidates: z.array(z.object({ candidateId: IdSchema, reason: TextSchema.max(1000) }).strict()),
 }).strict();
 export type PlanGenerationOutput = z.infer<typeof PlanGenerationOutputSchema>;
 

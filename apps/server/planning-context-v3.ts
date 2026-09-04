@@ -1,10 +1,6 @@
 import type { PlaceResolution, TravelPlanDocument } from "./contracts-v2.js";
 import { deriveExistingStayBlocksV3 } from "./itinerary-workflow-v3.js";
-import {
-  activeCoreVisits,
-  activePlanningAreas,
-  effectivePlanningRole,
-} from "./planning-roles-v3.js";
+import { effectivePlanningRole } from "./planning-roles-v3.js";
 import {
   computeMacroDependencyFingerprintV3,
   derivePlanMacroBasisStateV3,
@@ -53,10 +49,15 @@ function currentResolutionByPlace(plan: TravelPlanDocument, resolutions: PlaceRe
 }
 
 export function buildBackboneContextV3(plan: TravelPlanDocument) {
+  const places = new Map(plan.places.map((place) => [place.id, place]));
+  const byRole = (role: "planning_area" | "core_visit") => plan.candidates.filter((candidate) => {
+    const place = places.get(candidate.placeId);
+    return Boolean(place && effectivePlanningRole(candidate, place) === role);
+  });
   return {
     tripFacts: plan.trip,
-    planningAreas: activePlanningAreas(plan.candidates, plan.places).map((candidate) => candidateSummary(plan, candidate)).filter(Boolean),
-    coreVisits: activeCoreVisits(plan.candidates, plan.places).map((candidate) => candidateSummary(plan, candidate)).filter(Boolean),
+    planningAreas: byRole("planning_area").map((candidate) => candidateSummary(plan, candidate)).filter(Boolean),
+    coreVisits: byRole("core_visit").map((candidate) => candidateSummary(plan, candidate)).filter(Boolean),
   };
 }
 

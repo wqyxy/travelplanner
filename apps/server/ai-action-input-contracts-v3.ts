@@ -22,7 +22,7 @@ const RequirementsPatch = z.object({
     transport: z.string().trim().max(500).optional(),
     additionalRequirements: z.string().trim().max(4000).optional(),
   }).strict().refine((value) => Object.keys(value).length > 0, "brief 至少需要一个字段。").optional(),
-  dates: z.object({ start: z.string().trim().min(1).max(40).nullable(), end: z.string().trim().min(1).max(40).nullable(), requestedDurationDays: z.number().int().min(1).max(365).nullable() }).strict().optional(),
+  dates: z.object({ start: z.string().trim().min(1).max(40).nullable(), end: z.string().trim().min(1).max(40).nullable(), requestedDurationDays: z.number().int().min(1).nullable() }).strict().optional(),
   travelers: z.object({ summary: z.string().max(1000), adults: z.number().int().min(0).max(100).nullable(), children: z.number().int().min(0).max(100).nullable() }).strict().optional(),
   budget: z.object({ amount: z.number().finite().nonnegative().nullable(), currency: z.string().trim().min(1).max(20).nullable(), note: z.string().max(1000).nullable() }).strict().optional(),
   pace: z.string().trim().min(1).max(120).nullable().optional(),
@@ -76,7 +76,7 @@ const DestinationConversationEdit = z.object({
 }).strict().refine((value) => Boolean(value.placeChanges || value.candidateChanges || value.request === "promote_to_core"), "目的地编辑至少需要字段修改或受控重要游览地升级意图。");
 const DayOptimize = z.object({ dayId: Id.optional(), request: Request.optional() }).strict();
 const Refine = z.object({ dayIds: z.array(Id).max(2).optional(), request: Request.optional(), allowWeb: z.boolean().optional() }).strict();
-const DetailUpdate = z.object({ dayIds: z.array(Id).max(90).optional(), request: Request.optional(), allowWeb: z.boolean().optional() }).strict();
+const DetailUpdate = z.object({ dayIds: z.array(Id).optional(), request: Request.optional(), allowWeb: z.boolean().optional() }).strict();
 
 const ACTION_INPUT_CONTRACTS: Record<AiActionType, InputContractIdV3> = {
   "requirements.update": "requirements.mutation.input",
@@ -134,11 +134,11 @@ const CTA_SCHEMAS: Record<AiActionType, z.ZodType<Record<string, unknown>>> = {
   "itinerary.replan": Intent,
   "itinerary.detail.generate": Intent,
   "itinerary.detail.update": DetailUpdate,
-  "itinerary.stop.add": z.object({ dayId: Id.optional(), candidateId: Id, index: z.number().int().min(0).max(100).nullable().optional(), activity: z.string().trim().min(1).max(2000).optional() }).strict(),
+  "itinerary.stop.add": z.object({ dayId: Id.optional(), candidateId: Id, index: z.number().int().min(0).nullable().optional(), activity: z.string().trim().min(1).max(2000).optional() }).strict(),
   "itinerary.stop.remove": z.object({ stopId: Id.optional() }).strict(),
   "itinerary.stop.replace": z.object({ stopId: Id.optional(), candidateId: Id, activity: z.string().trim().min(1).max(2000).optional() }).strict(),
-  "itinerary.stop.move": z.object({ stopId: Id.optional(), targetDayId: Id, targetIndex: z.number().int().min(0).max(100) }).strict(),
-  "itinerary.day.reorder": z.object({ dayId: Id.optional(), targetIndex: z.number().int().min(0).max(100) }).strict(),
+  "itinerary.stop.move": z.object({ stopId: Id.optional(), targetDayId: Id, targetIndex: z.number().int().min(0) }).strict(),
+  "itinerary.day.reorder": z.object({ dayId: Id.optional(), targetIndex: z.number().int().min(0) }).strict(),
   "itinerary.edit": z.object({ dayId: Id.optional(), stopId: Id.optional(), changes: ItineraryChanges }).strict().refine((value) => Boolean(value.dayId || value.stopId), "itinerary.edit 需要 dayId 或 stopId。"),
   "itinerary.anchor.set": z.object({ dayId: Id.optional(), anchor: z.enum(["start", "end"]), placeId: Id.nullable().optional(), label: z.string().trim().min(1).max(300).nullable().optional(), notes: z.string().max(2000).nullable().optional() }).strict(),
   "itinerary.day.optimize": DayOptimize,

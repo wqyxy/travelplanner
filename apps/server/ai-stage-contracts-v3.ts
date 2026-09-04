@@ -124,7 +124,7 @@ const DialogueChangesSchema = z.object({
   dates: z.object({
     start: z.string().trim().min(1).max(40).nullable(),
     end: z.string().trim().min(1).max(40).nullable(),
-    requestedDurationDays: z.number().int().min(1).max(365).nullable(),
+    requestedDurationDays: z.number().int().min(1).nullable(),
   }).strict().optional(),
   travelers: z.object({
     summary: z.string().max(1000),
@@ -171,11 +171,11 @@ export const DialogueActionParametersSchema = z.object({
   candidateIds: z.array(z.string().trim().min(1).max(160)).max(200),
   preference: z.enum(["must_go", "want_to_go", "optional", "excluded"]).nullable(),
   dayId: z.string().trim().min(1).max(160).nullable(),
-  dayIds: z.array(z.string().trim().min(1).max(160)).max(90),
+  dayIds: z.array(z.string().trim().min(1).max(160)),
   stopId: z.string().trim().min(1).max(160).nullable(),
   targetDayId: z.string().trim().min(1).max(160).nullable(),
-  targetIndex: z.number().int().min(0).max(100).nullable(),
-  index: z.number().int().min(0).max(100).nullable(),
+  targetIndex: z.number().int().min(0).nullable(),
+  index: z.number().int().min(0).nullable(),
   anchor: z.enum(["start", "end"]).nullable(),
   placeId: z.string().trim().min(1).max(160).nullable(),
   label: z.string().trim().min(1).max(300).nullable(),

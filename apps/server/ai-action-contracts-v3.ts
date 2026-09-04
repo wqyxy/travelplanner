@@ -134,7 +134,7 @@ const ItineraryGenerationSuccessSchema = z.object({
   type: z.literal("success"),
   assistantMessage: TextSchema.max(12000),
   stays: z.array(SkeletonStayDraftSchema).min(1),
-  omittedPlanningAreas: z.array(OmittedPlanningAreaSchema).max(1800),
+  omittedPlanningAreas: z.array(OmittedPlanningAreaSchema),
 }).strict().superRefine((value, context) => {
   const omitted = value.omittedPlanningAreas.map((item) => item.candidateId);
   if (new Set(omitted).size !== omitted.length) context.addIssue({ code: "custom", path: ["omittedPlanningAreas"], message: "同一个 Planning Area 只能省略一次。" });
@@ -153,7 +153,7 @@ const ItineraryReplacementSuccessSchema = z.object({
   title: TextSchema.max(300),
   explanation: TextSchema.max(4000),
   stays: z.array(SkeletonStayDraftSchema).min(1),
-  omittedPlanningAreas: z.array(OmittedPlanningAreaSchema).max(1800),
+  omittedPlanningAreas: z.array(OmittedPlanningAreaSchema),
 }).strict().superRefine((value, context) => {
   const omitted = value.omittedPlanningAreas.map((item) => item.candidateId);
   if (new Set(omitted).size !== omitted.length) context.addIssue({ code: "custom", path: ["omittedPlanningAreas"], message: "同一个 Planning Area 只能省略一次。" });
@@ -183,7 +183,7 @@ const DetailedStopDraftSchema = z.object({
 
 export const DetailedDayUpdateSchema = z.object({
   dayId: IdSchema,
-  stops: z.array(DetailedStopDraftSchema).max(80),
+  stops: z.array(DetailedStopDraftSchema),
 }).strict();
 export type DetailedDayUpdate = z.infer<typeof DetailedDayUpdateSchema>;
 
@@ -196,8 +196,8 @@ export type DetailedUnscheduledCandidate = z.infer<typeof DetailedUnscheduledCan
 const DetailGenerateSuccessSchema = z.object({
   type: z.literal("success"),
   assistantMessage: TextSchema.max(12000),
-  dayUpdates: z.array(DetailedDayUpdateSchema).min(1).max(90),
-  unscheduledCandidates: z.array(DetailedUnscheduledCandidateSchema).max(1800),
+  dayUpdates: z.array(DetailedDayUpdateSchema).min(1),
+  unscheduledCandidates: z.array(DetailedUnscheduledCandidateSchema),
 }).strict();
 
 export const ItineraryDetailGenerateOutputSchema = z.object({
@@ -212,9 +212,9 @@ const DetailUpdateSuccessSchema = z.object({
   assistantMessage: TextSchema.max(12000),
   title: TextSchema.max(300),
   explanation: TextSchema.max(4000),
-  affectedDayIds: z.array(IdSchema).min(1).max(90),
-  dayUpdates: z.array(DetailedDayUpdateSchema).min(1).max(90),
-  unscheduledCandidates: z.array(DetailedUnscheduledCandidateSchema).max(1800).default([]),
+  affectedDayIds: z.array(IdSchema).min(1),
+  dayUpdates: z.array(DetailedDayUpdateSchema).min(1),
+  unscheduledCandidates: z.array(DetailedUnscheduledCandidateSchema).default([]),
 }).strict().superRefine((value, context) => {
   const requested = new Set(value.affectedDayIds);
   const returned = new Set(value.dayUpdates.map((day) => day.dayId));
@@ -234,7 +234,7 @@ export const ItineraryDayOptimizeOutputSchema = z.object({
   schemaVersion: z.literal(1),
   baseGeneration: z.number().int().min(0),
   result: z.discriminatedUnion("type", [
-    z.object({ type: z.literal("success"), assistantMessage: TextSchema.max(12000), title: TextSchema.max(300), explanation: TextSchema.max(4000), dayId: IdSchema, orderedStopIds: z.array(IdSchema).max(80) }).strict(),
+    z.object({ type: z.literal("success"), assistantMessage: TextSchema.max(12000), title: TextSchema.max(300), explanation: TextSchema.max(4000), dayId: IdSchema, orderedStopIds: z.array(IdSchema) }).strict(),
     RequiresInterestsSchema,
     RequiresWorkflowStepResultSchema,
   ]),
@@ -298,7 +298,7 @@ const ItineraryRefineStopSchema = z.object({
 
 const ItineraryRefineDayUpdateSchema = z.object({
   dayId: IdSchema,
-  stops: z.array(ItineraryRefineStopSchema).max(80),
+  stops: z.array(ItineraryRefineStopSchema),
 }).strict().superRefine((value, context) => {
   const ids = value.stops.map((stop) => stop.stopId);
   if (new Set(ids).size !== ids.length) context.addIssue({ code: "custom", path: ["stops"], message: "同一个 Stop 只能细化一次。" });

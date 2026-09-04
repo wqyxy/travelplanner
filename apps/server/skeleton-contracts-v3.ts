@@ -16,7 +16,7 @@ export type OmittedPlanningArea = z.infer<typeof OmittedPlanningAreaSchema>;
 
 export const SkeletonPlanDraftSchema = z.object({
   stays: z.array(SkeletonStayDraftSchema).min(1),
-  omittedPlanningAreas: z.array(OmittedPlanningAreaSchema).max(1800),
+  omittedPlanningAreas: z.array(OmittedPlanningAreaSchema),
 }).strict().superRefine((value, context) => {
   const omittedIds = value.omittedPlanningAreas.map((item) => item.candidateId);
   if (new Set(omittedIds).size !== omittedIds.length) {
