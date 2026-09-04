@@ -158,9 +158,43 @@ function dayMutationScope(dayIds: string[]): ProposalScope {
   return ids.length === 1 ? { type: "day", id: ids[0] } : { type: "days", ids };
 }
 
-function actionScope(actionType: AiActionType, targetIds: string[], parameters: Record<string, unknown>): ProposalScope {
+function actionScope(actionType: AiActionType, targetIds: string[], parameters: Record<string, unknown>, plan: TravelPlanDocument): ProposalScope {
   if (actionType.startsWith("requirements.")) return { type: "trip", id: null };
   if (actionType.startsWith("destination.") || actionType.startsWith("interest.")) return { type: "candidate_pool", id: null };
+  const requestedDayId = () => targetIds[0] || (typeof parameters.dayId === "string" ? parameters.dayId : "");
+  const requestedStopId = () => targetIds[0] || (typeof parameters.stopId === "string" ? parameters.stopId : "");
+  const ownerDayForStop = (stopId: string) => plan.days.find((day) => day.stops.some((stop) => stop.id === stopId))?.id ?? null;
+
+  if (actionType === "itinerary.stop.add" || actionType === "itinerary.anchor.set") {
+    const dayId = requestedDayId();
+    if (!dayId || !plan.days.some((day) => day.id === dayId)) throw new Error(`局部行程 Action 引用未知 Day：${dayId || "(missing)"}`);
+    return { type: "day", id: dayId };
+  }
+  if (actionType === "itinerary.stop.remove" || actionType === "itinerary.stop.replace") {
+    const stopId = requestedStopId();
+    const dayId = stopId ? ownerDayForStop(stopId) : null;
+    if (!dayId) throw new Error(`局部行程 Action 引用未知 Stop：${stopId || "(missing)"}`);
+    return { type: "day", id: dayId };
+  }
+  if (actionType === "itinerary.edit") {
+    if (typeof parameters.stopId === "string" && parameters.stopId) {
+      const dayId = ownerDayForStop(parameters.stopId);
+      if (!dayId) throw new Error(`局部行程 Action 引用未知 Stop：${parameters.stopId}`);
+      return { type: "day", id: dayId };
+    }
+    const dayId = requestedDayId();
+    if (!dayId || !plan.days.some((day) => day.id === dayId)) throw new Error(`局部行程 Action 引用未知 Day：${dayId || "(missing)"}`);
+    return { type: "day", id: dayId };
+  }
+  if (actionType === "itinerary.stop.move") {
+    const stopId = requestedStopId();
+    const sourceDayId = stopId ? ownerDayForStop(stopId) : null;
+    const targetDayId = typeof parameters.targetDayId === "string" ? parameters.targetDayId : "";
+    if (!sourceDayId) throw new Error(`局部行程 Action 引用未知 Stop：${stopId || "(missing)"}`);
+    if (!targetDayId || !plan.days.some((day) => day.id === targetDayId)) throw new Error(`局部行程 Action 引用未知目标 Day：${targetDayId || "(missing)"}`);
+    return dayMutationScope([sourceDayId, targetDayId]);
+  }
+
   if (actionType === "itinerary.day.optimize") {
     const parameterIds = Array.isArray(parameters.dayIds) ? parameters.dayIds.filter((value): value is string => typeof value === "string") : [];
     const id = targetIds[0] || (typeof parameters.dayId === "string" ? parameters.dayId : parameterIds.length === 1 ? parameterIds[0] : "");
@@ -511,7 +545,7 @@ export class TravelPlannerRuntimeV3 {
           const registration = actionRegistration(output.result.actionType);
           if (registration.stage !== stage) throw new Error(`阶段对话识别了越界 Action：${output.result.actionType}`);
           const normalizedParameters = parseActionParametersV3(output.result.actionType, registration.inputContract, "conversation", output.result.parameters);
-          const scope = actionScope(output.result.actionType, output.result.targetIds, normalizedParameters);
+          const scope = actionScope(output.result.actionType, output.result.targetIds, normalizedParameters, this.options.store.requireTrip(tripId).plan);
           const action = AiActionRecordSchema.parse({
             id: randomUUID(), tripId, stage, actionType: output.result.actionType, executor: registration.executor, origin: "conversation", sourceMessageId: messageId,
             parameters: output.result.parameters, targetIds: output.result.targetIds, scope, baseGeneration: effectiveGeneration, status: "pending_confirmation",
@@ -558,7 +592,7 @@ export class TravelPlannerRuntimeV3 {
     const targetIds = input.targetIds ?? [];
     const action = AiActionRecordSchema.parse({
       id: randomUUID(), tripId: input.tripId, stage: input.stage, actionType: input.actionType, executor: registration.executor, origin: "cta", sourceMessageId: null,
-      parameters: rawParameters, targetIds, scope: actionScope(input.actionType, targetIds, normalizedParameters), baseGeneration: trip.contentGeneration, status: "pending_confirmation",
+      parameters: rawParameters, targetIds, scope: actionScope(input.actionType, targetIds, normalizedParameters, trip.plan), baseGeneration: trip.contentGeneration, status: "pending_confirmation",
       taskId: null, proposalId: null, resultRef: null, startedAt: null, updatedAt: now(), completedAt: null, errorSummary: null,
     });
     const created = this.options.store.createAction(action, input.requestKey);
