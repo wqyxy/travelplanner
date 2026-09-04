@@ -1,8 +1,8 @@
 # TravelPlanner 文档索引
 
-> 更新日期：2026-09-03
+> 更新日期：2026-09-05
 
-`docs/` 只保留当前开发、验收和交接真正需要读取的文档。
+`docs/` 只保留当前产品定义、实现依据、验收和交接真正需要读取的文档。
 
 原则：
 
@@ -20,53 +20,38 @@
 
 > 产品最终应该是什么？
 
-当前用户流程：
+当前最新产品目标已经从“五步流程”收敛为：
 
 ```text
-1 旅行需求
-2 想去哪些地方
-3 路线和天数
-4 补充景点（可选）
-5 每日行程
+旅行需求
++
+最终线路
 ```
 
-产品最高原则之一：
+其中原 Step 2“地点”和 Step 4“补充景点”不再有独立页面，而是“最终线路”中的两种生成能力；原 Step 3 和 Step 5 合并为同一份最终线路，不再维护两套行程。
 
-> **内部模型可以复杂，但普通用户不需要理解工程状态和术语。**
-
-包含 Planning Area / Core Visit / Detail Interest、preference 语义、右侧唯一控制台、Stay Block、增量更新、未定位和 Provider 边界。
-
-## 2. 正式实施 / 验收施工图
-
-[`TravelPlanner 五步规划流程重构实施方案.md`](./TravelPlanner%20五步规划流程重构实施方案.md)
-
-回答：
-
-> 五步重构按什么合同实施和验收？
-
-这是当前最高优先级专项验收依据。
-
-已经实施并在 Phase 1–6 逐阶段 Gate 中验证的核心合同包括：
+核心产品规则包括：
 
 ```text
-PlanningRole
-must / want / optional / excluded 的 Skeleton 语义
-稳定 stayBlockId
-重复 Planning Area / 环线
-移动日计入到达 Stay Block
-requiresWorkflowStep
-Step 3 SkeletonEditDraft + 原子保存
-Macro fingerprint + 派生 macroDirty
-Planning Area / Core / Detail unresolved readiness
-Step 4 capacity-aware interests 且可跳过
-patch-only Detailed update
-applySkeletonPlanV3 避免 100 PlanCommand 上限
-Phase 6 Complexity Downshift / Map ownership
+最终线路是一份有序地点列表
+正常 / 待定 / 不去都留在线路排序中
+待定 / 不去仍显示在地图，但不参与当前路线计算
+地点卡右侧主要偏好只保留“待定 / 不去”，并保留编辑 / 移除
+住宿是日程分界，不是地点类型
+不存在地点级“住几晚”属性
+两个住宿分界之间的有效地点属于同一个 Day
+手工调整优先，AI 不自动修正“看起来不合理”的路线
+生成详细地点后直接插入最终线路
+自动插入新地点不能改变已有节点相对顺序
+最终线路一变化，定位、地图和路线自动跟随
+右侧控制台仍是唯一业务操作入口
 ```
 
-当前 Phase 7 仍需按该施工图执行最终综合回归。
+这是**当前产品需求最高依据**。
 
-## 3. UI 设计规范
+---
+
+## 2. UI 设计规范
 
 [`五步 UI 交互规范.md`](./五步%20UI%20交互规范.md)
 
@@ -74,21 +59,43 @@ Phase 6 Complexity Downshift / Map ownership
 
 > 用户实际怎么操作？
 
-重点规则：
+文件名保留“五步”只是为了兼容已有链接；内容已更新为“最终线路”版 UI 规范。
+
+当前重点规则：
 
 ```text
-Step 2 是愿望清单，Step 3 才是最终路线
-Step 4 明确可选
-四级 preference 留在数据层，主 UI 主要操作“必去 / 想去”
-重要游览地保留，但不做 planningRole 编辑器
-Step 3 只告诉用户“还差 N 天”，不暴露 Draft / canonical 等术语
-Update Card 默认紧凑、原因按需展开
-跨步骤请求自动切换到正确工作区
-未定位按是否真正阻塞分级展示
-地图 / 时间轴仍只展示和选择
+顶层只保留“旅行需求 / 最终线路”
+原 Step 2 / 4 的地点块统一迁入最终线路
+待定 / 不去卡片变灰但不离开列表
+地图显示所有状态地点，路线只连正常地点
+生成主要地点不默认每个地点住 1 晚
+不提供地点级“住几晚”输入
+住 / 多一晚 / 不住直接作用于日程分界
+Day 由最终线路自动派生
+生成详细地点直接进入对应线路 / Day
+最终线路变化后地图和路线自动更新
+手工排序优先于 AI 合理性
+AI 只有在用户明确“优化”时才可重排已有线路
+右侧控制台保持唯一业务入口
 ```
 
-Phase 6 Browser Gate 已验证 mounted UI 符合这些主要交互合同；最终综合回归仍需再次覆盖关键场景。
+---
+
+## 3. 旧五步正式实施 / 验收施工图
+
+[`TravelPlanner 五步规划流程重构实施方案.md`](./TravelPlanner%20五步规划流程重构实施方案.md)
+
+回答：
+
+> **当前已经实现 / 验收过的五步架构当时按什么合同施工？**
+
+这份文档现在属于**现有实现基线与历史施工依据**，不再代表新的产品目标。
+
+它仍然有价值，因为下一步编写新的技术修改方案时，需要用它理解现有代码为什么存在 PlanningRole、Stay Block、Step 2/3/4/5、Macro / Detail 等结构。
+
+不要直接按照这份旧施工图继续增加新产品功能。
+
+---
 
 ## 4. 当前实施状态
 
@@ -96,112 +103,122 @@ Phase 6 Browser Gate 已验证 mounted UI 符合这些主要交互合同；最�
 
 回答：
 
-> 现在代码做到哪里，下一步应该做什么？
+> 现在代码实际上做到哪里？
 
-当前结论：
+它只说明当前代码状态和既有 Gate，不自动等于最新产品目标。
 
-```text
-Phase 0 Gap Review：DONE
-Phase 1：PASS
-Phase 2：PASS
-Phase 3：PASS
-Phase 4：PASS
-Phase 5：PASS
-Phase 6：PASS
-Phase 7：最终综合回归交接中
-```
+新的产品目标已经更新，但**代码尚未按新目标施工**。
 
-当前不能直接宣称专项最终完成。
+---
 
-## 5. 当前最终回归 Handoff
+## 5. 用户控制权修正
 
-[`FIVE_STEP_FINAL_REGRESSION_HANDOFF.md`](./FIVE_STEP_FINAL_REGRESSION_HANDOFF.md)
+[`USER_CONTROL_CORRECTION.md`](./USER_CONTROL_CORRECTION.md)
 
 回答：
 
-> Codex 现在具体应该怎么做最终综合回归？
+> 当前实现如何保证“用户决定旅行方案，AI 不以合理性为由硬拦截”？
 
-包含：
-
-```text
-实施前基线
-完整 diff review 范围
-Phase 1–6 targeted tests 并集
-项目真实 typecheck / full test / build 命令
-实施方案第 29 节 F1–F14 核心场景
-Detailed / Provider / Map 额外回归
-安全隔离 Browser E2E
-真实 AI smoke 的可执行 / BLOCKED 规则
-最终报告格式
-```
-
-下一步固定为：
+这份专项中的核心原则仍继续有效，尤其是：
 
 ```text
-把该 Handoff 交给 Codex
-→ 对当前实际 HEAD 完成最终综合回归
-→ PASS / FAIL / PARTIAL
-→ 用户根据报告决定是否修复、合并或结束专项
+用户手工意图优先
+规划不合理默认 Advisory 而不是硬失败
+AI 不能静默删除、移动、缩短未授权内容
+Provider 事实不能伪造
 ```
+
+新的“最终线路”产品设计继续建立在这些原则上。
+
+---
+
+## 6. 当前最终回归 Handoff
+
+[`FIVE_STEP_FINAL_REGRESSION_HANDOFF.md`](./FIVE_STEP_FINAL_REGRESSION_HANDOFF.md)
+
+这是既有五步实现的回归交接材料。
+
+它仍可用于判断当前代码基线是否稳定，但不应拿来验收新的“最终线路”产品目标。
 
 ---
 
 # 文档优先级
 
+从 2026-09-05 起，产品与技术状态必须分开理解。
+
 发生冲突时：
 
 ```text
 当前用户明确决定
-→ TravelPlanner 五步规划流程重构实施方案.md
-→ 五步 UI 交互规范.md
-→ PRODUCT_PLAN.md
-→ IMPLEMENTATION_STATUS.md（只说明实际完成状态）
+→ PRODUCT_PLAN.md（最新产品目标）
+→ 五步 UI 交互规范.md（最新 UI / 交互目标）
+→ USER_CONTROL_CORRECTION.md（仍有效的用户控制原则）
+→ 新的技术修改方案（尚未编写）
+→ TravelPlanner 五步规划流程重构实施方案.md（现有实现基线 / 旧施工图）
+→ IMPLEMENTATION_STATUS.md（只说明当前代码实际状态）
 ```
 
 职责：
 
 ```text
 PRODUCT_PLAN
-= 产品是什么
+= 最新产品是什么
+
+五步 UI 交互规范
+= 最新用户怎么操作（文件名历史保留）
+
+USER_CONTROL_CORRECTION
+= 用户控制权与 AI 权限边界
 
 五步实施方案
-= 五步重构合同、Phase Gate 与最终验收范围
-
-五步 UI 规范
-= 用户如何操作
+= 现有五步代码的历史施工合同 / 技术基线
 
 IMPLEMENTATION_STATUS
-= 当前代码实际上做到哪里、当前 Gate 是什么
+= 当前代码实际上做到哪里
 
 FIVE_STEP_FINAL_REGRESSION_HANDOFF
-= 当前 Phase 7 独立最终测试任务
+= 既有五步实现的最终回归任务
 ```
-
-设计文档头部如果仍带有 2026-09-02 设计冻结时的“尚未实施”历史描述，不再作为实时状态判断依据；实时状态以 `IMPLEMENTATION_STATUS.md` 为准。
 
 ---
 
 # 当前下一步
 
-不要继续增加产品功能，也不要直接合并 `main`。
+**当前不要直接施工。**
 
-当前唯一下一步：
-
-```text
-Phase 7 Final Codex Regression
-```
-
-至少重新验证：
+已经完成的是：
 
 ```text
-git diff --check
-Phase 1–6 targeted tests 的必要并集
-web/server typecheck
-full Vitest
-build
-isolated Browser E2E
-真实 AI smoke（仅环境和现有项目方法允许时）
-第 29 节全部核心业务场景
+新的产品逻辑梳理
+→ PRODUCT_PLAN 更新
+→ UI 交互规范更新
 ```
 
-发现失败先报告，不自动修复；由用户决定回到对应 Phase。
+下一步应当是：
+
+```text
+读取当前实际代码
++ 对照新的 PRODUCT_PLAN / UI 规范
++ 对照旧五步实施基线
+→ 编写新的技术修改方案
+→ 用户核对技术方案
+→ 再进入施工
+```
+
+新的技术文档应重点回答：
+
+```text
+最终线路如何成为唯一 canonical 工作对象
+现有 Candidate / Skeleton / Day / Stop 哪些保留、哪些降级、哪些移除
+Step 2 / 4 页面和能力如何迁入最终线路
+Step 3 / 5 如何合并
+住宿分界 / Day 如何表达
+待定 / 不去如何保序但排除在路线计算外
+地图和 Provider 如何改为只读最终线路
+最终线路变化如何触发定位和路线更新
+旧数据兼容策略
+Prompt / Action / Scope 如何调整
+迁移顺序、测试与 Gate
+```
+
+在这份技术修改方案确认前，不修改业务代码。
