@@ -982,8 +982,9 @@ export class TravelPlannerRuntimeV3 {
       const place = original.plan.places.find((item) => item.id === candidate.placeId);
       return place && effectivePlanningRole(candidate, place) === "planning_area" ? [candidate.id] : [];
     }));
-    const targets = [...new Set(action.targetIds.length ? action.targetIds : readiness.adoptedPlanningAreaIds)];
-    if (!targets.length) throw new Error("兴趣点研究缺少目标 Planning Area；请选择一个规划区域后重试。");
+    const defaultTargetIds = readiness.adoptedPlanningAreaIds.length ? readiness.adoptedPlanningAreaIds : [...allPlanningAreaIds];
+    const targets = [...new Set(action.targetIds.length ? action.targetIds : defaultTargetIds)];
+    if (!targets.length) throw new Error("兴趣点研究缺少可用 Planning Area；请先添加至少一个规划区域。");
     for (const targetId of targets) {
       if (!allPlanningAreaIds.has(targetId)) throw new Error(`兴趣点研究引用未知 Planning Area：${targetId}`);
       buildInterestAreaContextV3(original.plan, targetId);
@@ -1331,7 +1332,7 @@ export class TravelPlannerRuntimeV3 {
     const commands = refinementCommands(trip.plan, output);
     if (!commands.length) { this.options.store.completeAction(action.id, "no-change"); return; }
     const scope = dayMutationScope(result.dayIds);
-  return this.createProposalForAction(action, result.title, result.explanation, commands, scope, result.dayIds);
+    return this.createProposalForAction(action, result.title, result.explanation, commands, scope, result.dayIds);
   }
 
   private createProposalForAction(action: AiActionRecord, title: string, explanation: string, commandValues: PlanCommand[], scopeValue: ProposalScope, affectedDayIds?: string[]) {
