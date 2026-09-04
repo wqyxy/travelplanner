@@ -62,7 +62,7 @@ function assertDayScope(plan: TravelPlanDocument, dayId: string, commands: PlanC
     }
     if (command.type === "move_day_stop") {
       if (stopOwner(plan, command.stopId) === dayId && command.targetDayId === dayId) continue;
-      throw new Error("Day Scope 不允许跨日移动；请改用 Trip Scope。");
+      throw new Error("Day Scope 不允许跨日移动；请改用多日或整趟 Scope。");
     }
     if (command.type === "add_candidate") {
       const usedByTargetDay = addedStops.some((stopCommand) => stopCommand.dayId === dayId
@@ -73,6 +73,49 @@ function assertDayScope(plan: TravelPlanDocument, dayId: string, commands: PlanC
     if (command.type === "update_candidate" && temporaryCandidates.has(command.candidateId)) continue;
     if (command.type === "update_place" && temporaryPlaces.has(command.placeId)) continue;
     throw new Error(`Proposal 命令超出 Day Scope：${dayId}`);
+  }
+}
+
+function assertDaysScope(plan: TravelPlanDocument, dayIds: string[], commands: PlanCommand[]) {
+  const allowedDayIds = new Set(dayIds);
+  if (allowedDayIds.size !== dayIds.length) throw new Error("Days Scope 不得包含重复 Day。");
+  for (const dayId of allowedDayIds) if (!plan.days.some((day) => day.id === dayId)) throw new Error(`未知 Days Scope Day：${dayId}`);
+
+  const temporaryCandidates = new Set(
+    commands.flatMap((command) => command.type === "add_candidate" ? [command.candidate.id] : []),
+  );
+  const temporaryPlaces = new Set(
+    commands.flatMap((command) => command.type === "add_candidate" ? [command.place.id] : []),
+  );
+  const addedStops = commands.filter((command): command is Extract<PlanCommand, { type: "add_day_stop" }> => command.type === "add_day_stop");
+
+  for (const command of commands) {
+    if (command.type === "set_day_anchor" || command.type === "update_day" || command.type === "add_day_stop") {
+      if (allowedDayIds.has(command.dayId)) continue;
+      throw new Error(`Proposal 命令超出 Days Scope：${command.dayId}`);
+    }
+    if (command.type === "update_day_stop" || command.type === "remove_day_stop") {
+      const owner = stopOwner(plan, command.stopId);
+      if (owner && allowedDayIds.has(owner)) continue;
+      throw new Error(`Proposal 命令修改了 Days Scope 外的 Stop：${command.stopId}`);
+    }
+    if (command.type === "move_day_stop") {
+      const owner = stopOwner(plan, command.stopId);
+      if (owner && allowedDayIds.has(owner) && allowedDayIds.has(command.targetDayId)) continue;
+      throw new Error("Days Scope 不允许把 Stop 移入或移出允许的日期范围。");
+    }
+    if (command.type === "move_day") {
+      throw new Error("Days Scope 不允许重排整趟 Day 顺序；请使用显式整趟 Scope。");
+    }
+    if (command.type === "add_candidate") {
+      const usedByScopedDay = addedStops.some((stopCommand) => allowedDayIds.has(stopCommand.dayId)
+        && (stopCommand.stop.candidateId === command.candidate.id || stopCommand.stop.placeId === command.place.id));
+      if (usedByScopedDay) continue;
+      throw new Error("Days Scope 新增的 Candidate 必须在同一 Proposal 中加入允许的 Day。");
+    }
+    if (command.type === "update_candidate" && temporaryCandidates.has(command.candidateId)) continue;
+    if (command.type === "update_place" && temporaryPlaces.has(command.placeId)) continue;
+    throw new Error(`Proposal 命令超出 Days Scope：${command.type}`);
   }
 }
 
@@ -88,6 +131,7 @@ export function assertProposalCommandsWithinScope(
   if (scope.type === "candidate_pool") assertCandidatePoolScope(commands);
   else if (scope.type === "candidate") assertCandidateScope(plan, scope.id, commands);
   else if (scope.type === "place") assertPlaceScope(plan, scope.id, commands);
-  else assertDayScope(plan, scope.id, commands);
+  else if (scope.type === "day") assertDayScope(plan, scope.id, commands);
+  else assertDaysScope(plan, scope.ids, commands);
   return { scope, commands };
 }
