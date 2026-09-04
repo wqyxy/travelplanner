@@ -1,0 +1,78 @@
+name: UC Fix Finalizer Regression
+
+on:
+  push:
+    branches:
+      - codex/user-control-correction
+    paths:
+      - .github/workflows/uc-fix-finalizer-regression.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/user-control-correction
+          fetch-depth: 0
+      - name: Apply narrow regression fixes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          runtime = Path('apps/server/planner-runtime-v3.ts')
+          text = runtime.read_text()
+          first = text.index('function dayMutationScope(')
+          action = text.index('function actionScope(', first)
+          helper = '''function dayMutationScope(dayIds: string[]): ProposalScope {
+            const ids = [...new Set(dayIds.filter(Boolean))];
+            if (!ids.length) throw new Error("局部行程 Action 缺少目标 Day，不能自动扩大为整趟 Scope。");
+            return ids.length === 1 ? { type: "day", id: ids[0] } : { type: "days", ids };
+          }
+
+          '''
+          text = text[:first] + helper + text[action:]
+
+          old_refine = '''    const dayId = result.dayIds.length === 1 ? result.dayIds[0] : null;
+              return this.createProposalForAction(action, result.title, result.explanation, commands, dayId ? { type: "day", id: dayId } : { type: "trip", id: null });'''
+          normalized_old_refine = '''    const dayId = result.dayIds.length === 1 ? result.dayIds[0] : null;
+            return this.createProposalForAction(action, result.title, result.explanation, commands, dayId ? { type: "day", id: dayId } : { type: "trip", id: null });'''
+          replacement = '''    const scope = dayMutationScope(result.dayIds);
+            return this.createProposalForAction(action, result.title, result.explanation, commands, scope, result.dayIds);'''
+          if old_refine in text:
+              text = text.replace(old_refine, replacement, 1)
+          elif normalized_old_refine in text:
+              text = text.replace(normalized_old_refine, replacement, 1)
+          elif 'const scope = dayMutationScope(result.dayIds);' not in text:
+              raise SystemExit('refine multi-day scope target not found')
+
+          if text.count('function dayMutationScope(') != 1:
+              raise SystemExit('dayMutationScope must exist exactly once')
+          runtime.write_text(text)
+
+          web_types = Path('apps/web/src/v2-types.ts')
+          text = web_types.read_text()
+          needle = '  | { type: "day"; id: string }\n  | { type: "trip"; id: null };'
+          replacement = '  | { type: "day"; id: string }\n  | { type: "days"; ids: string[] }\n  | { type: "trip"; id: null };'
+          if needle in text:
+              text = text.replace(needle, replacement, 1)
+          elif '| { type: "days"; ids: string[] }' not in text:
+              raise SystemExit('web ProposalScope target not found')
+          web_types.write_text(text)
+
+          workflow = Path('.github/workflows/uc-fix-finalizer-regression.yml')
+          workflow.unlink()
+          PY
+          git diff --check
+      - name: Commit fixes
+        shell: bash
+        run: |
+          git config user.name "OpenAI"
+          git config user.email "noreply@openai.com"
+          git add apps/server/planner-runtime-v3.ts apps/web/src/v2-types.ts .github/workflows/uc-fix-finalizer-regression.yml
+          git commit -m "UC7: fix finalizer scope regression"
+          git push origin codex/user-control-correction
