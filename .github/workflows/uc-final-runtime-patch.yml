@@ -1,0 +1,41 @@
+name: UC Final Runtime Patch
+
+on:
+  push:
+    paths:
+      - '.github/workflows/uc-final-runtime-patch.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/user-control-correction
+          fetch-depth: 0
+      - name: Patch runtime fallback only
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('apps/server/planner-runtime-v3.ts')
+          text = path.read_text()
+          old = '    const targets = [...new Set(action.targetIds.length ? action.targetIds : readiness.adoptedPlanningAreaIds)];\n    if (!targets.length) throw new Error("兴趣点研究缺少目标 Planning Area；请选择一个规划区域后重试。");'
+          new = '    const defaultTargetIds = readiness.adoptedPlanningAreaIds.length ? readiness.adoptedPlanningAreaIds : [...allPlanningAreaIds];\n    const targets = [...new Set(action.targetIds.length ? action.targetIds : defaultTargetIds)];\n    if (!targets.length) throw new Error("兴趣点研究缺少可用 Planning Area；请先添加至少一个规划区域。");'
+          if old not in text:
+              raise SystemExit('expected runtime target block not found')
+          text = text.replace(old, new, 1)
+          text = text.replace('    const scope = dayMutationScope(result.dayIds);\n  return this.createProposalForAction(action, result.title, result.explanation, commands, scope, result.dayIds);', '    const scope = dayMutationScope(result.dayIds);\n    return this.createProposalForAction(action, result.title, result.explanation, commands, scope, result.dayIds);', 1)
+          path.write_text(text)
+          PY
+          git diff --check
+      - name: Commit patch and remove workflow
+        run: |
+          rm .github/workflows/uc-final-runtime-patch.yml
+          git config user.name "wqyxy"
+          git config user.email "wqyxy@hotmail.com"
+          git add apps/server/planner-runtime-v3.ts .github/workflows/uc-final-runtime-patch.yml
+          git commit -m "UC: allow interest discovery without adopted skeleton"
+          git push origin HEAD:codex/user-control-correction
