@@ -32,6 +32,9 @@ function dateRangeDays(start: string, end: string) {
   const right = Date.parse(`${end}T00:00:00Z`);
   return Math.floor((right - left) / 86_400_000) + 1;
 }
+function nextDate(value: string) {
+  return new Date(Date.parse(`${value}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+}
 function normalizedNames(place: { nameZh: string; nameLocal: string | null; nameEn: string | null }) {
   return [place.nameZh, place.nameLocal, place.nameEn]
     .filter((value): value is string => Boolean(value))
@@ -47,7 +50,16 @@ export function derivePlanningAdvisoriesV3(
   const places = new Map(plan.places.map((place) => [place.id, place]));
   const candidates = new Map(plan.candidates.map((candidate) => [candidate.id, candidate]));
   const scheduledCandidateIds = new Set<string>();
+  const representedPlanningAreaCandidateIds = new Set<string>();
   const resolvedPlaceIds = new Set(resolutions.filter((item) => item.status === "resolved").map((item) => item.placeId));
+
+  for (const candidate of plan.candidates) {
+    const place = places.get(candidate.placeId);
+    if (!place || effectivePlanningRole(candidate, place) !== "planning_area") continue;
+    if (plan.days.some((day) => day.startAnchor.placeId === place.id || day.endAnchor.placeId === place.id)) {
+      representedPlanningAreaCandidateIds.add(candidate.id);
+    }
+  }
 
   const { start, end, requestedDurationDays } = plan.trip.dates;
   if (start && end && start > end) {
@@ -68,6 +80,19 @@ export function derivePlanningAdvisoriesV3(
   }
   for (const [date, dayIds] of dateOwners) {
     if (dayIds.length > 1) result.push(advisory("DAY_DATE_DUPLICATE", "warning", "skeleton", `${date} 被多个 Day 使用，内容已保留。`, dayIds.map((id) => ({ type: "day" as const, id })), ["date_alignment"]));
+  }
+  for (let index = 1; index < plan.days.length; index += 1) {
+    const previous = plan.days[index - 1];
+    const current = plan.days[index];
+    if (!previous.date || !current.date || current.date === nextDate(previous.date)) continue;
+    result.push(advisory(
+      "DAY_DATE_DISCONTINUITY",
+      "info",
+      "skeleton",
+      `Day ${previous.dayNumber}（${previous.date}）与 Day ${current.dayNumber}（${current.date}）日期不连续；内容已保留。`,
+      [{ type: "day", id: previous.id }, { type: "day", id: current.id }],
+      ["date_alignment"],
+    ));
   }
 
   const aliases = new Map<string, string[]>();
@@ -130,9 +155,23 @@ export function derivePlanningAdvisoriesV3(
   }
 
   for (const candidate of plan.candidates) {
-    if (candidate.preference !== "must_go" || scheduledCandidateIds.has(candidate.id)) continue;
+    if (candidate.preference !== "must_go") continue;
     const place = places.get(candidate.placeId);
-    result.push(advisory("MUST_GO_NOT_SCHEDULED", "warning", "detail", `${place?.nameZh ?? candidate.id} 标记为“必去”，但尚未安排进每日行程。`, [{ type: "candidate", id: candidate.id }], ["coverage"]));
+    const role = place ? effectivePlanningRole(candidate, place) : null;
+    const represented = role === "planning_area"
+      ? representedPlanningAreaCandidateIds.has(candidate.id)
+      : scheduledCandidateIds.has(candidate.id);
+    if (represented) continue;
+    result.push(advisory(
+      "MUST_GO_NOT_SCHEDULED",
+      "warning",
+      role === "planning_area" ? "skeleton" : "detail",
+      role === "planning_area"
+        ? `${place?.nameZh ?? candidate.id} 标记为“必去”，但尚未进入当前路线。`
+        : `${place?.nameZh ?? candidate.id} 标记为“必去”，但尚未安排进每日行程。`,
+      [{ type: "candidate", id: candidate.id }],
+      ["coverage"],
+    ));
   }
 
   return [...new Map(result.map((item) => [item.id, item])).values()].sort((a, b) => a.id.localeCompare(b.id));
