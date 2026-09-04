@@ -8,7 +8,6 @@ import {
   type Day,
   type DayStop,
   type PlanCommand,
-  type ProposalScope,
   type TravelPlanDocument,
   type TripCandidate,
 } from "./contracts-v2.js";
@@ -127,18 +126,6 @@ function markDayForReview(day: Day) {
   if (day.detailLevel === "detailed") day.detailStatus = "needs_review";
 }
 
-function removeCandidateStops(plan: MutablePlan, candidateId: string) {
-  const changed = new Set<string>();
-  for (const day of plan.days) {
-    const next = day.stops.filter((stop) => stop.candidateId !== candidateId);
-    if (next.length === day.stops.length) continue;
-    day.stops = next;
-    markDayForReview(day);
-    changed.add(day.id);
-  }
-  return changed;
-}
-
 function removeCandidates(plan: MutablePlan, candidateIds: Set<string>) {
   const placeIds = new Set(plan.candidates.filter((candidate) => candidateIds.has(candidate.id)).map((candidate) => candidate.placeId));
   const changedDays = new Set<string>();
@@ -178,7 +165,6 @@ function removeCandidateTree(plan: MutablePlan, candidateId: string) {
 function setCandidatePreference(plan: MutablePlan, candidateId: string, preference: CandidatePreference) {
   const candidate = requireCandidate(plan, candidateId);
   candidate.preference = preference;
-  return preference === "excluded" ? removeCandidateStops(plan, candidateId) : new Set<string>();
 }
 
 function mapNewStop(source: unknown, mapper: ReturnType<typeof createIdMapper>): DayStop {
@@ -189,12 +175,8 @@ function mapNewStop(source: unknown, mapper: ReturnType<typeof createIdMapper>):
   return stop;
 }
 
-function normalizeDays(plan: MutablePlan) {
-  const start = plan.trip.dates.start;
-  plan.days.forEach((day, index) => {
-    day.dayNumber = index + 1;
-    if (start) day.date = new Date(Date.parse(`${start}T00:00:00Z`) + index * 86_400_000).toISOString().slice(0, 10);
-  });
+function renumberDaysAfterExplicitMove(plan: MutablePlan) {
+  plan.days.forEach((day, index) => { day.dayNumber = index + 1; });
 }
 
 function clearUnreferencedPlaces(plan: MutablePlan) {
@@ -288,14 +270,14 @@ export function applyPlanCommands(current: TravelPlanDocument, commandValues: un
       case "set_candidate_preference": {
         const id = mapper.resolve(command.candidateId);
         explicitChangedCandidates.add(id);
-        for (const dayId of setCandidatePreference(plan, id, command.preference)) explicitlyChangedDays.add(dayId);
+        setCandidatePreference(plan, id, command.preference);
         break;
       }
       case "bulk_set_candidate_preference": {
         for (const sourceId of new Set(command.candidateIds)) {
           const id = mapper.resolve(sourceId);
           explicitChangedCandidates.add(id);
-          for (const dayId of setCandidatePreference(plan, id, command.preference)) explicitlyChangedDays.add(dayId);
+          setCandidatePreference(plan, id, command.preference);
         }
         break;
       }
@@ -303,7 +285,6 @@ export function applyPlanCommands(current: TravelPlanDocument, commandValues: un
         if (command.candidate.placeId !== command.place.id) throw new Error("新增 Candidate 必须引用同一命令中的 Place 临时 ID。");
         const place = { ...clone(command.place), id: mapper.resolve(command.place.id) };
         const candidate: TripCandidate = { ...clone(command.candidate), id: mapper.resolve(command.candidate.id), placeId: place.id };
-        if (plan.places.some((item) => semanticPlaceKey(item) === semanticPlaceKey(place))) throw new Error(`地点已存在：${place.nameZh}`);
         plan.places.push(place);
         plan.candidates.push(candidate);
         explicitChangedPlaces.add(place.id);
@@ -405,12 +386,12 @@ export function applyPlanCommands(current: TravelPlanDocument, commandValues: un
         plan.days.splice(found.index, 1);
         if (command.targetIndex > plan.days.length) throw new Error("Day 目标位置超出范围。");
         plan.days.splice(command.targetIndex, 0, found.day);
-        explicitlyChangedDays.add(found.day.id);
+        renumberDaysAfterExplicitMove(plan);
+        for (const day of plan.days) explicitlyChangedDays.add(day.id);
         break;
       }
       case "update_day": {
         const day = findDay(plan, mapper.resolve(command.dayId)).day;
-        if ("date" in command.changes && plan.trip.dates.start) throw new Error("已有旅行开始日期时，Day 日期由服务端连续计算，不能单独修改。");
         Object.assign(day, clone(command.changes));
         markDayForReview(day);
         explicitlyChangedDays.add(day.id);
@@ -419,7 +400,6 @@ export function applyPlanCommands(current: TravelPlanDocument, commandValues: un
     }
   }
 
-  normalizeDays(plan);
   clearUnreferencedPlaces(plan);
   const parsed = TravelPlanDocumentSchema.parse(plan);
 
