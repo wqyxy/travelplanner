@@ -9,6 +9,14 @@ function placeName(workspace: Workspace, placeId: string | null, fallback = "地
   return placeNamePresentation(workspace.trip.plan.places.find((place) => place.id === placeId), workspace.trip.planLanguage, fallback).combined;
 }
 
+function stopScheduleLabel(stop: Workspace["trip"]["plan"]["days"][number]["stops"][number], index: number) {
+  if (stop.scheduleText?.trim()) return stop.scheduleText.trim();
+  if (stop.startTime && stop.endTime) return `${stop.startTime}–${stop.endTime}`;
+  if (stop.startTime) return `${stop.startTime} 起`;
+  if (stop.endTime) return `至 ${stop.endTime}`;
+  return `${index + 1}`;
+}
+
 export function DailyItineraryPanelV3({
   workspace,
   selectedDayId,
@@ -36,7 +44,7 @@ export function DailyItineraryPanelV3({
   const places = useMemo(() => new Map(workspace.trip.plan.places.map((place) => [place.id, place])), [workspace.trip.plan.places]);
 
   return <section className="phase6-daily-panel">
-    <header className="phase6-step-intro"><div><p className="eyebrow">STEP 5</p><h2>每日行程</h2><p>这里是最终按天安排。路线和停留天数保持不变，只调整每天去哪里、先后顺序和时间。</p></div><div className="phase6-intro-actions"><button className={`button small ${selectedDayId === null ? "primary" : ""}`} type="button" onClick={onSelectAll}>全部日期</button>{dirtyRoutes.length > 0 && <button className="button small" type="button" disabled={busy} onClick={() => void onRecalculateDirty()}><RefreshCw size={14}/>更新 {dirtyRoutes.length} 天地图路线</button>}</div></header>
+    <header className="phase6-step-intro"><div><p className="eyebrow">STEP 5</p><h2>每日行程</h2><p>这里是最终按天安排。时间可以是精确时刻，也可以是“上午、到达后、次日凌晨”等自然表达；未定位或时间冲突不会让内容消失。</p></div><div className="phase6-intro-actions"><button className={`button small ${selectedDayId === null ? "primary" : ""}`} type="button" onClick={onSelectAll}>全部日期</button>{dirtyRoutes.length > 0 && <button className="button small" type="button" disabled={busy} onClick={() => void onRecalculateDirty()}><RefreshCw size={14}/>更新 {dirtyRoutes.length} 天地图路线</button>}</div></header>
     <div className="phase6-daily-list">
       {workspace.trip.plan.days.map((day) => {
         const state = routeStateForDay(workspace.routeStates, day.id);
@@ -45,8 +53,8 @@ export function DailyItineraryPanelV3({
         return <article className={`phase6-day-card ${selected ? "selected" : ""}`} key={day.id} onClick={() => onSelectDay(day.id)}>
           <header><span>Day {day.dayNumber}</span><div><strong>{day.title}</strong><small>{day.date || "日期待定"}</small></div><em className={status === "已完成" ? "ready" : status === "需更新" ? "attention" : "idle"}>{status === "已完成" ? <CheckCircle2 size={13}/> : status === "需更新" ? <TriangleAlert size={13}/> : <Sparkles size={13}/>} {status}</em></header>
           <div className="phase6-day-anchors"><span><small>出发</small>{placeName(workspace, day.startAnchor.placeId, day.startAnchor.label || "出发地点待确认")}</span><span><small>结束</small>{placeName(workspace, day.endAnchor.placeId, day.endAnchor.label || "结束地点待确认")}</span></div>
-          <div className="phase6-day-stops">{!day.stops.length ? <p>这一天还没有具体游览安排。</p> : day.stops.map((stop, index) => <button type="button" className={selectedStopId === stop.id ? "selected" : ""} key={stop.id} onClick={(event) => { event.stopPropagation(); onSelectStop(stop.id); }}><span>{stop.startTime && stop.endTime ? `${stop.startTime}–${stop.endTime}` : `${index + 1}`}</span><div><strong>{placeNamePresentation(places.get(stop.placeId), workspace.trip.planLanguage, stop.activity).combined}</strong><small>{stop.activity}{stop.durationMinutes != null ? ` · ${stop.durationMinutes} 分钟` : ""}</small></div></button>)}</div>
-          <footer><div className={`phase6-route-summary ${state.dirty ? "attention" : ""}`}>{state.dirty ? <><TriangleAlert size={13}/><span>地点或顺序有变化，地图路线需要更新</span></> : state.route ? <><Route size={13}/><span>{formatDistance(state.route.distanceKm)} · {formatRouteDuration(state.route.durationMinutes)}</span></> : <><MapPin size={13}/><span>地图路线待计算</span></>}</div><div><button className="button small" type="button" disabled={busy} onClick={(event) => { event.stopPropagation(); void onRecalculate(day.id); }}><RefreshCw size={13}/>{state.dirty || !state.route ? "更新地图路线" : "重新计算路线"}</button><button className="button small" type="button" disabled={busy} onClick={(event) => { event.stopPropagation(); void onImproveDay([day.id]); }}><Sparkles size={13}/>{status === "已完成" ? "调整这一天" : "完善这一天"}</button></div></footer>
+          <div className="phase6-day-stops">{!day.stops.length ? <p>这一天还没有具体游览安排。</p> : day.stops.map((stop, index) => <button type="button" className={selectedStopId === stop.id ? "selected" : ""} key={stop.id} onClick={(event) => { event.stopPropagation(); onSelectStop(stop.id); }}><span>{stopScheduleLabel(stop, index)}</span><div><strong>{placeNamePresentation(places.get(stop.placeId), workspace.trip.planLanguage, stop.activity).combined}</strong><small>{stop.activity}{stop.scheduleText && (stop.startTime || stop.endTime) ? ` · ${[stop.startTime, stop.endTime].filter(Boolean).join("–")}` : ""}{stop.durationMinutes != null ? ` · ${stop.durationMinutes} 分钟` : ""}</small></div></button>)}</div>
+          <footer><div className={`phase6-route-summary ${state.dirty ? "attention" : ""}`}>{state.dirty ? <><TriangleAlert size={13}/><span>地点或顺序有变化，地图路线需要更新</span></> : state.route ? <><Route size={13}/><span>{formatDistance(state.route.distanceKm)} · {formatRouteDuration(state.route.durationMinutes)}</span></> : <><MapPin size={13}/><span>地图路线待计算；未定位路段会单独提示</span></>}</div><div><button className="button small" type="button" disabled={busy} onClick={(event) => { event.stopPropagation(); void onRecalculate(day.id); }}><RefreshCw size={13}/>{state.dirty || !state.route ? "更新地图路线" : "重新计算路线"}</button><button className="button small" type="button" disabled={busy} onClick={(event) => { event.stopPropagation(); void onImproveDay([day.id]); }}><Sparkles size={13}/>{status === "已完成" ? "调整这一天" : "完善这一天"}</button></div></footer>
         </article>;
       })}
     </div>
