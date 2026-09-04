@@ -193,6 +193,7 @@ export type ProposalScope =
   | { type: "candidate"; id: string }
   | { type: "place"; id: string }
   | { type: "day"; id: string }
+  | { type: "days"; ids: string[] }
   | { type: "trip"; id: null };
 export type DayStopChanges = Partial<Omit<DayStop, "id">>;
 export type PlanCommand =

@@ -158,12 +158,6 @@ function dayMutationScope(dayIds: string[]): ProposalScope {
   return ids.length === 1 ? { type: "day", id: ids[0] } : { type: "days", ids };
 }
 
-function dayMutationScope(dayIds: string[]): ProposalScope {
-  const ids = [...new Set(dayIds.filter(Boolean))];
-  if (!ids.length) throw new Error("局部行程 Action 缺少目标 Day，不能自动扩大为整趟 Scope。");
-  return ids.length === 1 ? { type: "day", id: ids[0] } : { type: "days", ids };
-}
-
 function actionScope(actionType: AiActionType, targetIds: string[], parameters: Record<string, unknown>): ProposalScope {
   if (actionType.startsWith("requirements.")) return { type: "trip", id: null };
   if (actionType.startsWith("destination.") || actionType.startsWith("interest.")) return { type: "candidate_pool", id: null };
@@ -1302,8 +1296,8 @@ export class TravelPlannerRuntimeV3 {
     const trip = this.options.store.requireTrip(action.tripId);
     const commands = refinementCommands(trip.plan, output);
     if (!commands.length) { this.options.store.completeAction(action.id, "no-change"); return; }
-    const dayId = result.dayIds.length === 1 ? result.dayIds[0] : null;
-    return this.createProposalForAction(action, result.title, result.explanation, commands, dayId ? { type: "day", id: dayId } : { type: "trip", id: null });
+    const scope = dayMutationScope(result.dayIds);
+  return this.createProposalForAction(action, result.title, result.explanation, commands, scope, result.dayIds);
   }
 
   private createProposalForAction(action: AiActionRecord, title: string, explanation: string, commandValues: PlanCommand[], scopeValue: ProposalScope, affectedDayIds?: string[]) {
