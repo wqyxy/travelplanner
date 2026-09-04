@@ -10,8 +10,7 @@ import {
 import {
   addNightAfterFinalRouteNodeV3,
   deriveFinalRouteDaysV3,
-  deriveLegacyFinalRouteNodesV3,
-  migrateLegacyPlanToFinalRouteV3,
+  materializeLegacyFinalRouteV3,
   moveFinalRouteNodeV3,
   removeFinalRouteNodeV3,
   setFinalRouteDayBoundaryV3,
@@ -69,72 +68,11 @@ function routePlan(nodes: FinalRouteNode[], originPlaceId = "a"): TravelPlanDocu
       dates: { start: "2026-10-01", end: null, requestedDurationDays: 8 },
     },
     places: [...ids].map((id) => place(id, id.toUpperCase())),
-    finalRoute: { nodes },
+    finalRoute: { version: 1, nodes },
   });
 }
 
 describe("final route v3", () => {
-  it("keeps legacy candidate order and maps old preferences without inventing day boundaries", () => {
-    const base = emptyTravelPlan();
-    const plan = TravelPlanDocumentSchema.parse({
-      ...base,
-      places: [place("a"), place("b"), place("c"), place("d")],
-      candidates: [
-        { id: "ca", placeId: "a", planningAreaCandidateId: null, preference: "must_go", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: null, tags: [] },
-        { id: "cb", placeId: "b", planningAreaCandidateId: null, preference: "want_to_go", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: null, tags: [] },
-        { id: "cc", placeId: "c", planningAreaCandidateId: null, preference: "optional", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: null, tags: [] },
-        { id: "cd", placeId: "d", planningAreaCandidateId: null, preference: "excluded", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: null, tags: [] },
-      ],
-      finalRoute: { version: 0, nodes: [] },
-    });
-
-    expect(deriveLegacyFinalRouteNodesV3(plan).map((item) => [item.placeId, item.status, item.endsDay])).toEqual([
-      ["a", "normal", false],
-      ["b", "normal", false],
-      ["c", "tentative", false],
-      ["d", "no_go", false],
-    ]);
-  });
-
-  it("converts legacy Day/Stop paths into one ordered route and keeps repeated accommodation places", () => {
-    const base = emptyTravelPlan();
-    const plan = TravelPlanDocumentSchema.parse({
-      ...base,
-      trip: { ...base.trip, originPlaceId: "a" },
-      places: [place("a"), place("x"), place("b"), place("c")],
-      finalRoute: { version: 0, nodes: [] },
-      days: [
-        {
-          id: "d1", dayNumber: 1, date: null, title: "D1", transferMode: "drive", detailLevel: "detailed", detailStatus: "ready",
-          startAnchor: { id: "d1s", placeId: "a", label: null, notes: null },
-          stops: [{ id: "sx", candidateId: null, placeId: "x", activity: "X", period: null, scheduleText: null, startTime: null, endTime: null, durationMinutes: null, transportFromPrevious: transport("drive"), scheduleVerification: null, costNote: null, costVerification: null, notes: null }],
-          endAnchor: { id: "d1e", placeId: "b", label: null, notes: null },
-        },
-        {
-          id: "d2", dayNumber: 2, date: null, title: "D2", transferMode: "none", detailLevel: "planned", detailStatus: null,
-          startAnchor: { id: "d2s", placeId: "b", label: null, notes: null }, stops: [], endAnchor: { id: "d2e", placeId: "b", label: null, notes: null },
-        },
-        {
-          id: "d3", dayNumber: 3, date: null, title: "D3", transferMode: "drive", detailLevel: "planned", detailStatus: null,
-          startAnchor: { id: "d3s", placeId: "b", label: null, notes: null }, stops: [], endAnchor: { id: "d3e", placeId: "c", label: null, notes: null },
-        },
-      ],
-    });
-
-    const nodes = deriveLegacyFinalRouteNodesV3(plan);
-    expect(nodes.map((item) => [item.id, item.placeId, item.endsDay])).toEqual([
-      ["sx", "x", false],
-      ["d1e", "b", true],
-      ["d2e", "b", true],
-      ["d3e", "c", false],
-    ]);
-    expect(migrateLegacyPlanToFinalRouteV3(plan).days.map((day) => [day.startAnchor.placeId, day.endAnchor.placeId])).toEqual([
-      ["a", "b"],
-      ["b", "b"],
-      ["b", "c"],
-    ]);
-  });
-
   it("derives Day blocks mechanically from normal nodes and ignores tentative/no-go boundaries", () => {
     const plan = routePlan([
       node("x", "x", { status: "tentative", endsDay: true }),
@@ -213,11 +151,37 @@ describe("final route v3", () => {
     const base = routePlan([node("b", "b")]);
     expect(() => TravelPlanDocumentSchema.parse({
       ...base,
-      finalRoute: { nodes: [node("dup", "b"), node("dup", "b")] },
+      finalRoute: { version: 1, nodes: [node("dup", "b"), node("dup", "b")] },
     })).toThrow(/最终线路节点 ID 不能重复/);
     expect(() => TravelPlanDocumentSchema.parse({
       ...base,
-      finalRoute: { nodes: [node("missing", "missing")] },
+      finalRoute: { version: 1, nodes: [node("missing", "missing")] },
     })).toThrow(/最终线路引用未知 Place/);
+  });
+
+  it("promotes only the completely empty bootstrap plan to the current final-route version", () => {
+    const promoted = materializeLegacyFinalRouteV3(emptyTravelPlan());
+    expect(promoted.finalRoute).toEqual({ version: 1, nodes: [] });
+  });
+
+  it("rejects nonempty test data that still uses the old route shape instead of converting it", () => {
+    const base = emptyTravelPlan();
+    const oldPlan = TravelPlanDocumentSchema.parse({
+      ...base,
+      places: [place("old-place")],
+      candidates: [{
+        id: "old-candidate",
+        placeId: "old-place",
+        planningAreaCandidateId: null,
+        preference: "want_to_go",
+        source: "user",
+        aiReason: null,
+        aiScore: null,
+        suggestedDurationMinutes: null,
+        tags: [],
+      }],
+      finalRoute: { version: 0, nodes: [] },
+    });
+    expect(() => materializeLegacyFinalRouteV3(oldPlan)).toThrow(/OLD_TEST_PLAN_UNSUPPORTED/);
   });
 });
