@@ -252,8 +252,8 @@ npm run build
 
 ## 本阶段 Codex 本地测试 Prompt
 
-> Test Branch: `__TEST_BRANCH__`
-> Test HEAD: `__TEST_HEAD__`
+> Test Branch: `test/plan-phase1-final-route-20260905`
+> Test HEAD: `b751f0dff0c475419c54bf657a8cc541343443ac`
 >
 > 你是独立测试 Agent。不要相信施工 Agent 的完成声明，只根据指定 Git 基线、实际代码和本地执行结果判断 Phase 1。
 >
