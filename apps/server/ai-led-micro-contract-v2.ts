@@ -62,16 +62,13 @@ export const AiLedMicroCandidateDiscoveryOutputSchema = z.object({
   const targetId = value.areaTargets[0]?.planningAreaCandidateId;
   const placeIds = new Set(value.places.map((place) => place.id));
   if (placeIds.size !== value.places.length) context.addIssue({ code: "custom", path: ["places"], message: "临时 Place ID 不能重复。" });
-  for (const [index, place] of value.places.entries()) {
-    if (place.kind === "city") context.addIssue({ code: "custom", path: ["places", index, "kind"], message: "兴趣点 Place kind 不能是 city。" });
-  }
   const candidateIds = new Set<string>();
   const refs = new Set<string>();
   for (const [index, candidate] of value.candidates.entries()) {
     if (candidateIds.has(candidate.temporaryId)) context.addIssue({ code: "custom", path: ["candidates", index, "temporaryId"], message: "临时 Candidate ID 不能重复。" });
     if (!placeIds.has(candidate.placeTemporaryId)) context.addIssue({ code: "custom", path: ["candidates", index, "placeTemporaryId"], message: "Candidate 必须引用本轮 Place。" });
     if (refs.has(candidate.placeTemporaryId)) context.addIssue({ code: "custom", path: ["candidates", index, "placeTemporaryId"], message: "同一 Place 只能生成一个 Candidate。" });
-    if (!candidate.planningAreaCandidateId || candidate.planningAreaCandidateId !== targetId) context.addIssue({ code: "custom", path: ["candidates", index, "planningAreaCandidateId"], message: "每个兴趣点 Candidate 必须归属本轮唯一 Macro Candidate。" });
+    if (!candidate.planningAreaCandidateId || candidate.planningAreaCandidateId !== targetId) context.addIssue({ code: "custom", path: ["candidates", index, "planningAreaCandidateId"], message: "每个兴趣点 Candidate 必须归属本轮唯一 Planning Area Candidate。" });
     candidateIds.add(candidate.temporaryId);
     refs.add(candidate.placeTemporaryId);
   }
