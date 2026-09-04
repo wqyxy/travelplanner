@@ -125,7 +125,7 @@ export function CandidateWorkflowPanelV3({
   const submitAdd = async () => {
     if (!adding || !name.trim()) return;
     const parsed = duration.trim() ? Number(duration) : null;
-    if (parsed !== null && (!Number.isInteger(parsed) || parsed < 0 || false)) { setAddError("停留时间请输入分钟整数。"); return; }
+    if (parsed !== null && (!Number.isInteger(parsed) || parsed < 0)) { setAddError("停留时间请输入分钟整数。"); return; }
     setAddError("");
     await onAddCandidate({ nameZh: name.trim(), placeKind, planningRole: adding, planningAreaCandidateId: adding === "planning_area" ? null : (parentId || null), suggestedDurationMinutes: parsed });
     setAdding(null); setName(""); setParentId(""); setDuration("");
