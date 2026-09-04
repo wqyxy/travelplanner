@@ -252,7 +252,96 @@ npm run build
 
 ## 本阶段 Codex 本地测试 Prompt
 
-本节在 Phase 1 代码冻结后写入具体的 `Test Branch` 和 `Test HEAD`。
+> Test Branch: `__TEST_BRANCH__`
+> Test HEAD: `__TEST_HEAD__`
+>
+> 你是独立测试 Agent。不要相信施工 Agent 的完成声明，只根据指定 Git 基线、实际代码和本地执行结果判断 Phase 1。
+>
+> **第一步只能检查 Git 基线，不要先运行任何测试：**
+>
+> ```bash
+> git branch --show-current
+> git rev-parse HEAD
+> git status --short
+> ```
+>
+> 必须满足：
+>
+> - 当前分支严格等于 Test Branch；
+> - 当前 HEAD 严格等于 Test HEAD；
+> - 工作树没有会影响待测生产代码的本地修改。
+>
+> 如果 Branch 或 HEAD 不匹配，立即停止，输出 `TEST_BASE_MISMATCH`。不要自行 checkout、switch、pull、merge、rebase、reset 或 cherry-pick。
+>
+> 如果存在会影响待测代码的本地修改，立即停止，输出 `TEST_WORKTREE_DIRTY`。
+>
+> 基线确认无误后，阅读：
+>
+> - `docs/PLAN.md`
+> - `docs/PLAN_EXECUTION.md`
+> - `docs/PLAN_PROGRESS.md`
+> - `apps/server/final-route-v3.ts`
+> - `apps/server/contracts-v2.ts`
+> - `apps/server/plan-commands-v2.ts`
+> - `apps/server/travel-store-v3.ts`
+> - `apps/server/day-route-v2.ts`
+> - Phase 1 相关测试文件。
+>
+> 本次只验收 Phase 1，不实现或修改 Phase 2 / Phase 3。不要为了让测试通过而擅自改变产品规则。
+>
+> 如果本地数据库中有施工前的测试旅行数据，可直接清空 / 删除测试数据库后重新创建；本次**不验收旧旅行迁移或旧 Revision 兼容**。
+>
+> 运行：
+>
+> ```bash
+> npm run typecheck
+> npx vitest run --config vitest.config.ts apps/server/final-route-v3.test.ts apps/server/final-route-plan-commands-v3.test.ts apps/server/travel-store-final-route-v3.test.ts apps/server/day-route-v2.test.ts apps/server/plan-route-order-v2.test.ts
+> npm test
+> npm run build
+> ```
+>
+> 独立重点检查：
+>
+> 1. 完全空白的新建计划允许内部 `finalRoute.version = 0` 启动占位，但该占位不能含 Place、Candidate、Day 或线路节点；第一次进入 Store / 最终线路逻辑后应提升为 `version = 1`。
+> 2. 任何含实际旅行内容却仍是旧格式 / `version = 0` 的计划必须直接报 `OLD_TEST_PLAN_UNSUPPORTED`，不能从 Candidate / Day 猜测、迁移或补出最终线路。
+> 3. 代码中不应继续存在旧 Candidate / Day → 最终线路的内容转换函数；Store 里暂时保留的旧函数名调用只能作为现有调用点适配，实际实现不得迁移旧内容。
+> 4. 同一个 Place 可以有多个独立线路节点。
+> 5. normal / tentative / no_go：inactive 节点保留顺序和 `endsDay`，但退出当前 Day；恢复 normal 后原分界恢复。
+> 6. `A —drive→ X —walk→ B` 中 X 退出当前线路后，A→B 使用 B 自己保存的 walk。
+> 7. “不住”只取消分界；“多一晚”只新增同 Place 节点和同地点→同地点 Day，不能移动其他节点。
+> 8. 最后一个 normal 节点没有 `endsDay=true` 仍能形成合法最后一天；Day 编号和日期连续重算。
+> 9. Store 保存时必须根据最终线路重建 Day，不能信任调用方单独修改后的 `days[]`。
+> 10. Route fingerprint 和实际线路输入必须包含 Day 终点自己的到达交通方式。
+> 11. 新结构自己的 Revision / restore / generation / Proposal 冲突保护仍然有效；不要求旧 Revision 恢复。
+> 12. 重复线路节点 ID、未知 Place 引用继续拒绝。
+> 13. Provider 事实边界不变：AI / 计划数据不能伪造真实坐标、距离、时长或 geometry。
+>
+> 如果发现问题，不要直接替施工 Agent 修代码。请给出文件、复现条件、实际结果、预期结果和原因判断。
+>
+> 最终固定输出：
+>
+> ```text
+> Test Branch: ...
+> Test HEAD: ...
+> Phase 1: PASS / FAIL
+>
+> 实际执行的测试：
+> - ...
+>
+> 发现的问题：
+> 1. [Blocker / High / Medium / Low] ...
+>    - 文件：
+>    - 复现：
+>    - 实际：
+>    - 预期：
+>    - 原因判断：
+>
+> 未覆盖或无法验证：
+> - ...
+>
+> 是否建议进入 Phase 2：是 / 否
+> 原因：...
+> ```
 
 ---
 
