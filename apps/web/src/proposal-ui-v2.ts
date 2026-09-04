@@ -25,7 +25,9 @@ export function proposalCreateBody(message: string, scope: ProposalScope) {
 }
 
 export function proposalScopeKey(scope: ProposalScope) {
-  return `${scope.type}:${scope.id ?? ""}`;
+  return scope.type === "days"
+    ? `${scope.type}:${scope.ids.join(",")}`
+    : `${scope.type}:${scope.id ?? ""}`;
 }
 
 export function proposalScopeLabel(scope: ProposalScope) {
@@ -34,6 +36,7 @@ export function proposalScopeLabel(scope: ProposalScope) {
     case "candidate": return "候选地点";
     case "place": return "真实地点";
     case "day": return "某一天";
+    case "days": return "多个日期";
     case "trip": return "整趟旅行";
   }
 }
