@@ -6,6 +6,7 @@ import { CandidateWorkflowPanelV3, type GoogleMapsPreviewV3, type WorkflowCandid
 import { DailyItineraryPanelV3 } from "./DailyItineraryPanelV3";
 import { MacroItineraryPanelV3 } from "./MacroItineraryPanelV3";
 import { PasswordDrawer } from "./PasswordDrawer";
+import { PlanningAdvisoryListV3 } from "./PlanningAdvisoryListV3";
 import { RequirementsPanelV3 } from "./RequirementsPanelV3";
 import { VersionDrawerV2 } from "./VersionDrawerV2";
 import { WorkflowAssistantV3 } from "./WorkflowAssistantV3";
@@ -16,14 +17,12 @@ import type { AppSettings, CandidatePreference, PlanCommand, PlanningRole, Trip,
 import type { AiAction, AiActionType, ConversationStage, WorkflowStepV3, WorkspaceV3 } from "./v3-types";
 import {
   defaultWorkflowStepV3,
-  detailResolutionSummaryV3,
-  latestRequiredWorkflowStepV3,
   selectionForWorkflowStepV3,
   stageForWorkflowStepV3,
   WORKFLOW_STEPS_V3,
 } from "./workflow-ui-v3";
 
- type User = { id: string; username: string };
+type User = { id: string; username: string };
 type Model = { model: string; displayName?: string; supportedReasoningEfforts?: Array<string | { reasoningEffort?: string }> };
 type CodexStatus = { signedIn: boolean; models: Model[]; error?: string };
 type Bootstrap = { authenticated: boolean; configured: boolean; user: User | null; settings: AppSettings };
@@ -74,7 +73,6 @@ export default function AppWorkflowV3() {
   const workspaceElement = useRef<HTMLDivElement>(null);
   const loadToken = useRef(0);
   const selectedTripId = useRef<string | null>(null);
-  const handledRequiredAction = useRef<string | null>(null);
   const candidateFocusSequence = useRef(0);
   selectedTripId.current = workspace?.trip.id ?? null;
 
@@ -107,7 +105,7 @@ export default function AppWorkflowV3() {
       const next = await api<WorkspaceV3>(`/api/trips/${id}/workspace`);
       if (token !== loadToken.current) return;
       setWorkspace(next); setMenu(null);
-      if (resetSelection) { const nextStep = defaultWorkflowStepV3(next); setStep(nextStep); setSelection(selectionForWorkflowStepV3(nextStep)); handledRequiredAction.current = null; }
+      if (resetSelection) { const nextStep = defaultWorkflowStepV3(next); setStep(nextStep); setSelection(selectionForWorkflowStepV3(nextStep)); }
       if (window.matchMedia("(max-width: 900px)").matches) setSidebar(false);
     } catch (cause) { if (token === loadToken.current) setError(cause instanceof Error ? cause.message : "无法加载旅行工作台。"); }
   };
@@ -119,13 +117,6 @@ export default function AppWorkflowV3() {
   useEffect(() => { if (user) void refreshTrips(trash); }, [trash, user?.id]);
   useEffect(() => { const timer = window.setTimeout(() => window.dispatchEvent(new Event("travel-workspace-resize")), 220); return () => window.clearTimeout(timer); }, [sidebar, focus, settings.ui.workspaceSplitRatio]);
   useEffect(() => { const escape = (event: KeyboardEvent) => { if (event.key === "Escape") { setFocus(null); setMapPickPlaceId(null); } }; window.addEventListener("keydown", escape); return () => window.removeEventListener("keydown", escape); }, []);
-  useEffect(() => {
-    if (!workspace) return;
-    const required = latestRequiredWorkflowStepV3(workspace);
-    if (!required || handledRequiredAction.current === required.actionId) return;
-    handledRequiredAction.current = required.actionId;
-    gotoStep(required.step);
-  }, [workspace?.actions.map((action) => `${action.id}:${action.status}:${action.resultRef}`).join("|")]);
   useEffect(() => {
     if (!user) return;
     let closed = false; let socket: WebSocket | null = null; let retryTimer: number | undefined;
@@ -223,23 +214,17 @@ export default function AppWorkflowV3() {
 
   const models = (codex?.models || []).filter((item) => item.model);
   const legacyWorkspace = workspace as any;
-  const planningAreaIds = new Set<string>();
-  if (trip) for (const candidate of trip.plan.candidates) if (effectiveRole(candidate, trip) === "planning_area") planningAreaIds.add(candidate.id);
-  const adoptedAreaIds = new Set<string>();
-  if (trip) for (const day of trip.plan.days) { const area = trip.plan.candidates.find((candidate) => effectiveRole(candidate, trip) === "planning_area" && candidate.placeId === day.endAnchor.placeId); if (area) adoptedAreaIds.add(area.id); }
   const mapWorkspace = workspace ? (() => {
     if (step === "detail") return legacyWorkspace;
     if (step === "skeleton") return { ...legacyWorkspace, trip: { ...workspace.trip, plan: { ...workspace.trip.plan, candidates: workspace.trip.plan.candidates.filter((candidate) => effectiveRole(candidate, workspace.trip) === "planning_area"), days: workspace.trip.plan.days.map((day) => ({ ...day, stops: [] })) } }, routeStates: workspace.macroRouteStates };
     if (step === "backbone") return { ...legacyWorkspace, trip: { ...workspace.trip, plan: { ...workspace.trip.plan, candidates: workspace.trip.plan.candidates.filter((candidate) => effectiveRole(candidate, workspace.trip) !== "detail_interest") } } };
-    if (step === "interests") return { ...legacyWorkspace, trip: { ...workspace.trip, plan: { ...workspace.trip.plan, candidates: workspace.trip.plan.candidates.filter((candidate) => { const role = effectiveRole(candidate, workspace.trip); return role !== "planning_area" && Boolean(candidate.planningAreaCandidateId && adoptedAreaIds.has(candidate.planningAreaCandidateId)); }) } } };
+    if (step === "interests") return { ...legacyWorkspace, trip: { ...workspace.trip, plan: { ...workspace.trip.plan, candidates: workspace.trip.plan.candidates.filter((candidate) => effectiveRole(candidate, workspace.trip) !== "planning_area") } } };
     return legacyWorkspace;
   })() : null;
   const macroNeedsUpdate = workspace?.itineraryUpdateState.macro.status === "needs_update";
   const detailNeedsUpdate = workspace?.itineraryUpdateState.detail.status === "needs_update";
   const detailAffectedDayIds = workspace?.itineraryUpdateState.detail.affectedDayIds ?? [];
   const hasDetailedDays = Boolean(workspace?.trip.plan.days.some((day) => day.detailLevel === "detailed"));
-  const detailReadiness = workspace ? detailResolutionSummaryV3(workspace) : { blocking: [], blockingCount: 0, nonBlockingNames: [] };
-  const planningAreaCount = trip ? trip.plan.candidates.filter((candidate) => effectiveRole(candidate, trip) === "planning_area" && candidate.preference !== "excluded").length : 0;
   const currentStepMeta = WORKFLOW_STEPS_V3.find((item) => item.step === step)!;
   const retryCurrent = async () => {
     if (!trip) return;
@@ -257,18 +242,17 @@ export default function AppWorkflowV3() {
         {workspace ? <WorkspaceMapV2 workspace={mapWorkspace as any} view={(step === "skeleton" || step === "detail") ? "itinerary" : "candidates"} selectedCandidateId={selectedCandidateId} selectedDayId={step === "detail" ? selectedDayId : null} selectedStopId={step === "detail" ? selectedStopId : null} focusRequest={mapFocusRequest} routePreviewDayId={step === "skeleton" ? macroPreviewDayId : null} routeFocusDayId={step === "skeleton" ? macroFocusedDayId : null} mapPickPlaceId={mapPickPlaceId} fullscreen={focus === "map"} onSelectCandidate={(candidateId, focusMap) => { setMapFocusRequest(focusMap ? { target: "candidate", id: candidateId, requestId: ++candidateFocusSequence.current } : null); setSelection({ type: "candidate", id: candidateId }); }} onSelectStop={(stopId) => { setMapFocusRequest(null); setSelection({ type: "stop", id: stopId }); }} onMapPick={(placeId, latitude, longitude) => void setManualResolution(placeId, latitude, longitude)} onFocusHandled={(requestId) => setMapFocusRequest((current) => current?.requestId === requestId ? null : current)} onToggleFullscreen={() => setFocus((current) => current === "map" ? null : "map")}/> : <section className="workspace-map-v2 no-trip"><div className="map-empty-overlay"><span className="brand-mark">✦</span><strong>地图只展示规划结果</strong><span>所有旅行操作都从右侧开始</span></div></section>}
         <div className="splitter" onPointerDown={resize}/>
         <div className="workspace-side-v3">{workspace ? <>
-          <header className="workspace-flow-head-v3"><nav className="workspace-flow-nav-v3 phase6-flow-nav" aria-label="旅行规划步骤">{WORKFLOW_STEPS_V3.map((item) => { const disabled = item.step === "skeleton" ? planningAreaCount === 0 : item.step === "interests" || item.step === "detail" ? workspace.trip.plan.days.length === 0 : false; const needsUpdate = item.step === "skeleton" ? macroNeedsUpdate : item.step === "detail" ? detailNeedsUpdate : false; return <button type="button" key={item.step} className={step === item.step ? "active" : ""} disabled={disabled} onClick={() => gotoStep(item.step)}><span>{item.number}</span><b>{item.label}</b>{item.optional && <em>可选</em>}{needsUpdate && <i>需更新</i>}</button>; })}</nav></header>
+          <header className="workspace-flow-head-v3"><nav className="workspace-flow-nav-v3 phase6-flow-nav" aria-label="旅行规划步骤">{WORKFLOW_STEPS_V3.map((item) => { const needsUpdate = item.step === "skeleton" ? macroNeedsUpdate : item.step === "detail" ? detailNeedsUpdate : false; return <button type="button" key={item.step} className={step === item.step ? "active" : ""} onClick={() => gotoStep(item.step)}><span>{item.number}</span><b>{item.label}</b>{item.optional && <em>可选</em>}{needsUpdate && <i>需更新</i>}</button>; })}</nav></header>
+          <PlanningAdvisoryListV3 advisories={workspace.advisories ?? []} step={step}/>
           <div className="workspace-step-content-v3">
             {step === "requirements" ? <RequirementsPanelV3 facts={workspace.trip.plan.trip} busy={working} onSave={saveBrief} onGenerate={async () => gotoStep("backbone")}/>
             : step === "backbone" ? <CandidateWorkflowPanelV3 mode="backbone" workspace={legacyWorkspace} selectedCandidateId={selectedCandidateId} busy={working} macroNeedsUpdate={Boolean(macroNeedsUpdate)} onSelectCandidate={(candidateId) => { setMapFocusRequest(null); setSelection({ type: "candidate", id: candidateId }); }} onFocusCandidate={(candidateId) => setMapFocusRequest({ target: "candidate", id: candidateId, requestId: ++candidateFocusSequence.current })} onSetPreference={setPreference} onDiscover={() => startCta("destinations", "destination.generate")} onAddCandidate={addCandidate} onUpdatePlace={updatePlace} onPreviewGoogleMapsLink={previewGoogleMapsLink} onApplyGoogleMapsLink={applyGoogleMapsLink} onRemoveCandidate={removeCandidate} onContinue={async () => gotoStep("skeleton")} onGoToSkeleton={() => gotoStep("skeleton")} onRetry={retryResolutions} onBeginMapPick={(placeId) => { setMapFocusRequest(null); setMapPickPlaceId(placeId); setFocus("map"); }}/>
             : step === "skeleton" ? <MacroItineraryPanelV3 workspace={workspace} busy={working} previewedDayId={macroPreviewDayId} focusedDayId={macroFocusedDayId} onPreviewDay={setMacroPreviewDayId} onToggleFocusDay={(dayId) => { setMacroPreviewDayId(dayId); setMacroFocusedDayId((current) => current === dayId ? null : dayId); }} onSelectAll={() => { setMapFocusRequest(null); setMacroPreviewDayId(null); setMacroFocusedDayId(null); setSelection({ type: "trip", id: null }); }} onGenerate={() => startCta("destinations", "itinerary.generate")} onUpdate={() => startCta("destinations", "itinerary.replan")} onSaveDraft={saveSkeletonDraft} onRecalculate={recalculateMacroRoute} onRecalculateDirty={recalculateDirtyMacroRoutes} onContinue={async () => gotoStep("interests")}/>
             : step === "interests" ? <CandidateWorkflowPanelV3 mode="interests" workspace={legacyWorkspace} selectedCandidateId={selectedCandidateId} busy={working} macroNeedsUpdate={Boolean(macroNeedsUpdate)} onSelectCandidate={(candidateId) => { setMapFocusRequest(null); setSelection({ type: "candidate", id: candidateId }); }} onFocusCandidate={(candidateId) => setMapFocusRequest({ target: "candidate", id: candidateId, requestId: ++candidateFocusSequence.current })} onSetPreference={setPreference} onDiscover={() => startCta("interests", "interest.supplement")} onAddCandidate={addCandidate} onUpdatePlace={updatePlace} onPreviewGoogleMapsLink={previewGoogleMapsLink} onApplyGoogleMapsLink={applyGoogleMapsLink} onRemoveCandidate={removeCandidate} onContinue={async () => gotoStep("detail")} onGoToSkeleton={() => gotoStep("skeleton")} onRetry={retryResolutions} onBeginMapPick={(placeId) => { setMapFocusRequest(null); setMapPickPlaceId(placeId); setFocus("map"); }}/>
             : <section className={`phase6-detail-step ${hasDetailedDays ? "has-daily-itinerary" : ""}`}>
-                {macroNeedsUpdate ? <div className="phase6-blocking-card"><strong>路线和天数需要重新确认</strong><p>前面的地点或旅行需求已经影响到当前路线。先确认第 3 步，再继续安排每天怎么玩。</p><button className="button primary small" type="button" onClick={() => gotoStep("skeleton")}>去更新路线和天数</button></div>
-                : detailReadiness.blockingCount > 0 ? <div className="phase6-blocking-card"><strong>{detailReadiness.blockingCount} 个当前行程需要的地点尚未定位</strong><p>{detailReadiness.blocking.map((item) => item.message).join("；")}</p><button className="button primary small" type="button" onClick={() => gotoStep(detailReadiness.blocking[0].step)}>去处理这些地点</button></div> : null}
-                {detailReadiness.nonBlockingNames.length > 0 && <details className="phase6-context-details"><summary>{detailReadiness.nonBlockingNames.length} 个非必去地点尚未定位</summary><p>{detailReadiness.nonBlockingNames.join("、")}</p><small>这些地点不会阻止其他已定位地点继续生成每日行程。</small></details>}
-                {detailNeedsUpdate && hasDetailedDays && !macroNeedsUpdate && <div className="phase6-update-card"><TriangleAlert size={16}/><div><strong>{detailAffectedDayIds.length} 天需要更新，其他 {Math.max(0, workspace.trip.plan.days.length - detailAffectedDayIds.length)} 天保持不变</strong><p>只重新安排真正受前面修改影响的日期。</p><details><summary>查看原因</summary><small>地点偏好、重要游览地或停留安排发生了变化；未受影响日期继续沿用。</small></details></div>{detailReadiness.blockingCount ? <button className="button primary small" onClick={() => gotoStep(detailReadiness.blocking[0].step)}>先处理未定位地点</button> : <button className="button primary small" disabled={working} onClick={() => void startCta("itinerary", "itinerary.detail.update", { dayIds: detailAffectedDayIds }, detailAffectedDayIds)}><Sparkles size={14}/>更新受影响的 {detailAffectedDayIds.length} 天</button>}</div>}
-                {!hasDetailedDays && !macroNeedsUpdate && <section className="phase6-generate-detail"><div><p className="eyebrow">STEP 5</p><h2>每日行程</h2><p>路线和天数已经固定。现在把重要游览地和已有普通景点安排到具体日期；即使第 4 步没有补充景点，也可以直接开始。</p></div><button className="button primary" type="button" disabled={working || detailReadiness.blockingCount > 0} onClick={() => void startCta("itinerary", "itinerary.detail.generate")}><Sparkles size={15}/>生成每日行程</button></section>}
+                {macroNeedsUpdate && <div className="phase6-update-card"><TriangleAlert size={16}/><div><strong>路线和天数可能需要重新确认</strong><p>前面的地点或旅行需求已经影响到当前路线。你仍可继续编辑或生成每日行程，也可以先回第 3 步检查。</p></div><button className="button small" type="button" onClick={() => gotoStep("skeleton")}>查看路线和天数</button></div>}
+                {detailNeedsUpdate && hasDetailedDays && <div className="phase6-update-card"><TriangleAlert size={16}/><div><strong>{detailAffectedDayIds.length} 天需要更新，其他 {Math.max(0, workspace.trip.plan.days.length - detailAffectedDayIds.length)} 天保持不变</strong><p>这里只重新安排真正受前面修改影响的日期；当前内容在更新前仍会保留。</p></div><button className="button primary small" disabled={working || detailAffectedDayIds.length === 0} onClick={() => void startCta("itinerary", "itinerary.detail.update", { dayIds: detailAffectedDayIds }, detailAffectedDayIds)}><Sparkles size={14}/>更新受影响的 {detailAffectedDayIds.length} 天</button></div>}
+                {!hasDetailedDays && <section className="phase6-generate-detail"><div><p className="eyebrow">STEP 5</p><h2>每日行程</h2><p>可以直接开始详细规划。即使路线仍需确认、地点尚未定位或第 4 步没有补充景点，系统也会保留你的选择并用提醒说明当前限制。</p></div><button className="button primary" type="button" disabled={working} onClick={() => void startCta("itinerary", "itinerary.detail.generate")}><Sparkles size={15}/>生成每日行程</button></section>}
                 {hasDetailedDays && <DailyItineraryPanelV3 workspace={legacyWorkspace} selectedDayId={selectedDayId} selectedStopId={selectedStopId} busy={working} onSelectAll={() => setSelection({ type: "trip", id: null })} onSelectDay={(dayId) => setSelection({ type: "day", id: dayId })} onSelectStop={(stopId) => setSelection({ type: "stop", id: stopId })} onRecalculate={recalculateRoute} onRecalculateDirty={recalculateDirtyRoutes} onImproveDay={refine}/>}
               </section>}
           </div>
