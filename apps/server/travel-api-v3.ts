@@ -9,6 +9,7 @@ import {
 import { AiActionTypeSchema, ConversationStageSchema, WorkspaceSelectionV3Schema } from "./ai-stage-contracts-v3.js";
 import { confirmDetailToCorePromotionV3 } from "./core-promotion-v3.js";
 import { normalizeDetailDayCtaActionV3 } from "./detail-day-cta-v3.js";
+import { derivePlanningAdvisoriesV3 } from "./planning-advisories-v3.js";
 import { normalizeRequirementsCtaParametersV3 } from "./requirements-duration-v3.js";
 import { recoverReplanCtaParametersV3 } from "./replan-intent-v3.js";
 import { saveSkeletonEditDraftV3 } from "./skeleton-edit-api-v3.js";
@@ -55,7 +56,16 @@ export async function dispatchTravelApiV3(
   }
 
   match = /^\/api\/trips\/([^/]+)\/workspace$/.exec(pathname);
-  if (method === "GET" && match) return { status: 200, data: deps.runtime.workspace(decode(match[1])) };
+  if (method === "GET" && match) {
+    const workspace = deps.runtime.workspace(decode(match[1]));
+    return {
+      status: 200,
+      data: {
+        ...workspace,
+        advisories: derivePlanningAdvisoriesV3(workspace.trip.plan, workspace.resolutions),
+      },
+    };
+  }
 
   match = /^\/api\/trips\/([^/]+)\/duplicate$/.exec(pathname);
   if (method === "POST" && match) return { status: 200, data: { trip: deps.store.duplicate(decode(match[1])) } };
