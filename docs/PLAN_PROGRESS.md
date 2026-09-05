@@ -114,10 +114,11 @@ Phase 1 已建立 finalRoute、三状态、住宿分界、到达交通、Day 自
 
 - `PlanningAdvisoryListV3` 支持最终线路工作区合并显示内部多个旧分类的提醒，不恢复旧五步页面。
 
-### 新增纯逻辑测试代码
+### 新增测试代码
 
 - `apps/web/src/final-route-ui-v3.test.ts`
 - `apps/web/src/final-route-map-v3.test.ts`
+- `apps/web/src/phase2-final-route-cutover.test.ts`
 
 施工 Agent 未运行这些测试。
 
@@ -128,6 +129,7 @@ Phase 1 已建立 finalRoute、三状态、住宿分界、到达交通、Day 自
 - `main.tsx` 已切换到 `AppFinalRouteV3`；
 - 路线人工操作走现有 `/commands`，没有新增旁路写入；
 - 添加地点在一个命令批次内完成 Place / Candidate / route node ID 映射；
+- 新旅行空白 v0 占位在 Store `requireTrip` 时会先 materialize 为 v1，因此第一批 finalRoute 命令不会被旧数据保护误伤；
 - 地图路线数据不从全部地图点拼接，而继续读取派生 Day Route，因此 inactive 点不会进入交通路线；
 - Map Popup 不包含业务修改按钮；
 - Route 失败与 plan 保存失败分离；
@@ -136,9 +138,11 @@ Phase 1 已建立 finalRoute、三状态、住宿分界、到达交通、Day 自
 ## 本地测试基线
 
 ```text
-Test Branch: __PHASE2_TEST_BRANCH__
-Test HEAD: __PHASE2_TEST_HEAD__
+Test Branch: test/plan-phase2-final-route-ui-20260905
+Test HEAD: 762c8926fedb1b2fd73f113ab2989f2a207bb990
 ```
+
+该分支已经冻结，不再修改。
 
 完整本地 Codex Prompt 已写入 `docs/PLAN_EXECUTION.md`。
 
@@ -170,8 +174,9 @@ Phase 3 将负责：
 
 ## 下一步
 
-1. 冻结 Phase 2 Test Branch + HEAD；
-2. 用户按 `PLAN_EXECUTION.md` 中的 Phase 2 Prompt 本地测试；
-3. 用户返回匹配 Branch + HEAD 的 PASS / FAIL；
-4. PASS → Phase 2 completed，进入 Phase 3；
-5. FAIL → 只修复 Phase 2 报告问题并生成新的测试基线。
+1. 用户切到冻结分支 `test/plan-phase2-final-route-ui-20260905`；
+2. 确认 HEAD 为 `762c8926fedb1b2fd73f113ab2989f2a207bb990`；
+3. 按 `PLAN_EXECUTION.md` 中的 Phase 2 Prompt 本地测试；
+4. 用户返回匹配 Branch + HEAD 的 PASS / FAIL；
+5. PASS → Phase 2 completed，进入 Phase 3；
+6. FAIL → 只修复 Phase 2 报告问题并生成新的测试基线。
