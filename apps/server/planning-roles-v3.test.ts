@@ -54,6 +54,17 @@ describe("planning roles v3", () => {
     expect(legacyDetail).not.toHaveProperty("planningRole");
   });
 
+  it("treats a parented place as detail even when its real-world Place kind is city", () => {
+    const areaPlace = place("p-area", "city");
+    const childCity = place("p-child-city", "city");
+    const area = candidate("c-area", areaPlace.id, "planning_area");
+    const child = candidate("c-child", childCity.id, undefined, area.id);
+
+    expect(effectivePlanningRole(child, childCity)).toBe("detail_interest");
+    expect(activePlanningAreas({ places: [areaPlace, childCity], candidates: [area, child] }).map((item) => item.id)).toEqual(["c-area"]);
+    expect(activeDetailInterests({ places: [areaPlace, childCity], candidates: [area, child] }).map((item) => item.id)).toEqual(["c-child"]);
+  });
+
   it("honors explicit core visits and filters excluded candidates", () => {
     const places = [place("p-area", "city"), place("p-core", "attraction"), place("p-detail", "attraction")];
     const candidates = [
