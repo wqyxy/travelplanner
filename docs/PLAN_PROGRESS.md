@@ -12,192 +12,207 @@
 
 - 用户只维护一份最终线路。
 - 同一现实地点可以在线路中出现多次，每次拥有独立线路节点 ID。
-- 状态为正常 / 待定 / 不去。
-- 待定 / 不去保留顺序和地图展示，但退出当前 Day 和交通路线。
-- 待定 / 不去原有住宿分界保留但暂时失效，恢复 normal 后恢复。
+- 节点状态为 normal / tentative / no_go。
+- tentative / no_go 保留顺序和保存的住宿分界，但退出当前有效 Day 和交通路线；恢复 normal 后重新生效。
 - 交通方式属于“到达当前节点”。
 - 不住只取消日程分界。
-- 多一晚新增同 Place 的线路节点，不自动搬动景点。
-- Day 根据最终线路自动生成，最后一天允许没有住宿。
+- 多一晚新增同 Place 的线路节点，不移动其他地点。
+- Day 根据最终线路自动生成，最后一天允许没有住宿分界。
 - 普通 AI 生成只能插入新地点；只有显式优化才能重排已有地点。
-- 地图展示全部地点，路线只使用 normal。
-- 业务编辑统一在右侧。
-- Provider 事实边界继续保留。
+- 地图显示全部状态，交通路线只使用 normal。
+- 业务修改入口最终统一在右侧。
+- Provider 坐标、真实距离、时长和 geometry 的事实边界继续保留。
 
 ---
 
 ## 数据策略
 
-用户已确认当前所有旅行数据都是测试数据，可以从头开始。
+用户已确认当前全部旅行数据都是测试数据，可以从头开始。
 
 因此：
 
 - 不迁移已经落盘的旧旅行 JSON；
 - 不从旧 Candidate / Day 猜测最终线路；
 - 不兼容施工前旧 Revision；
-- 旧本地数据库可直接清空 / 删除后重建；
+- 旧本地数据库可以直接清空 / 删除后重建；
 - Revision / Undo 只保证新结构。
 
-Phase 1 施工中间态仍存在旧 Skeleton、Day 和 detailed itinerary 入口。为了不让这些当前入口在 Phase 2 / 3 尚未改造前直接失效，现在只允许一个**当前写入翻译层**：
+Phase 2 / 3 尚未拆掉旧 Skeleton、Day 和 detailed itinerary 入口。Phase 1 只保留一个施工中间态的**当前写入翻译层**：
 
 ```text
-当前旧入口产生新的 Day 视图
+当前代码入口产生新的 Day 视图
 → Store 保存边界翻译成最终线路节点
 → 再由最终线路生成 Day
-→ 数据库最终只保存一份线路
+→ 数据库最终只有一份线路
 ```
 
-这不用于读取或迁移旧数据库。
+这层逻辑不能用于读取或迁移已经落盘的旧格式旅行。
 
 ---
 
 ## 测试规则
 
-- 施工 Agent 不运行任何测试、typecheck、build、迁移、应用启动或 CI。
-- 每个 Phase 由用户本地 Codex 独立测试。
+- 施工 Agent 不运行测试、typecheck、build、应用启动或 CI。
+- 每个 Phase 由用户本地 Codex 独立验证。
 - 测试必须绑定唯一 `Test Branch + Test HEAD`。
-- 用户未返回匹配该 Branch + HEAD 的 PASS 前，不进入下一 Phase。
-- 任意业务代码新提交都会使旧测试结果失效。
+- Branch / HEAD 不一致或工作树影响待测代码时不能给 PASS。
+- 任意业务代码新提交都会使旧 PASS / FAIL 基线失效。
+- 用户未返回匹配基线的 PASS 前，不进入下一 Phase。
 
 ---
 
-## Phase 1：最终线路底层与自动 Day / Route 基础
+# Phase 1：最终线路底层与自动 Day / Route 基础
 
 状态：awaiting_local_test
 
-### 已完成的底层能力
+## 已完成能力
 
-- 最终线路节点、三状态、住宿分界和节点交通字段。
+- 最终线路节点、三状态、住宿分界、到达交通字段。
 - 同一 Place 多线路节点。
 - 最终线路 → Day 自动生成。
-- 住 / 不住 / 多一晚 / 状态 / 拖动 / 删除 / 交通修改。
-- Day 终点到达交通可以进入 Route 输入。
-- PlanCommand / Revision / generation / Proposal 冲突识别已覆盖最终线路变化。
-- 已落盘的非空旧格式计划直接报 `OLD_TEST_PLAN_UNSUPPORTED`，不做迁移。
-- 完全空白的 `finalRoute.version = 0` 仅作为启动占位，并会提升为 `version = 1`。
+- 新增 / 删除 / 拖动 / 状态 / 住 / 不住 / 多一晚 / 交通修改。
+- 最终线路变化进入 generation / Revision / Proposal 冲突判断。
+- Route 能读取 Day 终点的到达交通方式。
+- 完全空白 `finalRoute.version = 0` 只作为启动占位，进入最终线路逻辑后提升到 version 1。
+- 已经落盘的非空旧格式旅行直接报 `OLD_TEST_PLAN_UNSUPPORTED`，不迁移。
 
-### 第一次本地验收
-
-Test Branch：`test/plan-phase1-final-route-20260905`  
-Test HEAD：`b751f0dff0c475419c54bf657a8cc541343443ac`
-
-用户本地结果：**FAIL**。
-
-实际结果：
-
-- typecheck：PASS；
-- Phase 1 专项：22/22 PASS；
-- 用户独立补充：9/9 PASS；
-- build：PASS；
-- 完整 `npm test`：FAIL；
-- 75 个文件通过、7 个文件失败；
-- 452 tests passed、21 tests failed。
-
-失败文件：
+## 第一次本地验收
 
 ```text
-apps/server/core-promotion-v3.test.ts
-apps/server/planner-runtime-v3.test.ts
-apps/server/interest-discovery-v3.test.ts
-apps/server/planner-runtime-v3-detail-unavailable-phase5.test.ts
-apps/server/skeleton-edit-api-v3.test.ts
-apps/server/planner-runtime-v3-ai-actions.test.ts
-apps/server/planner-runtime-v3-detail-phase5.test.ts
+Test Branch: test/plan-phase1-final-route-20260905
+Test HEAD: b751f0dff0c475419c54bf657a8cc541343443ac
 ```
 
-共同根因：
+结果：**FAIL**
 
-> Store 已经只信最终线路，但当前旧 Skeleton / DayStop / detail Action 仍会在内存里先生成或修改 Day。Phase 2 / 3 尚未拆掉这些生产路径，因此写入时 Day 被丢弃，导致当前程序中间态和完整回归一起失败。
+- typecheck：PASS
+- Phase 1 专项：22/22 PASS
+- 独立补充：9/9 PASS
+- build：PASS
+- 完整 npm test：452 passed / 21 failed
+- 7 个测试文件失败
 
-### 第一次 FAIL 后的修复
+根因：当前旧 Skeleton / Day / detail 生产路径仍只修改 `days[]`，而 Store 已经只从最终线路生成 Day。
 
-本轮没有恢复旧数据迁移，而是增加最小的当前写入翻译：
+## R1 → R2 修复
 
-- 如果调用方明确修改了最终线路：最终线路优先，提交的 Day 只作为派生结果丢弃并重建。
-- 如果最终线路没有改变、但当前旧入口修改了 Day：保存前把 Day 视图转换为最终线路节点，再重新生成 Day。
-- 已经落盘的旧计划仍然直接拒绝，不使用这层翻译。
-- 翻译时保留当前运行所需的：
-  - Day 起点 / 终点；
-  - Day 顺序；
-  - `stayBlockId`；
-  - 明确的详细活动、时间、period、备注等；
-  - 第一天起点；
-  - 到达第一站 / 终点的交通；
-  - 已存在的 tentative / no_go 节点及顺序。
-- planned Day 中只有占位 activity 的 Stop 不会因此被误判成 detailed。
-- 新增了针对 Store 写入翻译和 final-route 写入翻译的回归测试代码。
+增加施工中间态的当前写入翻译：
 
-主要修复提交：
+- 最终线路显式变化时，最终线路优先，独立 Day 修改不能覆盖它。
+- 最终线路未变化、当前旧入口修改 Day 时，保存前把 Day 视图翻译成最终线路节点，再重建 Day。
+- 已落盘旧格式数据仍然直接拒绝。
+- 保留当前运行需要的 Day 起终点、顺序、`stayBlockId`、详细活动 / 时间 / 备注、第一天起点、交通及 inactive 节点。
+
+## R2 本地验收
 
 ```text
-3e2ad8e779126a30e34fa2e58454454892284b28
-78d8016048ef6c764e2e69bf0b575c626abb262c
-de5f61173fa7d84dda8b66e1ad542cd109e5ed82
-8b2d251b64c2953c4077881a49e3c657d3a85190
-62eaa716df2a77008469bee1f2a2a23faa99fcd0
-dd6ed5fc63dd0b553131c7faa2f4422270205082
+Test Branch: test/plan-phase1-final-route-20260905-r2
+Test HEAD: 5adec91f04d6c74614464f38516626bd15fcc45c
 ```
 
-### R2 本地测试基线
+结果：**FAIL**
+
+实际：
+
+- typecheck：PASS
+- Phase 1 专项：26/26 PASS
+- 第一次失败的 7 个文件：48/50 PASS
+- 完整 npm test：80 files passed / 2 failed / 82 total
+- 完整 npm test：475 tests passed / 2 failed / 477 total
+- build：PASS
+- 独立审计：6/6 PASS
+
+剩余 2 个 High 问题：
+
+1. Stop-only Day 的 start / end Anchor 都为 null 时，即使 Stops 已经构成 A → B，写入桥接仍要求独立终点，因此保存失败。
+2. Day 的 `transferMode=rail` 被桥接落实到首个 Stop 后，Detailed Update 返回 `transportFromPrevious=null` 会把这段 Day 到达交通误认为应清空，产生额外命令并可能丢失 rail。
+
+## R2 → R3 修复
+
+已静态完成以下修改，尚未由用户本地测试：
+
+### 1. Stop-only Day
+
+- 新增 Day 有效起点 / 终点推断：
+  - startAnchor 优先；为空时取首个 Stop；再退到 endAnchor。
+  - endAnchor 优先；为空时取最后一个 Stop；再退到 startAnchor。
+- null Anchor 的 Day 不再因为缺少独立终点而拒绝保存。
+- 内部仍使用独立 Day boundary route node 进行分 Day，因此最后一个 Stop 不会被吞掉。
+- 如果原 Day 的 start / end Anchor 为 null，重新派生后继续保留 null 视图。
+- 修正一个静态 Review 发现的边界：source Day 的 startAnchor 为 null 时，不能把首个 Stop 当成“与起点重复”而删除。
+- 目标行为：A、B 两个 Stops 可以保存，之后追加 C，仍得到 A、B、C。
+
+### 2. Detailed 到达交通 sticky
+
+- 如果首个已有 Stop 正在承载 Day 的到达交通，例如 `transferMode=rail` 且首 Stop 的 transport 也是 rail：
+  - Detailed draft 返回 `transportFromPrevious=null` 时视为“不改变这段 Day 到达交通”；
+  - 保留原 rail；
+  - 不生成无意义的 transport 清空命令。
+- 非首站交通和新的非空交通仍按原合同处理。
+- 这是 Phase 1 过渡桥接语义；Phase 2 / 3 最终由线路节点直接管理交通。
+
+### 3. R3 回归测试代码
+
+新增：
+
+```text
+apps/server/final-route-phase1-r3-regression.test.ts
+```
+
+静态覆盖：
+
+- null Anchor Stop-only Day 保存 A/B，再追加 C；
+- Detailed Update 不清空首站承载的 Day 到达交通。
+
+## R3 本地测试基线
 
 状态：尚未由用户本地验证。
 
-Test Branch：`test/plan-phase1-final-route-20260905-r2`  
-Test HEAD：`5adec91f04d6c74614464f38516626bd15fcc45c`
+```text
+Test Branch: __R3_TEST_BRANCH__
+Test HEAD: __R3_TEST_HEAD__
+```
 
-该测试分支已经冻结，不再修改。
+冻结后会把准确 Branch + 40 位 HEAD 写回本文件；冻结测试分支不会再修改。
 
-第一次测试结果不能用于 R2，因为 HEAD 已变化。
+## 当前 blocker
 
-### 当前 blocker
-
-唯一 blocker：**R2 尚未由用户本地完整回归确认 PASS。**
+唯一 blocker：**R3 尚未由用户本地完整回归确认 PASS。**
 
 Phase 2 尚未开始。
 
 ---
 
-## Phase 2：右侧最终线路人工规划闭环 + 地图联动
+# Phase 2：右侧最终线路人工规划闭环 + 地图联动
 
 状态：pending
 
-只有 Phase 1 对新的指定 Branch + HEAD 本地测试 PASS 后才开始。
+只有 Phase 1 对指定 R3 Branch + HEAD 本地测试 PASS 后才开始。
 
 ---
 
-## Phase 3：AI 生成 / 局部补充 / 显式优化 + 旧流程清理
+# Phase 3：AI 生成 / 局部补充 / 显式优化 + 旧流程清理
 
 状态：pending
 
 只有 Phase 2 本地测试 PASS 后才开始。
 
-Phase 3 需要移除 / 缩小 Phase 1 为当前旧入口保留的 Day 视图写入翻译层，因为最终产品不再让旧 Skeleton / DayStop 作为用户线路入口。
+Phase 3 需要删除或显著缩小 Phase 1 为旧 Skeleton / Day / detail 入口保留的当前写入翻译层。
 
 ---
 
-## 当前已知问题
+## 当前已知中间态
 
-- 当前 UI 仍是旧五步，这是 Phase 2 的工作。
-- 当前 AI Action / Scope 仍主要按 Candidate / Day 组织，这是 Phase 3 的工作。
-- 当前 Day 视图写入翻译只是施工中间态兼容当前代码路径，不是最终产品结构。
-- 如果本地现有测试库保存的是旧计划 JSON，测试前直接清空 / 删除后重建。
-
----
-
-## 与原实施方案的变化
-
-原 Phase 1 曾包含旧旅行和旧 Revision 迁移兼容，已根据用户决定删除。
-
-第一次完整回归又证明：完全取消所有旧 Day 写入路径会让 Phase 2 / 3 尚未施工前的当前程序直接失效。因此 Phase 1 新增一个边界明确的临时写入翻译层，只保证**当前新操作**在施工中间态可继续保存成最终线路。
-
-这不改变“最终只保存一份线路”的产品目标，也不恢复旧数据库迁移。
+- UI 仍是旧五步：Phase 2 处理。
+- AI Action / Scope 仍主要按 Candidate / Day 组织：Phase 3 处理。
+- Day 视图写入翻译只是施工中间态，不是最终产品 API。
+- 本地旧测试数据库如果含旧计划 JSON，直接清空重建。
 
 ---
 
 ## 下一步
 
-1. 使用 R2 Test Branch + Test HEAD 在用户本地重新验证；
-2. 执行 typecheck、Phase 1 专项测试、第一次失败的 7 个测试文件、完整 `npm test`、build；
-3. 用户返回匹配 R2 Branch + HEAD 的 PASS / FAIL；
-4. PASS 后 Phase 1 才标记 completed 并进入 Phase 2；
-5. FAIL 则继续只修复报告中的 Phase 1 问题。
+1. 冻结 R3 Test Branch + Test HEAD；
+2. 用户本地运行 R3 Prompt；
+3. PASS：Phase 1 → completed，Phase 2 → in_progress；
+4. FAIL：只修报告中的 Phase 1 问题，生成新的冻结基线。
