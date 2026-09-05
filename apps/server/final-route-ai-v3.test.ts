@@ -127,18 +127,24 @@ describe("final route AI write permissions", () => {
     expect(result.days.length).toBeGreaterThan(0);
   });
 
-  it("allows the same formal Place to appear multiple times as independent AI route nodes", () => {
+  it("allows the same formal Place to appear nonadjacently as independent AI route nodes", () => {
     const before = plan({ places: [] });
     const discovered = plan({
       places: [place("formal-a", "A"), place("formal-b", "B")],
       candidates: [candidate("formal-a-candidate", "formal-a", "core_visit", "formal-b-candidate"), candidate("formal-b-candidate", "formal-b", "planning_area")],
     });
     const output = mainOutput();
+    const sourceB = output.candidates[0];
+    const sourceA = output.candidates[1];
     output.places.push({ ...place("tmp-a-return", "A"), id: "tmp-a-return" });
-    output.candidates.push({ ...output.candidates[1], temporaryId: "candidate-a-return", placeTemporaryId: "tmp-a-return", aiReason: "回到 A" });
+    output.candidates = [
+      { ...sourceA, aiReason: "先到 A" },
+      sourceB,
+      { ...sourceA, temporaryId: "candidate-a-return", placeTemporaryId: "tmp-a-return", aiReason: "回到 A" },
+    ];
 
     const result = applyMainRouteGenerationFromOutputV3(before, discovered, output);
-    expect(result.finalRoute.nodes.map((item) => item.placeId)).toEqual(["formal-b", "formal-a", "formal-a"]);
+    expect(result.finalRoute.nodes.map((item) => item.placeId)).toEqual(["formal-a", "formal-b", "formal-a"]);
     expect(new Set(result.finalRoute.nodes.map((item) => item.id)).size).toBe(3);
   });
 
