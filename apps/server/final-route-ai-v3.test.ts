@@ -229,14 +229,17 @@ describe("final route AI write permissions", () => {
 
   it("lets refine change schedule text and notes but preserves transport and verification facts", () => {
     const before = plan({
-      places: [place("a"), place("b")],
+      places: [place("a"), place("b"), place("c")],
       nodes: [
-        node("a-node", "a", { transportFromPrevious: { mode: "drive", durationMinutes: null, note: null, verification: { status: "unverified", checkedAt: null } } }),
-        node("b-node", "b"),
+        node("a-node", "a"),
+        node("b-node", "b", { transportFromPrevious: { mode: "drive", durationMinutes: null, note: null, verification: { status: "unverified", checkedAt: null } } }),
+        node("c-node", "c"),
       ],
     });
     const day = before.days[0];
     const currentStop = day.stops[0];
+    expect(currentStop?.id).toBe("b-node");
+    if (!currentStop) throw new Error("expected middle route node to derive as a Day Stop");
     const output: ItineraryRefineOutput = {
       schemaVersion: 1,
       baseGeneration: 0,
@@ -250,7 +253,7 @@ describe("final route AI write permissions", () => {
           dayId: day.id,
           stops: [{
             stopId: currentStop.id,
-            activity: "上午游览 A",
+            activity: "上午游览 B",
             period: "morning",
             scheduleText: "09:00 左右开始",
             startTime: "09:00",
@@ -269,7 +272,7 @@ describe("final route AI write permissions", () => {
     const sanitized = sanitizeFinalRouteRefineOutputV3(before, [day.id], output);
     if (sanitized.result.type !== "success") throw new Error("expected success");
     const updated = sanitized.result.dayUpdates[0].stops[0];
-    expect(updated).toMatchObject({ activity: "上午游览 A", scheduleText: "09:00 左右开始", startTime: "09:00", endTime: "10:30", durationMinutes: 90, notes: "早点到" });
+    expect(updated).toMatchObject({ activity: "上午游览 B", scheduleText: "09:00 左右开始", startTime: "09:00", endTime: "10:30", durationMinutes: 90, notes: "早点到" });
     expect(updated.transportFromPrevious).toEqual(currentStop.transportFromPrevious);
     expect(updated.scheduleVerification).toEqual(currentStop.scheduleVerification);
     expect(updated.costVerification).toEqual(currentStop.costVerification);
