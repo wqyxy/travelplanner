@@ -37,6 +37,16 @@ function transportFromMode(mode: Day["transferMode"]): Transport | null {
   };
 }
 
+function userSelectedFinalRouteTransport(transport: Transport | null): Transport | null {
+  if (!transport || transport.mode === "none") return null;
+  return {
+    mode: transport.mode,
+    durationMinutes: null,
+    note: null,
+    verification: { status: "unverified", checkedAt: null },
+  };
+}
+
 function emptyNode(input: Pick<FinalRouteNode, "id" | "placeId" | "status" | "endsDay"> & Partial<Pick<FinalRouteNode, "transportFromPrevious">>): FinalRouteNode {
   return {
     id: input.id,
@@ -487,7 +497,7 @@ export function updateFinalRouteTransportV3(
   transportFromPrevious: Transport | null,
 ): FinalRouteMutationResultV3 {
   return applyMutation(plan, (nodes) => {
-    requireNode(nodes, nodeId).node.transportFromPrevious = clone(transportFromPrevious);
+    requireNode(nodes, nodeId).node.transportFromPrevious = userSelectedFinalRouteTransport(transportFromPrevious);
   });
 }
 
@@ -520,7 +530,10 @@ export function insertFinalRouteNodeV3(
     if (index < 0 || index > nodes.length) throw new Error("最终线路插入位置超出范围。");
     if (nodes.some((item) => item.id === node.id)) throw new Error(`最终线路节点 ID 重复：${node.id}`);
     if (!plan.places.some((place) => place.id === node.placeId)) throw new Error(`最终线路引用未知 Place：${node.placeId}`);
-    nodes.splice(index, 0, clone(node));
+    nodes.splice(index, 0, {
+      ...clone(node),
+      transportFromPrevious: userSelectedFinalRouteTransport(node.transportFromPrevious),
+    });
   });
 }
 
