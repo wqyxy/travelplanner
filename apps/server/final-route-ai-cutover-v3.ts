@@ -16,6 +16,7 @@ import { TravelPlannerRuntimeV3 } from "./planner-runtime-v3.js";
 import { TravelStoreV3 } from "./travel-store-v3.js";
 
 const mainGenerationOutputs = new Map<string, DestinationGenerateOutput>();
+const isRouteOptimizationAction = (actionType: string | undefined) => actionType === "itinerary.day.optimize" || actionType === "itinerary.repair";
 
 const storePrototype = TravelStoreV3.prototype as any;
 const originalWritePlan = storePrototype.writePlan as Function;
@@ -172,4 +173,34 @@ runtimePrototype.persistItineraryRepair = function persistFinalRouteOptimization
   }
   const scope: ProposalScope = { type: "trip", id: null };
   return runtime.createProposalForAction(action, result.title, result.explanation, commands, scope);
+};
+
+const originalApplyProposal = runtimePrototype.applyProposal as Function;
+runtimePrototype.applyProposal = async function applyFinalRouteOptimizationProposal(
+  this: TravelPlannerRuntimeV3,
+  tripId: string,
+  proposalId: string,
+) {
+  const runtime = this as any;
+  const linkedAction = runtime.options.store.listActions(tripId).find((action: AiActionRecord) => action.proposalId === proposalId);
+  const result = await originalApplyProposal.call(this, tripId, proposalId);
+  if (isRouteOptimizationAction(linkedAction?.actionType) && result?.trip?.plan?.days?.length) {
+    runtime.startRouteBatch(tripId, result.generation, result.trip.plan.days.map((day: any) => day.id));
+  }
+  return result;
+};
+
+const originalUndoProposal = runtimePrototype.undoProposal as Function;
+runtimePrototype.undoProposal = function undoFinalRouteOptimizationProposal(
+  this: TravelPlannerRuntimeV3,
+  tripId: string,
+  proposalId: string,
+) {
+  const runtime = this as any;
+  const linkedAction = runtime.options.store.listActions(tripId).find((action: AiActionRecord) => action.proposalId === proposalId);
+  const result = originalUndoProposal.call(this, tripId, proposalId);
+  if (isRouteOptimizationAction(linkedAction?.actionType) && result?.trip?.plan?.days?.length) {
+    runtime.startRouteBatch(tripId, result.generation, result.trip.plan.days.map((day: any) => day.id));
+  }
+  return result;
 };
