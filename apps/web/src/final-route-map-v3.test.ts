@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { WorkspaceV3 } from "./v3-types";
-import { finalRouteMapPointFeaturesV3 } from "./final-route-map-v3";
+import { finalRouteMapPointFeaturesV3, finalRouteMapRouteGeometryFeaturesV3 } from "./final-route-map-v3";
 
 function workspace(): WorkspaceV3 {
   const node = (id: string, placeId: string, status: "normal" | "tentative" | "no_go", endsDay = false) => ({
@@ -74,5 +74,57 @@ describe("final route map presentation", () => {
     expect(points[1].properties.mark).toContain("?");
     expect(points[1].properties.mark).toContain("住");
     expect(points[2].properties.mark).toContain("×");
+  });
+
+  it("hides dirty provider legs that no longer match the current active Day topology", () => {
+    const value = workspace();
+    const y = value.trip.plan.finalRoute!.nodes.find((item) => item.id === "node-y")!;
+    y.status = "normal";
+    value.trip.plan.days = [{
+      id: "day-1",
+      dayNumber: 1,
+      date: null,
+      title: "A 到 Y",
+      transferMode: "none",
+      detailLevel: "planned",
+      detailStatus: null,
+      startAnchor: { id: "start", placeId: "a", label: null, notes: null },
+      stops: [],
+      endAnchor: { id: "end", placeId: "y", label: null, notes: null },
+    }];
+    const leg = (id: string, fromPlaceId: string, toPlaceId: string) => ({
+      id,
+      fromNodeId: `from-${id}`,
+      toNodeId: `to-${id}`,
+      fromPlaceId,
+      toPlaceId,
+      mode: "drive" as const,
+      status: "ready" as const,
+      distanceKm: 10,
+      durationMinutes: 20,
+      geometry: { type: "LineString", coordinates: [[0, 0], [1, 1]] },
+      warning: null,
+    });
+    value.routeStates = [{
+      dayId: "day-1",
+      dirty: true,
+      route: {
+        tripId: "trip",
+        dayId: "day-1",
+        version: 1,
+        inputFingerprint: "old",
+        status: "ready",
+        distanceKm: 30,
+        durationMinutes: 60,
+        geometry: null,
+        legs: [leg("old-a-x", "a", "x"), leg("old-x-y", "x", "y"), leg("current-a-y", "a", "y")],
+        warnings: [],
+        calculatedAt: "2026-09-05T00:00:00Z",
+      },
+    }];
+
+    const routes = finalRouteMapRouteGeometryFeaturesV3(value);
+    expect(routes.map((item) => item.id)).toEqual(["route-leg:day-1:current-a-y"]);
+    expect(routes[0].properties.dirty).toBe(true);
   });
 });
