@@ -121,8 +121,8 @@ Phase 3 必须由用户本地 Codex 在冻结基线上验证。
 
 # 5. Phase 3 本地 Codex 测试 Prompt
 
-> Test Branch: `__TEST_BRANCH__`  
-> Test HEAD: `__TEST_HEAD__`
+> Test Branch: `test/plan-phase3-final-route-ai-20260905`  
+> Test HEAD: `b736706424aa00aa1f3fd2db18a1ae915dc84afc`
 
 你是 TravelPlanner Phase 3 独立测试 Agent。
 
