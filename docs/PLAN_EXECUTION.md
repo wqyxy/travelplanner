@@ -137,8 +137,8 @@ R2 修复：
 
 # 5. Phase 3 R2 本地 Codex 测试 Prompt
 
-> Test Branch: `__TEST_BRANCH_R2__`  
-> Test HEAD: `__TEST_HEAD_R2__`
+> Test Branch: `test/plan-phase3-final-route-ai-20260905-r2`  
+> Test HEAD: `635f2b8bcaa805f3dacf12e3134ae6b175a71a19`
 
 你是 TravelPlanner Phase 3 R2 独立测试 Agent。
 
@@ -172,7 +172,7 @@ TEST_BASE_MISMATCH
 TEST_WORKTREE_DIRTY
 ```
 
-冻结分支里的本文件可能仍显示 `__TEST_BRANCH_R2__ / __TEST_HEAD_R2__`；本地测试时以用户拿到的测试 Prompt 顶部精确 Branch + HEAD 为准。
+冻结分支里的本文件可能仍显示占位符；本地测试时以用户拿到的测试 Prompt 顶部精确 Branch + HEAD 为准。
 
 ## 5.2 第一优先：复测 R1 三个失败点
 
