@@ -1,7 +1,7 @@
-import { ArrowDown, ArrowUp, Crosshair, GripVertical, Link, MapPin, Pencil, Plus, RefreshCw, Sparkles, Trash2, WandSparkles } from "lucide-react";
+import { ArrowDown, ArrowUp, Clock3, Crosshair, GripVertical, Link, MapPin, Pencil, Plus, RefreshCw, Sparkles, Trash2, WandSparkles } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
-import type { FinalRouteNodeStatus, PlaceKind, TransportMode } from "./v2-types";
+import type { FinalRouteNodeStatus, Period, PlaceKind, TransportMode } from "./v2-types";
 import type { AiActionType, ConversationStage, WorkspaceV3 } from "./v3-types";
 import { placeNamePresentation } from "./place-name-presentation";
 import {
@@ -25,9 +25,18 @@ const placeKindLabels: Record<PlaceKind, string> = {
 };
 
 const transportOptions: TransportMode[] = ["walk", "drive", "bike", "transit", "rail", "flight", "ferry"];
+const periodLabels: Record<Period, string> = { morning: "上午", afternoon: "下午", evening: "傍晚", night: "夜间", all_day: "全天" };
 
 type AddDraft = { nameZh: string; kind: PlaceKind };
 type PlaceEditDraft = WorkflowPlaceEditChangesV3 & { googleUrl: string };
+type DetailDraft = {
+  activity: string;
+  period: Period | "";
+  startTime: string;
+  endTime: string;
+  durationMinutes: string;
+  notes: string;
+};
 
 function resolutionLabel(status: "resolving" | "resolved" | "unresolved" | "missing") {
   if (status === "resolved") return "已定位";
@@ -90,7 +99,9 @@ export function FinalRoutePanelV3({
   const [addDraft, setAddDraft] = useState<AddDraft>({ nameZh: "", kind: "attraction" });
   const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null);
   const selectedRow = rows.find((row) => row.node.id === selectedNodeId) ?? null;
+  const selectedStopOwner = selectedNodeId ? plan.days.find((day) => day.stops.some((stop) => stop.id === selectedNodeId)) ?? null : null;
   const [editDraft, setEditDraft] = useState<PlaceEditDraft | null>(null);
+  const [detailDraft, setDetailDraft] = useState<DetailDraft | null>(null);
   const [preview, setPreview] = useState<GoogleMapsPreviewV3 | null>(null);
   const [editMessage, setEditMessage] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
@@ -101,6 +112,7 @@ export function FinalRoutePanelV3({
   useEffect(() => {
     if (!selectedRow?.place) {
       setEditDraft(null);
+      setDetailDraft(null);
       setPreview(null);
       setEditMessage("");
       return;
@@ -112,9 +124,17 @@ export function FinalRoutePanelV3({
       kind: selectedRow.place.kind,
       googleUrl: "",
     });
+    setDetailDraft({
+      activity: selectedRow.node.activity ?? selectedRow.place.nameZh,
+      period: selectedRow.node.period ?? "",
+      startTime: selectedRow.node.startTime ?? "",
+      endTime: selectedRow.node.endTime ?? "",
+      durationMinutes: selectedRow.node.durationMinutes === null ? "" : String(selectedRow.node.durationMinutes),
+      notes: selectedRow.node.notes ?? "",
+    });
     setPreview(null);
     setEditMessage("");
-  }, [selectedRow?.node.id, selectedRow?.place?.id, selectedRow?.place?.nameZh, selectedRow?.place?.nameLocal, selectedRow?.place?.nameEn, selectedRow?.place?.kind]);
+  }, [selectedRow?.node.id, selectedRow?.node.activity, selectedRow?.node.period, selectedRow?.node.startTime, selectedRow?.node.endTime, selectedRow?.node.durationMinutes, selectedRow?.node.notes, selectedRow?.place?.id, selectedRow?.place?.nameZh, selectedRow?.place?.nameLocal, selectedRow?.place?.nameEn, selectedRow?.place?.kind]);
 
   useEffect(() => {
     const ids = normalRows.map((row) => row.node.id);
@@ -143,6 +163,45 @@ export function FinalRoutePanelV3({
     };
     if (!changes.nameZh) { setEditMessage("中文名称不能为空。"); return; }
     setEditMessage(await onUpdatePlace(selectedRow.place.id, changes) ? "地点信息已保存。" : "地点信息保存失败。");
+  };
+
+  const saveDetail = async () => {
+    if (!selectedRow || !selectedStopOwner || !detailDraft || aiBusy || busy) return;
+    const durationText = detailDraft.durationMinutes.trim();
+    const durationMinutes = durationText ? Number(durationText) : null;
+    if (durationText && (!Number.isInteger(durationMinutes) || durationMinutes! < 0)) {
+      setEditMessage("停留分钟数需要填写 0 或正整数。");
+      return;
+    }
+    setAiBusy(true);
+    setEditMessage("");
+    try {
+      await api(`/api/trips/${workspace.trip.id}/actions/cta`, {
+        method: "POST",
+        body: JSON.stringify({
+          stage: "itinerary",
+          actionType: "itinerary.edit",
+          parameters: {
+            stopId: selectedRow.node.id,
+            changes: {
+              activity: detailDraft.activity.trim() || selectedRow.place?.nameZh || "游览地点",
+              period: detailDraft.period || null,
+              startTime: detailDraft.startTime.trim() || null,
+              endTime: detailDraft.endTime.trim() || null,
+              durationMinutes,
+              notes: detailDraft.notes.trim() || null,
+            },
+          },
+          targetIds: [selectedRow.node.id],
+          requestKey: crypto.randomUUID(),
+        }),
+      });
+      setEditMessage("详细安排已保存；最终线路节点会同步更新。");
+    } catch (cause) {
+      setEditMessage(cause instanceof Error ? cause.message : "详细安排保存失败。");
+    } finally {
+      setAiBusy(false);
+    }
   };
 
   const previewGoogle = async () => {
@@ -192,9 +251,9 @@ export function FinalRoutePanelV3({
     setAiMessage("");
     try {
       await api(proposalActionPath(workspace.trip.id, proposalId, action), { method: "POST", body: "{}" });
-      setAiMessage(action === "apply" ? "已采用这次优化。" : action === "reject" ? "已保留当前线路。" : "已撤销这次优化。");
+      setAiMessage(action === "apply" ? "已采用这次 AI 方案。" : action === "reject" ? "已保留当前安排。" : "已撤销这次 AI 方案。");
     } catch (cause) {
-      setAiMessage(cause instanceof Error ? cause.message : "无法处理这次优化方案。");
+      setAiMessage(cause instanceof Error ? cause.message : "无法处理这次 AI 方案。");
     } finally {
       setAiBusy(false);
     }
@@ -214,14 +273,14 @@ export function FinalRoutePanelV3({
   })();
   const segmentRows = segmentBounds ? rows.slice(segmentBounds.start, segmentBounds.end + 1).filter((row) => row.node.status === "normal") : [];
   const segmentAreaIds = [...new Set(segmentRows.flatMap((row) => planningAreaByPlace.get(row.node.placeId)?.id ?? []))];
-  const optimizationActions = workspace.actions.filter((action) => action.actionType === "itinerary.day.optimize" || action.actionType === "itinerary.repair");
-  const optimizationProposals = optimizationActions.flatMap((action) => action.proposalId
+  const visibleAiActions = workspace.actions.filter((action) => action.actionType === "itinerary.day.optimize" || action.actionType === "itinerary.repair" || action.actionType === "itinerary.refine");
+  const visibleAiProposals = visibleAiActions.flatMap((action) => action.proposalId
     ? workspace.proposals.filter((proposal) => proposal.id === action.proposalId).map((proposal) => ({ action, proposal }))
-    : []).slice(-4).reverse();
+    : []).slice(-6).reverse();
 
   return <section className="final-route-panel-v3">
     <header className="final-route-panel-head-v3">
-      <div><p className="eyebrow">行程</p><h2>最终线路</h2><p>这就是实际保存的线路。Day、地图和交通路线都跟着这里变化。</p></div>
+      <div><p className="eyebrow">行程</p><h2>最终线路</h2><p>这就是实际保存的线路。Day、详细安排、地图和交通路线都跟着这里变化。</p></div>
       <button className="button primary" type="button" disabled={busy || aiBusy} onClick={() => setAddOpen((value) => !value)}><Plus size={15}/>添加地点</button>
     </header>
 
@@ -253,17 +312,17 @@ export function FinalRoutePanelV3({
           </div>
         </div>}
       </>}
-      <small>普通生成只能插入新地点。只有你明确点击“优化”时，AI 才能提出已有地点的重排方案。</small>
+      <small>普通生成只能插入新地点；“完善这一天”只能补时间和备注。只有你明确点击“优化”时，AI 才能提出已有地点的重排方案。</small>
       {aiMessage && <small className="final-route-edit-message-v3">{aiMessage}</small>}
     </section>
 
-    {optimizationProposals.length > 0 && <section className="final-route-add-v3 final-route-ai-proposals-v3">
-      <strong><WandSparkles size={15}/>AI 优化方案</strong>
-      {optimizationProposals.map(({ proposal }) => <article key={proposal.id} className={`phase6-proposal-card ${proposal.status}`}>
-        <header><strong>{proposal.title}</strong><span>{proposal.status === "pending" ? "待你决定" : proposal.status === "applied" ? "已采用" : proposal.status === "rejected" ? "未采用" : proposal.status === "superseded" ? "已失效" : proposal.status === "undone" ? "已撤销" : proposal.status}</span></header>
+    {visibleAiProposals.length > 0 && <section className="final-route-add-v3 final-route-ai-proposals-v3">
+      <strong><WandSparkles size={15}/>AI 方案</strong>
+      {visibleAiProposals.map(({ action, proposal }) => <article key={proposal.id} className={`phase6-proposal-card ${proposal.status}`}>
+        <header><strong>{proposal.title}</strong><span>{action.actionType === "itinerary.refine" ? "详细安排" : "顺序优化"} · {proposal.status === "pending" ? "待你决定" : proposal.status === "applied" ? "已采用" : proposal.status === "rejected" ? "未采用" : proposal.status === "superseded" ? "已失效" : proposal.status === "undone" ? "已撤销" : proposal.status}</span></header>
         <p>{proposal.explanation}</p>
-        {proposal.status === "pending" && <footer><button className="button" type="button" disabled={busy || aiBusy} onClick={() => void handleProposal(proposal.id, "reject")}>不采用</button><button className="button primary" type="button" disabled={busy || aiBusy || proposal.baseGeneration !== workspace.trip.contentGeneration} onClick={() => void handleProposal(proposal.id, "apply")}>采用这个顺序</button></footer>}
-        {proposal.status === "applied" && <footer><button className="button" type="button" disabled={busy || aiBusy || workspace.trip.contentGeneration !== proposal.baseGeneration + 1} onClick={() => void handleProposal(proposal.id, "undo")}>撤销这次优化</button></footer>}
+        {proposal.status === "pending" && <footer><button className="button" type="button" disabled={busy || aiBusy} onClick={() => void handleProposal(proposal.id, "reject")}>不采用</button><button className="button primary" type="button" disabled={busy || aiBusy || proposal.baseGeneration !== workspace.trip.contentGeneration} onClick={() => void handleProposal(proposal.id, "apply")}>采用这个方案</button></footer>}
+        {proposal.status === "applied" && <footer><button className="button" type="button" disabled={busy || aiBusy || workspace.trip.contentGeneration !== proposal.baseGeneration + 1} onClick={() => void handleProposal(proposal.id, "undo")}>撤销这次方案</button></footer>}
       </article>)}
     </section>}
 
@@ -284,7 +343,7 @@ export function FinalRoutePanelV3({
         const display = placeNamePresentation(row.place, workspace.trip.planLanguage, row.node.activity || "未命名地点");
         const selected = row.node.id === selectedNodeId;
         return <div className="final-route-row-wrap-v3" key={row.node.id}>
-          {showDay && <div className="final-route-day-divider-v3"><b>Day {row.dayNumber}</b><span>{day?.date || "日期待定"}</span><div className="final-route-inline-actions-v3"><button className="button small" type="button" disabled={busy || aiBusy || !dayAreaIds.length} onClick={() => void startAi("interests", "interest.discover", { request: `final-route-detail-scope:day:${day?.id ?? ""}` }, dayAreaIds, "AI 已开始补充这一天的详细地点。")}>补充详细地点</button><button className="button small" type="button" disabled={busy || aiBusy || !day || day.stops.length < 2} onClick={() => day && void startAi("itinerary", "itinerary.day.optimize", { dayId: day.id, request: "优化这一天" }, [day.id], "AI 已开始分析这一天的顺序；完成后由你决定是否采用。")}>优化这一天</button></div></div>}
+          {showDay && <div className="final-route-day-divider-v3"><b>Day {row.dayNumber}</b><span>{day?.date || "日期待定"}</span><div className="final-route-inline-actions-v3"><button className="button small" type="button" disabled={busy || aiBusy || !dayAreaIds.length} onClick={() => void startAi("interests", "interest.discover", { request: `final-route-detail-scope:day:${day?.id ?? ""}` }, dayAreaIds, "AI 已开始补充这一天的详细地点。")}>补充详细地点</button><button className="button small" type="button" disabled={busy || aiBusy || !day || day.stops.length < 1} onClick={() => day && void startAi("itinerary", "itinerary.refine", { dayIds: [day.id], request: "完善这一天" }, [day.id], "AI 已开始补充这一天的时间和活动说明；完成后由你决定是否采用。")}>完善这一天</button><button className="button small" type="button" disabled={busy || aiBusy || !day || day.stops.length < 2} onClick={() => day && void startAi("itinerary", "itinerary.day.optimize", { dayId: day.id, request: "优化这一天" }, [day.id], "AI 已开始分析这一天的顺序；完成后由你决定是否采用。")}>优化这一天</button></div></div>}
           <article
             className={`final-route-row-v3 status-${row.node.status} ${selected ? "selected" : ""}`}
             draggable={!busy && !aiBusy}
@@ -301,7 +360,7 @@ export function FinalRoutePanelV3({
             <button className="final-route-drag-v3" type="button" aria-label="拖动地点排序" title="拖动排序"><GripVertical size={17}/></button>
             <button className="final-route-main-v3" type="button" onClick={() => onSelectNode(row.node.id)}>
               <span className="final-route-index-v3">{row.index + 1}</span>
-              <span><strong>{display.primary}</strong>{display.secondary && <small>{display.secondary}</small>}<small>{placeKindLabels[row.place?.kind ?? "waypoint"]} · {resolutionLabel(locationState)}</small></span>
+              <span><strong>{display.primary}</strong>{display.secondary && <small>{display.secondary}</small>}<small>{placeKindLabels[row.place?.kind ?? "waypoint"]} · {resolutionLabel(locationState)}{row.node.startTime || row.node.scheduleText ? ` · ${row.node.startTime || row.node.scheduleText}` : ""}</small></span>
             </button>
             <div className="final-route-badges-v3"><span className={`status-pill-v3 ${row.node.status}`}>{finalRouteStatusLabelsV3[row.node.status]}</span>{row.node.endsDay && <span className={`stay-pill-v3 ${row.node.status !== "normal" ? "inactive" : ""}`}>住</span>}</div>
             <div className="final-route-quick-v3">
@@ -317,6 +376,23 @@ export function FinalRoutePanelV3({
             <div className="final-route-control-group-v3"><label>当天是否在这里结束</label><div className="final-route-inline-actions-v3">{row.node.endsDay ? <><button className="button small" type="button" disabled={busy || aiBusy} onClick={() => void onSetBoundary(row.node.id, false)}>不住</button><button className="button small" type="button" disabled={busy || aiBusy || row.node.status !== "normal"} onClick={() => void onAddNight(row.node.id)}>多一晚</button></> : <button className="button small" type="button" disabled={busy || aiBusy || row.node.status !== "normal"} onClick={() => void onSetBoundary(row.node.id, true)}>住</button>}</div>{row.node.status !== "normal" && row.node.endsDay && <small>住宿分界仍保存，恢复“正常”后会在原位置重新生效。</small>}</div>
 
             <div className="final-route-control-group-v3"><label>到达这里的交通方式</label><select value={row.node.transportFromPrevious?.mode ?? ""} disabled={busy || aiBusy} onChange={(event) => void onSetTransport(row.node.id, event.target.value as TransportMode | "")}><option value="">未设置</option>{transportOptions.map((mode) => <option key={mode} value={mode}>{transportModeLabelsV3[mode]}</option>)}</select><small>这项设置属于当前地点：上一个当前有效地点变化时，它仍跟着当前地点保留。</small></div>
+
+            {detailDraft && <details className="final-route-details-v3" open>
+              <summary><Clock3 size={14}/>详细安排</summary>
+              {selectedStopOwner ? <>
+                <div className="final-route-edit-grid-v3">
+                  <label><span>活动说明</span><input value={detailDraft.activity} disabled={busy || aiBusy} onChange={(event) => setDetailDraft((current) => current ? { ...current, activity: event.target.value } : current)}/></label>
+                  <label><span>时段</span><select value={detailDraft.period} disabled={busy || aiBusy} onChange={(event) => setDetailDraft((current) => current ? { ...current, period: event.target.value as Period | "" } : current)}><option value="">未设置</option>{Object.entries(periodLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                  <label><span>开始时间</span><input type="time" value={detailDraft.startTime} disabled={busy || aiBusy} onChange={(event) => setDetailDraft((current) => current ? { ...current, startTime: event.target.value } : current)}/></label>
+                  <label><span>结束时间</span><input type="time" value={detailDraft.endTime} disabled={busy || aiBusy} onChange={(event) => setDetailDraft((current) => current ? { ...current, endTime: event.target.value } : current)}/></label>
+                  <label><span>停留分钟</span><input inputMode="numeric" value={detailDraft.durationMinutes} disabled={busy || aiBusy} placeholder="例如 90" onChange={(event) => setDetailDraft((current) => current ? { ...current, durationMinutes: event.target.value } : current)}/></label>
+                  <label><span>备注</span><input value={detailDraft.notes} disabled={busy || aiBusy} onChange={(event) => setDetailDraft((current) => current ? { ...current, notes: event.target.value } : current)}/></label>
+                </div>
+                {row.node.scheduleText && <small>AI / 用户自然语言安排：{row.node.scheduleText}</small>}
+                <div className="final-route-inline-actions-v3"><button className="button small" type="button" disabled={busy || aiBusy} onClick={() => void saveDetail()}>保存详细安排</button></div>
+                <small>这里直接编辑当前线路节点的活动和时间；不会改变地点顺序、状态、住宿分界或 Provider 路线事实。</small>
+              </> : <small>当前节点是这一天的结束位置，不作为当天中途 Stop 单独维护时间表；住宿分界和地点信息仍可在上方编辑。</small>}
+            </details>}
 
             {editDraft && row.place && <details className="final-route-details-v3" open>
               <summary><Pencil size={14}/>编辑地点与定位</summary>
