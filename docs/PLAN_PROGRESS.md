@@ -52,8 +52,6 @@ Tests: 479 passed / 0 failed / 479 total
 
 状态：completed
 
-最终验收：
-
 ```text
 Test Branch: test/plan-phase2-final-route-ui-20260905-r2
 Test HEAD: aa55a6d616902d1c436b8f796c8e1be3c0a7f354
@@ -68,85 +66,19 @@ Tests: 489 passed / 0 failed / 489 total
 
 状态：awaiting_local_test
 
-## 已完成施工
+## 产品施工已完成
 
-### AI 主要地点
-
-- `destination.generate` 用户语义改为“生成主要地点”。
-- 只允许 finalRoute 为空时第一次生成，不能覆盖已有用户线路。
-- AI output candidate 顺序直接成为新 route node 顺序。
-- 新节点可带 `routeSuggestion.endsDay / transportMode`；没有“每个地点默认住一晚”。
-- transport 仍只保存 mode，不制造 Provider 事实。
-- 同一现实 Place 可在 AI 主线路出现多次，每次创建独立 route node。
-
-### AI 详细地点
-
-- `interest.discover / supplement` 用户语义改为“生成 / 补充详细地点”。
-- 复用原并行研究、0–9 数量、正式化、去重、定位和任务进度。
-- Store 写入前只为本轮真正新增的 detail candidates 创建 route nodes。
-- 所有已有 route nodes 的相对顺序和字段必须保持不变。
-- 支持 trip / day / segment scope。
-- Day / segment scope 找不到范围内合法锚点时 fail closed，不回退范围外位置。
-
-### 手工线路地点作为研究锚点
-
-- 手工从最终线路新增 Place 会同步创建隐藏 `planning_area` Candidate。
-- 这只是 AI 详细地点研究锚点，不改变 Place.kind，不自动住宿。
-- 有 parent candidate 的地点在未显式 role 时固定推导为 `detail_interest`，即使 Place.kind=city。
-
-### 详细安排
-
-- 旧 Step 5 页面没有恢复。
-- 最终线路右侧直接编辑 activity / period / startTime / endTime / durationMinutes / notes。
-- `scheduleText` 已存在时直接展示。
-- 当前内部写入复用已验证的 deterministic `itinerary.edit` + Day→finalRoute 桥。
-- 每个有 Stop 的 Day 可点击“完善这一天”（内部 `itinerary.refine`）。
-- AI refine 只能更新授权 Day 的既有 Stop 详细字段。
-- AI 返回的 transportFromPrevious / scheduleVerification / costVerification 会被服务端恢复为当前值，不能借 refine 改路线事实或伪造 verified。
-- refine 结果走 Proposal，由用户 apply / reject。
-
-### 显式优化
-
-- “优化这一天”：只授权目标 Day 当前 Stop route-node IDs，Day end boundary 固定。
-- “优化这一段”：只授权选定连续 route span 内 normal nodes。
-- “优化全程”：只授权整条 finalRoute 的 normal nodes。
-- AI 必须恰好返回授权 ID 集合的新顺序；新增 / 删除 / 重复 / unknown ID 全部拒绝。
-- tentative / no_go 不在授权集合，原槽位固定。
-- 优化只生成 `move_final_route_node` Proposal；用户决定 apply / reject / undo。
-- 优化 Proposal apply / undo 后自动启动 Route batch 更新地图路线。
-
-### 右侧唯一入口
-
-`FinalRoutePanelV3` 当前包含：
-
-- 生成主要地点；
-- 生成详细地点；
-- 某 Day / 某段补充详细地点；
-- 完善这一天；
-- 优化这一天 / 这一段 / 全程；
-- AI Proposal apply / reject / undo；
-- 原有人工线路操作、详细安排、地点编辑、定位修复。
-
-Map Popup 不增加 AI / 业务修改入口。
-
-### Prompt / 文档
-
-已重写主要 AI Prompt 为最终线路语言：
-
-- 生成主要地点；
-- 生成详细地点；
-- 补充详细地点；
-- 完善这一天；
-- 优化这一天；
-- 优化这一段或全程。
-
-已同步 `PRODUCT.md` / `TECHNICAL.md` 为当前两工作区产品和技术现状。
-
-### 仍保留的内部旧代码
-
-旧 `AppWorkflowV3`、Candidate/Skeleton/Daily Itinerary 组件和部分旧 Action contract 仍有源码存在，用于内部兼容、测试或当前写入桥；它们不再由生产入口挂载，也不能成为 finalRoute 之外的第二份用户线路来源。
-
-本 Phase 没有 DB Schema 迁移，也没有恢复旧测试数据兼容。
+- `destination.generate` 直接形成 finalRoute；已有线路时不能普通生成覆盖。
+- 同一现实 Place 可多次成为独立 route node。
+- `interest.discover / supplement` 只插入本轮新增详细地点，不得修改旧 route node。
+- trip / day / segment 局部详细生成都有服务器范围限制；找不到范围内锚点时 fail closed。
+- 手工加入最终线路的地点可作为内部 planning area 研究锚点，不改变 Place.kind、不自动住宿。
+- 详细安排直接属于 route node；手工可编辑 activity / period / startTime / endTime / durationMinutes / notes。
+- “完善这一天”只能修改授权 Day 的详细安排；transport / scheduleVerification / costVerification 强制保持当前值。
+- “优化这一天 / 这一段 / 全程”只产生授权范围内的 move Proposal；inactive 节点固定槽位。
+- Proposal apply / undo 后自动启动 Route batch。
+- 右侧最终线路仍是唯一业务入口，Map Popup 没有第二套业务 mutation。
+- `PRODUCT.md` / `TECHNICAL.md` 已同步为两工作区现状。
 
 ## R1 本地测试
 
@@ -155,52 +87,65 @@ Test Branch: test/plan-phase3-final-route-ai-20260905
 Test HEAD: b736706424aa00aa1f3fd2db18a1ae915dc84afc
 Phase 3: FAIL
 Typecheck: FAIL
-Phase 3 专项: 8 files passed / 2 failed；52 / 54 tests passed
-AI / Prompt / Runtime 回归: PASS（7 files / 63 tests）
-完整 npm test: 86 files passed / 2 failed；503 / 505 tests passed
-Build: FAIL（Web 成功，Server TypeScript 失败）
+Phase 3 专项: 52 / 54 tests passed
+AI / Prompt / Runtime 回归: PASS
+npm test: 503 / 505 tests passed
+Build: FAIL（Server TypeScript）
 独立临时审计: 12 / 12 PASS
 ```
 
-R1 失败集中在三个验收问题：
+R1 修复：
 
-1. `final-route-ai-cutover-v3.ts` 的 refine sanitize 重复实现导致 Map value 被推断成 `{}`，Server TypeScript 无法访问 transport / verification 字段。
-2. `final-route-ai-v3.ts` clone 整个联合类型后丢失 `result.type=success` 的 TypeScript 收窄。
-3. refine 正式测试使用只有起点/终点、没有中途 Stop 的两节点夹具；单日优化 Prompt 与源码审计断言仅有字面差异。
+- Runtime refine 改为复用唯一 `sanitizeFinalRouteRefineOutputV3`。
+- 修复 success 联合类型的 TypeScript 收窄。
+- refine 正式测试改为 A → B → C，中途 B 是真实 Day Stop。
+- 单日优化 Prompt 与正式字面断言同步。
 
-## R2 修复
-
-- Runtime `persistRefine` 不再复制 sanitize 逻辑，统一调用 `sanitizeFinalRouteRefineOutputV3`。
-- sanitizer 在 success 分支先保存已收窄的 `result`，只 clone success result，再组装返回值，避免联合类型收窄丢失。
-- refine 权限测试改为 `A → B → C`，明确验证 B 是真实 Day Stop，并在 B 上验证 transport / verification 保护。
-- 单日优化 Prompt 统一为“只有用户明确启动本动作后”，不改变权限语义。
-- 没有改动 Phase 3 的产品权限、finalRoute 规则、Provider 边界或 UI 结构。
-
-## 施工侧验证
-
-只做了：
-
-- GitHub 静态读取 / 写入；
-- TypeScript 调用链和联合类型静态审查；
-- 测试夹具与 Prompt 合同对照；
-- diff / 入口审查。
-
-没有运行任何测试、typecheck、build、应用或 CI。
-
-## R2 本地测试基线
+## R2 本地测试
 
 ```text
 Test Branch: test/plan-phase3-final-route-ai-20260905-r2
 Test HEAD: 635f2b8bcaa805f3dacf12e3134ae6b175a71a19
+Phase 3: FAIL
+Typecheck: PASS
+R1 三个失败点复测: PASS
+Phase 3 专项: 53 / 54 tests passed
+AI / Prompt / Runtime 回归: PASS（7 files / 63 tests）
+npm test: 504 / 505 tests passed
+Build: PASS
+独立临时审计: PASS
 ```
 
-测试分支已冻结；冻结后不再修改该分支。
+R2 仅剩两个测试契约问题，没有发现新的产品逻辑问题：
+
+1. `phase3-final-route-ai-cutover.test.ts` 仍断言旧的 Runtime 内联 refine 清洗代码，与 R2 已确定的“共享 sanitizer 单一实现”冲突。
+2. 正式重复 Place 测试写成 B → A → A，没有精确锁定非相邻回访 A → B → A；独立探针已经确认实现支持 A → B → A。
+
+## R3 修复
+
+- cutover 源码审计测试改为验证 `sanitizeFinalRouteRefineOutputV3` 的导入与调用，并明确禁止恢复第二套内联 transport / verification 清洗。
+- 重复 Place 正式测试改为真实 A → B → A：两个不同临时 A 正式化后复用同一 Place，最终保留三个独立 route node ID。
+- 没有修改任何生产代码、产品权限、Provider 边界或 UI 行为。
+
+## 施工侧验证
+
+只做 GitHub 静态读取 / 写入、类型配置审查、测试合同对照和 diff 审查。  
+没有运行任何 test、typecheck、build、应用或 CI。
+
+## R3 本地测试基线
+
+```text
+Test Branch: __TEST_BRANCH_R3__
+Test HEAD: __TEST_HEAD_R3__
+```
+
+冻结后不再修改该测试分支。
 
 ---
 
 ## 下一步
 
-1. 用户本地 Codex 重跑 R1 强制 Gate 与三个失败点；
-2. 返回匹配 R2 Branch + HEAD 的 PASS / FAIL；
+1. 冻结 Phase 3 R3 Test Branch + HEAD；
+2. 用户本地 Codex 重跑 Phase 3 强制 Gate；
 3. PASS → Phase 3 completed，本轮 PLAN 完成；
-4. FAIL → 只修新的 Phase 3 报告问题，生成新的测试基线。
+4. FAIL → 仅修新的报告问题，再冻结新基线。
