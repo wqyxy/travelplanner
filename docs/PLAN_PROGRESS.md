@@ -190,18 +190,17 @@ R1 失败集中在三个验收问题：
 ## R2 本地测试基线
 
 ```text
-Test Branch: __TEST_BRANCH_R2__
-Test HEAD: __TEST_HEAD_R2__
+Test Branch: test/plan-phase3-final-route-ai-20260905-r2
+Test HEAD: 635f2b8bcaa805f3dacf12e3134ae6b175a71a19
 ```
 
-冻结后不再修改该测试分支。
+测试分支已冻结；冻结后不再修改该分支。
 
 ---
 
 ## 下一步
 
-1. 冻结 Phase 3 R2 唯一 Test Branch + HEAD；
-2. 用户本地 Codex 重跑 R1 强制 Gate 与三个失败点；
-3. 返回匹配基线 PASS / FAIL；
-4. PASS → Phase 3 completed，本轮 PLAN 完成；
-5. FAIL → 只修新的 Phase 3 报告问题，生成新的测试基线。
+1. 用户本地 Codex 重跑 R1 强制 Gate 与三个失败点；
+2. 返回匹配 R2 Branch + HEAD 的 PASS / FAIL；
+3. PASS → Phase 3 completed，本轮 PLAN 完成；
+4. FAIL → 只修新的 Phase 3 报告问题，生成新的测试基线。
