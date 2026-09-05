@@ -1,32 +1,31 @@
 # TravelPlanner 技术文档
 
 > 状态：**当前 main 技术现状**  
-> 更新日期：2026-09-05  
-> 本文件只描述当前代码实际上如何工作。
+> 更新日期：2026-09-05
 
 ---
 
-# 1. 当前前端入口
+# 1. 前端入口
 
-当前 Web 挂载入口是：
+当前生产 Web 入口：
 
 ```text
 apps/web/src/main.tsx
 → AppFinalRouteV3.tsx
 ```
 
-正常产品导航只有两个工作区：
+正常导航只有：
 
 ```text
 规划 · 旅行需求
 行程 · 最终线路
 ```
 
-旧 `AppWorkflowV3.tsx`、Candidate / Skeleton / Daily Itinerary 等组件仍有部分源码和测试保留，但不再由 `main.tsx` 挂载，也不是正常产品导航入口。
+旧 `AppWorkflowV3` 和 Candidate / Skeleton / Daily Itinerary 组件仍有部分源码保留，但不再由生产入口挂载。
 
 ---
 
-# 2. 当前核心数据模型
+# 2. 核心计划数据
 
 `TravelPlanDocument` 仍包含：
 
@@ -40,62 +39,70 @@ planningState?
 warnings[]
 ```
 
-其中线路的唯一用户维护来源是：
+唯一用户线路来源是：
 
 ```text
 finalRoute.version = 1
 finalRoute.nodes[]
 ```
 
-`days[]` 仍然保存，是因为大量 Route、AI context 和已有接口依赖 Day 结构；但 Day 的线路顺序由 finalRoute 机械派生，不能作为第二份独立线路覆盖 finalRoute。
+`days[]` 仍持久化，因为 Route、AI context 和部分兼容接口仍依赖 Day 结构；但其线路拓扑由 finalRoute 机械派生，不能反过来成为第二份独立路线。
 
 ---
 
-# 3. Place / Candidate / FinalRoute 的职责
+# 3. Place / Candidate / FinalRouteNode
 
 ## Place
 
-`Place` 是现实地点实体：
-
-```text
-id
-nameZh / nameLocal / nameEn
-kind
-city / region / country / countryCode
-approximate
-```
-
-`Place` 本身不决定住宿、不决定 Day，也不决定 AI 权限。
+现实地点实体，只描述名称、类型和行政区等语义信息。
 
 ## Candidate
 
-`TripCandidate` 当前仍保留，主要服务于：
+当前主要作为 AI 内部研究结构：
+
+- `planning_area`；
+- `core_visit`；
+- `detail_interest`；
+- AI reason / score / tags；
+- 现有 Action contract 兼容。
+
+Candidate 已经没有独立正常用户页面。
+
+手工从最终线路新增 Place 时，会创建隐藏的 `planning_area` Candidate，使该 Place 可以继续作为“生成详细地点”的研究锚点。这个角色不改变 `Place.kind`。
+
+角色推导规则：
 
 ```text
-AI 地点研究上下文
-planning_area / core_visit / detail_interest 内部分组
-AI score / reason / tags
-旧 Action contract 兼容
+显式 planningRole 优先
+否则有 planningAreaCandidateId → detail_interest
+否则只为旧结构兼容使用 Place.kind fallback
 ```
 
-Candidate 已经不是用户维护的第二条路线，也没有独立正常页面。
-
-手工从最终线路面板新增地点时，会同步创建一个内部 `planning_area` Candidate，使该用户地点可以继续作为“生成详细地点”的研究锚点；这个内部角色不改变 Place.kind。
+因此带父区域的详细地点即使真实 `kind=city`，也不会被误判成新的主要区域。
 
 ## FinalRouteNode
 
-`FinalRouteNode` 表示一个 Place 在线路中的一次出现：
+表示某个 Place 在线路中的一次出现：
 
 ```text
 id
 placeId
-status: normal | tentative | no_go
+status
 endsDay
 transportFromPrevious
-activity / period / schedule...
+activity
+period
+scheduleText
+startTime
+endTime
+durationMinutes
+scheduleVerification
+costNote
+costVerification
+notes
 ```
 
-同一个 Place 可以被多个 route node 引用。
+同一 Place 可以由多个独立 route node 引用。
 
 ---
 
@@ -107,75 +114,23 @@ activity / period / schedule...
 apps/server/final-route-v3.ts
 ```
 
-核心函数：
+normal 节点 + `endsDay` 机械派生 Day。
 
-```text
-activeFinalRouteNodesV3
-deriveFinalRouteDaysV3
-rebuildFinalRouteDaysV3
-setFinalRouteNodeStatusV3
-setFinalRouteDayBoundaryV3
-updateFinalRouteTransportV3
-moveFinalRouteNodeV3
-removeFinalRouteNodeV3
-insertFinalRouteNodeV3
-addNightAfterFinalRouteNodeV3
-```
+`tentative / no_go`：
 
-派生规则：
+- 节点本身继续保存；
+- 顺序不变；
+- `endsDay` 不丢；
+- 到达交通不丢；
+- 当前 Day / Route 暂时跳过。
 
-```text
-trip.originPlaceId
-+ status=normal 的 route nodes
-+ endsDay=true
-→ segments
-→ Day 1 / Day 2 / ...
-```
-
-`tentative / no_go` 不进入当前 Day，但节点本身、顺序、`endsDay` 和到达交通仍保存在 finalRoute 中。
-
-最后一段即使没有 `endsDay=true` 也会形成最后一个 Day。
+最后一段即使无 `endsDay=true` 仍形成最后一天。
 
 ---
 
-# 5. 交通数据边界
+# 5. PlanCommand 与人工编辑
 
-`transportFromPrevious` 属于“到达当前 route node”。
-
-FinalRoute mutation 会把用户 / AI 输入的交通对象正规化：
-
-```text
-只保留 mode
-
-durationMinutes = null
-note = null
-verification.status = unverified
-verification.checkedAt = null
-```
-
-`mode=none` 会保存为：
-
-```text
-transportFromPrevious = null
-```
-
-因此 `set_final_route_transport` 和 `add_final_route_node` 都不能借调用参数写入伪造的 Provider 事实。
-
-真实：
-
-```text
-distance
-duration
-geometry
-```
-
-只保存在 Route Provider 结果中。
-
----
-
-# 6. PlanCommand
-
-现有通用命令仍保留 Candidate / Day 命令，同时已经增加最终线路命令：
+FinalRoute 命令包括：
 
 ```text
 add_final_route_node
@@ -187,64 +142,92 @@ set_final_route_transport
 add_final_route_night
 ```
 
-前端人工规划直接调用 `/api/trips/:id/commands` 执行这些命令。
+人工地点 / 顺序 / 状态 / 住宿 / 交通从右侧通过 `/commands` 写入。
 
-`applyPlanCommands` 执行 finalRoute mutation 后会重新派生 Day，并返回：
+详细安排当前复用已经验证过的确定性 `itinerary.edit` Day-stop 写入：
 
 ```text
-changedDayIds
-routeDirtyDayIds
-changedPlaceIds
-...
+FinalRoutePanelV3
+→ itinerary.edit
+→ update_day_stop
+→ Store 当前写入桥
+→ route node detail fields
+→ finalRoute 再派生 Day
 ```
+
+这是内部兼容实现；用户看不到 DayStop / Step 5。
+
+当前右侧手工编辑字段：
+
+```text
+activity
+period
+startTime
+endTime
+durationMinutes
+notes
+```
+
+`FinalRouteNode.scheduleText` 如果存在会直接展示；AI refine 可以补充。
 
 ---
 
-# 7. 当前 Store 策略
+# 6. 当前 Day 写入桥
 
-数据库仍是 v3 fresh-data 策略。
-
-已经落盘的非空旧格式旅行不会自动迁移成 finalRoute。
-
-如果旧计划带实际内容但缺少当前 finalRoute：
-
-```text
-OLD_TEST_PLAN_UNSUPPORTED
-```
-
-全新空白计划内部允许短暂出现：
-
-```text
-finalRoute.version = 0
-```
-
-Store 读取时只对完全空白计划提升为 v1。
-
-## 当前 Day 写入过渡层
-
-`final-route-v3.ts` 中仍保留：
+`final-route-v3.ts` 仍保留：
 
 ```text
 syncFinalRouteForLegacyWriteV3
 ```
 
-它只用于当前源码中尚未完全删除的旧 Skeleton / Day / Detailed 内部路径：
+它只用于当前进程里仍复用 Day contracts 的内部路径，包括详细安排编辑 / refine。
+
+已经落盘的旧非空旅行仍然不会迁移：
 
 ```text
-当前进程新产生的 Day 视图
-→ 保存前翻译成 finalRoute
-→ 再由 finalRoute 生成 Day
+OLD_TEST_PLAN_UNSUPPORTED
 ```
 
-它不能迁移已经落盘的旧旅行。
-
-正常新 UI 不依赖这条路径。
+因此这不是旧数据迁移或双线路模型。
 
 ---
 
-# 8. 当前前端最终线路组件
+# 7. 交通与 Provider 事实边界
 
-主要组件：
+FinalRoute transport mutation 只保留：
+
+```text
+mode
+```
+
+并正规化为：
+
+```text
+durationMinutes = null
+note = null
+verification.status = unverified
+verification.checkedAt = null
+```
+
+`mode=none` → `transportFromPrevious=null`。
+
+真实：
+
+```text
+distance
+duration
+geometry
+```
+
+只来自 Route Provider。
+
+Place 坐标只来自 Place Resolution / Google Maps link / map pick / 用户明确坐标。
+
+---
+
+# 8. 前端最终线路
+
+主要文件：
 
 ```text
 AppFinalRouteV3.tsx
@@ -255,47 +238,44 @@ final-route-map-v3.ts
 phase2-final-route.css
 ```
 
-`FinalRoutePanelV3` 是线路业务的唯一正常入口，负责：
+`FinalRoutePanelV3` 是正常产品里的唯一线路业务入口。
 
-```text
-人工新增
-移动 / 拖动
-状态
-住 / 不住 / 多一晚
-到达交通
-Place 编辑
-定位修复
-AI 生成主要地点
-AI 生成详细地点
-AI 优化 Day / segment / trip
-优化 Proposal 的采用 / 拒绝 / 撤销
-```
+当前包含：
+
+- 人工新增 / 删除 / 排序；
+- status；
+- 住 / 不住 / 多一晚；
+- 到达交通；
+- 详细安排；
+- Place 编辑与定位修复；
+- AI 主要地点；
+- AI 详细地点；
+- AI 完善这一天；
+- AI Day / segment / trip 优化；
+- AI Proposal apply / reject / undo。
 
 ---
 
-# 9. 地图数据
+# 9. 地图
 
-地图点：
+地图点来自：
 
 ```text
-finalRoute.nodes
-+ PlaceResolution
+finalRoute.nodes + PlaceResolution
 ```
 
-因此 normal / tentative / no_go 的真实已定位节点都可以显示。
+所以三个状态的已定位节点都能显示。
 
-地图路线：
+地图路线来自：
 
 ```text
 finalRoute
-→ 当前 normal Day
-→ DayRoute Provider result
-→ map geometry
+→ normal 派生 Day
+→ DayRoute Provider
+→ geometry
 ```
 
-对于 dirty 的旧 Provider route，前端还会按当前 Day 的真实节点拓扑过滤每条 leg。
-
-一条旧 leg 只有同时匹配：
+对于 dirty 旧 route，每条 leg 必须同时匹配当前 Day：
 
 ```text
 fromNodeId
@@ -304,180 +284,75 @@ toNodeId
 toPlaceId
 ```
 
-才允许继续作为“待更新参考线”显示。
+才允许显示为待更新参考线。
 
-因此 inactive 节点不会因为旧 geometry 缓存继续出现在当前交通路线中；同一 Place 的多个独立 route node 也不会混淆。
-
-Map Popup 只有展示信息，没有最终线路业务 mutation。
+Map Popup 不包含线路业务 mutation。
 
 ---
 
-# 10. AI Action 基础设施
+# 10. AI Action 复用
 
-底层 Action 类型暂时继续使用现有名称：
+底层 Action ID 暂时继续使用已有名称：
 
 ```text
 destination.generate
 interest.discover
 interest.supplement
+itinerary.refine
 itinerary.day.optimize
 itinerary.repair
 ```
 
-但它们在当前产品中的职责已经收敛为：
+当前用户语义：
 
 ```text
-destination.generate      → 生成主要地点
-interest.discover         → 生成详细地点
-interest.supplement       → 补充详细地点
-itinerary.day.optimize    → 优化这一天
-itinerary.repair          → 优化这一段 / 优化全程
+destination.generate    → 生成主要地点
+interest.discover       → 生成详细地点
+interest.supplement     → 补充详细地点
+itinerary.refine        → 完善这一天
+itinerary.day.optimize  → 优化这一天
+itinerary.repair        → 优化这一段 / 全程
 ```
 
-这保留了已有：
+这样继续复用：
 
-```text
-StagedTravelAiV3
-Prompt Registry
-AiTaskMonitorV3
-generation
-Proposal
-Revision
-Provider resolution
-WebSocket progress
-```
-
-而不再重新创建一套 AI 任务系统。
+- StagedTravelAiV3；
+- Prompt Registry；
+- AiTaskMonitorV3；
+- generation / CAS；
+- Proposal；
+- Revision / Undo；
+- Provider resolution；
+- WebSocket progress。
 
 ---
 
-# 11. Phase 3 AI finalRoute cutover
+# 11. Phase 3 AI cutover
 
-核心文件：
+核心：
 
 ```text
 apps/server/final-route-ai-v3.ts
 apps/server/final-route-ai-cutover-v3.ts
 ```
 
-生产入口：
+生产入口 `index-cutover-v3.ts` 会在创建 Runtime 前加载 cutover。
 
-```text
-index-cutover-v3.ts
-```
+## 11.1 主要地点
 
-会在 `index-v3.ts` 创建 Runtime 之前加载 final-route AI cutover。
-
-## 11.1 纯权限 / 变换层
-
-`final-route-ai-v3.ts` 负责可独立测试的确定性规则：
-
-```text
-applyMainRouteGenerationFromOutputV3
-insertNewDetailCandidatesFromPlanV3
-finalRouteTargetNodeIdsForOptimizationV3
-finalRouteMoveCommandsForOrderedSubsetV3
-orderedAuthorizedRouteNodeIdsFromDaysV3
-```
-
-普通生成的硬保证：
-
-```text
-已有 route node 相对顺序不变
-已有 node 所有字段不变
-只允许增加新 node
-```
-
-显式优化的硬保证：
-
-```text
-AI 返回 ID 必须恰好等于授权 ID 集合
-范围外 node 不生成 move command
-inactive node 不属于授权集合
-固定节点槽位保持不动
-```
-
-## 11.2 Runtime / Store cutover 扩展
-
-`final-route-ai-cutover-v3.ts` 在现有 Runtime / Store 的稳定写入接点上安装最终线路行为：
-
-### 主要地点
-
-原 `destination.generate` 仍负责：
+原 `destination.generate` 继续负责：
 
 ```text
 AI 调用
-结构校验
-Candidate 正式化
-定位
-Task 状态
-```
-
-在写入 Store 之前，cutover 把本轮 AI 输出顺序和 `routeSuggestion` 转成新的 finalRoute nodes。
-
-仅允许最终线路为空时执行。
-
-### 详细地点
-
-原 `interest.discover / supplement` 仍负责：
-
-```text
-并行区域研究
-0–9 数量规则
-去重
-Candidate 正式化
+输出 Schema
+Candidate 正式化 / 去重
 Provider 定位
-进度
+Task / generation
 ```
 
-每个区域提交 Store 时，cutover 检测本轮真正新增的 detail candidates，只为这些新实体插入 finalRoute node。
+Store 写入前，cutover 使用本轮原始 AI output 的 candidate 顺序创建 finalRoute nodes。
 
-已有 route nodes 不允许被修改或重排。
-
-支持 scope request：
-
-```text
-final-route-detail-scope:trip
-final-route-detail-scope:day:<dayId>
-final-route-detail-scope:segment:<fromNodeId>:<toNodeId>
-```
-
-### 显式优化
-
-`itinerary.day.optimize`：
-
-```text
-只授权目标 Day 当前 stops 对应 route node IDs
-```
-
-Day 的结束边界节点不由这个动作移动。
-
-`itinerary.repair` 当前作为内部“segment / trip 优化执行器”：
-
-```text
-targetIds=[]                 → 全程
-targetIds=[fromNode,toNode]  → 连续线路段
-```
-
-AI 输出中的 Day 结构只是现有合同的承载格式；服务器真正读取的只有授权 route-node ID 的相对顺序。
-
-其他 AI 返回字段不会成为最终线路 mutation。
-
----
-
-# 12. AI Prompt 约束
-
-当前 Prompt 已切换成最终线路语言：
-
-```text
-生成主要地点
-生成详细地点
-补充详细地点
-优化这一天
-优化这一段或全程
-```
-
-主要地点输出的 `BackboneCandidateDraftSchema` 增加可选：
+`BackboneCandidateDraftSchema` 新增可选：
 
 ```text
 routeSuggestion: {
@@ -486,100 +361,140 @@ routeSuggestion: {
 }
 ```
 
-它只能表达本轮新增节点的建议。
+它只影响本轮新 route node。
 
-没有 `stayDays`，也没有“AI 生成一个地点就默认住 1 晚”的规则。
+仅允许 finalRoute 为空时执行主地点第一次生成。
 
-详细地点 Prompt 明确禁止：
+相同语义 Place 即使在 Candidate 层复用为同一个实体，AI output 中每一次线路出现仍创建独立 route node，因此 `A → B → A` 可表达。
+
+## 11.2 详细地点
+
+原 interest 并行研究管线继续负责 0–9 数量、去重、正式化、定位和任务进度。
+
+每个区域写 Store 前：
 
 ```text
-移动已有节点
-删除已有节点
-修改状态
-修改住宿分界
-修改已有交通
+检测本轮新增 detail candidates
+→ 只创建新的 route nodes
+→ 插入指定 route scope
+→ 检查所有旧 node 相对顺序和字段完全不变
 ```
 
-服务端也有对应的确定性检查，因此不是只依赖 Prompt 自觉。
+Scope request：
+
+```text
+final-route-detail-scope:trip
+final-route-detail-scope:day:<dayId>
+final-route-detail-scope:segment:<fromNodeId>:<toNodeId>
+```
+
+Day / segment scope 没有合法锚点时 fail closed，不回退到范围外节点。
+
+## 11.3 完善这一天
+
+`itinerary.refine` 继续使用现有输出合同，但 cutover 在持久化前做额外权限收紧：
+
+- 必须只返回请求 Day；
+- Stop 必须是当前授权 Day 的既有 Stop；
+- 可以更新 activity / period / scheduleText / time / duration / notes；
+- `transportFromPrevious` 强制恢复当前值；
+- `scheduleVerification` 强制恢复当前值；
+- `costVerification` 强制恢复当前值。
+
+因此 refine 不能借详细安排修改路线交通或制造 verified 事实。
+
+结果仍走 Proposal，由用户决定是否采用。
+
+## 11.4 显式优化
+
+纯权限函数：
+
+```text
+finalRouteTargetNodeIdsForOptimizationV3
+finalRouteMoveCommandsForOrderedSubsetV3
+orderedAuthorizedRouteNodeIdsFromDaysV3
+```
+
+硬规则：
+
+- AI 返回 ID 集合必须恰好等于授权集合；
+- 不允许新增 / 删除 / 重复 / unknown ID；
+- inactive 节点不进入授权集合；
+- 范围外节点不生成 move command；
+- 范围外 / inactive 节点保持原槽位。
+
+单日优化只授权当前 Day 的 stops，Day end boundary 固定。
+
+`itinerary.repair` 目前作为 segment / trip 的内部 AI 执行器；其 Day output 只是旧合同承载格式，服务器最终只读取授权 route-node ID 的相对顺序。
+
+优化只生成 `move_final_route_node` Proposal。
 
 ---
 
-# 13. Proposal / generation / Revision
+# 12. Proposal / generation / Revision
 
-普通生成属于新增内容，可以直接写入当前计划，但仍受 action `baseGeneration` 控制。
+普通地点生成属于新增内容，仍受 action `baseGeneration` 控制。
 
-显式优化属于已有线路重排，统一生成 Proposal：
+优化 / refine 属于已有内容修改：
 
 ```text
-AI 计算顺序
-→ 服务端检查授权 node ID 集合
-→ move_final_route_node commands
+AI output
+→ server scope validation
 → Proposal pending
-→ 用户采用 / 不采用
+→ 用户 apply / reject
 ```
 
-应用 Proposal 时仍使用现有：
+apply 仍走现有 generation CAS、Revision、supersede / undo。
 
-```text
-generation CAS
-scope validation
-Revision
-superseded conflict handling
-undo
-```
-
-所以 AI 不会在用户已经修改线路以后静默覆盖新版本。
+优化 apply / undo 后，Phase 3 cutover 会自动启动新的 Route batch，避免地图长期停留在 dirty 路线。
 
 ---
 
-# 14. Provider 事实边界
+# 13. Prompt 现状
 
-Place 与 PlaceResolution 分离保存。
-
-真实坐标只来自：
+已改成最终线路语义的主要 Prompt：
 
 ```text
-Provider match / choice
-Google Maps link
-map pick
-用户明确坐标
+生成主要地点
+生成详细地点
+补充详细地点
+完善这一天
+优化这一天
+优化这一段或全程
 ```
 
-Route Provider 负责：
-
-```text
-distanceKm
-durationMinutes
-geometry
-```
-
-finalRoute、AI output、PlanCommand 都不能制造这些事实。
-
-未定位 Place 可以继续保留在线路。
+普通生成 Prompt 明确禁止修改已有节点；服务器也有对应确定性权限检查，不依赖 Prompt 自觉。
 
 ---
 
-# 15. 仍保留但已退出正常产品路径的旧结构
+# 14. Fresh-data 策略
 
-当前源码中仍存在一些旧五步时代模块，例如：
+数据库 Schema 本轮没有新增迁移。
+
+施工前测试数据不兼容：
+
+- 不迁移旧旅行 JSON；
+- 不从旧 Candidate / Day 猜 finalRoute；
+- 不恢复施工前旧 Revision。
+
+完全空白 v0 bootstrap 可以在读取时提升到 finalRoute v1；非空旧格式直接拒绝。
+
+---
+
+# 15. 仍保留的内部旧模块
+
+源码中仍存在部分旧五步时代模块 / Action，例如：
 
 ```text
 AppWorkflowV3
 CandidateWorkflowPanelV3
 MacroItineraryPanelV3
 DailyItineraryPanelV3
-Skeleton contracts / edit API
-旧 itinerary.generate / detail.generate 等 Action
+itinerary.generate
+itinerary.detail.generate
+旧 Skeleton contracts
 ```
 
-保留原因主要是：
+它们当前不是生产用户入口，也不能成为 finalRoute 之外的第二份线路来源。
 
-```text
-现有内部合同和测试仍复用部分数据结构
-阶段性减少一次性大删除风险
-旧 Day/Skeleton 写入桥仍需要覆盖内部调用
-```
-
-但这些模块不再决定当前用户工作流，也不是最终线路的第二份真实来源。
-
-后续如果删除这些内部兼容代码，应以“不改变 finalRoute 用户语义”为前提进行纯技术清理，而不是重新引入新的产品步骤。
+保留原因是部分内部合同 / 测试 / 写入桥仍被当前稳定能力复用。后续若做纯技术删除，应保持当前 finalRoute 产品语义不变。
