@@ -14,6 +14,7 @@ export type FinalRouteMutationResultV3 = {
 };
 
 const clone = <T>(value: T): T => structuredClone(value);
+const same = (left: unknown, right: unknown) => JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
 
 function stableNodeId(prefix: string, source: string) {
   const digest = createHash("sha256").update(source).digest("hex").slice(0, 24);
@@ -24,6 +25,16 @@ function dateAt(plan: TravelPlanDocument, index: number) {
   return plan.trip.dates.start
     ? new Date(Date.parse(`${plan.trip.dates.start}T00:00:00Z`) + index * 86_400_000).toISOString().slice(0, 10)
     : null;
+}
+
+function transportFromMode(mode: Day["transferMode"]): Transport | null {
+  if (mode === "none") return null;
+  return {
+    mode,
+    durationMinutes: null,
+    note: null,
+    verification: { status: "unverified", checkedAt: null },
+  };
 }
 
 function emptyNode(input: Pick<FinalRouteNode, "id" | "placeId" | "status" | "endsDay"> & Partial<Pick<FinalRouteNode, "transportFromPrevious">>): FinalRouteNode {
@@ -65,7 +76,7 @@ function currentFinalRoutePlanV3(planValue: TravelPlanDocument): TravelPlanDocum
 }
 
 export function materializeLegacyFinalRouteV3(plan: TravelPlanDocument): TravelPlanDocument {
-  // Existing Store call site retained temporarily; old route data is not converted.
+  // Existing Store read call site is retained temporarily. Persisted old route data is never converted.
   return currentFinalRoutePlanV3(plan);
 }
 
@@ -98,6 +109,26 @@ function dayStopFromNode(plan: TravelPlanDocument, node: FinalRouteNode): Day["s
     costNote: node.costNote,
     costVerification: clone(node.costVerification),
     notes: node.notes,
+  };
+}
+
+function routeNodeFromDayStop(stop: Day["stops"][number]): FinalRouteNode {
+  return {
+    id: stop.id,
+    placeId: stop.placeId,
+    status: "normal",
+    endsDay: false,
+    transportFromPrevious: clone(stop.transportFromPrevious),
+    activity: stop.activity,
+    period: stop.period,
+    scheduleText: stop.scheduleText ?? null,
+    startTime: stop.startTime,
+    endTime: stop.endTime,
+    durationMinutes: stop.durationMinutes,
+    scheduleVerification: clone(stop.scheduleVerification),
+    costNote: stop.costNote,
+    costVerification: clone(stop.costVerification),
+    notes: stop.notes,
   };
 }
 
@@ -184,12 +215,141 @@ export function rebuildFinalRouteDaysV3(plan: TravelPlanDocument): TravelPlanDoc
   return TravelPlanDocumentSchema.parse({
     ...base,
     days: deriveFinalRouteDaysV3(base),
-    planningState: undefined,
   });
 }
 
-export function syncFinalRouteForLegacyWriteV3(_before: TravelPlanDocument, after: TravelPlanDocument): TravelPlanDocument {
-  // Existing Store call site retained temporarily. Old Candidate / Day data is never converted.
+function mergeInactiveNodesV3(beforeNodes: FinalRouteNode[], desiredActive: FinalRouteNode[]) {
+  const desiredIds = new Set(desiredActive.map((node) => node.id));
+  const beforeBuckets = new Map<string, FinalRouteNode[]>();
+  const afterBuckets = new Map<string, FinalRouteNode[]>();
+  const tail: FinalRouteNode[] = [];
+
+  for (let index = 0; index < beforeNodes.length; index += 1) {
+    const node = beforeNodes[index];
+    if (node.status === "normal") continue;
+
+    let previousActiveId: string | null = null;
+    for (let previous = index - 1; previous >= 0; previous -= 1) {
+      if (beforeNodes[previous].status !== "normal") continue;
+      if (desiredIds.has(beforeNodes[previous].id)) previousActiveId = beforeNodes[previous].id;
+      break;
+    }
+
+    let nextActiveId: string | null = null;
+    for (let next = index + 1; next < beforeNodes.length; next += 1) {
+      if (beforeNodes[next].status !== "normal") continue;
+      if (desiredIds.has(beforeNodes[next].id)) nextActiveId = beforeNodes[next].id;
+      break;
+    }
+
+    if (nextActiveId) {
+      const bucket = beforeBuckets.get(nextActiveId) ?? [];
+      bucket.push(clone(node));
+      beforeBuckets.set(nextActiveId, bucket);
+    } else if (previousActiveId) {
+      const bucket = afterBuckets.get(previousActiveId) ?? [];
+      bucket.push(clone(node));
+      afterBuckets.set(previousActiveId, bucket);
+    } else {
+      tail.push(clone(node));
+    }
+  }
+
+  const merged: FinalRouteNode[] = [];
+  for (const node of desiredActive) {
+    merged.push(...(beforeBuckets.get(node.id) ?? []));
+    merged.push(node);
+    merged.push(...(afterBuckets.get(node.id) ?? []));
+  }
+  merged.push(...tail);
+  return merged;
+}
+
+function normalizedDayViewForLinearRouteV3(before: TravelPlanDocument, after: TravelPlanDocument) {
+  const days = clone(after.days);
+  const beforeById = new Map(before.days.map((day) => [day.id, day]));
+  let originPlaceId = after.trip.originPlaceId;
+
+  const first = days[0];
+  const previousFirst = first ? beforeById.get(first.id) : null;
+  if (first && previousFirst && first.startAnchor.placeId !== previousFirst.startAnchor.placeId) {
+    originPlaceId = first.startAnchor.placeId;
+  }
+
+  for (let index = 0; index < days.length - 1; index += 1) {
+    const current = days[index];
+    const next = days[index + 1];
+    if (current.endAnchor.placeId === next.startAnchor.placeId) continue;
+
+    const previousCurrent = beforeById.get(current.id);
+    const previousNext = beforeById.get(next.id);
+    const endChanged = Boolean(previousCurrent && current.endAnchor.placeId !== previousCurrent.endAnchor.placeId);
+    const startChanged = Boolean(previousNext && next.startAnchor.placeId !== previousNext.startAnchor.placeId);
+
+    if (startChanged && !endChanged) current.endAnchor.placeId = next.startAnchor.placeId;
+    else next.startAnchor.placeId = current.endAnchor.placeId;
+  }
+
+  return { days, originPlaceId };
+}
+
+function rebuildFinalRouteFromDayViewV3(before: TravelPlanDocument, after: TravelPlanDocument) {
+  const normalized = normalizedDayViewForLinearRouteV3(before, after);
+  const existingById = new Map(before.finalRoute.nodes.map((node) => [node.id, node]));
+  const desiredActive: FinalRouteNode[] = [];
+
+  normalized.days.forEach((day, index) => {
+    for (const stop of day.stops) desiredActive.push(routeNodeFromDayStop(stop));
+
+    const endPlaceId = day.endAnchor.placeId;
+    if (!endPlaceId) throw new Error(`FINAL_ROUTE_DAY_VIEW_UNREPRESENTABLE: Day ${day.id} 缺少终点地点。`);
+    const existing = existingById.get(day.id);
+    if (existing && existing.status !== "normal") {
+      throw new Error(`FINAL_ROUTE_DAY_VIEW_CONFLICT: Day ${day.id} 对应的最终线路节点当前不是 normal。`);
+    }
+
+    const endNode = existing ? clone(existing) : emptyNode({
+      id: day.id,
+      placeId: endPlaceId,
+      status: "normal",
+      endsDay: false,
+    });
+    endNode.placeId = endPlaceId;
+    endNode.status = "normal";
+    endNode.endsDay = index < normalized.days.length - 1 ? true : (existing?.endsDay ?? false);
+    endNode.transportFromPrevious = day.endTransportFromPrevious !== undefined
+      ? clone(day.endTransportFromPrevious)
+      : day.stops.length === 0
+        ? transportFromMode(day.transferMode)
+        : clone(existing?.transportFromPrevious ?? null);
+    desiredActive.push(endNode);
+  });
+
+  const finalRoute = {
+    version: 1 as const,
+    nodes: mergeInactiveNodesV3(before.finalRoute.nodes, desiredActive),
+  };
+  const base = TravelPlanDocumentSchema.parse({
+    ...clone(after),
+    trip: { ...clone(after.trip), originPlaceId: normalized.originPlaceId },
+    finalRoute,
+  });
+  return rebuildFinalRouteDaysV3(base);
+}
+
+export function syncFinalRouteForLegacyWriteV3(beforeValue: TravelPlanDocument, afterValue: TravelPlanDocument): TravelPlanDocument {
+  // Transitional write bridge only. Persisted old plans are still rejected by currentFinalRoutePlanV3.
+  // While Phase 2/3 removes the old Day/Skeleton entry points, an in-memory caller that edits the Day view
+  // is translated into final-route nodes before persistence, so days[] never becomes a second saved route.
+  const before = currentFinalRoutePlanV3(beforeValue);
+  const parsedAfter = TravelPlanDocumentSchema.parse(clone(afterValue));
+  const after = parsedAfter.finalRoute.version === 1
+    ? parsedAfter
+    : TravelPlanDocumentSchema.parse({ ...parsedAfter, finalRoute: clone(before.finalRoute) });
+
+  const finalRouteChanged = !same(before.finalRoute, after.finalRoute);
+  const dayViewChanged = !same(before.days, after.days);
+  if (!finalRouteChanged && dayViewChanged) return rebuildFinalRouteFromDayViewV3(before, after);
   return rebuildFinalRouteDaysV3(after);
 }
 
