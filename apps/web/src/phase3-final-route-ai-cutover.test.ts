@@ -32,6 +32,15 @@ describe("Phase 3 final route AI cutover", () => {
     expect(cutover).toContain('const scope: ProposalScope = { type: "trip", id: null }');
   });
 
+  it("fails closed on requested Day scope and refreshes routes after optimization apply or undo", () => {
+    const cutover = serverSource("final-route-ai-cutover-v3.ts");
+    expect(cutover).toContain("requestedDayId");
+    expect(cutover).toContain("result.dayId !== requestedDayId");
+    expect(cutover).toContain("originalApplyProposal");
+    expect(cutover).toContain("originalUndoProposal");
+    expect(cutover).toContain("runtime.startRouteBatch");
+  });
+
   it("uses final-route language instead of the removed five-step product language in rewritten AI prompts", () => {
     const root = fileURLToPath(new URL("../../..", import.meta.url));
     const readPrompt = (path: string) => readFileSync(`${root}/prompts/${path}`, "utf8");
