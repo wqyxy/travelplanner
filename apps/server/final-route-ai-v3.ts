@@ -298,12 +298,26 @@ export function finalRouteMoveCommandsForOrderedSubsetV3(
 
   for (let index = 0; index < desired.length; index += 1) {
     const desiredId = desired[index];
-    if (working[index] === desiredId || !allowed.has(desiredId)) continue;
-    const currentIndex = working.indexOf(desiredId);
-    if (currentIndex < 0) throw new Error(`优化结果引用未知线路节点：${desiredId}`);
-    working.splice(currentIndex, 1);
-    working.splice(index, 0, desiredId);
-    commands.push({ type: "move_final_route_node", nodeId: desiredId, targetIndex: index });
+    const currentId = working[index];
+    if (currentId === desiredId) continue;
+
+    if (allowed.has(desiredId)) {
+      const currentIndex = working.indexOf(desiredId);
+      if (currentIndex < 0) throw new Error(`优化结果引用未知线路节点：${desiredId}`);
+      working.splice(currentIndex, 1);
+      working.splice(index, 0, desiredId);
+      commands.push({ type: "move_final_route_node", nodeId: desiredId, targetIndex: index });
+      continue;
+    }
+
+    if (!allowed.has(currentId)) {
+      throw new Error("FINAL_ROUTE_OPTIMIZE_COMMAND_BUILD_FAILED: 优化结果试图移动授权范围外节点。");
+    }
+    const targetIndex = desired.indexOf(currentId);
+    if (targetIndex < 0) throw new Error(`优化结果遗漏线路节点：${currentId}`);
+    working.splice(index, 1);
+    working.splice(targetIndex, 0, currentId);
+    commands.push({ type: "move_final_route_node", nodeId: currentId, targetIndex });
   }
 
   if (JSON.stringify(working) !== JSON.stringify(desired)) {
