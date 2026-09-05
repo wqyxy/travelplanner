@@ -92,10 +92,10 @@ describe("final route map presentation", () => {
       stops: [],
       endAnchor: { id: "end", placeId: "y", label: null, notes: null },
     }];
-    const leg = (id: string, fromPlaceId: string, toPlaceId: string) => ({
+    const leg = (id: string, fromNodeId: string, fromPlaceId: string, toNodeId: string, toPlaceId: string) => ({
       id,
-      fromNodeId: `from-${id}`,
-      toNodeId: `to-${id}`,
+      fromNodeId,
+      toNodeId,
       fromPlaceId,
       toPlaceId,
       mode: "drive" as const,
@@ -117,7 +117,11 @@ describe("final route map presentation", () => {
         distanceKm: 30,
         durationMinutes: 60,
         geometry: null,
-        legs: [leg("old-a-x", "a", "x"), leg("old-x-y", "x", "y"), leg("current-a-y", "a", "y")],
+        legs: [
+          leg("old-a-x", "start", "a", "node-x", "x"),
+          leg("old-x-y", "node-x", "x", "end", "y"),
+          leg("current-a-y", "start", "a", "end", "y"),
+        ],
         warnings: [],
         calculatedAt: "2026-09-05T00:00:00Z",
       },
