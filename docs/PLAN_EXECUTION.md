@@ -78,12 +78,7 @@ Test HEAD: b736706424aa00aa1f3fd2db18a1ae915dc84afc
 Phase 3: FAIL
 ```
 
-修复：
-
-- Runtime refine 改为复用共享 sanitizer；
-- 修复 TypeScript 联合类型收窄；
-- refine 正式测试改为真实中途 Stop；
-- 单日优化 Prompt 与测试字面一致。
+修复：Runtime refine 复用共享 sanitizer；修复 TypeScript 联合类型收窄；refine 测试改为真实中途 Stop；单日优化 Prompt 与测试字面一致。
 
 ## R2
 
@@ -99,15 +94,12 @@ npm test: 504 / 505 tests passed
 Build: PASS
 ```
 
-R2 没有发现新的产品逻辑缺口，只剩两个正式测试契约问题：
-
-1. cutover 源码审计仍要求 Runtime 内存在旧的内联 refine 清洗代码；
-2. 重复 Place 正式测试只构造 B → A → A，没有精确覆盖 A → B → A。
+R2 没有新的产品逻辑缺口，只剩两个测试契约问题：cutover 测试仍要求旧内联 sanitize；重复 Place 正式测试没有精确覆盖 A → B → A。
 
 ## R3 修复
 
-- `phase3-final-route-ai-cutover.test.ts` 改为验证共享 `sanitizeFinalRouteRefineOutputV3` 的导入与调用，并明确禁止重新出现第二套内联 transport / verification 清洗。
-- `final-route-ai-v3.test.ts` 的重复 Place case 改成真实 A → B → A；两个临时 A 正式化后复用同一现实 Place，同时三个 route node ID 必须独立。
+- cutover 正式测试改为验证共享 sanitizer 的导入与调用，并禁止第二套内联清洗。
+- 重复 Place 正式测试改为真实 A → B → A，两个 A 正式化后复用同一 Place，但 route node ID 独立。
 - 没有修改生产代码或产品行为。
 
 施工 Agent 没有运行 test / typecheck / build / app / Provider / migration / CI。
@@ -116,8 +108,8 @@ R2 没有发现新的产品逻辑缺口，只剩两个正式测试契约问题�
 
 # 5. Phase 3 R3 本地 Codex 测试 Prompt
 
-> Test Branch: `__TEST_BRANCH_R3__`  
-> Test HEAD: `__TEST_HEAD_R3__`
+> Test Branch: `test/plan-phase3-final-route-ai-20260905-r3`  
+> Test HEAD: `8b17dde239484e79a98b7900766442d1b8836ea2`
 
 你是 TravelPlanner Phase 3 R3 独立测试 Agent。
 
@@ -135,7 +127,13 @@ git rev-parse HEAD
 git status --short
 ```
 
-必须严格等于本 Prompt 顶部 Branch / HEAD，且工作树干净。
+必须严格满足：
+
+```text
+Branch = test/plan-phase3-final-route-ai-20260905-r3
+HEAD = 8b17dde239484e79a98b7900766442d1b8836ea2
+工作树干净
+```
 
 Branch / HEAD 不一致：
 
@@ -151,26 +149,20 @@ TEST_WORKTREE_DIRTY
 
 不要自行 checkout / switch / pull / merge / rebase / reset / cherry-pick。
 
-冻结测试分支内本文件可能仍显示占位符；测试时以用户给你的 R3 Prompt 顶部精确 Branch + HEAD 为准。
-
 ## 5.2 R2 唯一失败点复测
-
-重点检查：
 
 ### A. 共享 sanitizer 测试合同
 
-`apps/web/src/phase3-final-route-ai-cutover.test.ts` 应验证：
+`apps/web/src/phase3-final-route-ai-cutover.test.ts` 必须验证：
 
 - `final-route-ai-cutover-v3.ts` 导入 `sanitizeFinalRouteRefineOutputV3`；
 - `persistFinalRouteDayDetails` 直接调用共享 sanitizer；
-- Runtime 不再维护第二套：
+- Runtime 不存在第二套：
 
 ```text
 stop.transportFromPrevious = structuredClone(...)
 stop.scheduleVerification = structuredClone(...)
 ```
-
-如果正式测试仍要求旧内联实现，判 FAIL。
 
 ### B. A → B → A 正式回归
 
@@ -182,11 +174,11 @@ A → B → A
 
 要求：
 
-- 两个 A 可来自不同临时 Place；
+- 两个 A 来自不同临时 Place；
 - 正式化后两个 A 引用同一现实 Place ID；
 - 三个 route node ID 全部独立；
-- A 不得因为 Place / Candidate 去重而被压成一次；
-- 必须是非相邻重复，不能只测试 A → A 或 B → A → A。
+- 不得因为 Place / Candidate 去重而丢失回访 A；
+- 必须是非相邻重复。
 
 ## 5.3 Typecheck
 
@@ -194,7 +186,7 @@ A → B → A
 npm run typecheck
 ```
 
-Windows 可用：
+Windows 可使用：
 
 ```bash
 npm.cmd run typecheck
@@ -247,7 +239,7 @@ Phase 3: FAIL
 npm run build
 ```
 
-Windows 可用：
+Windows 可使用：
 
 ```bash
 npm.cmd run build
@@ -259,12 +251,12 @@ bundle warning 不算失败，真正 build error 算失败。
 
 # 6. 独立审计
 
-R1 / R2 已有大量独立探针通过，但 R3 仍至少抽查：
+至少抽查：
 
 1. A → B → A：同 Place、三个独立 route node。
 2. 共享 sanitizer success 分支保护 transport / verification。
-3. sanitizer 非 success union 分支仍原样合法返回。
-4. Runtime refine 确实只调用共享 sanitizer。
+3. sanitizer 非 success union 分支仍合法返回。
+4. Runtime refine 只调用共享 sanitizer。
 5. 详细地点只新增，旧节点全字段不变。
 6. Day / segment 局部生成 fail closed。
 7. 单日 optimize 固定 Day boundary。
@@ -297,8 +289,8 @@ R1 / R2 已有大量独立探针通过，但 R3 仍至少抽查：
 # 8. 最终输出
 
 ```text
-Test Branch: <actual branch>
-Test HEAD: <actual 40-char SHA>
+Test Branch: test/plan-phase3-final-route-ai-20260905-r3
+Test HEAD: 8b17dde239484e79a98b7900766442d1b8836ea2
 
 Phase 3: PASS / FAIL
 
