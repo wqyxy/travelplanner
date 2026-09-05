@@ -23,6 +23,13 @@ const transport = (mode: Transport["mode"]): Transport => ({
   verification: { status: "unverified", checkedAt: null },
 });
 
+const forgedTransport = (mode: Transport["mode"]): Transport => ({
+  mode,
+  durationMinutes: 987,
+  note: "claimed fact",
+  verification: { status: "verified", checkedAt: "2026-09-05T00:00:00Z" },
+});
+
 const node = (id: string, placeId: string, patch: Partial<FinalRouteNode> = {}): FinalRouteNode => ({
   id,
   placeId,
@@ -118,6 +125,25 @@ describe("final route PlanCommand integration", () => {
     expect(applied.plan.finalRoute.nodes.some((item) => item.placeId === "x")).toBe(true);
     expect(applied.plan.days[0].stops.find((stop) => stop.id === "x-node")?.candidateId).toBeNull();
     expect(applied.effects.removedPlaceIds).not.toContain("x");
+  });
+
+  it("keeps caller-supplied transport duration, notes and verification facts out of finalRoute mutations", () => {
+    const before = routePlan();
+    const safeDrive = transport("drive");
+    const changed = applyPlanCommands(before, [{
+      type: "set_final_route_transport",
+      nodeId: "c-node",
+      transportFromPrevious: forgedTransport("drive"),
+    }]);
+    expect(changed.plan.finalRoute.nodes.find((item) => item.id === "c-node")?.transportFromPrevious).toEqual(safeDrive);
+
+    const inserted = applyPlanCommands(before, [{
+      type: "add_final_route_node",
+      index: 1,
+      node: node("temp-forged-node", "b", { transportFromPrevious: forgedTransport("walk") }),
+    }]);
+    const insertedId = inserted.idMappings["temp-forged-node"];
+    expect(inserted.plan.finalRoute.nodes.find((item) => item.id === insertedId)?.transportFromPrevious).toEqual(transport("walk"));
   });
 
   it("keeps new route mutations out of narrow AI scopes until route-specific scopes exist", () => {
