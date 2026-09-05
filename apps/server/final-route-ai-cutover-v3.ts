@@ -132,9 +132,13 @@ runtimePrototype.persistDayOptimize = function persistFinalRouteDayOptimize(
   const result = output.result as any;
   if (runtime.completeRequiresWorkflowStep(action, result)) return;
   if (result.type !== "success") throw new Error("单日优化结果类型无效。");
+  const requestedDayId = String(action.parameters.dayId ?? action.targetIds[0] ?? "");
+  if (!requestedDayId || result.dayId !== requestedDayId) {
+    throw new Error(`FINAL_ROUTE_OPTIMIZE_SCOPE_VIOLATION: 单日优化只能返回用户授权的 Day ${requestedDayId || "(missing)"}。`);
+  }
   const trip = runtime.options.store.requireTrip(action.tripId);
-  const day = trip.plan.days.find((item: any) => item.id === result.dayId);
-  if (!day) throw new Error(`未知 Day：${result.dayId}`);
+  const day = trip.plan.days.find((item: any) => item.id === requestedDayId);
+  if (!day) throw new Error(`未知 Day：${requestedDayId}`);
   const allowedNodeIds = day.stops.map((stop: any) => stop.id);
   const commands = finalRouteMoveCommandsForOrderedSubsetV3(trip.plan, allowedNodeIds, result.orderedStopIds);
   if (!commands.length) {
