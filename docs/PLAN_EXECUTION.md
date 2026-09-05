@@ -304,9 +304,10 @@ apps/server/planner-runtime-v3-detail-phase5.test.ts
 
 ## 本阶段 Codex 本地测试 Prompt
 
-> 本节中的最终 `Test Branch` / `Test HEAD` 会在本轮 R2 代码冻结后记录到 `PLAN_PROGRESS.md`，并由施工 Agent 在交付给用户的测试 Prompt 顶部明确给出。测试时以交付 Prompt 顶部的精确值为准。
+> Test Branch: `test/plan-phase1-final-route-20260905-r2`  
+> Test HEAD: `5adec91f04d6c74614464f38516626bd15fcc45c`
 >
-> 你是独立测试 Agent。不要相信施工 Agent 的完成声明。
+> 你是独立测试 Agent。不要相信施工 Agent 的完成声明，只根据这个 Branch + HEAD 的实际代码判断 Phase 1。
 >
 > 第一步只能执行：
 >
@@ -316,19 +317,38 @@ apps/server/planner-runtime-v3-detail-phase5.test.ts
 > git status --short
 > ```
 >
-> Branch / HEAD 与交付 Prompt 不一致时立即输出 `TEST_BASE_MISMATCH`，不要自行切分支、pull、merge、rebase、reset 或 cherry-pick。
+> Branch / HEAD 任一不一致时立即输出 `TEST_BASE_MISMATCH`，不要自行切分支、pull、merge、rebase、reset 或 cherry-pick。
 >
 > 工作树存在影响待测代码的修改时输出 `TEST_WORKTREE_DIRTY`。
 >
 > 基线正确后阅读 `PLAN.md`、`PLAN_EXECUTION.md`、`PLAN_PROGRESS.md` 和 Phase 1 相关代码。
 >
-> 执行 typecheck、Phase 1 专项测试、第一次失败的 7 个测试文件、完整 `npm test`、build。
+> 执行：
 >
-> 不测试旧旅行迁移；但是必须确认已落盘旧格式旅行仍然失败关闭。
+> ```text
+> npm run typecheck
+> npx vitest run --config vitest.config.ts apps/server/final-route-v3.test.ts apps/server/final-route-plan-commands-v3.test.ts apps/server/travel-store-final-route-v3.test.ts apps/server/day-route-v2.test.ts apps/server/plan-route-order-v2.test.ts
+> npx vitest run --config vitest.config.ts apps/server/core-promotion-v3.test.ts apps/server/planner-runtime-v3.test.ts apps/server/interest-discovery-v3.test.ts apps/server/planner-runtime-v3-detail-unavailable-phase5.test.ts apps/server/skeleton-edit-api-v3.test.ts apps/server/planner-runtime-v3-ai-actions.test.ts apps/server/planner-runtime-v3-detail-phase5.test.ts
+> npm test
+> npm run build
+> ```
 >
-> 重点独立验证“当前旧入口的新写入翻译”和“旧数据库迁移”没有混成一件事：前者当前允许，后者明确禁止。
+> 不测试施工前旧旅行迁移；但是必须确认已落盘旧格式旅行仍然失败关闭。
 >
-> 最终输出 Branch、HEAD、PASS / FAIL、实际执行测试、问题严重程度和是否建议进入 Phase 2。
+> 重点独立验证：
+>
+> 1. 最终线路显式修改优先，独立 `days[]` 不能覆盖它。
+> 2. 当前 Skeleton / Day / detailed Day 的新操作可以在保存边界翻译成最终线路，然后 Day 再从最终线路生成。
+> 3. 上述写入翻译不能被用于读取 / 迁移已经落盘的旧旅行。
+> 4. tentative / no_go 节点在 Day 视图翻译时不能丢失或被改成 normal。
+> 5. 第一天起点、Day 边界、`stayBlockId`、详细时间和备注不能在翻译时无故丢失。
+> 6. planned Day 的占位 activity 不应仅因此变成 detailed；明确的 period / 时间 / schedule / 备注等详细修改应被保留。
+> 7. `transferMode` 在没有明确节点交通时应落实到该 Day 的第一个到达节点；没有 Stop 时落实到终点。
+> 8. 原 Phase 1 的三状态、住 / 不住 / 多一晚、交通继承、最后一天、Day 编号 / 日期、Route 终点交通、新结构 Revision / Proposal 冲突和 Provider 事实边界不能回归。
+>
+> 如果发现问题，不要直接替施工 Agent 修代码。给出文件、复现、实际、预期和原因判断。
+>
+> 最终输出必须包含：Test Branch、Test HEAD、Phase 1 PASS / FAIL、实际执行的每条测试、问题严重程度、是否建议进入 Phase 2。
 
 ---
 
