@@ -9,7 +9,7 @@
 
 # 1. 当前目标
 
-旧五步产品已经收敛为：
+产品已经收敛为两个工作区：
 
 ```text
 规划 · 旅行需求
@@ -18,7 +18,7 @@
 
 唯一用户线路是 `finalRoute`。
 
-Phase 1 已完成 finalRoute / Day / Route 底层；Phase 2 已完成右侧人工规划 + 地图；Phase 3 负责把 AI 生成、详细安排、显式优化都切到最终线路语义。
+Phase 1 已完成 finalRoute / Day / Route 底层；Phase 2 已完成右侧人工规划 + 地图；Phase 3 负责 AI 生成、详细安排和显式优化全部使用最终线路语义。
 
 核心权限：
 
@@ -32,7 +32,7 @@ Phase 1 已完成 finalRoute / Day / Route 底层；Phase 2 已完成右侧人�
 
 ---
 
-# 2. 已完成阶段
+# 2. 已通过阶段
 
 ## Phase 1
 
@@ -52,103 +52,82 @@ Phase 2: PASS
 
 ---
 
-# 3. Phase 3 实现摘要
+# 3. Phase 3 当前实现
 
-## 3.1 主要地点
-
-- `destination.generate` → 用户看到“生成主要地点”。
-- 只允许空 finalRoute 第一次生成。
-- AI candidate 顺序直接形成 route node 顺序。
-- `routeSuggestion` 只对本轮新节点表达 `endsDay / transportMode`。
-- 无默认一晚，无 stayDays。
-- 同一 Place 可多次出现，每次独立 route node。
-
-## 3.2 详细地点
-
-- `interest.discover / supplement` → “生成 / 补充详细地点”。
-- 复用已有 AI 研究、0–9、正式化、去重、定位和任务基础设施。
-- 只插入本轮新增 route nodes。
-- 所有旧 route node 的顺序和字段保持不变。
-- 支持 trip / day / segment scope。
-- 局部 scope 找不到合法锚点时 fail closed。
-
-## 3.3 详细安排
-
-- 详细时间 / 活动 / 备注直接属于 route node。
-- 右侧可以编辑 activity / period / startTime / endTime / durationMinutes / notes。
-- Day 可点击“完善这一天”（内部 `itinerary.refine`）。
-- refine 不能增删 / 重排地点、改 status / endsDay。
-- transport 和 verification 字段被服务器强制保持当前值。
-- refine 结果先形成 Proposal。
-
-## 3.4 显式优化
-
-- `优化这一天`：只重排目标 Day stops，Day end boundary 固定。
-- `优化这一段`：只重排指定 route span 内 normal nodes。
-- `优化全程`：只重排所有 normal nodes。
-- AI 必须返回授权 ID 完整集合，不能新增 / 删除 / 重复 / unknown。
-- inactive 节点固定原槽位。
-- 只产生 `move_final_route_node` Proposal。
-- apply / undo 后自动重算路线。
-
-## 3.5 当前技术过渡
-
-部分旧 Day / Action contract 仍作为内部实现被复用，例如手工详细安排和 refine 会经过 Day→finalRoute 写入桥。
-
-它们不是用户可见 Step，也不能成为第二份路线。
-
-旧持久化数据仍不迁移。
+- `destination.generate` 直接生成 finalRoute，不经过用户维护的 Candidate 页面。
+- 同一 Place 可在线路中出现多次，每次独立 route node。
+- `interest.discover / supplement` 只插入本轮新增详细地点，旧节点顺序和字段保持不变。
+- trip / day / segment scope 在服务端硬限制；局部找不到合法锚点时 fail closed。
+- 手工加入最终线路的地点可作为隐藏 planning area 研究锚点，但不改变 Place.kind、不自动住宿。
+- 详细时间 / 活动 / 备注直接属于 route node；右侧可人工编辑。
+- `itinerary.refine` 只完善授权 Day 的详细安排，并通过共享 `sanitizeFinalRouteRefineOutputV3` 强制保护 transport / verification。
+- `优化这一天 / 这一段 / 全程` 只产生授权节点的 move Proposal。
+- inactive 节点不进入优化授权集合，原槽位固定。
+- Proposal apply / undo 后自动启动 Route batch。
+- 正常 UI 仍只有旅行需求 / 最终线路，地图没有第二套业务按钮。
 
 ---
 
-# 4. Phase 3 R1 结果与 R2 修复
+# 4. Phase 3 测试历史
 
-R1：
+## R1
 
 ```text
 Test Branch: test/plan-phase3-final-route-ai-20260905
 Test HEAD: b736706424aa00aa1f3fd2db18a1ae915dc84afc
 Phase 3: FAIL
-Typecheck: FAIL
-Phase 3 专项: 8 files passed / 2 failed；52 / 54 tests passed
-AI / Prompt / Runtime 回归: PASS
-npm test: 86 files passed / 2 failed；503 / 505 tests passed
-build: FAIL（Server TypeScript）
-独立临时审计: 12 / 12 PASS
 ```
 
-R1 的失败不是新的产品权限缺口，集中在三个工程验收点：
+修复：
 
-1. Runtime 重复实现 refine sanitize，Map value 类型被推断成 `{}`。
-2. sanitizer clone 整个联合类型后丢失 `success` 判别收窄。
-3. 正式 refine 测试没有构造中途 Day Stop；单日优化 Prompt 与测试断言只有字面差异。
+- Runtime refine 改为复用共享 sanitizer；
+- 修复 TypeScript 联合类型收窄；
+- refine 正式测试改为真实中途 Stop；
+- 单日优化 Prompt 与测试字面一致。
 
-R2 修复：
+## R2
 
-- `persistRefine` 统一调用 `sanitizeFinalRouteRefineOutputV3`，删除 Runtime 里的重复 sanitize 代码。
-- sanitizer 在已收窄 success result 上 clone 和遍历，再组装返回值。
-- refine 测试使用 `A → B → C`，明确以 B 作为中途 Stop 验证权限。
-- 单日优化 Prompt 统一成“只有用户明确启动本动作后”。
-- 产品权限、Provider 事实边界、最终线路数据规则均未改变。
+```text
+Test Branch: test/plan-phase3-final-route-ai-20260905-r2
+Test HEAD: 635f2b8bcaa805f3dacf12e3134ae6b175a71a19
+Phase 3: FAIL
+Typecheck: PASS
+R1 三个失败点复测: PASS
+Phase 3 专项: 53 / 54 tests passed
+AI / Prompt / Runtime 回归: PASS
+npm test: 504 / 505 tests passed
+Build: PASS
+```
 
-施工 Agent 仍然不运行 test / typecheck / build / app / Provider / migration / CI。
+R2 没有发现新的产品逻辑缺口，只剩两个正式测试契约问题：
+
+1. cutover 源码审计仍要求 Runtime 内存在旧的内联 refine 清洗代码；
+2. 重复 Place 正式测试只构造 B → A → A，没有精确覆盖 A → B → A。
+
+## R3 修复
+
+- `phase3-final-route-ai-cutover.test.ts` 改为验证共享 `sanitizeFinalRouteRefineOutputV3` 的导入与调用，并明确禁止重新出现第二套内联 transport / verification 清洗。
+- `final-route-ai-v3.test.ts` 的重复 Place case 改成真实 A → B → A；两个临时 A 正式化后复用同一现实 Place，同时三个 route node ID 必须独立。
+- 没有修改生产代码或产品行为。
+
+施工 Agent 没有运行 test / typecheck / build / app / Provider / migration / CI。
 
 ---
 
-# 5. Phase 3 R2 本地 Codex 测试 Prompt
+# 5. Phase 3 R3 本地 Codex 测试 Prompt
 
-> Test Branch: `test/plan-phase3-final-route-ai-20260905-r2`  
-> Test HEAD: `635f2b8bcaa805f3dacf12e3134ae6b175a71a19`
+> Test Branch: `__TEST_BRANCH_R3__`  
+> Test HEAD: `__TEST_HEAD_R3__`
 
-你是 TravelPlanner Phase 3 R2 独立测试 Agent。
+你是 TravelPlanner Phase 3 R3 独立测试 Agent。
 
-不要相信施工 Agent 的完成声明。只根据指定 Git 基线、实际代码和本地执行结果判断。
+不要相信施工 Agent 的完成声明，只根据指定 Git 基线、实际代码和本地执行结果判断。
 
-不要施工或修复生产代码。
+不要修改或修复生产代码。
 
 ## 5.1 Git 基线
 
-测试前只能先执行：
+测试前只能执行：
 
 ```bash
 git branch --show-current
@@ -156,82 +135,72 @@ git rev-parse HEAD
 git status --short
 ```
 
-必须严格等于本 Prompt 顶部 Test Branch / Test HEAD。
+必须严格等于本 Prompt 顶部 Branch / HEAD，且工作树干净。
 
-Branch 或 HEAD 不一致：
+Branch / HEAD 不一致：
 
 ```text
 TEST_BASE_MISMATCH
 ```
 
-不要自行 checkout / switch / pull / merge / rebase / reset / cherry-pick。
-
-如果工作树存在影响待测代码的修改：
+工作树存在影响待测代码的修改：
 
 ```text
 TEST_WORKTREE_DIRTY
 ```
 
-冻结分支里的本文件可能仍显示占位符；本地测试时以用户拿到的测试 Prompt 顶部精确 Branch + HEAD 为准。
+不要自行 checkout / switch / pull / merge / rebase / reset / cherry-pick。
 
-## 5.2 第一优先：复测 R1 三个失败点
+冻结测试分支内本文件可能仍显示占位符；测试时以用户给你的 R3 Prompt 顶部精确 Branch + HEAD 为准。
 
-### TypeScript / Server build
+## 5.2 R2 唯一失败点复测
 
-先执行：
+重点检查：
+
+### A. 共享 sanitizer 测试合同
+
+`apps/web/src/phase3-final-route-ai-cutover.test.ts` 应验证：
+
+- `final-route-ai-cutover-v3.ts` 导入 `sanitizeFinalRouteRefineOutputV3`；
+- `persistFinalRouteDayDetails` 直接调用共享 sanitizer；
+- Runtime 不再维护第二套：
+
+```text
+stop.transportFromPrevious = structuredClone(...)
+stop.scheduleVerification = structuredClone(...)
+```
+
+如果正式测试仍要求旧内联实现，判 FAIL。
+
+### B. A → B → A 正式回归
+
+`apps/server/final-route-ai-v3.test.ts` 的重复 Place 测试必须真实形成：
+
+```text
+A → B → A
+```
+
+要求：
+
+- 两个 A 可来自不同临时 Place；
+- 正式化后两个 A 引用同一现实 Place ID；
+- 三个 route node ID 全部独立；
+- A 不得因为 Place / Candidate 去重而被压成一次；
+- 必须是非相邻重复，不能只测试 A → A 或 B → A → A。
+
+## 5.3 Typecheck
 
 ```bash
 npm run typecheck
 ```
 
-Windows 执行策略阻止 `npm.ps1` 时可用：
+Windows 可用：
 
 ```bash
 npm.cmd run typecheck
 ```
 
-重点确认不再出现：
-
-```text
-TS2339 current.transportFromPrevious
-TS2339 current.scheduleVerification
-TS2339 current.costVerification
-TS2339 sanitized.result.dayUpdates
-```
-
-### refine 正式权限测试
-
-确认 `apps/server/final-route-ai-v3.test.ts` 的 refine case 真实形成：
-
-```text
-A → B → C
-```
-
-其中 B 必须是 `day.stops[0]`，再验证：
-
-- activity / scheduleText / startTime / endTime / duration / notes 可以更新；
-- transportFromPrevious 必须恢复当前值；
-- scheduleVerification / costVerification 必须恢复当前值。
-
-测试不能在调用 sanitizer 前因为 `currentStop=undefined` 自己崩溃。
-
-### Prompt 字面锁定
-
-确认：
-
-```text
-prompts/actions/itinerary/优化单日游览顺序.md
-```
-
-包含：
-
-```text
-只有用户明确启动本动作
-```
-
-并且权限语义仍然是：没有用户显式调用就不能优化已有顺序。
-
-## 5.3 Phase 3 专项
+## 5.4 Phase 3 专项
 
 ```bash
 npx vitest run --config vitest.config.ts \
@@ -247,7 +216,7 @@ npx vitest run --config vitest.config.ts \
   apps/server/day-route-v2.test.ts
 ```
 
-## 5.4 AI / Prompt / Runtime 回归
+## 5.5 AI / Prompt / Runtime 回归
 
 ```bash
 npx vitest run --config vitest.config.ts \
@@ -260,95 +229,72 @@ npx vitest run --config vitest.config.ts \
   apps/server/planner-runtime-v3-detail-phase5.test.ts
 ```
 
-## 5.5 完整回归
+## 5.6 完整回归
 
 ```bash
 npm test
 ```
 
-这是强制 Gate。任何正式测试失败都必须：
+这是强制 Gate。任何正式测试失败都必须判：
 
 ```text
 Phase 3: FAIL
 ```
 
-记录完整 Test Files / Tests passed / failed / total。
-
-## 5.6 Build
+## 5.7 Build
 
 ```bash
 npm run build
 ```
 
-Windows 可以：
+Windows 可用：
 
 ```bash
 npm.cmd run build
 ```
 
-bundle 体积 warning 不算失败；Server TypeScript error 算失败。
+bundle warning 不算失败，真正 build error 算失败。
 
 ---
 
-# 6. 必做独立审计
+# 6. 独立审计
 
-R1 已经有 12 / 12 独立行为探针 PASS，但 R2 仍需至少抽查关键权限，不能只因为编译通过就直接 PASS。
+R1 / R2 已有大量独立探针通过，但 R3 仍至少抽查：
 
-至少验证：
-
-1. 主地点直接形成 finalRoute。
-2. `A → B → A` 同 Place 多 route node。
-3. 详细地点只新增，旧节点所有字段与相对顺序保持。
-4. Day / segment scope 找不到合法锚点时 fail closed。
-5. 手工地点可作为 planning area 研究锚点。
-6. refine 可改活动 / 时间 / 备注，但不能改 transport / verification。
+1. A → B → A：同 Place、三个独立 route node。
+2. 共享 sanitizer success 分支保护 transport / verification。
+3. sanitizer 非 success union 分支仍原样合法返回。
+4. Runtime refine 确实只调用共享 sanitizer。
+5. 详细地点只新增，旧节点全字段不变。
+6. Day / segment 局部生成 fail closed。
 7. 单日 optimize 固定 Day boundary。
-8. segment / trip optimize 只移动授权 normal nodes，inactive 原槽位固定。
+8. segment / trip optimize 只移动授权 normal 节点，inactive 固定槽位。
 9. Proposal apply / reject / undo 与 stale generation。
 10. Provider transport 只保存 mode。
 11. 生产入口仍只有旅行需求 / 最终线路。
-12. Map Popup 仍无第二套业务按钮。
+12. Map Popup 无第二套业务按钮。
 
-优化 apply / undo 后 Route batch 如果无法真实调用 Provider，可以做静态调用链审计并明确标注未执行真实 Provider。
+允许创建一次性测试文件，但不得修改生产代码；测试后删除，最终工作树必须干净。
 
 ---
 
-# 7. 浏览器 / UI 验证
+# 7. 浏览器 / Provider
 
-如果本地环境有浏览器，验证右侧 AI / Proposal / 详细安排和地图单一职责。
+有浏览器能力则验证右侧 AI / Proposal / 详细安排和地图单一职责。
 
-如果没有浏览器能力，必须写：
+没有浏览器能力写：
 
 ```text
 浏览器 / UI 验证：未覆盖
 ```
 
-不要伪造 E2E PASS。
+不得伪造 E2E PASS。
 
-真实外部 Provider 网络调用不是本阶段强制 Gate。
-
----
-
-# 8. 独立临时测试
-
-允许创建一次性 Vitest，但：
-
-- 不修改生产代码；
-- 测完删除临时文件；
-- 最终工作树干净。
-
-本轮建议把重点放在：
-
-- sanitizer 对真实 Day Stop 的字段保护；
-- Runtime 确实复用 sanitizer；
-- union result 的 success / requires-workflow 分支都保持合法；
-- R1 已通过的权限边界没有回归。
+真实外部 Route Provider 不是本阶段强制 Gate。
 
 ---
 
-# 9. 最终输出格式
-
-严格输出：
+# 8. 最终输出
 
 ```text
 Test Branch: <actual branch>
@@ -361,7 +307,7 @@ Phase 3: PASS / FAIL
 - git rev-parse HEAD: ...
 - git status --short: ...
 - npm run typecheck: PASS / FAIL
-- R1 三个失败点复测: PASS / FAIL
+- R2 唯一失败点复测: PASS / FAIL
 - Phase 3 专项: PASS / FAIL
 - AI / Prompt / Runtime 回归: PASS / FAIL
 - npm test: PASS / FAIL
