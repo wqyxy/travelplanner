@@ -135,17 +135,17 @@ R2 仅剩两个测试契约问题，没有发现新的产品逻辑问题：
 ## R3 本地测试基线
 
 ```text
-Test Branch: __TEST_BRANCH_R3__
-Test HEAD: __TEST_HEAD_R3__
+Test Branch: test/plan-phase3-final-route-ai-20260905-r3
+Test HEAD: 8b17dde239484e79a98b7900766442d1b8836ea2
 ```
 
-冻结后不再修改该测试分支。
+测试分支已冻结；冻结后不再修改该分支。
 
 ---
 
 ## 下一步
 
-1. 冻结 Phase 3 R3 Test Branch + HEAD；
-2. 用户本地 Codex 重跑 Phase 3 强制 Gate；
+1. 用户本地 Codex 重跑 Phase 3 强制 Gate；
+2. 返回匹配 R3 Branch + HEAD 的 PASS / FAIL；
 3. PASS → Phase 3 completed，本轮 PLAN 完成；
 4. FAIL → 仅修新的报告问题，再冻结新基线。
