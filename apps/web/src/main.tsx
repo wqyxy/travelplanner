@@ -8,7 +8,8 @@ import "./v3-fixes.css";
 import "./workspace-v4.css";
 import "./stage-ai-v3.css";
 import "./phase6-workflow.css";
-import AppWorkflowV3 from "./AppWorkflowV3";
+import "./phase2-final-route.css";
+import AppFinalRouteV3 from "./AppFinalRouteV3";
 
 setWorkerUrl(mapLibreWorkerUrl);
 
@@ -23,4 +24,4 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, { error: strin
   }
 }
 
-createRoot(document.getElementById("root")!).render(<StrictMode><AppErrorBoundary><AppWorkflowV3/></AppErrorBoundary></StrictMode>);
+createRoot(document.getElementById("root")!).render(<StrictMode><AppErrorBoundary><AppFinalRouteV3/></AppErrorBoundary></StrictMode>);
