@@ -169,11 +169,11 @@ apps/server/final-route-phase1-r3-regression.test.ts
 状态：尚未由用户本地验证。
 
 ```text
-Test Branch: __R3_TEST_BRANCH__
-Test HEAD: __R3_TEST_HEAD__
+Test Branch: test/plan-phase1-final-route-20260905-r3
+Test HEAD: eeca847d16d6022416451c5223afa376e9d7c9c2
 ```
 
-冻结后会把准确 Branch + 40 位 HEAD 写回本文件；冻结测试分支不会再修改。
+该测试分支已经冻结，不再修改。冻结后的 `main` 只允许更新本阶段测试基线文档元数据，不得改变 R3 待测业务代码。
 
 ## 当前 blocker
 
@@ -212,7 +212,6 @@ Phase 3 需要删除或显著缩小 Phase 1 为旧 Skeleton / Day / detail 入�
 
 ## 下一步
 
-1. 冻结 R3 Test Branch + Test HEAD；
-2. 用户本地运行 R3 Prompt；
-3. PASS：Phase 1 → completed，Phase 2 → in_progress；
-4. FAIL：只修报告中的 Phase 1 问题，生成新的冻结基线。
+1. 用户在 R3 Test Branch + Test HEAD 上运行本地 Codex 验收；
+2. PASS：Phase 1 → completed，Phase 2 → in_progress；
+3. FAIL：只修报告中的 Phase 1 问题，生成新的冻结基线。
