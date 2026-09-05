@@ -207,6 +207,7 @@ function detailInsertionPointV3(
         if (previousBoundary) return { nodeId: previousBoundary.id, placement: "after" as const };
       }
     }
+    return null;
   }
 
   const segmentMatch = /^final-route-detail-scope:segment:([^:]+):([^:]+)$/u.exec(scopeRequest ?? "");
@@ -220,6 +221,7 @@ function detailInsertionPointV3(
       const chosen = matches.at(-1);
       if (chosen) return { nodeId: chosen.id, placement: chosen.id === nodes[start]?.id ? "after" as const : "before" as const };
     }
+    return null;
   }
 
   return { nodeId: normalMatching.at(-1)!.id, placement: "before" as const };
@@ -331,10 +333,14 @@ export function orderedAuthorizedRouteNodeIdsFromDaysV3(
   allowedNodeIds: string[],
 ) {
   const allowed = new Set(allowedNodeIds);
+  const seen = new Set<string>();
   const ordered: string[] = [];
   for (const day of days) {
     for (const id of [...day.stops.map((stop) => stop.id), day.id]) {
-      if (allowed.has(id) && !ordered.includes(id)) ordered.push(id);
+      if (!allowed.has(id)) continue;
+      if (seen.has(id)) throw new Error(`FINAL_ROUTE_OPTIMIZE_SCOPE_VIOLATION: AI 优化重复返回线路节点 ${id}。`);
+      seen.add(id);
+      ordered.push(id);
     }
   }
   return ordered;
