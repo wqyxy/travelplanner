@@ -10,33 +10,40 @@
 
 # 1. 最终目标
 
-把当前五步流程收敛成两个核心工作区：
+把旧五步流程：
 
 ```text
-规划：旅行需求
-行程：最终线路
+旅行需求
+→ 候选地点
+→ 路线和天数
+→ 补充景点
+→ 每日详细行程
 ```
 
-用户只维护一份最终线路。
+收敛为两个核心工作区：
 
 ```text
-填写旅行需求
-→ AI / 用户把主要地点加入最终线路
-→ 用户排序、待定、不去、住 / 不住 / 多一晚、设置交通
-→ AI / 用户继续把详细地点插入最终线路
-→ Day、地图和交通路线自动变化
-→ 只有显式“优化”才允许 AI 重排已有节点
+规划 · 旅行需求
+行程 · 最终线路
 ```
+
+用户只维护一份最终线路。地点顺序、状态、住宿分界和到达交通都记录在线路节点上；Day、地图和交通路线只从这份线路得到。
+
+核心产品原则：
+
+- 用户是唯一决策者，AI 只辅助；
+- 不因为路线“不合理”而自动修改用户结果；
+- 不完整、冲突、暂未定位的方案允许保存；
+- 代码只阻止数据损坏、越权和伪造事实；
+- 地图只负责展示 / 选择 / 定位辅助；
+- 业务修改统一从右侧进入；
+- Provider 坐标、真实距离、时长和 geometry 不能由 AI 或 UI 伪造。
 
 ---
 
-# 2. 已确认的数据与交互规则
+# 2. 最终线路规则
 
-## 最终线路
-
-每个线路节点表示某个 Place 在线路中的一次出现。同一 Place 可以出现多次，每次有独立节点 ID。
-
-节点核心字段：
+每个最终线路节点表示某个现实 Place 在线路中的一次出现：
 
 ```text
 id
@@ -46,19 +53,27 @@ endsDay
 transportFromPrevious
 ```
 
-活动、时间、费用、备注等详细信息也可以保存在节点上。
+同一个 Place 可以出现多次，每次有独立节点 ID。
 
-## 状态
+## 2.1 状态
 
-`tentative / no_go`：
+- `normal`：参与当前 Day 和交通路线；
+- `tentative`：保留原顺序、地图点和原住宿分界，但暂时不参与 Day / 路线；
+- `no_go`：同样保留原顺序、地图点和原住宿分界，但暂时不参与 Day / 路线；
+- 恢复 `normal` 时，原位置、住宿分界和到达交通一起恢复；
+- 只有“移除”才真正删除线路节点。
 
-- 保留原顺序；
-- 保留地图展示；
-- 保存的 `endsDay` 不删除；
-- 暂时不参与有效 Day 和交通路线；
-- 恢复 normal 后原位置和住宿分界恢复。
+## 2.2 住宿分界
 
-## 交通
+`endsDay=true` 表示当天在这个 normal 节点结束。
+
+- 住：设置 `endsDay=true`；
+- 不住：设置 `endsDay=false`，不删除、不移动其他地点；
+- 多一晚：在当前住宿节点后新增一个引用相同 Place 的独立 normal 节点，并形成新的 Day；
+- 多一晚本身不能移动任何前后景点；
+- 最后一个 normal 节点即使 `endsDay=false` 也必须形成合法最后一天。
+
+## 2.3 到达交通
 
 交通属于“到达当前节点”。
 
@@ -66,21 +81,21 @@ transportFromPrevious
 A —drive→ X —walk→ B
 ```
 
-X 不参与当前线路时：
+X inactive 后：
 
 ```text
 A —walk→ B
 ```
 
-## 住 / 不住 / 多一晚
+恢复 X 后仍是：
 
-- 住：当前 normal 节点 `endsDay=true`。
-- 不住：只取消分界，不删除、不移动地点。
-- 多一晚：在当前节点后新增一个引用同 Place 的 normal 节点并形成新的日界线。
+```text
+A —drive→ X —walk→ B
+```
 
-## Day
+## 2.4 Day
 
-Day 不作为第二份线路维护。
+Day 不作为第二份独立线路维护。
 
 ```text
 旅行起点
@@ -89,315 +104,562 @@ Day 不作为第二份线路维护。
 → 自动得到 Day
 ```
 
-最后一个 normal 节点即使 `endsDay=false`，也必须形成合法最后一天。
-
-## AI 权限
-
-普通“生成”只能新增 / 插入节点，不能偷偷重排、删除或改变用户已有节点。
-
-只有用户明确触发“优化一天 / 一段 / 全程”时，AI 才能在授权范围重排。
-
-## 入口
-
-```text
-地图 = 展示 / 选择 / 定位辅助
-右侧 = 唯一业务修改入口
-```
+Day 编号和日期随最终线路自动重新计算。
 
 ---
 
 # 3. 数据策略
 
-当前数据库和旅行内容全部视为测试数据，可以从头开始。
+当前旅行数据全部是测试数据，可以从头开始。
 
-因此：
+因此本轮不承担：
 
-- 不迁移旧旅行 JSON；
-- 不从旧 Candidate / Day 推断最终线路；
-- 不兼容施工前旧 Revision；
-- 旧测试数据库必要时直接删除 / 清空；
-- 新结构自己的 Revision / Undo / generation / CAS 必须继续工作。
+- 施工前旧旅行 JSON 迁移；
+- 旧 Candidate / Day → 最终线路迁移；
+- 施工前旧 Revision 恢复。
 
-已经落盘的非空旧格式计划直接拒绝，例如：
+已经落盘的非空旧格式计划直接拒绝，不猜测新线路。
 
-```text
-OLD_TEST_PLAN_UNSUPPORTED
-```
-
-## Phase 1 施工中间态例外
-
-Phase 2 / 3 还没拆除 Skeleton、Day、Detailed Day 等旧代码入口。
-
-所以 Phase 1 临时允许：
+Phase 1–3 施工中间态仍有少量旧 Skeleton / Day / Detailed 内部调用。Phase 1 保留一个边界明确的当前写入翻译层：
 
 ```text
-当前运行中的新 Day 写入
-→ Store 边界翻译成最终线路节点
-→ 再从最终线路生成 Day
+当前旧代码路径产生新的 Day 视图
+→ Store 保存边界翻译成最终线路
+→ 再由最终线路生成 Day
+→ 最终数据库仍只有一份线路
 ```
 
-这只保证当前代码在施工中间态能运行，**不用于迁移数据库中的旧旅行**。
-
-Phase 2 / 3 完成后应删除或显著缩小这层翻译。
+这层逻辑不能用来迁移已经落盘的旧计划，并应在 Phase 3 随旧入口清理继续缩小或删除。
 
 ---
 
 # 4. 测试规则
 
-施工 Agent：
-
-- 不运行测试；
-- 不运行 typecheck；
-- 不运行 build；
-- 不启动应用验证；
-- 不使用 GitHub CI / Actions 做验收。
+施工 Agent **不得执行任何测试、typecheck、build、应用启动、迁移、Provider 运行验证或 CI**。
 
 每个 Phase：
 
-1. 完成代码；
+1. 修改代码；
 2. 只做静态 Review；
-3. 更新 Progress 为 `awaiting_local_test`；
-4. 冻结唯一 Test Branch + 40 位 Test HEAD；
-5. 保存并输出本地 Codex 测试 Prompt；
-6. 停止施工；
-7. 等用户返回匹配 Branch + HEAD 的 PASS / FAIL。
+3. 状态改为 `awaiting_local_test`；
+4. 冻结唯一 Test Branch + 40 位 HEAD；
+5. 把完整本地 Codex 测试 Prompt 写在本文件；
+6. 用户本地测试；
+7. 用户返回匹配 Branch + HEAD 的 PASS / FAIL；
+8. PASS 才进入下一 Phase；FAIL 只修当前 Phase。
 
-PASS 只对指定 Branch + HEAD 有效。
+测试状态只使用：
+
+```text
+pending
+in_progress
+awaiting_local_test
+completed
+blocked
+```
 
 ---
 
-# 5. 实施阶段
+# 5. Phase 1 — 最终线路底层与自动 Day / Route 基础
 
-# Phase 1：最终线路底层与自动 Day / Route 基础
+状态：completed
 
-状态：`awaiting_local_test`
+Phase 1 已完成：
 
-## 目标
+- finalRoute v1；
+- 同 Place 多节点；
+- normal / tentative / no_go；
+- endsDay；
+- transportFromPrevious；
+- Day 自动派生；
+- 新增 / 删除 / 移动 / 状态 / 住宿 / 多一晚 / 交通命令；
+- Route 终点交通；
+- generation / Revision / Proposal 冲突识别；
+- 当前 Day 写入的过渡翻译；
+- Stop-only null Anchor 兼容；
+- Detailed 首站 Day 到达交通 sticky；
+- Provider 事实边界保持。
 
-让底层真正以最终线路为中心，同时在 Phase 2 / 3 尚未完成时保证当前旧入口的新操作仍能安全落到最终线路。
-
-## 已实施
-
-1. 最终线路节点模型和三状态。
-2. 同一 Place 多节点。
-3. 住 / 不住 / 多一晚。
-4. 节点拖动、删除、交通修改。
-5. 最终线路 → Day 自动推导。
-6. Day Number / 日期随线路重算。
-7. Day 终点到达交通进入 Route 输入和 dirty 判断。
-8. 最终线路变化进入 Revision / generation / Proposal 冲突识别。
-9. 已落盘旧格式旅行直接拒绝，不迁移。
-10. 完全空白 `version=0` 只作为启动占位，不能携带实际规划内容。
-11. Store 明确最终线路变化时，独立提交的 `days[]` 不能覆盖最终线路。
-12. Phase 1 当前写入桥：旧 Skeleton / Day / detail 新操作可先形成 Day 视图，再翻译为最终线路并重新生成 Day。
-
-## R1 验收
-
-```text
-Branch: test/plan-phase1-final-route-20260905
-HEAD: b751f0dff0c475419c54bf657a8cc541343443ac
-```
-
-结果：FAIL。完整测试有 21 个失败，集中在旧 Skeleton / Day / detail 当前生产路径。
-
-## R2 验收
-
-```text
-Branch: test/plan-phase1-final-route-20260905-r2
-HEAD: 5adec91f04d6c74614464f38516626bd15fcc45c
-```
-
-结果：FAIL，但已收敛到 2 个问题：
-
-- 80 / 82 test files passed；
-- 475 / 477 tests passed；
-- typecheck PASS；
-- build PASS。
-
-剩余问题：
-
-1. start / end Anchor 都为 null 的 Stop-only Day 无法保存。
-2. Detailed Update 的 null transport 会误清首站承载的 Day 到达交通。
-
-## R3 修复
-
-### Stop-only Day
-
-当前 Day 如果没有独立 Anchor，但 Stops 已经构成路线：
-
-```text
-A → B
-```
-
-允许保存。
-
-内部推断：
-
-```text
-有效 start = startAnchor ?? first Stop ?? endAnchor
-有效 end   = endAnchor ?? last Stop ?? startAnchor
-```
-
-内部仍保留独立 Day boundary route node，因此最后一个 Stop 不会因为承担日界线而消失。
-
-如果源 Day 的 Anchor 是 null，派生 Day 保持 null 视图。
-
-特别规则：源 Day 的 startAnchor 为 null 时，第一个 Stop 不能被“与起点重复”逻辑删除。
-
-### Detailed 到达交通
-
-如果：
-
-```text
-Day.transferMode = rail
-首个现有 Stop.transportFromPrevious = rail
-```
-
-而旧 Detailed draft 返回：
-
-```text
-transportFromPrevious = null
-```
-
-Phase 1 过渡期解释为“不改变由 Day 落到首站的到达交通”，保留 rail，不生成多余清空命令。
-
-新的非空交通仍正常覆盖；其他 Stop 不套用这个特殊 sticky 规则。
-
-### 新增回归测试代码
-
-```text
-apps/server/final-route-phase1-r3-regression.test.ts
-```
-
-覆盖：
-
-- null Anchor 的 A/B Stop-only Day 保存后仍有 A/B；追加 C 后为 A/B/C；
-- Detailed null transport 不清除首站承载的 Day 到达交通。
-
-## Phase 1 完成 Gate
-
-必须由用户本地确认：
-
-- typecheck PASS；
-- Phase 1 专项 PASS；
-- R3 新回归 PASS；
-- R2 两个失败文件 PASS；
-- 历史 7 个失败文件 PASS；
-- 完整 `npm test` PASS；
-- build PASS；
-- 独立检查没有发现最终线路 / Day 双份线路问题。
-
-## Phase 1 R3 Codex 本地测试 Prompt
+最终验收：
 
 ```text
 Test Branch: test/plan-phase1-final-route-20260905-r3
 Test HEAD: eeca847d16d6022416451c5223afa376e9d7c9c2
+Phase 1: PASS
+Test Files: 83 passed / 0 failed / 83 total
+Tests: 479 passed / 0 failed / 479 total
+```
 
-你是独立测试 Agent。不要相信施工 Agent 的完成声明，只根据指定 Git 基线、实际代码和本地执行结果判断 Phase 1。
+---
 
-本次只验收 Phase 1 R3，不施工 Phase 2 / Phase 3，也不要直接替施工 Agent 修改生产代码。
+# 6. Phase 2 — 右侧最终线路人工规划闭环 + 地图联动
 
-第一步只能执行：
+状态：awaiting_local_test
 
+## 6.1 本阶段目标
+
+Phase 2 不改造 AI 生成权限和 Prompt；它先让用户能够只靠新的最终线路工作区完成完整人工规划。
+
+正常用户界面只保留：
+
+```text
+规划 · 旅行需求
+行程 · 最终线路
+```
+
+旧 Step 2 / 3 / 4 / 5 不再作为正常导航入口。
+
+## 6.2 本阶段已施工内容
+
+### 新挂载入口
+
+新增 `AppFinalRouteV3.tsx` 并由 `main.tsx` 直接挂载。
+
+旧 `AppWorkflowV3.tsx` 暂时留在源码供 Phase 3 清理，但不再是正常产品入口。
+
+### 右侧最终线路
+
+新增 `FinalRoutePanelV3.tsx`：
+
+- 手工添加地点后直接进入 finalRoute，不经过候选池页面；
+- 新 Place + 内部 Candidate 关联 + finalRoute node 在同一命令批次保存；
+- 支持上下移动与拖动排序；
+- 支持 normal / tentative / no_go；
+- 支持住 / 不住 / 多一晚；
+- 支持“到达当前节点”的交通方式；
+- 支持 Place 名称 / 类型编辑；
+- 支持重新识别、Google Maps 链接、地图选点；
+- “移除”只删除当前线路节点，不误删同 Place 的其他线路出现；
+- inactive 节点仍显示原住宿分界，并说明恢复 normal 后重新生效；
+- Day 只作为最终线路切分后的派生分组展示，不提供独立 Day 编辑入口。
+
+### 地图
+
+新增 `FinalRouteMapV3.tsx` / `final-route-map-v3.ts`：
+
+- 地图点直接来自 `finalRoute.nodes`；
+- normal / tentative / no_go 的已定位节点全部显示；
+- 待定和不去有不同标记 / 视觉；
+- 路线线条仍来自由 normal 节点派生的 Day Route；
+- 地图点击只选择 / 聚焦右侧线路节点；
+- Popup 只显示地点、状态、地址，不放删除、状态、住宿或优化按钮；
+- 只有从右侧先点击“地图选点”后，地图点击才会保存定位；
+- 未定位地点继续保留在线路，只是在地图上没有伪造坐标。
+
+### 路线刷新
+
+最终线路命令成功保存后，如果 Day Route 变脏，前端会尝试自动重新计算当前路线。
+
+路线 Provider 更新失败时：
+
+- 已保存的最终线路不回滚；
+- 右侧显示非阻断提示；
+- 提供“更新地图路线”按钮再次尝试。
+
+### 旅行需求
+
+`RequirementsPanelV3` 不再显示 Step 1 / “下一步：想去哪些地方”，改成：
+
+```text
+规划 · 旅行需求
+→ 进入最终线路
+```
+
+### 提醒
+
+`PlanningAdvisoryListV3` 支持在最终线路工作区合并显示旧内部分类的提醒，但不把旧五步重新暴露成页面导航。
+
+## 6.3 本阶段明确不做
+
+以下留到 Phase 3：
+
+- “生成主要地点”直接写 finalRoute；
+- “生成详细地点”直接写 finalRoute；
+- AI 局部插入；
+- 显式“优化这一天 / 这一段 / 全程”；
+- 普通 AI 只能插入、不能重排的最终 Scope / Prompt 权限；
+- 旧 destination / interest / itinerary Action 收敛；
+- 旧 Prompt / Candidate / Skeleton / Day 编辑内部路径最终删除；
+- PRODUCT / TECHNICAL 最终文档切换。
+
+---
+
+# 7. Phase 2 本地 Codex 测试 Prompt
+
+> Test Branch: `__PHASE2_TEST_BRANCH__`  
+> Test HEAD: `__PHASE2_TEST_HEAD__`
+
+你是独立测试 Agent。不要相信施工 Agent 的完成声明，只根据指定 Branch + HEAD 的代码和本地执行结果判断 Phase 2。
+
+## 7.1 先验证 Git 基线
+
+只能先运行：
+
+```bash
 git branch --show-current
 git rev-parse HEAD
 git status --short
+```
 
-必须严格匹配本 Prompt 顶部 Test Branch / Test HEAD，且工作树没有影响待测代码的修改。
+必须严格等于本 Prompt 顶部的 Test Branch / Test HEAD。
 
-Branch 或 HEAD 不一致：立即停止，输出 TEST_BASE_MISMATCH。
-不要自行 checkout、switch、pull、merge、rebase、reset、cherry-pick。
+如果不一致立即输出：
 
-工作树有影响生产代码的修改：立即停止，输出 TEST_WORKTREE_DIRTY。
+```text
+TEST_BASE_MISMATCH
+```
 
-基线正确后阅读：
-- docs/PLAN.md
-- docs/PLAN_EXECUTION.md
-- docs/PLAN_PROGRESS.md
-- apps/server/final-route-v3.ts
-- apps/server/detail-itinerary-v3.ts
-- apps/server/travel-store-v3.ts
-- apps/server/plan-commands-v2.ts
-- apps/server/day-route-v2.ts
-- apps/server/final-route-phase1-r3-regression.test.ts
+不要自行 checkout / switch / pull / merge / rebase / reset / cherry-pick。
 
-数据原则：
-- 不测试施工前旧旅行迁移；
-- 已经落盘的非空旧格式旅行必须继续拒绝；
-- Phase 1 当前 Day 写入翻译只针对当前新操作。
+如果工作树存在影响待测代码的修改，立即输出：
 
-依次执行：
+```text
+TEST_WORKTREE_DIRTY
+```
 
+## 7.2 阅读范围
+
+阅读：
+
+- `docs/PLAN.md`
+- `docs/PLAN_EXECUTION.md`
+- `docs/PLAN_PROGRESS.md`
+- `apps/web/src/main.tsx`
+- `apps/web/src/AppFinalRouteV3.tsx`
+- `apps/web/src/FinalRoutePanelV3.tsx`
+- `apps/web/src/FinalRouteMapV3.tsx`
+- `apps/web/src/final-route-ui-v3.ts`
+- `apps/web/src/final-route-map-v3.ts`
+- `apps/web/src/RequirementsPanelV3.tsx`
+- `apps/web/src/PlanningAdvisoryListV3.tsx`
+- `apps/server/final-route-v3.ts`
+- `apps/server/plan-commands-v2.ts`
+- `apps/server/day-route-v2.ts`
+- `apps/server/travel-api-v3.ts`
+
+确认 `main.tsx` 实际挂载的是新两工作区 App，不是旧五步 App。
+
+## 7.3 Typecheck
+
+执行：
+
+```bash
 npm run typecheck
+```
 
+Windows 如果 `npm.ps1` 被执行策略阻止，可以使用：
+
+```bash
+npm.cmd run typecheck
+```
+
+记录实际命令。
+
+## 7.4 Phase 2 专项测试
+
+执行：
+
+```bash
 npx vitest run --config vitest.config.ts \
+  apps/web/src/final-route-ui-v3.test.ts \
+  apps/web/src/final-route-map-v3.test.ts \
   apps/server/final-route-v3.test.ts \
   apps/server/final-route-plan-commands-v3.test.ts \
   apps/server/travel-store-final-route-v3.test.ts \
   apps/server/day-route-v2.test.ts \
-  apps/server/plan-route-order-v2.test.ts \
-  apps/server/final-route-phase1-r3-regression.test.ts
+  apps/server/plan-route-order-v2.test.ts
+```
 
-专门重跑 R2 最后两个失败文件：
+Windows 可以使用等价 `.cmd` 入口。
 
-npx vitest run --config vitest.config.ts \
-  apps/server/planner-runtime-v3.test.ts \
-  apps/server/planner-runtime-v3-detail-phase5.test.ts
+## 7.5 完整回归
 
-再重跑历史 7 个失败文件：
+执行：
 
-npx vitest run --config vitest.config.ts \
-  apps/server/core-promotion-v3.test.ts \
-  apps/server/planner-runtime-v3.test.ts \
-  apps/server/interest-discovery-v3.test.ts \
-  apps/server/planner-runtime-v3-detail-unavailable-phase5.test.ts \
-  apps/server/skeleton-edit-api-v3.test.ts \
-  apps/server/planner-runtime-v3-ai-actions.test.ts \
-  apps/server/planner-runtime-v3-detail-phase5.test.ts
-
-完整回归：
-
+```bash
 npm test
+```
 
-生产构建：
+完整 `npm test` 是强制 Gate。任何测试失败都必须判：
 
+```text
+Phase 2: FAIL
+```
+
+## 7.6 Build
+
+执行：
+
+```bash
 npm run build
+```
 
-独立检查：
+Windows 可以使用：
 
-1. Stop-only Day：startAnchor=null、endAnchor=null、Stops=A/B 可以保存；最终线路中 A/B 都存在；派生 Day 仍有 A/B；追加 C 后严格是 A/B/C。
-2. Stop-only Day 的内部日界线不得吞掉最后一个 Stop，也不得为了内部表示把 null Anchor 强行暴露成非 null。
-3. Detailed sticky：Day.transferMode=rail 且首 Stop 已承载 rail，Detailed draft 返回 transportFromPrevious=null 时不能生成 rail 清空命令，保存后 rail 仍存在。
-4. 新的非空 transport 仍能正常修改交通；sticky 规则不能扩散到普通后续 Stop。
-5. 最终线路显式修改必须永远优先于同时提交的独立 days[]。
-6. tentative / no_go 节点在 Day 视图更新时不能丢失，保存的 endsDay 仍在，恢复 normal 后重新生效。
-7. A —drive→ X —walk→ B 中 X inactive 后 A→B 使用 B 的 walk；恢复 X 后两段恢复。
-8. 不住只取消分界；多一晚只新增同 Place 节点；最后一天 endsDay=false 仍合法。
-9. Day Number / 日期连续重算。
-10. Route 终点到达交通仍参与 fingerprint 和实际 leg。
-11. 新结构 Revision / restore / generation / Proposal 冲突保护正常。
-12. 已落盘旧格式 JSON 仍报 OLD_TEST_PLAN_UNSUPPORTED，不能因为当前写入桥重新获得迁移能力。
-13. Provider 事实边界不变：不能伪造真实坐标、距离、时长、geometry。
+```bash
+npm.cmd run build
+```
 
-如果任何测试失败，不要直接修改生产代码。报告：文件、位置/逻辑、复现、实际、预期、原因判断。
+## 7.7 独立代码审计
 
-最终固定输出：
+不要只相信现有测试，独立确认：
 
-Test Branch: test/plan-phase1-final-route-20260905-r3
-Test HEAD: eeca847d16d6022416451c5223afa376e9d7c9c2
+### A. 两工作区
 
-Phase 1: PASS / FAIL
+正常挂载界面只能看到：
+
+```text
+规划 · 旅行需求
+行程 · 最终线路
+```
+
+不能再出现可进入的：
+
+```text
+想去哪些地方
+路线和天数
+补充景点
+每日行程
+```
+
+旧文件可以仍在源码，但不能继续作为正常产品导航。
+
+### B. 添加地点直接进入最终线路
+
+从右侧添加 A、B、C。
+
+必须直接得到：
+
+```text
+A → B → C
+```
+
+不能要求用户先进入 Candidate 页面再“采用”。
+
+后台可以保留内部 Candidate 关联，但用户不能维护第二份候选线路。
+
+### C. 排序
+
+验证：
+
+- 上移；
+- 下移；
+- HTML drag/drop。
+
+例如：
+
+```text
+A → B → C → D
+```
+
+把 B 拖到 D 的位置后，最终保存顺序必须与 UI 一致。
+
+排序不能偷偷修改节点状态、住宿分界或 Place。
+
+### D. 三状态
+
+准备：
+
+```text
+A
+X【住】
+B
+Y【住】
+C
+```
+
+分别把 X 改成 tentative、Y 改成 no_go。
+
+必须：
+
+- X / Y 仍留在右侧原顺序；
+- X / Y 在地图上仍显示（前提是真实坐标已定位）；
+- X / Y 有不同视觉；
+- X / Y 不参与当前有效 Day；
+- X / Y 不参与当前交通路线；
+- 原 `endsDay` 仍保存；
+- 恢复 normal 后原住宿分界恢复。
+
+### E. 住 / 不住
+
+```text
+A → B【住】 → C → D【住】
+```
+
+把 B 改成“不住”后，只能机械变成同一个 Day：
+
+```text
+A → B → C → D【住】
+```
+
+不能自动移动 C / D，不能自动新增其他住宿点。
+
+### F. 多一晚
+
+```text
+A → 陶波【住】 → B
+```
+
+点击“多一晚”后必须是：
+
+```text
+A → 陶波#1【住】 → 陶波#2【住】 → B
+```
+
+并派生：
+
+```text
+Day 1: A → 陶波
+Day 2: 陶波 → 陶波
+Day 3: 陶波 → B
+```
+
+B 不能被移动。
+
+### G. 到达交通
+
+设置：
+
+```text
+A —drive→ X —walk→ B
+```
+
+X inactive 后：
+
+```text
+A —walk→ B
+```
+
+恢复 X 后仍是原来的两段交通。
+
+交通修改不得保存伪造的真实距离、时长或 geometry。
+
+### H. 同 Place 多节点
+
+验证“多一晚”或其他重复 Place 后：
+
+- 两个线路节点 ID 独立；
+- 编辑 Place 名称会同时反映到同一 Place 的多个线路出现；
+- 删除其中一个线路节点不能把另一个一起删除。
+
+### I. 地图职责
+
+确认地图：
+
+- 点直接来自 finalRoute；
+- 显示 normal / tentative / no_go 已定位节点；
+- 路线线条只来自 normal 派生 Day；
+- 点击点只选择 / 聚焦右侧节点；
+- Popup 没有删除 / 状态 / 住 / 不住 / 多一晚 / 优化按钮；
+- 只有右侧先启动“地图选点”后，地图点击才写定位。
+
+### J. 未定位地点
+
+手工添加一个 Provider 暂时无法识别的地点。
+
+必须：
+
+- 仍保留在线路；
+- 不自动删除；
+- 不自动补位；
+- 右侧显示待定位 / 未定位；
+- 可以重新识别、Google Maps 链接或地图选点；
+- 地图不能为了“显示它”伪造坐标。
+
+### K. 最终线路变化后的 Day / Route
+
+对以下操作逐一检查：
+
+- 添加；
+- 删除；
+- 移动；
+- 状态变化；
+- 住 / 不住；
+- 多一晚；
+- 交通方式变化。
+
+必须立即得到新的派生 Day。
+
+前端应自动尝试刷新 dirty Day Route。
+
+如果 Route Provider 更新失败：
+
+- 最终线路修改仍然保存；
+- 不能因为地图路线失败而回滚用户线路；
+- UI 应给非阻断提示并允许再次“更新地图路线”。
+
+### L. 右侧唯一业务入口
+
+确认没有第二套地图业务按钮，也没有隐藏 Day / Candidate 编辑入口让用户修改同一事实。
+
+旅行列表、版本历史、主题、密码等全局管理不属于线路业务重复入口。
+
+### M. 手工结果优先
+
+手工制造明显绕路、一天很多地点等不合理结果。
+
+系统可以提醒，但不能自动：
+
+- 改顺序；
+- 改状态；
+- 改住宿分界；
+- 删除地点。
+
+### N. Revision / generation
+
+通过新最终线路 UI 连续做若干修改：
+
+- 新 Revision 能记录；
+- 恢复新 Revision 后 finalRoute / Day 一致；
+- 旧 generation 的冲突修改不能静默覆盖新线路。
+
+只测试新结构，不测试施工前旧 Revision。
+
+### O. Provider 事实边界
+
+确认：
+
+- 坐标来自 Resolution / 人工地图选点；
+- 实际距离 / 时长 / geometry 来自 Route Provider；
+- finalRoute / UI 命令只保存用户选择的交通方式，不伪造 Provider 事实。
+
+## 7.8 浏览器 / UI 验证
+
+如果本地测试环境支持启动应用并通过浏览器检查 UI，可以运行开发环境并执行上述 A–M 的实际 UI 操作。
+
+如果当前 Codex 环境没有浏览器能力，不要伪造 E2E PASS；把无法完成的浏览器项写进“未覆盖或无法验证”。
+
+真实外部地图 Provider 网络调用不是本 Phase 必须 Gate；不要为了调用真实 Provider 修改代码或凭证。
+
+## 7.9 允许独立补充临时测试
+
+可以添加临时 Vitest 进行独立审计，但：
+
+- 不能修改生产代码来迁就测试；
+- 最终必须删除临时测试；
+- 保持工作树干净；
+- 报告临时测试数量和结果。
+
+## 7.10 输出格式
+
+严格输出：
+
+```text
+Test Branch: __PHASE2_TEST_BRANCH__
+Test HEAD: __PHASE2_TEST_HEAD__
+
+Phase 2: PASS / FAIL
 
 实际执行的测试：
 - git branch --show-current: ...
 - git rev-parse HEAD: ...
 - git status --short: ...
 - npm run typecheck: PASS / FAIL
-- Phase 1 + R3 专项: PASS / FAIL
-- R2 两个失败文件: PASS / FAIL
-- 历史 7 个失败文件: PASS / FAIL
+- Phase 2 专项: PASS / FAIL
 - npm test: PASS / FAIL
 - npm run build: PASS / FAIL
+- 浏览器 / UI 验证: PASS / FAIL / 未覆盖
+- 独立临时审计: ...
 
 完整测试统计：
 - Test Files: ...
@@ -414,70 +676,28 @@ Phase 1: PASS / FAIL
 未覆盖或无法验证：
 - ...
 
-是否建议进入 Phase 2：是 / 否
-原因：...
+是否建议进入 Phase 3：是 / 否
+
+原因：
+...
 ```
 
 ---
 
-# Phase 2：右侧最终线路人工规划闭环 + 地图联动
+# 8. Phase 3 — AI 生成 / 局部补充 / 显式优化 + 旧流程清理
 
-状态：`pending`
+状态：pending
 
-只有 Phase 1 R3 对指定 Branch + HEAD 本地 PASS 后开始。
+Phase 2 本地 PASS 后才开始。
 
-## 主要工作
+Phase 3 负责：
 
-1. 导航收敛为“规划：旅行需求 / 行程：最终线路”。
-2. 右侧建立唯一最终线路业务操作面板。
-3. 支持新增、编辑、删除、拖动、三状态、住 / 不住 / 多一晚、交通、定位修复。
-4. Day 由线路分界展示。
-5. 地图显示全部状态，路线只连接 normal。
-6. 旧 Step 2 / 3 / 4 / 5 不再作为正常业务入口。
-7. 合理性问题只提醒，不自动修改用户方案。
-
-完成后进入 `awaiting_local_test`，冻结 Phase 2 Branch + HEAD。
-
----
-
-# Phase 3：AI 生成 / 局部补充 / 显式优化 + 旧流程清理
-
-状态：`pending`
-
-只有 Phase 2 本地 PASS 后开始。
-
-## 主要工作
-
-1. 主要地点生成直接加入最终线路。
-2. 详细地点生成直接插入最终线路，不再二次安排到独立 Day。
-3. 支持按 Day / 区间 / 住宿点附近局部补充。
-4. 普通生成只能插入，不重排已有节点。
-5. 显式优化才允许在授权范围重排。
-6. 重构 Action / Scope / Prompt。
-7. Proposal / Revision / Undo 覆盖最终线路操作。
-8. 删除 / 隔离 Skeleton、stayDays、Candidate→DayStop 等旧线路职责。
-9. 删除或显著缩小 Phase 1 当前 Day 写入翻译层。
-10. 根据最终代码更新 PRODUCT / TECHNICAL。
-
----
-
-# 6. 高风险点
-
-- 最终线路和 Day 不能再次变成两份可独立编辑的数据。
-- tentative / no_go 不能破坏排序和保存的住宿分界。
-- 多一晚不能偷偷移动其他地点。
-- 生成与优化权限必须严格分开。
-- 局部生成 / 优化不得越界。
-- Provider 的真实事实不得由 AI 伪造。
-
----
-
-# 7. 施工原则
-
-- 只做 PLAN 需要的修改。
-- 不为旧测试数据增加迁移代码。
-- 用户是旅行方案的唯一决策者，AI 只是辅助。
-- 不完整 / 有冲突 / 暂未定位的方案允许保存，非数据破坏问题只提醒。
-- 每完成一个 Phase 立即更新 Progress。
-- 施工 Agent 不运行测试。
-- 用户本地 PASS 前不进入下一 Phase。
+- 生成主要地点直接插入 finalRoute；
+- 生成详细地点直接插入 finalRoute；
+- 局部范围生成；
+- 普通 AI 只能插入新节点，不能改变已有节点相对顺序、状态、住宿分界或删除；
+- 用户显式触发“优化这一天 / 这一段 / 全程”后，AI 才能在授权范围重排；
+- destination / interest / itinerary Action 和 Prompt 收敛到新产品语义；
+- 清理旧五步 UI、Skeleton / Candidate / Day 的产品职责；
+- 缩小或删除 Phase 1 的旧 Day 写入翻译；
+- 更新 PRODUCT.md / TECHNICAL.md。
