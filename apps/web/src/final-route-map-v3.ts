@@ -65,18 +65,26 @@ export function finalRouteMapPointFeaturesV3(workspace: WorkspaceV3): FinalRoute
   });
 }
 
+function routeSegmentKey(fromNodeId: string, fromPlaceId: string, toNodeId: string, toPlaceId: string) {
+  return `${fromNodeId}\u0000${fromPlaceId}\u0000${toNodeId}\u0000${toPlaceId}`;
+}
+
 function currentDaySegmentKeysV3(workspace: WorkspaceV3) {
   return new Map(workspace.trip.plan.days.map((day) => {
-    const placeIds: string[] = [];
-    const push = (placeId: string | null) => {
-      if (!placeId || placeIds.at(-1) === placeId) return;
-      placeIds.push(placeId);
+    const nodes: Array<{ id: string; placeId: string }> = [];
+    const push = (id: string, placeId: string | null) => {
+      if (!placeId || nodes.at(-1)?.placeId === placeId) return;
+      nodes.push({ id, placeId });
     };
-    push(day.startAnchor.placeId);
-    day.stops.forEach((stop) => push(stop.placeId));
-    push(day.endAnchor.placeId);
+    push(day.startAnchor.id, day.startAnchor.placeId);
+    day.stops.forEach((stop) => push(stop.id, stop.placeId));
+    push(day.endAnchor.id, day.endAnchor.placeId);
     const segments = new Set<string>();
-    for (let index = 1; index < placeIds.length; index += 1) segments.add(`${placeIds[index - 1]}\u0000${placeIds[index]}`);
+    for (let index = 1; index < nodes.length; index += 1) {
+      const from = nodes[index - 1];
+      const to = nodes[index];
+      segments.add(routeSegmentKey(from.id, from.placeId, to.id, to.placeId));
+    }
     return [day.id, segments] as const;
   }));
 }
@@ -87,7 +95,7 @@ export function finalRouteMapRouteGeometryFeaturesV3(workspace: WorkspaceV3): Wo
     if (!state.route) return state;
     const allowed = currentSegments.get(state.dayId);
     const legs = allowed
-      ? state.route.legs.filter((leg) => allowed.has(`${leg.fromPlaceId}\u0000${leg.toPlaceId}`))
+      ? state.route.legs.filter((leg) => allowed.has(routeSegmentKey(leg.fromNodeId, leg.fromPlaceId, leg.toNodeId, leg.toPlaceId)))
       : [];
     return { ...state, route: { ...state.route, legs } };
   });
