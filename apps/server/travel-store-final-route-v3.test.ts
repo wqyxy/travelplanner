@@ -79,6 +79,32 @@ describe("TravelStoreV3 final-route storage", () => {
     store.close();
   });
 
+  it("translates a current in-memory Day producer into final-route nodes before saving", () => {
+    const store = new TravelStoreV3(databasePath());
+    const created = store.createTrip();
+    const transitional = TravelPlanDocumentSchema.parse({
+      ...created.plan,
+      trip: { ...created.plan.trip, originPlaceId: "a" },
+      places: [place("a"), place("b")],
+      days: [{
+        id: "day-b", dayNumber: 1, date: null, title: "B", transferMode: "drive", detailLevel: "planned", detailStatus: null,
+        startAnchor: { id: "start-b", placeId: "a", label: null, notes: null },
+        stops: [],
+        endAnchor: { id: "end-b", placeId: "b", label: null, notes: null },
+      }],
+    });
+
+    const written = store.writePlan(created.id, transitional, 0, { source: "test", summary: "transitional day producer" });
+
+    expect(written.trip.plan.finalRoute).toMatchObject({
+      version: 1,
+      nodes: [{ id: "day-b", placeId: "b", status: "normal", endsDay: false }],
+    });
+    expect(written.trip.plan.days).toHaveLength(1);
+    expect(written.trip.plan.days[0]).toMatchObject({ id: "day-b", transferMode: "drive" });
+    store.close();
+  });
+
   it("keeps Revision / restore for new-format plans only", () => {
     const store = new TravelStoreV3(databasePath());
     const created = store.createTrip();
