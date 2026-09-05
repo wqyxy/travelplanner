@@ -83,7 +83,6 @@ export function transportFromModeV3(mode: TransportMode | ""): Transport | null 
 export function newFinalRoutePlaceCommandsV3(draft: NewFinalRoutePlaceDraftV3): PlanCommand[] {
   const nameZh = draft.nameZh.trim();
   if (!nameZh) throw new Error("地点名称不能为空。");
-  const planningRole = draft.kind === "city" ? "planning_area" : "detail_interest";
   return [
     {
       type: "add_candidate",
@@ -103,7 +102,7 @@ export function newFinalRoutePlaceCommandsV3(draft: NewFinalRoutePlaceDraftV3): 
         id: draft.temporaryCandidateId,
         placeId: draft.temporaryPlaceId,
         planningAreaCandidateId: null,
-        planningRole,
+        planningRole: "planning_area",
         preference: "optional",
         source: "user",
         aiReason: null,
