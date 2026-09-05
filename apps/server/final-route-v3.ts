@@ -112,8 +112,21 @@ function dayStopFromNode(plan: TravelPlanDocument, node: FinalRouteNode): Day["s
   };
 }
 
+function stopHasExplicitDetail(stop: Day["stops"][number]) {
+  return Boolean(
+    stop.period
+      || stop.scheduleText
+      || stop.startTime
+      || stop.endTime
+      || stop.scheduleVerification
+      || stop.costNote
+      || stop.costVerification
+      || stop.notes,
+  );
+}
+
 function routeNodeFromDayStop(day: Day, stop: Day["stops"][number]): FinalRouteNode {
-  const detailed = day.detailLevel === "detailed";
+  const detailed = day.detailLevel === "detailed" || stopHasExplicitDetail(stop);
   return {
     id: stop.id,
     placeId: stop.placeId,
