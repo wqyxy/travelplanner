@@ -11,28 +11,40 @@ import type { TripDetailV3 } from "./travel-store-v3.js";
 
 export type DetailedUnscheduledCandidateV3 = { candidateId: string; reason: string };
 
-function stopForDraft(trip: TripDetailV3, _day: Day, draft: DetailedDayUpdate["stops"][number], existing: DayStop | undefined): DayStop {
+function stopForDraft(trip: TripDetailV3, day: Day, draft: DetailedDayUpdate["stops"][number], existing: DayStop | undefined): DayStop {
   const candidates = new Map(trip.plan.candidates.map((candidate) => [candidate.id, candidate]));
   const places = new Map(trip.plan.places.map((place) => [place.id, place]));
   const candidate = candidates.get(draft.candidateId);
   if (!candidate) throw new Error(`详细行程引用未知 Candidate：${draft.candidateId}`);
   const place = places.get(candidate.placeId);
   if (!place) throw new Error(`详细行程 Candidate 引用未知 Place：${draft.candidateId}`);
+
+  const isFirstExistingStop = Boolean(existing && day.stops[0]?.id === existing.id);
+  const preserveDayArrivalTransport = Boolean(
+    draft.transportFromPrevious === null
+      && isFirstExistingStop
+      && day.transferMode !== "none"
+      && existing?.transportFromPrevious?.mode === day.transferMode,
+  );
+
   return {
     id: existing?.id ?? randomUUID(),
     candidateId: candidate.id,
     placeId: candidate.placeId,
     activity: draft.activity,
     period: draft.period,
-    // `null` is an explicit AI instruction to clear a legacy natural-language
-    // schedule.  Only an omitted field inherits the sticky value.
+    // `null` is an explicit AI instruction to clear a natural-language schedule.
+    // Transport is different during the Phase 1 bridge: the first Stop can carry the Day-level
+    // arrival transport. A null detailed draft must not erase that route-owned arrival fact.
     scheduleText: Object.hasOwn(draft, "scheduleText")
       ? draft.scheduleText ?? null
       : existing?.scheduleText ?? null,
     startTime: draft.startTime,
     endTime: draft.endTime,
     durationMinutes: draft.durationMinutes,
-    transportFromPrevious: draft.transportFromPrevious,
+    transportFromPrevious: preserveDayArrivalTransport
+      ? structuredClone(existing!.transportFromPrevious)
+      : draft.transportFromPrevious,
     scheduleVerification: draft.scheduleVerification,
     costNote: draft.costNote,
     costVerification: draft.costVerification,
