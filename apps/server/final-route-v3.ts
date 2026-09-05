@@ -345,7 +345,13 @@ function rebuildFinalRouteFromDayViewV3(before: TravelPlanDocument, after: Trave
   }
 
   normalized.days.forEach((day, index) => {
-    for (const stop of day.stops) desiredActive.push(routeNodeFromDayStop(day, stop));
+    day.stops.forEach((stop, stopIndex) => {
+      const node = routeNodeFromDayStop(day, stop);
+      if (stopIndex === 0 && !node.transportFromPrevious && day.transferMode !== "none") {
+        node.transportFromPrevious = transportFromMode(day.transferMode);
+      }
+      desiredActive.push(node);
+    });
 
     const endPlaceId = day.endAnchor.placeId;
     if (!endPlaceId) throw new Error(`FINAL_ROUTE_DAY_VIEW_UNREPRESENTABLE: Day ${day.id} 缺少终点地点。`);
@@ -389,6 +395,9 @@ export function syncFinalRouteForLegacyWriteV3(beforeValue: TravelPlanDocument, 
   // is translated into final-route nodes before persistence, so days[] never becomes a second saved route.
   const before = currentFinalRoutePlanV3(beforeValue);
   const parsedAfter = TravelPlanDocumentSchema.parse(clone(afterValue));
+  if (parsedAfter.finalRoute.version === 0 && parsedAfter.finalRoute.nodes.length) {
+    throw new Error("OLD_TEST_PLAN_UNSUPPORTED: version=0 不得包含最终线路节点。");
+  }
   const after = parsedAfter.finalRoute.version === 1
     ? parsedAfter
     : TravelPlanDocumentSchema.parse({ ...parsedAfter, finalRoute: clone(before.finalRoute) });
