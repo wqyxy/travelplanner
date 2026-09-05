@@ -138,11 +138,16 @@ de5f61173fa7d84dda8b66e1ad542cd109e5ed82
 dd6ed5fc63dd0b553131c7faa2f4422270205082
 ```
 
-### 当前本地测试状态
+### R2 本地测试基线
 
-第一次测试结果不能用于当前代码，因为修复后 HEAD 已变化。
+状态：尚未由用户本地验证。
 
-R2 测试基线正在冻结。冻结完成后只接受新的 Test Branch + Test HEAD 结果。
+Test Branch：`test/plan-phase1-final-route-20260905-r2`  
+Test HEAD：`5adec91f04d6c74614464f38516626bd15fcc45c`
+
+该测试分支已经冻结，不再修改。
+
+第一次测试结果不能用于 R2，因为 HEAD 已变化。
 
 ### 当前 blocker
 
@@ -191,8 +196,8 @@ Phase 3 需要移除 / 缩小 Phase 1 为当前旧入口保留的 Day 视图写�
 
 ## 下一步
 
-1. 冻结 Phase 1 R2 Test Branch + Test HEAD；
-2. 用户本地重新执行 typecheck、专项测试、第一次失败的 7 个测试文件、完整 `npm test`、build；
-3. 用户返回匹配新 Branch + HEAD 的 PASS / FAIL；
+1. 使用 R2 Test Branch + Test HEAD 在用户本地重新验证；
+2. 执行 typecheck、Phase 1 专项测试、第一次失败的 7 个测试文件、完整 `npm test`、build；
+3. 用户返回匹配 R2 Branch + HEAD 的 PASS / FAIL；
 4. PASS 后 Phase 1 才标记 completed 并进入 Phase 2；
 5. FAIL 则继续只修复报告中的 Phase 1 问题。
