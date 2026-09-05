@@ -148,32 +148,60 @@ Map Popup 不增加 AI / 业务修改入口。
 
 本 Phase 没有 DB Schema 迁移，也没有恢复旧测试数据兼容。
 
+## R1 本地测试
+
+```text
+Test Branch: test/plan-phase3-final-route-ai-20260905
+Test HEAD: b736706424aa00aa1f3fd2db18a1ae915dc84afc
+Phase 3: FAIL
+Typecheck: FAIL
+Phase 3 专项: 8 files passed / 2 failed；52 / 54 tests passed
+AI / Prompt / Runtime 回归: PASS（7 files / 63 tests）
+完整 npm test: 86 files passed / 2 failed；503 / 505 tests passed
+Build: FAIL（Web 成功，Server TypeScript 失败）
+独立临时审计: 12 / 12 PASS
+```
+
+R1 失败集中在三个验收问题：
+
+1. `final-route-ai-cutover-v3.ts` 的 refine sanitize 重复实现导致 Map value 被推断成 `{}`，Server TypeScript 无法访问 transport / verification 字段。
+2. `final-route-ai-v3.ts` clone 整个联合类型后丢失 `result.type=success` 的 TypeScript 收窄。
+3. refine 正式测试使用只有起点/终点、没有中途 Stop 的两节点夹具；单日优化 Prompt 与源码审计断言仅有字面差异。
+
+## R2 修复
+
+- Runtime `persistRefine` 不再复制 sanitize 逻辑，统一调用 `sanitizeFinalRouteRefineOutputV3`。
+- sanitizer 在 success 分支先保存已收窄的 `result`，只 clone success result，再组装返回值，避免联合类型收窄丢失。
+- refine 权限测试改为 `A → B → C`，明确验证 B 是真实 Day Stop，并在 B 上验证 transport / verification 保护。
+- 单日优化 Prompt 统一为“只有用户明确启动本动作后”，不改变权限语义。
+- 没有改动 Phase 3 的产品权限、finalRoute 规则、Provider 边界或 UI 结构。
+
 ## 施工侧验证
 
 只做了：
 
 - GitHub 静态读取 / 写入；
-- 调用链审查；
-- Scope / Schema / Prompt 对照；
-- diff / 入口审查；
-- 新增测试代码。
+- TypeScript 调用链和联合类型静态审查；
+- 测试夹具与 Prompt 合同对照；
+- diff / 入口审查。
 
 没有运行任何测试、typecheck、build、应用或 CI。
 
-## 本地测试基线
+## R2 本地测试基线
 
 ```text
-Test Branch: test/plan-phase3-final-route-ai-20260905
-Test HEAD: b736706424aa00aa1f3fd2db18a1ae915dc84afc
+Test Branch: __TEST_BRANCH_R2__
+Test HEAD: __TEST_HEAD_R2__
 ```
 
-测试分支已冻结；该分支内文档可能仍显示占位符，本次测试以这里记录的 Branch + HEAD 和用户拿到的测试 Prompt 顶部为准。
+冻结后不再修改该测试分支。
 
 ---
 
 ## 下一步
 
-1. 用户本地 Codex 执行 `PLAN_EXECUTION.md` 的 Phase 3 Gate；
-2. 返回匹配基线 PASS / FAIL；
-3. PASS → Phase 3 completed，本轮 PLAN 完成；
-4. FAIL → 只修 Phase 3 报告问题，生成新的测试基线。
+1. 冻结 Phase 3 R2 唯一 Test Branch + HEAD；
+2. 用户本地 Codex 重跑 R1 强制 Gate 与三个失败点；
+3. 返回匹配基线 PASS / FAIL；
+4. PASS → Phase 3 completed，本轮 PLAN 完成；
+5. FAIL → 只修新的 Phase 3 报告问题，生成新的测试基线。
