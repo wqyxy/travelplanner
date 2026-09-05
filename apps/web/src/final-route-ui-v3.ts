@@ -64,10 +64,10 @@ export function finalRouteDisplayRowsV3(plan: TravelPlanDocument): FinalRouteDis
 }
 
 export function finalRouteDayCountV3(plan: TravelPlanDocument) {
-  const nodes = plan.finalRoute?.nodes ?? [];
-  if (!nodes.some((node) => node.status === "normal")) return 0;
-  return nodes.filter((node) => node.status === "normal" && node.endsDay).length
-    + (nodes.some((node) => node.status === "normal" && !node.endsDay) ? 1 : 0);
+  const active = (plan.finalRoute?.nodes ?? []).filter((node) => node.status === "normal");
+  if (!active.length) return 0;
+  const boundaries = active.filter((node) => node.endsDay).length;
+  return boundaries + (active.at(-1)?.endsDay ? 0 : 1);
 }
 
 export function transportFromModeV3(mode: TransportMode | ""): Transport | null {
