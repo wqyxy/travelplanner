@@ -8,6 +8,7 @@ import {
 } from "./contracts-v2.js";
 import type { DestinationGenerateOutput } from "./ai-action-contracts-v3.js";
 import { rebuildFinalRouteDaysV3 } from "./final-route-v3.js";
+import { semanticPlaceKey } from "./plan-commands-v2.js";
 
 const clone = <T>(value: T): T => structuredClone(value);
 
@@ -43,7 +44,8 @@ function emptyRouteNode(input: {
 
 function assertExistingNodeOrderPreserved(before: TravelPlanDocument, afterNodes: FinalRouteNode[]) {
   const beforeIds = before.finalRoute.nodes.map((node) => node.id);
-  const afterExistingIds = afterNodes.filter((node) => beforeIds.includes(node.id)).map((node) => node.id);
+  const beforeIdSet = new Set(beforeIds);
+  const afterExistingIds = afterNodes.filter((node) => beforeIdSet.has(node.id)).map((node) => node.id);
   if (JSON.stringify(beforeIds) !== JSON.stringify(afterExistingIds)) {
     throw new Error("FINAL_ROUTE_AI_INSERT_REORDER_FORBIDDEN: 普通 AI 生成不得改变已有线路节点相对顺序。");
   }
@@ -54,6 +56,11 @@ function assertExistingNodeOrderPreserved(before: TravelPlanDocument, afterNodes
       throw new Error(`FINAL_ROUTE_AI_EXISTING_NODE_MUTATION_FORBIDDEN: 普通 AI 生成不得修改已有线路节点 ${node.id}。`);
     }
   }
+}
+
+function formalPlaceIdForGeneratedPlace(discoveredPlan: TravelPlanDocument, sourcePlace: DestinationGenerateOutput["places"][number]) {
+  const key = semanticPlaceKey(sourcePlace);
+  return discoveredPlan.places.find((place) => semanticPlaceKey(place) === key)?.id ?? null;
 }
 
 export function applyMainRouteGenerationV3(
@@ -88,6 +95,41 @@ export function applyMainRouteGenerationV3(
     finalRoute: { version: 1, nodes },
   });
   return rebuildFinalRouteDaysV3(plan);
+}
+
+export function applyMainRouteGenerationFromOutputV3(
+  before: TravelPlanDocument,
+  discoveredPlan: TravelPlanDocument,
+  output: DestinationGenerateOutput,
+) {
+  if (before.finalRoute.version !== 1 || before.finalRoute.nodes.length) {
+    throw new Error("FINAL_ROUTE_MAIN_GENERATION_REQUIRES_EMPTY_ROUTE: 已有最终线路时不能重新生成并覆盖；请使用详细地点生成或显式优化。");
+  }
+
+  const sourcePlaces = new Map(output.places.map((place) => [place.id, place]));
+  const seenPlaceIds = new Set<string>();
+  const nodes: FinalRouteNode[] = [];
+  for (const source of output.candidates) {
+    const sourcePlace = sourcePlaces.get(source.placeTemporaryId);
+    if (!sourcePlace) throw new Error(`主地点生成引用未知临时 Place：${source.placeTemporaryId}`);
+    const placeId = formalPlaceIdForGeneratedPlace(discoveredPlan, sourcePlace);
+    if (!placeId || seenPlaceIds.has(placeId)) continue;
+    const candidate = discoveredPlan.candidates.find((item) => item.placeId === placeId);
+    if (!candidate) throw new Error(`主地点生成没有找到正式 Candidate：${source.temporaryId}`);
+    seenPlaceIds.add(placeId);
+    const suggestion = source.routeSuggestion;
+    nodes.push(emptyRouteNode({
+      placeId,
+      endsDay: suggestion?.endsDay ?? false,
+      transportMode: suggestion?.transportMode ?? "none",
+    }));
+  }
+  if (!nodes.length) throw new Error("主地点生成没有产生可加入最终线路的新地点。");
+
+  return rebuildFinalRouteDaysV3(TravelPlanDocumentSchema.parse({
+    ...clone(discoveredPlan),
+    finalRoute: { version: 1, nodes },
+  }));
 }
 
 export function insertDetailDiscoveryIntoFinalRouteV3(input: {
@@ -135,6 +177,94 @@ export function insertDetailDiscoveryIntoFinalRouteV3(input: {
   return rebuildFinalRouteDaysV3(plan);
 }
 
+function detailInsertionPointV3(
+  before: TravelPlanDocument,
+  parentPlaceId: string,
+  scopeRequest: string | null | undefined,
+) {
+  const nodes = before.finalRoute.nodes;
+  const normalMatching = nodes.filter((node) => node.status === "normal" && node.placeId === parentPlaceId);
+  if (!normalMatching.length) return null;
+
+  const dayMatch = /^final-route-detail-scope:day:([^:]+)$/u.exec(scopeRequest ?? "");
+  if (dayMatch) {
+    const day = before.days.find((item) => item.id === dayMatch[1]);
+    if (day) {
+      if (day.endAnchor.placeId === parentPlaceId) {
+        const endNode = nodes.find((node) => node.id === day.id && node.status === "normal" && node.placeId === parentPlaceId);
+        if (endNode) return { nodeId: endNode.id, placement: "before" as const };
+      }
+      const stop = day.stops.find((item) => item.placeId === parentPlaceId);
+      if (stop) {
+        const stopNode = nodes.find((node) => node.id === stop.id && node.status === "normal");
+        if (stopNode) return { nodeId: stopNode.id, placement: "before" as const };
+      }
+      if (day.startAnchor.placeId === parentPlaceId) {
+        const previousDay = before.days[day.dayNumber - 2];
+        const previousBoundary = previousDay
+          ? nodes.find((node) => node.id === previousDay.id && node.status === "normal" && node.placeId === parentPlaceId)
+          : null;
+        if (previousBoundary) return { nodeId: previousBoundary.id, placement: "after" as const };
+      }
+    }
+  }
+
+  const segmentMatch = /^final-route-detail-scope:segment:([^:]+):([^:]+)$/u.exec(scopeRequest ?? "");
+  if (segmentMatch) {
+    const fromIndex = nodes.findIndex((node) => node.id === segmentMatch[1]);
+    const toIndex = nodes.findIndex((node) => node.id === segmentMatch[2]);
+    if (fromIndex >= 0 && toIndex >= 0) {
+      const start = Math.min(fromIndex, toIndex);
+      const end = Math.max(fromIndex, toIndex);
+      const matches = nodes.slice(start, end + 1).filter((node) => node.status === "normal" && node.placeId === parentPlaceId);
+      const chosen = matches.at(-1);
+      if (chosen) return { nodeId: chosen.id, placement: chosen.id === nodes[start]?.id ? "after" as const : "before" as const };
+    }
+  }
+
+  return { nodeId: normalMatching.at(-1)!.id, placement: "before" as const };
+}
+
+export function insertNewDetailCandidatesFromPlanV3(input: {
+  before: TravelPlanDocument;
+  discoveredPlan: TravelPlanDocument;
+  scopeRequest?: string | null;
+}) {
+  const beforeCandidateIds = new Set(input.before.candidates.map((candidate) => candidate.id));
+  const newlyAdded = input.discoveredPlan.candidates.filter((candidate) => !beforeCandidateIds.has(candidate.id));
+  if (!newlyAdded.length) return rebuildFinalRouteDaysV3(input.discoveredPlan);
+
+  const groups = new Map<string, typeof newlyAdded>();
+  for (const candidate of newlyAdded) {
+    if (!candidate.planningAreaCandidateId) continue;
+    const values = groups.get(candidate.planningAreaCandidateId) ?? [];
+    values.push(candidate);
+    groups.set(candidate.planningAreaCandidateId, values);
+  }
+  if (!groups.size) return rebuildFinalRouteDaysV3(input.discoveredPlan);
+
+  let nodes = clone(input.before.finalRoute.nodes);
+  for (const [parentCandidateId, candidates] of groups) {
+    const parent = input.discoveredPlan.candidates.find((candidate) => candidate.id === parentCandidateId);
+    if (!parent) throw new Error(`详细地点生成引用未知 Planning Area Candidate：${parentCandidateId}`);
+    const point = detailInsertionPointV3(input.before, parent.placeId, input.scopeRequest);
+    if (!point) {
+      throw new Error("FINAL_ROUTE_DETAIL_SCOPE_UNREPRESENTABLE: 目标区域当前没有正常的最终线路节点，不能自动决定详细地点插入位置。");
+    }
+    const index = nodes.findIndex((node) => node.id === point.nodeId);
+    if (index < 0) throw new Error(`详细地点生成找不到线路锚点：${point.nodeId}`);
+    const newNodes = candidates.map((candidate) => emptyRouteNode({ placeId: candidate.placeId }));
+    const insertionIndex = point.placement === "after" ? index + 1 : index;
+    nodes = [...nodes.slice(0, insertionIndex), ...newNodes, ...nodes.slice(insertionIndex)];
+  }
+
+  assertExistingNodeOrderPreserved(input.before, nodes);
+  return rebuildFinalRouteDaysV3(TravelPlanDocumentSchema.parse({
+    ...clone(input.discoveredPlan),
+    finalRoute: { version: 1, nodes },
+  }));
+}
+
 export function finalRouteTargetNodeIdsForOptimizationV3(
   plan: TravelPlanDocument,
   input: { optimizeScope: "segment" | "trip"; fromNodeId?: string | null; toNodeId?: string | null },
@@ -180,4 +310,18 @@ export function finalRouteMoveCommandsForOrderedSubsetV3(
     throw new Error("FINAL_ROUTE_OPTIMIZE_COMMAND_BUILD_FAILED: 无法在不移动授权范围外节点的情况下应用优化结果。");
   }
   return commands;
+}
+
+export function orderedAuthorizedRouteNodeIdsFromDaysV3(
+  days: Array<{ id: string; stops: Array<{ id: string }> }>,
+  allowedNodeIds: string[],
+) {
+  const allowed = new Set(allowedNodeIds);
+  const ordered: string[] = [];
+  for (const day of days) {
+    for (const id of [...day.stops.map((stop) => stop.id), day.id]) {
+      if (allowed.has(id) && !ordered.includes(id)) ordered.push(id);
+    }
+  }
+  return ordered;
 }
