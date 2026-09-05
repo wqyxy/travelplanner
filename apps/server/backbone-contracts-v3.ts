@@ -3,6 +3,7 @@ import {
   IdSchema,
   PlaceSchema,
   TextSchema,
+  TransportModeSchema,
   type Place,
 } from "./contracts-v2.js";
 
@@ -25,6 +26,10 @@ export const BackboneCandidateDraftSchema = z.object({
   suggestedDurationMinutes: z.number().int().min(0).nullable(),
   tags: z.array(TextSchema.max(120)).max(30),
   defaultPreference: z.literal("optional"),
+  routeSuggestion: z.object({
+    endsDay: z.boolean(),
+    transportMode: TransportModeSchema,
+  }).strict().optional(),
 }).strict();
 export type BackboneCandidateDraft = z.infer<typeof BackboneCandidateDraftSchema>;
 
