@@ -1,6 +1,7 @@
 import type {
   DestinationGenerateOutput,
   ItineraryDayOptimizeOutput,
+  ItineraryRefineOutput,
   ItineraryRepairOutput,
 } from "./ai-action-contracts-v3.js";
 import type { AiActionRecord } from "./ai-stage-contracts-v3.js";
@@ -177,6 +178,40 @@ runtimePrototype.persistItineraryRepair = function persistFinalRouteOptimization
   }
   const scope: ProposalScope = { type: "trip", id: null };
   return runtime.createProposalForAction(action, result.title, result.explanation, commands, scope);
+};
+
+const originalPersistRefine = runtimePrototype.persistRefine as Function;
+runtimePrototype.persistRefine = function persistFinalRouteDayDetails(
+  this: TravelPlannerRuntimeV3,
+  action: AiActionRecord,
+  output: ItineraryRefineOutput,
+) {
+  const runtime = this as any;
+  const result = output.result as any;
+  if (result.type !== "success") return originalPersistRefine.call(this, action, output);
+  const trip = runtime.options.store.requireTrip(action.tripId);
+  const requestedIds = Array.isArray(action.parameters.dayIds) && action.parameters.dayIds.length
+    ? action.parameters.dayIds.map(String)
+    : action.targetIds.map(String);
+  const requested = new Set(requestedIds);
+  if (!requested.size || result.dayIds.length !== requested.size || result.dayIds.some((id: string) => !requested.has(id))) {
+    throw new Error("FINAL_ROUTE_DETAIL_SCOPE_VIOLATION: 完善安排只能返回用户授权的 Day。");
+  }
+  const currentStops = new Map(trip.plan.days
+    .filter((day: any) => requested.has(day.id))
+    .flatMap((day: any) => day.stops.map((stop: any) => [stop.id, stop] as const)));
+  const sanitized = structuredClone(output) as any;
+  for (const dayUpdate of sanitized.result.dayUpdates) {
+    if (!requested.has(dayUpdate.dayId)) throw new Error("FINAL_ROUTE_DETAIL_SCOPE_VIOLATION: 完善安排返回了范围外 Day。");
+    for (const stop of dayUpdate.stops) {
+      const current = currentStops.get(stop.stopId);
+      if (!current) throw new Error(`FINAL_ROUTE_DETAIL_SCOPE_VIOLATION: 完善安排引用未知线路节点 ${stop.stopId}。`);
+      stop.transportFromPrevious = structuredClone(current.transportFromPrevious);
+      stop.scheduleVerification = structuredClone(current.scheduleVerification);
+      stop.costVerification = structuredClone(current.costVerification);
+    }
+  }
+  return originalPersistRefine.call(this, action, sanitized);
 };
 
 const originalApplyProposal = runtimePrototype.applyProposal as Function;
