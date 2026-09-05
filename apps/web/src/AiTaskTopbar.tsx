@@ -10,7 +10,7 @@ const actionLabels: Record<string, string> = {
   "destination.generate": "生成主要地点", "destination.add": "新增地点", "destination.remove": "移除地点", "destination.replace": "替换地点", "destination.edit": "修改地点", "destination.preference": "调整地点偏好",
   "itinerary.generate": "生成线路", "itinerary.replan": "更新线路",
   "interest.discover": "生成详细地点", "interest.supplement": "补充详细地点", "interest.add": "新增详细地点", "interest.remove": "移除详细地点", "interest.replace": "替换详细地点", "interest.edit": "修改详细地点", "interest.preference": "调整地点偏好",
-  "itinerary.detail.generate": "生成详细安排", "itinerary.detail.update": "更新受影响安排", "itinerary.refine": "完善当天安排", "itinerary.day.optimize": "优化这一天", "itinerary.repair": "优化线路", "itinerary.verify": "核验动态信息",
+  "itinerary.detail.generate": "生成详细安排", "itinerary.detail.update": "更新受影响安排", "itinerary.refine": "完善这一天", "itinerary.day.optimize": "优化这一天", "itinerary.repair": "优化线路", "itinerary.verify": "核验动态信息",
   "requirements.update": "保存旅行需求", "requirements.clear": "更新旅行需求", "requirements.capture": "记录补充需求",
 };
 const stageLabels: Record<string, string> = { requirements: "旅行需求", destinations: "主要地点", interests: "详细地点", itinerary: "最终线路" };
