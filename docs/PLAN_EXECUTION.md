@@ -290,8 +290,8 @@ apps/server/final-route-phase1-r3-regression.test.ts
 ## Phase 1 R3 Codex 本地测试 Prompt
 
 ```text
-Test Branch: __R3_TEST_BRANCH__
-Test HEAD: __R3_TEST_HEAD__
+Test Branch: test/plan-phase1-final-route-20260905-r3
+Test HEAD: eeca847d16d6022416451c5223afa376e9d7c9c2
 
 你是独立测试 Agent。不要相信施工 Agent 的完成声明，只根据指定 Git 基线、实际代码和本地执行结果判断 Phase 1。
 
@@ -383,8 +383,8 @@ npm run build
 
 最终固定输出：
 
-Test Branch: ...
-Test HEAD: ...
+Test Branch: test/plan-phase1-final-route-20260905-r3
+Test HEAD: eeca847d16d6022416451c5223afa376e9d7c9c2
 
 Phase 1: PASS / FAIL
 
