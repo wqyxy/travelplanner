@@ -3,13 +3,15 @@
 > 对应目标：[`PLAN.md`](./PLAN.md)  
 > 当前产品：[`PRODUCT.md`](./PRODUCT.md)  
 > 当前技术：[`TECHNICAL.md`](./TECHNICAL.md)  
-> 施工进度：[`PLAN_PROGRESS.md`](./PLAN_PROGRESS.md)
+> 最终进度：[`PLAN_PROGRESS.md`](./PLAN_PROGRESS.md)
 
 ---
 
-# 1. 当前目标
+# 1. 最终结果
 
-产品已经收敛为两个工作区：
+本轮 PLAN 已完成。
+
+产品已经从旧五步收敛为两个工作区：
 
 ```text
 规划 · 旅行需求
@@ -18,9 +20,7 @@
 
 唯一用户线路是 `finalRoute`。
 
-Phase 1 已完成 finalRoute / Day / Route 底层；Phase 2 已完成右侧人工规划 + 地图；Phase 3 负责 AI 生成、详细安排和显式优化全部使用最终线路语义。
-
-核心权限：
+核心权限已经落实为：
 
 ```text
 普通 AI 生成 = 只能新增
@@ -32,298 +32,139 @@ Phase 1 已完成 finalRoute / Day / Route 底层；Phase 2 已完成右侧人�
 
 ---
 
-# 2. 已通过阶段
-
-## Phase 1
+# 2. Phase 1 — completed
 
 ```text
 Test Branch: test/plan-phase1-final-route-20260905-r3
 Test HEAD: eeca847d16d6022416451c5223afa376e9d7c9c2
 Phase 1: PASS
+Test Files: 83 / 83 passed
+Tests: 479 / 479 passed
 ```
 
-## Phase 2
+完成：
+
+- finalRoute 数据基础；
+- Day 根据 finalRoute 自动派生；
+- Route 与 Day 关系收敛；
+- 新旅行数据策略；
+- 当前 Runtime 过渡写入桥。
+
+---
+
+# 3. Phase 2 — completed
 
 ```text
 Test Branch: test/plan-phase2-final-route-ui-20260905-r2
 Test HEAD: aa55a6d616902d1c436b8f796c8e1be3c0a7f354
 Phase 2: PASS
+Test Files: 86 / 86 passed
+Tests: 489 / 489 passed
 ```
+
+完成：
+
+- 右侧最终线路成为人工规划唯一业务入口；
+- 重排、状态、住 / 不住、多一晚、到达交通；
+- 同 Place 多 route node；
+- 详细地点 / 定位修复；
+- 地图展示所有已定位状态点；
+- 地图路线只基于当前有效 Day；
+- Provider 事实边界在服务端受控 mutation 层强制执行。
 
 ---
 
-# 3. Phase 3 当前实现
+# 4. Phase 3 — completed
 
-- `destination.generate` 直接生成 finalRoute，不经过用户维护的 Candidate 页面。
-- 同一 Place 可在线路中出现多次，每次独立 route node。
-- `interest.discover / supplement` 只插入本轮新增详细地点，旧节点顺序和字段保持不变。
-- trip / day / segment scope 在服务端硬限制；局部找不到合法锚点时 fail closed。
-- 手工加入最终线路的地点可作为隐藏 planning area 研究锚点，但不改变 Place.kind、不自动住宿。
-- 详细时间 / 活动 / 备注直接属于 route node；右侧可人工编辑。
-- `itinerary.refine` 只完善授权 Day 的详细安排，并通过共享 `sanitizeFinalRouteRefineOutputV3` 强制保护 transport / verification。
-- `优化这一天 / 这一段 / 全程` 只产生授权节点的 move Proposal。
-- inactive 节点不进入优化授权集合，原槽位固定。
-- Proposal apply / undo 后自动启动 Route batch。
-- 正常 UI 仍只有旅行需求 / 最终线路，地图没有第二套业务按钮。
-
----
-
-# 4. Phase 3 测试历史
-
-## R1
-
-```text
-Test Branch: test/plan-phase3-final-route-ai-20260905
-Test HEAD: b736706424aa00aa1f3fd2db18a1ae915dc84afc
-Phase 3: FAIL
-```
-
-修复：Runtime refine 复用共享 sanitizer；修复 TypeScript 联合类型收窄；refine 测试改为真实中途 Stop；单日优化 Prompt 与测试字面一致。
-
-## R2
-
-```text
-Test Branch: test/plan-phase3-final-route-ai-20260905-r2
-Test HEAD: 635f2b8bcaa805f3dacf12e3134ae6b175a71a19
-Phase 3: FAIL
-Typecheck: PASS
-R1 三个失败点复测: PASS
-Phase 3 专项: 53 / 54 tests passed
-AI / Prompt / Runtime 回归: PASS
-npm test: 504 / 505 tests passed
-Build: PASS
-```
-
-R2 没有新的产品逻辑缺口，只剩两个测试契约问题：cutover 测试仍要求旧内联 sanitize；重复 Place 正式测试没有精确覆盖 A → B → A。
-
-## R3 修复
-
-- cutover 正式测试改为验证共享 sanitizer 的导入与调用，并禁止第二套内联清洗。
-- 重复 Place 正式测试改为真实 A → B → A，两个 A 正式化后复用同一 Place，但 route node ID 独立。
-- 没有修改生产代码或产品行为。
-
-施工 Agent 没有运行 test / typecheck / build / app / Provider / migration / CI。
-
----
-
-# 5. Phase 3 R3 本地 Codex 测试 Prompt
-
-> Test Branch: `test/plan-phase3-final-route-ai-20260905-r3`  
-> Test HEAD: `8b17dde239484e79a98b7900766442d1b8836ea2`
-
-你是 TravelPlanner Phase 3 R3 独立测试 Agent。
-
-不要相信施工 Agent 的完成声明，只根据指定 Git 基线、实际代码和本地执行结果判断。
-
-不要修改或修复生产代码。
-
-## 5.1 Git 基线
-
-测试前只能执行：
-
-```bash
-git branch --show-current
-git rev-parse HEAD
-git status --short
-```
-
-必须严格满足：
-
-```text
-Branch = test/plan-phase3-final-route-ai-20260905-r3
-HEAD = 8b17dde239484e79a98b7900766442d1b8836ea2
-工作树干净
-```
-
-Branch / HEAD 不一致：
-
-```text
-TEST_BASE_MISMATCH
-```
-
-工作树存在影响待测代码的修改：
-
-```text
-TEST_WORKTREE_DIRTY
-```
-
-不要自行 checkout / switch / pull / merge / rebase / reset / cherry-pick。
-
-## 5.2 R2 唯一失败点复测
-
-### A. 共享 sanitizer 测试合同
-
-`apps/web/src/phase3-final-route-ai-cutover.test.ts` 必须验证：
-
-- `final-route-ai-cutover-v3.ts` 导入 `sanitizeFinalRouteRefineOutputV3`；
-- `persistFinalRouteDayDetails` 直接调用共享 sanitizer；
-- Runtime 不存在第二套：
-
-```text
-stop.transportFromPrevious = structuredClone(...)
-stop.scheduleVerification = structuredClone(...)
-```
-
-### B. A → B → A 正式回归
-
-`apps/server/final-route-ai-v3.test.ts` 的重复 Place 测试必须真实形成：
-
-```text
-A → B → A
-```
-
-要求：
-
-- 两个 A 来自不同临时 Place；
-- 正式化后两个 A 引用同一现实 Place ID；
-- 三个 route node ID 全部独立；
-- 不得因为 Place / Candidate 去重而丢失回访 A；
-- 必须是非相邻重复。
-
-## 5.3 Typecheck
-
-```bash
-npm run typecheck
-```
-
-Windows 可使用：
-
-```bash
-npm.cmd run typecheck
-```
-
-## 5.4 Phase 3 专项
-
-```bash
-npx vitest run --config vitest.config.ts \
-  apps/server/final-route-ai-v3.test.ts \
-  apps/server/planning-roles-v3.test.ts \
-  apps/web/src/phase3-final-route-ai-cutover.test.ts \
-  apps/web/src/final-route-ui-v3.test.ts \
-  apps/web/src/final-route-map-v3.test.ts \
-  apps/web/src/phase2-final-route-cutover.test.ts \
-  apps/server/final-route-v3.test.ts \
-  apps/server/final-route-plan-commands-v3.test.ts \
-  apps/server/travel-store-final-route-v3.test.ts \
-  apps/server/day-route-v2.test.ts
-```
-
-## 5.5 AI / Prompt / Runtime 回归
-
-```bash
-npx vitest run --config vitest.config.ts \
-  apps/server/ai-registries-v3.test.ts \
-  apps/server/prompt-registry-v3.test.ts \
-  apps/server/ai-action-contracts-v3.test.ts \
-  apps/server/planner-runtime-v3.test.ts \
-  apps/server/planner-runtime-v3-ai-actions.test.ts \
-  apps/server/interest-discovery-v3.test.ts \
-  apps/server/planner-runtime-v3-detail-phase5.test.ts
-```
-
-## 5.6 完整回归
-
-```bash
-npm test
-```
-
-这是强制 Gate。任何正式测试失败都必须判：
-
-```text
-Phase 3: FAIL
-```
-
-## 5.7 Build
-
-```bash
-npm run build
-```
-
-Windows 可使用：
-
-```bash
-npm.cmd run build
-```
-
-bundle warning 不算失败，真正 build error 算失败。
-
----
-
-# 6. 独立审计
-
-至少抽查：
-
-1. A → B → A：同 Place、三个独立 route node。
-2. 共享 sanitizer success 分支保护 transport / verification。
-3. sanitizer 非 success union 分支仍合法返回。
-4. Runtime refine 只调用共享 sanitizer。
-5. 详细地点只新增，旧节点全字段不变。
-6. Day / segment 局部生成 fail closed。
-7. 单日 optimize 固定 Day boundary。
-8. segment / trip optimize 只移动授权 normal 节点，inactive 固定槽位。
-9. Proposal apply / reject / undo 与 stale generation。
-10. Provider transport 只保存 mode。
-11. 生产入口仍只有旅行需求 / 最终线路。
-12. Map Popup 无第二套业务按钮。
-
-允许创建一次性测试文件，但不得修改生产代码；测试后删除，最终工作树必须干净。
-
----
-
-# 7. 浏览器 / Provider
-
-有浏览器能力则验证右侧 AI / Proposal / 详细安排和地图单一职责。
-
-没有浏览器能力写：
-
-```text
-浏览器 / UI 验证：未覆盖
-```
-
-不得伪造 E2E PASS。
-
-真实外部 Route Provider 不是本阶段强制 Gate。
-
----
-
-# 8. 最终输出
+最终冻结验收：
 
 ```text
 Test Branch: test/plan-phase3-final-route-ai-20260905-r3
 Test HEAD: 8b17dde239484e79a98b7900766442d1b8836ea2
 
-Phase 3: PASS / FAIL
-
-实际执行的测试：
-- git branch --show-current: ...
-- git rev-parse HEAD: ...
-- git status --short: ...
-- npm run typecheck: PASS / FAIL
-- R2 唯一失败点复测: PASS / FAIL
-- Phase 3 专项: PASS / FAIL
-- AI / Prompt / Runtime 回归: PASS / FAIL
-- npm test: PASS / FAIL
-- npm run build: PASS / FAIL
-- 浏览器 / UI 验证: PASS / FAIL / 未覆盖
-- 独立临时审计: ...
-
-完整测试统计：
-- Test Files: ...
-- Tests: ...
-
-发现的问题：
-1. [Blocker / High / Medium / Low] ...
-   - 文件：
-   - 复现：
-   - 实际：
-   - 预期：
-   - 原因判断：
-
-未覆盖或无法验证：
-- ...
-
-是否建议完成本轮 PLAN：是 / 否
-
-原因：
-...
+Phase 3: PASS
+Typecheck: PASS
+R2 唯一失败点复测: PASS
+Phase 3 专项: PASS（10 files / 54 tests）
+AI / Prompt / Runtime 回归: PASS（7 files / 63 tests）
+npm test: PASS（88 files / 505 tests）
+npm run build: PASS
+独立临时审计: PASS
+浏览器 / UI 验证: 未覆盖
+真实外部 Route Provider: 未覆盖（非强制 Gate）
 ```
+
+Phase 3 完成：
+
+## 4.1 生成主要地点
+
+- `destination.generate` 直接形成 finalRoute。
+- 已有 finalRoute 时不能通过普通生成覆盖。
+- AI 输出顺序直接形成新 route node 顺序。
+- `routeSuggestion` 只作用于本轮新节点。
+- 同一现实 Place 可以多次出现，每次拥有独立 route node。
+- 正式回归已覆盖 `A → B → A`。
+
+## 4.2 生成 / 补充详细地点
+
+- `interest.discover / supplement` 继续复用原研究、正式化、定位和任务基础设施。
+- 持久化到最终线路时只能插入本轮新增 route nodes。
+- 已有 route node 的 ID、相对顺序、status、endsDay、transport 和 detail fields 均不能被普通生成改写。
+- trip / day / segment scope 都由服务端校验。
+- 局部 scope 找不到范围内合法锚点时 fail closed。
+
+## 4.3 详细安排
+
+- activity / period / startTime / endTime / durationMinutes / notes 属于 finalRoute node。
+- 右侧可以直接人工编辑。
+- “完善这一天”通过 `itinerary.refine` 产生 Proposal。
+- Runtime 统一调用共享 `sanitizeFinalRouteRefineOutputV3`。
+- AI 可以完善活动 / 时间 / 备注，但 transport / scheduleVerification / costVerification 强制保持当前事实。
+- 不恢复旧 Step 5 页面。
+
+## 4.4 显式优化
+
+- 优化这一天：只授权目标 Day 当前可移动 Stop route-node IDs。
+- 优化这一段：只授权连续线路范围内 normal nodes。
+- 优化全程：只授权整条线路 normal nodes。
+- AI 必须恰好返回授权 ID 集合，新增 / 删除 / 重复 / unknown ID 全部拒绝。
+- tentative / no_go 不在授权集合，原槽位固定。
+- 优化只产生 move Proposal，用户决定 apply / reject / undo。
+- Proposal stale generation / CAS 路径已回归。
+- apply / undo 后自动启动 Route batch。
+
+## 4.5 唯一用户入口
+
+正常生产 UI 只有：
+
+```text
+规划 · 旅行需求
+行程 · 最终线路
+```
+
+最终线路右侧包含 AI 和人工业务操作；地图只展示、选择、聚焦和响应从右侧启动的选点，不提供第二套同类 mutation。
+
+---
+
+# 5. 测试历史
+
+Phase 3 没有跳过失败 Gate：
+
+- R1 FAIL：TypeScript、refine 测试夹具、Prompt/断言问题。
+- R2 FAIL：两个正式测试仍绑定旧实现合同。
+- R3 PASS：全部正式 Gate 通过。
+
+施工 Agent 没有自行运行 test / typecheck / build / app / Provider / migration / CI；所有正式 PASS / FAIL 均来自用户本地 Codex 对冻结 Branch + HEAD 的测试。
+
+---
+
+# 6. 后续开发基线
+
+后续需求应以以下文件作为当前事实：
+
+- `docs/PRODUCT.md`：当前产品现状；
+- `docs/TECHNICAL.md`：当前技术现状；
+- `docs/PLAN.md`：本轮目标与产品规则背景；
+- `docs/PLAN_PROGRESS.md`：本轮完成记录与冻结测试结果。
+
+旧 `AppWorkflowV3`、Candidate / Skeleton / Daily Itinerary 组件和部分旧 Action contract 仍可能作为内部兼容、测试或过渡桥存在，但它们不是当前用户流程，也不得重新形成 finalRoute 之外的第二份用户线路来源。
