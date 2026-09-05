@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { emptyTravelPlan } from "../../server/contracts-v2.js";
 import type { FinalRouteNode, TravelPlanDocument } from "./v2-types";
 import { finalRouteDayCountV3, finalRouteDisplayRowsV3, newFinalRoutePlaceCommandsV3, transportFromModeV3 } from "./final-route-ui-v3";
 
@@ -21,24 +20,30 @@ const node = (id: string, status: FinalRouteNode["status"], endsDay = false): Fi
   notes: null,
 });
 
-function plan(nodes: FinalRouteNode[]) {
-  const base = emptyTravelPlan() as unknown as TravelPlanDocument;
+function plan(nodes: FinalRouteNode[]): TravelPlanDocument {
   return {
-    ...base,
-    finalRoute: { version: 1 as const, nodes },
-    places: nodes.map((item) => ({
-      id: item.placeId,
-      nameZh: item.id.toUpperCase(),
-      nameLocal: null,
-      nameEn: null,
-      kind: "attraction" as const,
-      city: null,
-      region: null,
-      country: null,
-      countryCode: null,
-      approximate: false,
-    })),
-  } satisfies TravelPlanDocument;
+    schemaVersion: 2,
+    stage: "itinerary_planning",
+    trip: {
+      title: "test",
+      brief: { destination: "", origin: "", departureTime: "", duration: "", travelers: "", transport: "", additionalRequirements: "" },
+      originPlaceId: null,
+      destinationPlaceIds: [],
+      dates: { start: null, end: null, requestedDurationDays: null },
+      travelers: { summary: "", adults: null, children: null },
+      budget: { amount: null, currency: null, note: null },
+      pace: null,
+      themes: [],
+      preferences: [],
+      constraints: [],
+      assumptions: [],
+    },
+    places: nodes.map((item) => ({ id: item.placeId, nameZh: item.id.toUpperCase(), nameLocal: null, nameEn: null, kind: "attraction", city: null, region: null, country: null, countryCode: null, approximate: false })),
+    candidates: [],
+    finalRoute: { version: 1, nodes },
+    days: [],
+    warnings: [],
+  };
 }
 
 describe("final route UI helpers", () => {
@@ -58,6 +63,11 @@ describe("final route UI helpers", () => {
       ["c", 2],
     ]);
     expect(finalRouteDayCountV3(source)).toBe(2);
+  });
+
+  it("does not create an extra Day merely because a non-boundary node exists before the last boundary", () => {
+    expect(finalRouteDayCountV3(plan([node("a", "normal"), node("b", "normal", true)]))).toBe(1);
+    expect(finalRouteDayCountV3(plan([node("a", "normal", true), node("b", "normal")]))).toBe(2);
   });
 
   it("creates one batch that adds the Place/Candidate and its route occurrence", () => {
