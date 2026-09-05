@@ -33,7 +33,7 @@ describe("Phase 3 final route AI cutover", () => {
   });
 
   it("uses final-route language instead of the removed five-step product language in rewritten AI prompts", () => {
-    const root = fileURLToPath(new URL("../../../..", import.meta.url));
+    const root = fileURLToPath(new URL("../../..", import.meta.url));
     const readPrompt = (path: string) => readFileSync(`${root}/prompts/${path}`, "utf8");
     const main = readPrompt("actions/destinations/生成目的地建议.md");
     const details = readPrompt("actions/interests/发现兴趣点.md");
