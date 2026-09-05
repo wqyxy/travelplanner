@@ -163,18 +163,17 @@ Map Popup 不增加 AI / 业务修改入口。
 ## 本地测试基线
 
 ```text
-Test Branch: __TEST_BRANCH__
-Test HEAD: __TEST_HEAD__
+Test Branch: test/plan-phase3-final-route-ai-20260905
+Test HEAD: b736706424aa00aa1f3fd2db18a1ae915dc84afc
 ```
 
-冻结后不再修改该测试分支。
+测试分支已冻结；该分支内文档可能仍显示占位符，本次测试以这里记录的 Branch + HEAD 和用户拿到的测试 Prompt 顶部为准。
 
 ---
 
 ## 下一步
 
-1. 冻结 Phase 3 唯一测试 Branch + HEAD；
-2. 用户本地 Codex 执行 `PLAN_EXECUTION.md` 的 Phase 3 Gate；
-3. 返回匹配基线 PASS / FAIL；
-4. PASS → Phase 3 completed，本轮 PLAN 完成；
-5. FAIL → 只修 Phase 3 报告问题，生成新的测试基线。
+1. 用户本地 Codex 执行 `PLAN_EXECUTION.md` 的 Phase 3 Gate；
+2. 返回匹配基线 PASS / FAIL；
+3. PASS → Phase 3 completed，本轮 PLAN 完成；
+4. FAIL → 只修 Phase 3 报告问题，生成新的测试基线。
