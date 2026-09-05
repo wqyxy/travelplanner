@@ -3,7 +3,7 @@
 ## Overall Status
 
 当前阶段：Phase 3 — AI 直接写最终线路 + 显式优化 + 旧流程收敛  
-总体状态：in_progress  
+总体状态：awaiting_local_test  
 最后更新时间：2026-09-05
 
 ---
@@ -11,36 +11,32 @@
 ## 已确认的产品决定
 
 - 用户只维护一份最终线路。
-- 同一 Place 可以在线路中出现多次，每次拥有独立线路节点 ID。
-- 节点状态只有 normal / tentative / no_go。
-- tentative / no_go 保留顺序、地图点和原住宿分界，但暂时退出当前 Day 和交通路线；恢复 normal 后原位置重新生效。
-- 交通方式属于“到达当前节点”。
-- 不住只取消日程分界。
-- 多一晚新增同 Place 线路节点，不移动其他地点。
-- Day 根据最终线路自动生成，最后一天允许没有住宿分界。
-- 地图展示全部已定位线路节点，路线只连接当前 normal 派生 Day。
-- 地图只负责展示 / 选择 / 定位辅助，业务修改统一在右侧。
-- finalRoute 只保存用户选择的交通方式；真实距离、时长、geometry 和 Provider 验证事实不能由 UI / AI / API 调用方伪造。
-- 普通 AI 生成只能插入新地点，不能改变已有地点相对顺序、状态或住宿分界。
-- 只有用户明确调用“优化这一天 / 这一段 / 全程”时，AI 才获得对应范围内重排已有节点的权限。
+- 同一 Place 可以在线路中出现多次，每次拥有独立 route node ID。
+- tentative / no_go 保留原顺序、endsDay、到达交通和地图点，但暂时退出当前 Day / Route。
+- 交通属于“到达当前节点”。
+- 住 / 不住只控制 endsDay；多一晚新增同 Place 独立 route node。
+- Day 根据 finalRoute 自动派生；最后一天不要求住宿分界。
+- 右侧最终线路是唯一业务入口；地图不提供第二套业务按钮。
+- 普通 AI 生成只能新增节点，不能修改已有节点。
+- 只有用户显式点击优化时，AI 才能重排服务端授权范围内的已有 normal 节点。
+- 详细安排继续属于 finalRoute：活动、时间、停留、备注能力保留，不恢复旧 Step 5。
+- Provider 坐标、真实距离、真实时长、geometry、verified 事实不能由 UI / AI / API 调用方伪造。
 
 ---
 
 ## 测试规则
 
-- 施工 Agent 不运行任何测试、typecheck、build、应用启动、迁移或 CI。
-- 每个 Phase 由用户本地 Codex 独立测试。
+- 施工 Agent 不运行 test / typecheck / build / app / Provider / migration / CI。
+- 用户本地 Codex 独立测试。
 - 测试绑定唯一 Test Branch + 40 位 Test HEAD。
 - 任意待测代码变化都会使旧测试结果失效。
-- 用户未返回匹配 Branch + HEAD 的 PASS 前，不进入下一 Phase。
+- 匹配基线 PASS 前，不把 Phase 3 标记 completed。
 
 ---
 
-# Phase 1：最终线路底层与自动 Day / Route 基础
+# Phase 1
 
 状态：completed
-
-最终验收：
 
 ```text
 Test Branch: test/plan-phase1-final-route-20260905-r3
@@ -52,29 +48,9 @@ Tests: 479 passed / 0 failed / 479 total
 
 ---
 
-# Phase 2：右侧最终线路人工规划闭环 + 地图联动
+# Phase 2
 
 状态：completed
-
-R1：
-
-```text
-Test Branch: test/plan-phase2-final-route-ui-20260905
-Test HEAD: 762c8926fedb1b2fd73f113ab2989f2a207bb990
-Phase 2: FAIL
-```
-
-R1 独立审计发现两个 High：
-
-1. inactive 节点退出当前 Day 后，dirty 旧 Provider geometry 仍可能经过该节点。
-2. finalRoute 交通命令可以保存调用方伪造的 duration / note / verified 事实。
-
-R2 已修复：
-
-- 地图 dirty leg 必须同时匹配当前 Day 的 fromNodeId / fromPlaceId / toNodeId / toPlaceId；
-- finalRoute mutation 对交通输入统一正规化，仅保存 mode；
-- `mode=none` 保存为 null；
-- `set_final_route_transport` 与 `add_final_route_node.transportFromPrevious` 均受同一事实边界保护。
 
 最终验收：
 
@@ -86,48 +62,119 @@ Test Files: 86 passed / 0 failed / 86 total
 Tests: 489 passed / 0 failed / 489 total
 ```
 
-浏览器 / UI E2E 因测试环境没有可用浏览器未覆盖，不作为 Phase 2 Gate 失败；typecheck、专项、完整回归、build 和独立负向审计均 PASS。
-
 ---
 
-# Phase 3：AI 直接写最终线路 + 显式优化 + 旧流程收敛
+# Phase 3
 
-状态：in_progress
+状态：awaiting_local_test
 
-## 施工目标
+## 已完成施工
 
-1. “生成主要地点”直接把 AI 新 Place / route node 写入 finalRoute。
-2. “生成详细地点”直接把新增地点插入 finalRoute，不再经过 Candidate → DayStop 的二次安排。
-3. 普通生成只允许插入新节点：
-   - 不重排已有 route node；
-   - 不删除已有节点；
-   - 不改变 normal / tentative / no_go；
-   - 不改变已有 endsDay；
-   - 不把已有节点移动到其他 Day。
-4. 支持局部详细地点生成：全程 / 某个 Day / 指定连续线路段。
-5. 只有显式优化才允许重排已有节点：
-   - 优化这一天；
-   - 优化这一段；
-   - 优化全程。
-6. AI 优化必须使用 Proposal / generation / CAS 边界，用户最终决定是否采用。
-7. 右侧最终线路继续是唯一业务入口；地图不新增业务按钮。
-8. 旧 destination / interest / itinerary 产品职责和 Prompt 收敛到最终线路语义。
-9. 缩小或删除 Phase 1 为旧 Skeleton / Day 中间态保留的过渡路径。
-10. 完成后更新 `PRODUCT.md` / `TECHNICAL.md`。
+### AI 主要地点
 
-## 当前施工状态
+- `destination.generate` 用户语义改为“生成主要地点”。
+- 只允许 finalRoute 为空时第一次生成，不能覆盖已有用户线路。
+- AI output candidate 顺序直接成为新 route node 顺序。
+- 新节点可带 `routeSuggestion.endsDay / transportMode`；没有“每个地点默认住一晚”。
+- transport 仍只保存 mode，不制造 Provider 事实。
+- 同一现实 Place 可在 AI 主线路出现多次，每次创建独立 route node。
 
-- 已完成 Phase 2 → Phase 3 状态切换。
-- 正在检查现有 AI Action / Prompt / output contract，优先复用 generation、Proposal、Provider、Revision 基础设施，不恢复旧五步产品关系。
+### AI 详细地点
+
+- `interest.discover / supplement` 用户语义改为“生成 / 补充详细地点”。
+- 复用原并行研究、0–9 数量、正式化、去重、定位和任务进度。
+- Store 写入前只为本轮真正新增的 detail candidates 创建 route nodes。
+- 所有已有 route nodes 的相对顺序和字段必须保持不变。
+- 支持 trip / day / segment scope。
+- Day / segment scope 找不到范围内合法锚点时 fail closed，不回退范围外位置。
+
+### 手工线路地点作为研究锚点
+
+- 手工从最终线路新增 Place 会同步创建隐藏 `planning_area` Candidate。
+- 这只是 AI 详细地点研究锚点，不改变 Place.kind，不自动住宿。
+- 有 parent candidate 的地点在未显式 role 时固定推导为 `detail_interest`，即使 Place.kind=city。
+
+### 详细安排
+
+- 旧 Step 5 页面没有恢复。
+- 最终线路右侧直接编辑 activity / period / startTime / endTime / durationMinutes / notes。
+- `scheduleText` 已存在时直接展示。
+- 当前内部写入复用已验证的 deterministic `itinerary.edit` + Day→finalRoute 桥。
+- 每个有 Stop 的 Day 可点击“完善这一天”（内部 `itinerary.refine`）。
+- AI refine 只能更新授权 Day 的既有 Stop 详细字段。
+- AI 返回的 transportFromPrevious / scheduleVerification / costVerification 会被服务端恢复为当前值，不能借 refine 改路线事实或伪造 verified。
+- refine 结果走 Proposal，由用户 apply / reject。
+
+### 显式优化
+
+- “优化这一天”：只授权目标 Day 当前 Stop route-node IDs，Day end boundary 固定。
+- “优化这一段”：只授权选定连续 route span 内 normal nodes。
+- “优化全程”：只授权整条 finalRoute 的 normal nodes。
+- AI 必须恰好返回授权 ID 集合的新顺序；新增 / 删除 / 重复 / unknown ID 全部拒绝。
+- tentative / no_go 不在授权集合，原槽位固定。
+- 优化只生成 `move_final_route_node` Proposal；用户决定 apply / reject / undo。
+- 优化 Proposal apply / undo 后自动启动 Route batch 更新地图路线。
+
+### 右侧唯一入口
+
+`FinalRoutePanelV3` 当前包含：
+
+- 生成主要地点；
+- 生成详细地点；
+- 某 Day / 某段补充详细地点；
+- 完善这一天；
+- 优化这一天 / 这一段 / 全程；
+- AI Proposal apply / reject / undo；
+- 原有人工线路操作、详细安排、地点编辑、定位修复。
+
+Map Popup 不增加 AI / 业务修改入口。
+
+### Prompt / 文档
+
+已重写主要 AI Prompt 为最终线路语言：
+
+- 生成主要地点；
+- 生成详细地点；
+- 补充详细地点；
+- 完善这一天；
+- 优化这一天；
+- 优化这一段或全程。
+
+已同步 `PRODUCT.md` / `TECHNICAL.md` 为当前两工作区产品和技术现状。
+
+### 仍保留的内部旧代码
+
+旧 `AppWorkflowV3`、Candidate/Skeleton/Daily Itinerary 组件和部分旧 Action contract 仍有源码存在，用于内部兼容、测试或当前写入桥；它们不再由生产入口挂载，也不能成为 finalRoute 之外的第二份用户线路来源。
+
+本 Phase 没有 DB Schema 迁移，也没有恢复旧测试数据兼容。
+
+## 施工侧验证
+
+只做了：
+
+- GitHub 静态读取 / 写入；
+- 调用链审查；
+- Scope / Schema / Prompt 对照；
+- diff / 入口审查；
+- 新增测试代码。
+
+没有运行任何测试、typecheck、build、应用或 CI。
+
+## 本地测试基线
+
+```text
+Test Branch: __TEST_BRANCH__
+Test HEAD: __TEST_HEAD__
+```
+
+冻结后不再修改该测试分支。
 
 ---
 
 ## 下一步
 
-继续 Phase 3 施工；达到完整可测状态后：
-
-1. 只做静态 Review；
-2. 状态改为 `awaiting_local_test`；
-3. 冻结新的 Phase 3 Test Branch + HEAD；
-4. 输出完整本地 Codex 测试 Prompt；
-5. 用户返回匹配基线的 PASS / FAIL 后再决定是否完成本轮 PLAN。
+1. 冻结 Phase 3 唯一测试 Branch + HEAD；
+2. 用户本地 Codex 执行 `PLAN_EXECUTION.md` 的 Phase 3 Gate；
+3. 返回匹配基线 PASS / FAIL；
+4. PASS → Phase 3 completed，本轮 PLAN 完成；
+5. FAIL → 只修 Phase 3 报告问题，生成新的测试基线。
