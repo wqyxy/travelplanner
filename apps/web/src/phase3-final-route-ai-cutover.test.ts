@@ -40,13 +40,15 @@ describe("Phase 3 final route AI cutover", () => {
     expect(cutover).toContain('const scope: ProposalScope = { type: "trip", id: null }');
   });
 
-  it("fails closed on requested Day scope, protects refine facts, and refreshes routes after optimization apply or undo", () => {
+  it("fails closed on requested Day scope, reuses the shared refine sanitizer, and refreshes routes after optimization apply or undo", () => {
     const cutover = serverSource("final-route-ai-cutover-v3.ts");
     expect(cutover).toContain("requestedDayId");
     expect(cutover).toContain("result.dayId !== requestedDayId");
     expect(cutover).toContain("persistFinalRouteDayDetails");
-    expect(cutover).toContain("stop.transportFromPrevious = structuredClone(current.transportFromPrevious)");
-    expect(cutover).toContain("stop.scheduleVerification = structuredClone(current.scheduleVerification)");
+    expect(cutover).toContain("sanitizeFinalRouteRefineOutputV3,");
+    expect(cutover).toContain("const sanitized = sanitizeFinalRouteRefineOutputV3(trip.plan, requestedIds, output)");
+    expect(cutover).not.toContain("stop.transportFromPrevious = structuredClone(current.transportFromPrevious)");
+    expect(cutover).not.toContain("stop.scheduleVerification = structuredClone(current.scheduleVerification)");
     expect(cutover).toContain("originalApplyProposal");
     expect(cutover).toContain("originalUndoProposal");
     expect(cutover).toContain("runtime.startRouteBatch");
