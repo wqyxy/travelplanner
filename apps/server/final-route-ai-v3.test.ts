@@ -7,13 +7,14 @@ import {
   type TravelPlanDocument,
   type TripCandidate,
 } from "./contracts-v2.js";
-import type { DestinationGenerateOutput } from "./ai-action-contracts-v3.js";
+import type { DestinationGenerateOutput, ItineraryRefineOutput } from "./ai-action-contracts-v3.js";
 import {
   applyMainRouteGenerationFromOutputV3,
   finalRouteMoveCommandsForOrderedSubsetV3,
   finalRouteTargetNodeIdsForOptimizationV3,
   insertNewDetailCandidatesFromPlanV3,
   orderedAuthorizedRouteNodeIdsFromDaysV3,
+  sanitizeFinalRouteRefineOutputV3,
 } from "./final-route-ai-v3.js";
 import { rebuildFinalRouteDaysV3 } from "./final-route-v3.js";
 import { applyPlanCommands } from "./plan-commands-v2.js";
@@ -126,6 +127,20 @@ describe("final route AI write permissions", () => {
     expect(result.days.length).toBeGreaterThan(0);
   });
 
+  it("allows the same formal Place to appear multiple times as independent AI route nodes", () => {
+    const before = plan({ places: [] });
+    const discovered = plan({
+      places: [place("formal-a", "A"), place("formal-b", "B")],
+      candidates: [candidate("formal-a-candidate", "formal-a", "core_visit", "formal-b-candidate"), candidate("formal-b-candidate", "formal-b", "planning_area")],
+    });
+    const output = mainOutput();
+    output.candidates.push({ ...output.candidates[1], temporaryId: "candidate-a-return", aiReason: "回到 A" });
+
+    const result = applyMainRouteGenerationFromOutputV3(before, discovered, output);
+    expect(result.finalRoute.nodes.map((item) => item.placeId)).toEqual(["formal-b", "formal-a", "formal-a"]);
+    expect(new Set(result.finalRoute.nodes.map((item) => item.id)).size).toBe(3);
+  });
+
   it("refuses ordinary main generation when the user already has a final route", () => {
     const before = plan({ places: [place("existing")], nodes: [node("existing-node", "existing")] });
     const discovered = plan({ places: [place("formal-a", "A"), place("formal-b", "B")], candidates: [candidate("ca", "formal-a", "core_visit", "cb"), candidate("cb", "formal-b", "planning_area")] });
@@ -209,5 +224,53 @@ describe("final route AI write permissions", () => {
     expect(() => finalRouteMoveCommandsForOrderedSubsetV3(before, ["a-node", "b-node"], ["a-node", "a-node"])).toThrow(/FINAL_ROUTE_OPTIMIZE_SCOPE_VIOLATION/);
     expect(() => finalRouteMoveCommandsForOrderedSubsetV3(before, ["a-node", "b-node"], ["a-node", "unknown"])).toThrow(/FINAL_ROUTE_OPTIMIZE_SCOPE_VIOLATION/);
     expect(() => orderedAuthorizedRouteNodeIdsFromDaysV3([{ id: "a-node", stops: [{ id: "b-node" }, { id: "a-node" }] }], ["a-node", "b-node"])).toThrow(/FINAL_ROUTE_OPTIMIZE_SCOPE_VIOLATION/);
+  });
+
+  it("lets refine change schedule text and notes but preserves transport and verification facts", () => {
+    const before = plan({
+      places: [place("a"), place("b")],
+      nodes: [
+        node("a-node", "a", { transportFromPrevious: { mode: "drive", durationMinutes: null, note: null, verification: { status: "unverified", checkedAt: null } } }),
+        node("b-node", "b"),
+      ],
+    });
+    const day = before.days[0];
+    const currentStop = day.stops[0];
+    const output: ItineraryRefineOutput = {
+      schemaVersion: 1,
+      baseGeneration: 0,
+      assistantMessage: "完善时间",
+      result: {
+        type: "success",
+        title: "完善 Day 1",
+        explanation: "补充时间",
+        dayIds: [day.id],
+        dayUpdates: [{
+          dayId: day.id,
+          stops: [{
+            stopId: currentStop.id,
+            activity: "上午游览 A",
+            period: "morning",
+            scheduleText: "09:00 左右开始",
+            startTime: "09:00",
+            endTime: "10:30",
+            durationMinutes: 90,
+            transportFromPrevious: { mode: "flight", durationMinutes: 999, note: "fake", verification: { status: "verified", checkedAt: "2026-09-05T00:00:00Z" } },
+            scheduleVerification: { status: "verified", checkedAt: "2026-09-05T00:00:00Z" },
+            costNote: null,
+            costVerification: { status: "verified", checkedAt: "2026-09-05T00:00:00Z" },
+            notes: "早点到",
+          }],
+        }],
+      },
+    };
+
+    const sanitized = sanitizeFinalRouteRefineOutputV3(before, [day.id], output);
+    if (sanitized.result.type !== "success") throw new Error("expected success");
+    const updated = sanitized.result.dayUpdates[0].stops[0];
+    expect(updated).toMatchObject({ activity: "上午游览 A", scheduleText: "09:00 左右开始", startTime: "09:00", endTime: "10:30", durationMinutes: 90, notes: "早点到" });
+    expect(updated.transportFromPrevious).toEqual(currentStop.transportFromPrevious);
+    expect(updated.scheduleVerification).toEqual(currentStop.scheduleVerification);
+    expect(updated.costVerification).toEqual(currentStop.costVerification);
   });
 });
