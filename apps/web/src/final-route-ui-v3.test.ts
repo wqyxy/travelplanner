@@ -70,7 +70,7 @@ describe("final route UI helpers", () => {
     expect(finalRouteDayCountV3(plan([node("a", "normal", true), node("b", "normal")]))).toBe(2);
   });
 
-  it("creates one batch that adds the Place/Candidate and its route occurrence", () => {
+  it("creates one batch that adds the Place/internal detail anchor and its route occurrence", () => {
     const commands = newFinalRoutePlaceCommandsV3({
       index: 2,
       temporaryPlaceId: "tmp-place",
@@ -80,7 +80,7 @@ describe("final route UI helpers", () => {
       kind: "attraction",
     });
     expect(commands).toHaveLength(2);
-    expect(commands[0]).toMatchObject({ type: "add_candidate", place: { id: "tmp-place", nameZh: "Hobbiton" }, candidate: { id: "tmp-candidate", placeId: "tmp-place", planningRole: "detail_interest" } });
+    expect(commands[0]).toMatchObject({ type: "add_candidate", place: { id: "tmp-place", nameZh: "Hobbiton" }, candidate: { id: "tmp-candidate", placeId: "tmp-place", planningRole: "planning_area" } });
     expect(commands[1]).toMatchObject({ type: "add_final_route_node", index: 2, node: { id: "tmp-node", placeId: "tmp-place", status: "normal", endsDay: false } });
   });
 
