@@ -134,7 +134,8 @@ describe("final route AI write permissions", () => {
       candidates: [candidate("formal-a-candidate", "formal-a", "core_visit", "formal-b-candidate"), candidate("formal-b-candidate", "formal-b", "planning_area")],
     });
     const output = mainOutput();
-    output.candidates.push({ ...output.candidates[1], temporaryId: "candidate-a-return", aiReason: "回到 A" });
+    output.places.push({ ...place("tmp-a-return", "A"), id: "tmp-a-return" });
+    output.candidates.push({ ...output.candidates[1], temporaryId: "candidate-a-return", placeTemporaryId: "tmp-a-return", aiReason: "回到 A" });
 
     const result = applyMainRouteGenerationFromOutputV3(before, discovered, output);
     expect(result.finalRoute.nodes.map((item) => item.placeId)).toEqual(["formal-b", "formal-a", "formal-a"]);
@@ -239,9 +240,9 @@ describe("final route AI write permissions", () => {
     const output: ItineraryRefineOutput = {
       schemaVersion: 1,
       baseGeneration: 0,
-      assistantMessage: "完善时间",
       result: {
         type: "success",
+        assistantMessage: "完善时间",
         title: "完善 Day 1",
         explanation: "补充时间",
         dayIds: [day.id],
