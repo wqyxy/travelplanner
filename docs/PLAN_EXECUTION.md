@@ -135,15 +135,30 @@ AI 才能在授权范围内重排已有节点。
 因此本轮施工：
 
 - 不做旧旅行 JSON 迁移；
-- 不做旧 Candidate / Day → 最终线路转换；
+- 不做旧 Candidate / Day → 最终线路的数据迁移；
 - 不做旧 Revision 恢复兼容；
-- 不维护新旧数据双写；
-- 不因为旧测试数据库增加兼容分支；
+- 不因为旧数据库保留兼容分支；
 - 必要时直接删除 / 清空本地测试数据库重新创建旅行。
 
 新结构自己的 Revision / Undo / generation / CAS 继续保留并必须正常工作。
 
-数据库表结构本身不需要为了这次改造强行变更版本；旧计划 JSON 因缺少新结构而被拒绝读取时，直接清空测试数据即可。
+这里要区分两件事：
+
+### 不允许：旧数据迁移
+
+已经保存到数据库中的旧格式旅行，如果没有新的最终线路结构，直接拒绝读取；不根据旧 Candidate、旧 Day 或旧 Revision 猜出一条新线路。
+
+### Phase 1 临时允许：当前代码入口的写入翻译
+
+Phase 2 / Phase 3 尚未移除旧 Skeleton、旧 Day 编辑和旧详细行程 Action。为了让当前程序在施工中间态仍然可运行，这些**当前代码入口产生的新写入**可以在 Store 保存边界被翻译成最终线路节点，然后立即重新生成 Day。
+
+这不是旧数据迁移，因为：
+
+- 输入来自当前运行中的一次新操作；
+- 最终保存的仍然只有最终线路；
+- `days[]` 不会成为第二份独立线路；
+- 已经落盘的旧旅行仍然直接拒绝；
+- Phase 2 / Phase 3 移除旧入口后，这层临时翻译应继续缩小或删除。
 
 ---
 
@@ -176,51 +191,82 @@ AI 才能在授权范围内重排已有节点。
 
 从全新数据开始，让系统底层真正以最终线路为中心工作。
 
-不再承担任何旧旅行数据迁移职责。
+不承担旧旅行数据迁移职责，同时保证 Phase 2 / 3 尚未拆除的当前旧入口不会把 Day 再保存成另一份线路。
 
 ## 修改范围
 
 - 最终线路数据结构
 - TravelPlanDocument
-- 数据库版本边界
 - Day 自动生成
 - Route 输入 / dirty 判断
 - PlanCommand / Revision 基础
+- Store 写入边界
+- 当前 Skeleton / Day / detail 写入的临时翻译
 - 并发冲突识别
 - 本地测试用例
 
 ## 主要修改
 
-1. 业务读取 / 写入只接受当前最终线路结构。
-2. 现有 `emptyTravelPlan()` 的 `finalRoute.version = 0` 只允许作为**完全空白启动占位**：不能包含 Place、Candidate、Day 或线路节点，也不能承担旧数据转换；第一次被 Store / 最终线路逻辑读取时立即提升为 `version = 1`。
-3. 一旦旅行出现任何实际规划内容，必须已经使用 `finalRoute.version = 1`。
+1. 现有 `emptyTravelPlan()` 的 `finalRoute.version = 0` 只允许作为完全空白启动占位。
+2. 完全空白占位第一次进入 Store / 最终线路逻辑后立即提升为 `version = 1`。
+3. 已经落盘且含实际旅行内容的旧格式计划直接报 `OLD_TEST_PLAN_UNSUPPORTED`，不迁移。
 4. 同一 Place 可被多个线路节点引用。
-5. 支持：
-   - 新增节点；
-   - 移除节点；
-   - 拖动；
-   - normal / tentative / no_go；
-   - 住 / 不住；
-   - 多一晚；
-   - 修改交通方式。
+5. 支持新增、移除、拖动、三状态、住 / 不住、多一晚、修改交通方式。
 6. Day 始终根据最终线路重新生成。
-7. 保存旅行时不接受 `days[]` 作为另一份独立线路。
-8. Route 能正确读取 Day 终点的到达交通方式。
-9. 最终线路变化参与 generation / Revision / Proposal 冲突判断。
-10. 旧计划 JSON 不迁移；旧测试数据不能按新结构读取时直接清空重建。
-11. 删除之前为了旧 Candidate / Day / Revision 内容转换而加入的逻辑和测试；只保留完全空白启动占位的最小提升逻辑。
+7. 最终线路明确变化时，即使调用方同时提交了过期 `days[]`，也以最终线路为准重新生成 Day。
+8. Phase 1 过渡期，如果当前旧代码只修改了 Day / Skeleton / detailed Day、没有直接修改最终线路，Store 在保存前把该 Day 视图翻译成最终线路节点，再重新生成 Day。
+9. 上述临时翻译需要保留：
+   - Day 顺序；
+   - Day 起点 / 终点；
+   - `stayBlockId` 等仍被当前旧运行时读取的过渡信息；
+   - 当前详细行程的时间、活动、备注等信息；
+   - 到达第一站 / 终点的交通方式；
+   - 已经存在的 tentative / no_go 节点及其原排序。
+10. 临时翻译不能读取数据库中的旧格式旅行来做迁移。
+11. Route 能正确读取 Day 终点的到达交通方式。
+12. 最终线路变化参与 generation / Revision / Proposal 冲突判断。
+13. Revision / restore 只保证新结构。
 
-## 代码施工完成条件
+## 第一次本地验收结果
 
-- 含实际规划内容的旅行只接受 `finalRoute.version = 1`；
-- 完全空白的 `version = 0` 只作为启动占位，读取后立即提升，不承载旧数据；
-- Day 能由最终线路得到；
+测试基线：
+
+```text
+Test Branch: test/plan-phase1-final-route-20260905
+Test HEAD: b751f0dff0c475419c54bf657a8cc541343443ac
+```
+
+用户本地测试结果：`FAIL`。
+
+已通过：
+
+- typecheck；
+- Phase 1 专项测试 22/22；
+- 用户独立补充测试 9/9；
+- build。
+
+失败：
+
+- 完整 `npm test` 有 7 个测试文件、21 个测试失败。
+
+共同根因：
+
+> Phase 1 已经要求 Store 只从最终线路生成 Day，但 Phase 2 / 3 尚未拆除的当前 Skeleton、DayStop 和运行时 Action 仍然会先生成 / 修改 `days[]`。这些写入进入 Store 后被当成无效派生数据丢弃，导致当前程序中间态和旧回归测试一起失效。
+
+本轮修复没有恢复旧数据迁移，而是在 Store 保存边界增加“当前 Day 视图 → 最终线路 → Day”的临时翻译。
+
+## Phase 1 代码施工完成条件
+
+- 完全空白的 `version = 0` 只作为启动占位；
+- 已落盘的非空旧格式旅行直接拒绝；
+- Day 能由最终线路稳定得到；
 - 状态、住宿分界、多一晚、交通、拖动和删除都有确定性底层操作；
-- Store 保存时由最终线路重建 Day；
-- 新格式 Revision / restore 保持可用；
-- 旧格式计划 JSON 不会被转换成最终线路；
-- 静态 Review 没有发现任何旧 Candidate / Day / Revision 内容转换逻辑仍然存在；
-- Phase 状态更新为 `awaiting_local_test`。
+- 最终线路显式修改永远优先于同时提交的 `days[]`；
+- 当前旧 Skeleton / Day / detail 入口的新操作能够被翻译成最终线路后保存，不产生第二份线路；
+- inactive 节点不会在翻译过程中丢失；
+- 新结构 Revision / restore 保持可用；
+- Route 终点交通继续可用；
+- 完整仓库回归由用户本地验证。
 
 ## 本地测试要求
 
@@ -232,32 +278,37 @@ npm test
 npm run build
 ```
 
-重点验证：
+并重点复测第一次失败的 7 个文件：
 
-- 完全空白启动占位可以临时为 `version = 0`，但不能携带任何旅行内容，并会立即提升为 `version = 1`；
-- 任何含 Place / Candidate / Day 的旧格式计划都直接拒绝，不做转换；
-- 同一 Place 多节点；
-- normal / tentative / no_go；
-- inactive 节点分界暂时失效并可恢复；
-- 住 / 不住 / 多一晚；
-- 交通继承；
-- 最后一天无住宿；
-- Day 编号 / 日期重算；
-- Route 终点交通；
-- Store 不信任独立修改的 days[]；
-- 新格式 Revision / restore；
-- generation / Proposal 冲突；
-- 旧格式计划 JSON 不会被自动转换；
-- Provider 事实边界未被破坏。
+```text
+apps/server/core-promotion-v3.test.ts
+apps/server/planner-runtime-v3.test.ts
+apps/server/interest-discovery-v3.test.ts
+apps/server/planner-runtime-v3-detail-unavailable-phase5.test.ts
+apps/server/skeleton-edit-api-v3.test.ts
+apps/server/planner-runtime-v3-ai-actions.test.ts
+apps/server/planner-runtime-v3-detail-phase5.test.ts
+```
+
+还要验证：
+
+- 已落盘旧格式计划仍然拒绝，不因这次修复重新获得迁移能力；
+- 当前旧 Skeleton / Day / detailed Day 新写入可以转成最终线路；
+- 保存完成后再人为修改一份独立 `days[]`，最终线路显式修改时 Day 仍必须从最终线路重建；
+- tentative / no_go 节点在旧 Day 视图更新时不会被删除；
+- 第一天起点不等于 `trip.originPlaceId` 时不会丢失；
+- planned Day 不会因为过渡 Stop 的占位 activity 自动被误判为 detailed；
+- 旧 detail/refine 对时间、period、备注等显式修改可以进入线路节点；
+- Day transferMode 能落实到对应到达节点；
+- 新结构 Revision / Proposal / generation 冲突保护仍有效。
 
 ## 本阶段 Codex 本地测试 Prompt
 
-> Test Branch: `test/plan-phase1-final-route-20260905`
-> Test HEAD: `b751f0dff0c475419c54bf657a8cc541343443ac`
+> 本节中的最终 `Test Branch` / `Test HEAD` 会在本轮 R2 代码冻结后记录到 `PLAN_PROGRESS.md`，并由施工 Agent 在交付给用户的测试 Prompt 顶部明确给出。测试时以交付 Prompt 顶部的精确值为准。
 >
-> 你是独立测试 Agent。不要相信施工 Agent 的完成声明，只根据指定 Git 基线、实际代码和本地执行结果判断 Phase 1。
+> 你是独立测试 Agent。不要相信施工 Agent 的完成声明。
 >
-> **第一步只能检查 Git 基线，不要先运行任何测试：**
+> 第一步只能执行：
 >
 > ```bash
 > git branch --show-current
@@ -265,83 +316,19 @@ npm run build
 > git status --short
 > ```
 >
-> 必须满足：
+> Branch / HEAD 与交付 Prompt 不一致时立即输出 `TEST_BASE_MISMATCH`，不要自行切分支、pull、merge、rebase、reset 或 cherry-pick。
 >
-> - 当前分支严格等于 Test Branch；
-> - 当前 HEAD 严格等于 Test HEAD；
-> - 工作树没有会影响待测生产代码的本地修改。
+> 工作树存在影响待测代码的修改时输出 `TEST_WORKTREE_DIRTY`。
 >
-> 如果 Branch 或 HEAD 不匹配，立即停止，输出 `TEST_BASE_MISMATCH`。不要自行 checkout、switch、pull、merge、rebase、reset 或 cherry-pick。
+> 基线正确后阅读 `PLAN.md`、`PLAN_EXECUTION.md`、`PLAN_PROGRESS.md` 和 Phase 1 相关代码。
 >
-> 如果存在会影响待测代码的本地修改，立即停止，输出 `TEST_WORKTREE_DIRTY`。
+> 执行 typecheck、Phase 1 专项测试、第一次失败的 7 个测试文件、完整 `npm test`、build。
 >
-> 基线确认无误后，阅读：
+> 不测试旧旅行迁移；但是必须确认已落盘旧格式旅行仍然失败关闭。
 >
-> - `docs/PLAN.md`
-> - `docs/PLAN_EXECUTION.md`
-> - `docs/PLAN_PROGRESS.md`
-> - `apps/server/final-route-v3.ts`
-> - `apps/server/contracts-v2.ts`
-> - `apps/server/plan-commands-v2.ts`
-> - `apps/server/travel-store-v3.ts`
-> - `apps/server/day-route-v2.ts`
-> - Phase 1 相关测试文件。
+> 重点独立验证“当前旧入口的新写入翻译”和“旧数据库迁移”没有混成一件事：前者当前允许，后者明确禁止。
 >
-> 本次只验收 Phase 1，不实现或修改 Phase 2 / Phase 3。不要为了让测试通过而擅自改变产品规则。
->
-> 如果本地数据库中有施工前的测试旅行数据，可直接清空 / 删除测试数据库后重新创建；本次**不验收旧旅行迁移或旧 Revision 兼容**。
->
-> 运行：
->
-> ```bash
-> npm run typecheck
-> npx vitest run --config vitest.config.ts apps/server/final-route-v3.test.ts apps/server/final-route-plan-commands-v3.test.ts apps/server/travel-store-final-route-v3.test.ts apps/server/day-route-v2.test.ts apps/server/plan-route-order-v2.test.ts
-> npm test
-> npm run build
-> ```
->
-> 独立重点检查：
->
-> 1. 完全空白的新建计划允许内部 `finalRoute.version = 0` 启动占位，但该占位不能含 Place、Candidate、Day 或线路节点；第一次进入 Store / 最终线路逻辑后应提升为 `version = 1`。
-> 2. 任何含实际旅行内容却仍是旧格式 / `version = 0` 的计划必须直接报 `OLD_TEST_PLAN_UNSUPPORTED`，不能从 Candidate / Day 猜测、迁移或补出最终线路。
-> 3. 代码中不应继续存在旧 Candidate / Day → 最终线路的内容转换函数；Store 里暂时保留的旧函数名调用只能作为现有调用点适配，实际实现不得迁移旧内容。
-> 4. 同一个 Place 可以有多个独立线路节点。
-> 5. normal / tentative / no_go：inactive 节点保留顺序和 `endsDay`，但退出当前 Day；恢复 normal 后原分界恢复。
-> 6. `A —drive→ X —walk→ B` 中 X 退出当前线路后，A→B 使用 B 自己保存的 walk。
-> 7. “不住”只取消分界；“多一晚”只新增同 Place 节点和同地点→同地点 Day，不能移动其他节点。
-> 8. 最后一个 normal 节点没有 `endsDay=true` 仍能形成合法最后一天；Day 编号和日期连续重算。
-> 9. Store 保存时必须根据最终线路重建 Day，不能信任调用方单独修改后的 `days[]`。
-> 10. Route fingerprint 和实际线路输入必须包含 Day 终点自己的到达交通方式。
-> 11. 新结构自己的 Revision / restore / generation / Proposal 冲突保护仍然有效；不要求旧 Revision 恢复。
-> 12. 重复线路节点 ID、未知 Place 引用继续拒绝。
-> 13. Provider 事实边界不变：AI / 计划数据不能伪造真实坐标、距离、时长或 geometry。
->
-> 如果发现问题，不要直接替施工 Agent 修代码。请给出文件、复现条件、实际结果、预期结果和原因判断。
->
-> 最终固定输出：
->
-> ```text
-> Test Branch: ...
-> Test HEAD: ...
-> Phase 1: PASS / FAIL
->
-> 实际执行的测试：
-> - ...
->
-> 发现的问题：
-> 1. [Blocker / High / Medium / Low] ...
->    - 文件：
->    - 复现：
->    - 实际：
->    - 预期：
->    - 原因判断：
->
-> 未覆盖或无法验证：
-> - ...
->
-> 是否建议进入 Phase 2：是 / 否
-> 原因：...
-> ```
+> 最终输出 Branch、HEAD、PASS / FAIL、实际执行测试、问题严重程度和是否建议进入 Phase 2。
 
 ---
 
@@ -388,7 +375,8 @@ npm run build
 6. 重构 Action / Scope / Prompt。
 7. Proposal / Revision / Undo 覆盖最终线路操作。
 8. 删除或隔离 Skeleton / stayDays / Candidate→DayStop 等已无产品职责的入口。
-9. 根据最终代码更新 PRODUCT / TECHNICAL。
+9. 删除 Phase 1 为当前旧入口保留的 Day 视图临时翻译层中已经不再需要的分支。
+10. 根据最终代码更新 PRODUCT / TECHNICAL。
 
 ## 代码施工完成条件
 
@@ -401,18 +389,20 @@ PLAN 中完整新用户流程落地，旧五步不再承担用户线路职责。
 # 6. 高风险点
 
 1. 最终线路与 Day 不能重新变成两份可编辑数据。
-2. normal / tentative / no_go 切换不能破坏排序和保存的住宿分界。
-3. “多一晚”不能偷偷移动已有地点。
-4. 生成与优化权限必须严格分开。
-5. 局部生成 / 优化不得越界。
-6. Provider 的坐标、距离、时长和 geometry 不得由 AI 伪造。
+2. 临时 Day 写入翻译不能演变成旧数据库迁移。
+3. normal / tentative / no_go 切换不能破坏排序和保存的住宿分界。
+4. “多一晚”不能偷偷移动已有地点。
+5. 生成与优化权限必须严格分开。
+6. 局部生成 / 优化不得越界。
+7. Provider 的坐标、距离、时长和 geometry 不得由 AI 伪造。
 
 ---
 
 # 7. 施工原则
 
 - 只做 PLAN 需要的修改。
-- 不为当前测试数据保留迁移和兼容代码。
+- 不为当前旧测试数据库保留迁移代码。
+- 施工中间态允许最小写入翻译，但最终保存的数据必须仍然只有最终线路一份。
 - 用户是旅行方案最终决策者。
 - 旅行合理性问题只提醒。
 - 每完成一个 Phase 立即更新 Progress。
