@@ -112,23 +112,24 @@ function dayStopFromNode(plan: TravelPlanDocument, node: FinalRouteNode): Day["s
   };
 }
 
-function routeNodeFromDayStop(stop: Day["stops"][number]): FinalRouteNode {
+function routeNodeFromDayStop(day: Day, stop: Day["stops"][number]): FinalRouteNode {
+  const detailed = day.detailLevel === "detailed";
   return {
     id: stop.id,
     placeId: stop.placeId,
     status: "normal",
     endsDay: false,
     transportFromPrevious: clone(stop.transportFromPrevious),
-    activity: stop.activity,
-    period: stop.period,
-    scheduleText: stop.scheduleText ?? null,
-    startTime: stop.startTime,
-    endTime: stop.endTime,
-    durationMinutes: stop.durationMinutes,
-    scheduleVerification: clone(stop.scheduleVerification),
-    costNote: stop.costNote,
-    costVerification: clone(stop.costVerification),
-    notes: stop.notes,
+    activity: detailed ? stop.activity : null,
+    period: detailed ? stop.period : null,
+    scheduleText: detailed ? stop.scheduleText ?? null : null,
+    startTime: detailed ? stop.startTime : null,
+    endTime: detailed ? stop.endTime : null,
+    durationMinutes: detailed ? stop.durationMinutes : null,
+    scheduleVerification: detailed ? clone(stop.scheduleVerification) : null,
+    costNote: detailed ? stop.costNote : null,
+    costVerification: detailed ? clone(stop.costVerification) : null,
+    notes: detailed ? stop.notes : null,
   };
 }
 
@@ -152,6 +153,7 @@ export function deriveFinalRouteDaysV3(planValue: TravelPlanDocument): Day[] {
   const active = plan.finalRoute.nodes.filter((node) => node.status === "normal");
   if (!active.length) return [];
 
+  const sourceDays = new Map(plan.days.map((day) => [day.id, day]));
   const segments: FinalRouteNode[][] = [];
   let current: FinalRouteNode[] = [];
   for (const node of active) {
@@ -176,32 +178,37 @@ export function deriveFinalRouteDaysV3(planValue: TravelPlanDocument): Day[] {
       stopNodes = stopNodes.slice(1);
     }
 
-    const detailNodes = [...stopNodes, endNode];
-    const detailed = dayHasDetails(detailNodes);
-    const transferMode = segment[0]?.transportFromPrevious?.mode ?? "none";
     const dayId = endNode.id;
+    const sourceDay = sourceDays.get(dayId);
+    const inferredDetailed = dayHasDetails([...stopNodes, endNode]);
+    const detailLevel: Day["detailLevel"] = inferredDetailed ? "detailed" : (sourceDay?.detailLevel ?? "planned");
+    const detailStatus: Day["detailStatus"] = detailLevel === "detailed" ? (sourceDay?.detailStatus ?? "ready") : null;
+    const transferMode = segment[0]?.transportFromPrevious?.mode ?? "none";
+    const startSource = sourceDay?.startAnchor.placeId === startPlaceId ? sourceDay.startAnchor : null;
+    const endSource = sourceDay?.endAnchor.placeId === endPlaceId ? sourceDay.endAnchor : null;
 
     result.push({
       id: dayId,
       dayNumber: index + 1,
       date: dateAt(plan, index),
       title: startPlaceId && startPlaceId !== endPlaceId ? `前往${placeName(plan, endPlaceId)}` : placeName(plan, endPlaceId),
+      ...(sourceDay?.stayBlockId ? { stayBlockId: sourceDay.stayBlockId } : {}),
       transferMode,
       endTransportFromPrevious: clone(endNode.transportFromPrevious),
-      detailLevel: detailed ? "detailed" : "planned",
-      detailStatus: detailed ? "ready" : null,
+      detailLevel,
+      detailStatus,
       startAnchor: {
-        id: stableNodeId("route-start", dayId),
+        id: startSource?.id ?? stableNodeId("route-start", dayId),
         placeId: startPlaceId,
-        label: null,
-        notes: null,
+        label: startSource?.label ?? null,
+        notes: startSource?.notes ?? null,
       },
       stops: stopNodes.map((node) => dayStopFromNode(plan, node)),
       endAnchor: {
-        id: stableNodeId("route-end", dayId),
+        id: endSource?.id ?? stableNodeId("route-end", dayId),
         placeId: endPlaceId,
-        label: null,
-        notes: null,
+        label: endSource?.label ?? null,
+        notes: endSource?.notes ?? null,
       },
     });
     previousBoundaryPlaceId = endPlaceId;
@@ -231,15 +238,19 @@ function mergeInactiveNodesV3(beforeNodes: FinalRouteNode[], desiredActive: Fina
     let previousActiveId: string | null = null;
     for (let previous = index - 1; previous >= 0; previous -= 1) {
       if (beforeNodes[previous].status !== "normal") continue;
-      if (desiredIds.has(beforeNodes[previous].id)) previousActiveId = beforeNodes[previous].id;
-      break;
+      if (desiredIds.has(beforeNodes[previous].id)) {
+        previousActiveId = beforeNodes[previous].id;
+        break;
+      }
     }
 
     let nextActiveId: string | null = null;
     for (let next = index + 1; next < beforeNodes.length; next += 1) {
       if (beforeNodes[next].status !== "normal") continue;
-      if (desiredIds.has(beforeNodes[next].id)) nextActiveId = beforeNodes[next].id;
-      break;
+      if (desiredIds.has(beforeNodes[next].id)) {
+        nextActiveId = beforeNodes[next].id;
+        break;
+      }
     }
 
     if (nextActiveId) {
@@ -296,10 +307,32 @@ function normalizedDayViewForLinearRouteV3(before: TravelPlanDocument, after: Tr
 function rebuildFinalRouteFromDayViewV3(before: TravelPlanDocument, after: TravelPlanDocument) {
   const normalized = normalizedDayViewForLinearRouteV3(before, after);
   const existingById = new Map(before.finalRoute.nodes.map((node) => [node.id, node]));
+  const representedBeforeIds = new Set(before.days.flatMap((day) => [day.id, ...day.stops.map((stop) => stop.id)]));
+  const desiredIds = new Set(normalized.days.flatMap((day) => [day.id, ...day.stops.map((stop) => stop.id)]));
   const desiredActive: FinalRouteNode[] = [];
 
+  const firstDay = normalized.days[0];
+  if (firstDay?.startAnchor.placeId && firstDay.startAnchor.placeId !== normalized.originPlaceId) {
+    const existingStart = before.finalRoute.nodes.find((node) => node.status === "normal"
+      && !representedBeforeIds.has(node.id)
+      && node.placeId === firstDay.startAnchor.placeId) ?? null;
+    let startId = existingStart?.id ?? firstDay.startAnchor.id;
+    if (desiredIds.has(startId)) startId = stableNodeId("route-origin", firstDay.id);
+    const startNode = existingStart ? clone(existingStart) : emptyNode({
+      id: startId,
+      placeId: firstDay.startAnchor.placeId,
+      status: "normal",
+      endsDay: false,
+    });
+    startNode.id = startId;
+    startNode.placeId = firstDay.startAnchor.placeId;
+    startNode.status = "normal";
+    startNode.endsDay = false;
+    desiredActive.push(startNode);
+  }
+
   normalized.days.forEach((day, index) => {
-    for (const stop of day.stops) desiredActive.push(routeNodeFromDayStop(stop));
+    for (const stop of day.stops) desiredActive.push(routeNodeFromDayStop(day, stop));
 
     const endPlaceId = day.endAnchor.placeId;
     if (!endPlaceId) throw new Error(`FINAL_ROUTE_DAY_VIEW_UNREPRESENTABLE: Day ${day.id} 缺少终点地点。`);
