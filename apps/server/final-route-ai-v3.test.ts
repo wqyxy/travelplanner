@@ -13,6 +13,7 @@ import {
   finalRouteMoveCommandsForOrderedSubsetV3,
   finalRouteTargetNodeIdsForOptimizationV3,
   insertNewDetailCandidatesFromPlanV3,
+  orderedAuthorizedRouteNodeIdsFromDaysV3,
 } from "./final-route-ai-v3.js";
 import { rebuildFinalRouteDaysV3 } from "./final-route-v3.js";
 import { applyPlanCommands } from "./plan-commands-v2.js";
@@ -98,7 +99,7 @@ function mainOutput(): DestinationGenerateOutput {
         temporaryId: "candidate-a",
         placeTemporaryId: "tmp-a",
         planningRole: "core_visit",
-        parentCandidateRef: null,
+        parentCandidateRef: { type: "generated", temporaryCandidateId: "candidate-b" },
         aiReason: "再去 A",
         aiScore: 80,
         suggestedDurationMinutes: null,
@@ -115,7 +116,7 @@ describe("final route AI write permissions", () => {
     const before = plan({ places: [] });
     const discovered = plan({
       places: [place("formal-a", "A"), place("formal-b", "B")],
-      candidates: [candidate("formal-a-candidate", "formal-a", "core_visit"), candidate("formal-b-candidate", "formal-b", "planning_area")],
+      candidates: [candidate("formal-a-candidate", "formal-a", "core_visit", "formal-b-candidate"), candidate("formal-b-candidate", "formal-b", "planning_area")],
     });
 
     const result = applyMainRouteGenerationFromOutputV3(before, discovered, mainOutput());
@@ -127,7 +128,7 @@ describe("final route AI write permissions", () => {
 
   it("refuses ordinary main generation when the user already has a final route", () => {
     const before = plan({ places: [place("existing")], nodes: [node("existing-node", "existing")] });
-    const discovered = plan({ places: [place("formal-a", "A"), place("formal-b", "B")], candidates: [candidate("ca", "formal-a", "core_visit"), candidate("cb", "formal-b", "planning_area")] });
+    const discovered = plan({ places: [place("formal-a", "A"), place("formal-b", "B")], candidates: [candidate("ca", "formal-a", "core_visit", "cb"), candidate("cb", "formal-b", "planning_area")] });
     expect(() => applyMainRouteGenerationFromOutputV3(before, discovered, mainOutput())).toThrow(/FINAL_ROUTE_MAIN_GENERATION_REQUIRES_EMPTY_ROUTE/);
   });
 
@@ -173,6 +174,21 @@ describe("final route AI write permissions", () => {
     expect(result.days[1].stops.map((stop) => stop.placeId)).toContain("detail");
   });
 
+  it("fails closed when a Day-scoped detail target exists only outside that Day", () => {
+    const before = plan({
+      places: [place("area"), place("boundary"), place("end")],
+      candidates: [candidate("parent", "area", "planning_area")],
+      nodes: [node("area-node", "area"), node("boundary-node", "boundary", { endsDay: true }), node("end-node", "end")],
+    });
+    const day2 = before.days[1];
+    const discovered = TravelPlanDocumentSchema.parse({
+      ...before,
+      places: [...before.places, place("detail")],
+      candidates: [...before.candidates, candidate("detail-c", "detail", "detail_interest", "parent")],
+    });
+    expect(() => insertNewDetailCandidatesFromPlanV3({ before, discoveredPlan: discovered, scopeRequest: `final-route-detail-scope:day:${day2.id}` })).toThrow(/FINAL_ROUTE_DETAIL_SCOPE_UNREPRESENTABLE/);
+  });
+
   it("optimizes only authorized normal nodes while inactive nodes keep their exact slots", () => {
     const before = plan({
       places: [place("a"), place("x"), place("b"), place("c")],
@@ -192,5 +208,6 @@ describe("final route AI write permissions", () => {
     expect(() => finalRouteMoveCommandsForOrderedSubsetV3(before, ["a-node", "b-node"], ["a-node"])).toThrow(/FINAL_ROUTE_OPTIMIZE_SCOPE_VIOLATION/);
     expect(() => finalRouteMoveCommandsForOrderedSubsetV3(before, ["a-node", "b-node"], ["a-node", "a-node"])).toThrow(/FINAL_ROUTE_OPTIMIZE_SCOPE_VIOLATION/);
     expect(() => finalRouteMoveCommandsForOrderedSubsetV3(before, ["a-node", "b-node"], ["a-node", "unknown"])).toThrow(/FINAL_ROUTE_OPTIMIZE_SCOPE_VIOLATION/);
+    expect(() => orderedAuthorizedRouteNodeIdsFromDaysV3([{ id: "a-node", stops: [{ id: "b-node" }, { id: "a-node" }] }], ["a-node", "b-node"])).toThrow(/FINAL_ROUTE_OPTIMIZE_SCOPE_VIOLATION/);
   });
 });
