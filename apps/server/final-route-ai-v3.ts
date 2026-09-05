@@ -6,7 +6,7 @@ import {
   type TransportMode,
   type TravelPlanDocument,
 } from "./contracts-v2.js";
-import type { DestinationGenerateOutput } from "./ai-action-contracts-v3.js";
+import type { DestinationGenerateOutput, ItineraryRefineOutput } from "./ai-action-contracts-v3.js";
 import { rebuildFinalRouteDaysV3 } from "./final-route-v3.js";
 import { semanticPlaceKey } from "./plan-commands-v2.js";
 
@@ -340,4 +340,31 @@ export function orderedAuthorizedRouteNodeIdsFromDaysV3(
     }
   }
   return ordered;
+}
+
+export function sanitizeFinalRouteRefineOutputV3(
+  plan: TravelPlanDocument,
+  requestedDayIds: string[],
+  output: ItineraryRefineOutput,
+): ItineraryRefineOutput {
+  if (output.result.type !== "success") return clone(output);
+  const requested = new Set(requestedDayIds);
+  if (!requested.size || output.result.dayIds.length !== requested.size || output.result.dayIds.some((id) => !requested.has(id))) {
+    throw new Error("FINAL_ROUTE_DETAIL_SCOPE_VIOLATION: 完善安排只能返回用户授权的 Day。");
+  }
+  const currentStops = new Map(plan.days
+    .filter((day) => requested.has(day.id))
+    .flatMap((day) => day.stops.map((stop) => [stop.id, stop] as const)));
+  const sanitized = clone(output);
+  for (const dayUpdate of sanitized.result.dayUpdates) {
+    if (!requested.has(dayUpdate.dayId)) throw new Error("FINAL_ROUTE_DETAIL_SCOPE_VIOLATION: 完善安排返回了范围外 Day。");
+    for (const stop of dayUpdate.stops) {
+      const current = currentStops.get(stop.stopId);
+      if (!current) throw new Error(`FINAL_ROUTE_DETAIL_SCOPE_VIOLATION: 完善安排引用未知线路节点 ${stop.stopId}。`);
+      stop.transportFromPrevious = clone(current.transportFromPrevious);
+      stop.scheduleVerification = clone(current.scheduleVerification);
+      stop.costVerification = clone(current.costVerification);
+    }
+  }
+  return sanitized;
 }
