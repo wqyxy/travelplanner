@@ -185,14 +185,20 @@ export function deriveFinalRouteDaysV3(planValue: TravelPlanDocument): Day[] {
     const endNode = segment.at(-1)!;
     const startPlaceId = previousBoundaryPlaceId ?? segment[0]?.placeId ?? null;
     const endPlaceId = endNode.placeId;
+    const dayId = endNode.id;
+    const sourceDay = sourceDays.get(dayId);
     let stopNodes = segment.slice(0, -1);
 
-    if (index === 0 && stopNodes.length && stopNodes[0].placeId === startPlaceId && !stopNodes[0].endsDay) {
+    if (
+      index === 0
+      && sourceDay?.startAnchor.placeId !== null
+      && stopNodes.length
+      && stopNodes[0].placeId === startPlaceId
+      && !stopNodes[0].endsDay
+    ) {
       stopNodes = stopNodes.slice(1);
     }
 
-    const dayId = endNode.id;
-    const sourceDay = sourceDays.get(dayId);
     const inferredDetailed = dayHasDetails([...stopNodes, endNode]);
     const detailLevel: Day["detailLevel"] = inferredDetailed ? "detailed" : (sourceDay?.detailLevel ?? "planned");
     const detailStatus: Day["detailStatus"] = detailLevel === "detailed" ? (sourceDay?.detailStatus ?? "ready") : null;
