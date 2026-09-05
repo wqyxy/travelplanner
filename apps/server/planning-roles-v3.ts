@@ -7,6 +7,7 @@ export type PlanningRoleContextV3 = {
 
 export function effectivePlanningRole(candidate: TripCandidate, place: Place): PlanningRole {
   if (candidate.planningRole) return candidate.planningRole;
+  if (candidate.planningAreaCandidateId) return "detail_interest";
   return place.kind === "city" ? "planning_area" : "detail_interest";
 }
 
