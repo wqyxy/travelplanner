@@ -2,8 +2,8 @@ import { Crosshair, MapPinned, Maximize2, Minimize2, Route } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { WorkspaceV3 } from "./v3-types";
 import { placeNamePresentation } from "./place-name-presentation";
-import { finalRouteMapPointFeaturesV3, finalRouteMapStatusColorsV3 } from "./final-route-map-v3";
-import { dayRouteColors, routeGeometryFeatures } from "./workspace-map-presentation-v2";
+import { finalRouteMapPointFeaturesV3, finalRouteMapRouteGeometryFeaturesV3, finalRouteMapStatusColorsV3 } from "./final-route-map-v3";
+import { dayRouteColors } from "./workspace-map-presentation-v2";
 import { finalRouteStatusLabelsV3 } from "./final-route-ui-v3";
 
 export type FinalRouteMapFocusRequestV3 = { nodeId: string; requestId: number };
@@ -43,7 +43,7 @@ export function FinalRouteMapV3({
   mapPickRef.current = onMapPick;
 
   const points = useMemo(() => finalRouteMapPointFeaturesV3(workspace), [workspace]);
-  const allRoutes = useMemo(() => routeGeometryFeatures(workspace as any, null), [workspace]);
+  const allRoutes = useMemo(() => finalRouteMapRouteGeometryFeaturesV3(workspace), [workspace]);
   const currentRoutes = useMemo(() => allRoutes.filter((feature) => !feature.properties.dirty), [allRoutes]);
   const dirtyRoutes = useMemo(() => allRoutes.filter((feature) => feature.properties.dirty), [allRoutes]);
   const routeColors = useMemo(() => dayRouteColors(workspace.trip.plan.days), [workspace.trip.plan.days]);
