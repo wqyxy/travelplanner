@@ -269,6 +269,16 @@ Phase 2 不改造 AI 生成权限和 Prompt；它先让用户能够只靠新的�
 
 `PlanningAdvisoryListV3` 支持在最终线路工作区合并显示旧内部分类的提醒，但不把旧五步重新暴露成页面导航。
 
+### 测试代码
+
+新增：
+
+- `apps/web/src/final-route-ui-v3.test.ts`
+- `apps/web/src/final-route-map-v3.test.ts`
+- `apps/web/src/phase2-final-route-cutover.test.ts`
+
+施工 Agent 没有运行这些测试。
+
 ## 6.3 本阶段明确不做
 
 以下留到 Phase 3：
@@ -286,8 +296,8 @@ Phase 2 不改造 AI 生成权限和 Prompt；它先让用户能够只靠新的�
 
 # 7. Phase 2 本地 Codex 测试 Prompt
 
-> Test Branch: `__PHASE2_TEST_BRANCH__`  
-> Test HEAD: `__PHASE2_TEST_HEAD__`
+> Test Branch: `test/plan-phase2-final-route-ui-20260905`  
+> Test HEAD: `762c8926fedb1b2fd73f113ab2989f2a207bb990`
 
 你是独立测试 Agent。不要相信施工 Agent 的完成声明，只根据指定 Branch + HEAD 的代码和本地执行结果判断 Phase 2。
 
@@ -301,7 +311,12 @@ git rev-parse HEAD
 git status --short
 ```
 
-必须严格等于本 Prompt 顶部的 Test Branch / Test HEAD。
+必须严格等于：
+
+```text
+Branch = test/plan-phase2-final-route-ui-20260905
+HEAD   = 762c8926fedb1b2fd73f113ab2989f2a207bb990
+```
 
 如果不一致立即输出：
 
@@ -316,6 +331,8 @@ TEST_BASE_MISMATCH
 ```text
 TEST_WORKTREE_DIRTY
 ```
+
+冻结测试分支以后，施工 Agent 才会在 `main` 文档里写入最终 Branch / HEAD，因此测试分支自己的 `PLAN_EXECUTION.md / PLAN_PROGRESS.md` 可能仍保留基线占位符。**本 Prompt 中的 Branch + HEAD 是唯一有效测试基线。**
 
 ## 7.2 阅读范围
 
@@ -336,8 +353,11 @@ TEST_WORKTREE_DIRTY
 - `apps/server/plan-commands-v2.ts`
 - `apps/server/day-route-v2.ts`
 - `apps/server/travel-api-v3.ts`
+- `apps/server/travel-store-v3.ts`
 
 确认 `main.tsx` 实际挂载的是新两工作区 App，不是旧五步 App。
+
+特别检查新旅行的 bootstrap：Store 读取完全空白 `finalRoute.version=0` 时应 materialize 为 v1，因此“同批添加 Place/Candidate + 第一个 finalRoute node”不能被 `OLD_TEST_PLAN_UNSUPPORTED` 误伤。
 
 ## 7.3 Typecheck
 
@@ -363,6 +383,7 @@ npm.cmd run typecheck
 npx vitest run --config vitest.config.ts \
   apps/web/src/final-route-ui-v3.test.ts \
   apps/web/src/final-route-map-v3.test.ts \
+  apps/web/src/phase2-final-route-cutover.test.ts \
   apps/server/final-route-v3.test.ts \
   apps/server/final-route-plan-commands-v3.test.ts \
   apps/server/travel-store-final-route-v3.test.ts \
@@ -426,7 +447,7 @@ npm.cmd run build
 
 ### B. 添加地点直接进入最终线路
 
-从右侧添加 A、B、C。
+从全新旅行开始，在右侧添加 A、B、C。
 
 必须直接得到：
 
@@ -437,6 +458,8 @@ A → B → C
 不能要求用户先进入 Candidate 页面再“采用”。
 
 后台可以保留内部 Candidate 关联，但用户不能维护第二份候选线路。
+
+特别验证**第一个地点**也能成功加入；不能因为空旅行持久化的是 v0 占位就报 `OLD_TEST_PLAN_UNSUPPORTED`。
 
 ### C. 排序
 
@@ -645,8 +668,8 @@ A —walk→ B
 严格输出：
 
 ```text
-Test Branch: __PHASE2_TEST_BRANCH__
-Test HEAD: __PHASE2_TEST_HEAD__
+Test Branch: test/plan-phase2-final-route-ui-20260905
+Test HEAD: 762c8926fedb1b2fd73f113ab2989f2a207bb990
 
 Phase 2: PASS / FAIL
 
