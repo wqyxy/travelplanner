@@ -348,15 +348,16 @@ export function sanitizeFinalRouteRefineOutputV3(
   output: ItineraryRefineOutput,
 ): ItineraryRefineOutput {
   if (output.result.type !== "success") return clone(output);
+  const result = output.result;
   const requested = new Set(requestedDayIds);
-  if (!requested.size || output.result.dayIds.length !== requested.size || output.result.dayIds.some((id) => !requested.has(id))) {
+  if (!requested.size || result.dayIds.length !== requested.size || result.dayIds.some((id) => !requested.has(id))) {
     throw new Error("FINAL_ROUTE_DETAIL_SCOPE_VIOLATION: 完善安排只能返回用户授权的 Day。");
   }
   const currentStops = new Map(plan.days
     .filter((day) => requested.has(day.id))
     .flatMap((day) => day.stops.map((stop) => [stop.id, stop] as const)));
-  const sanitized = clone(output);
-  for (const dayUpdate of sanitized.result.dayUpdates) {
+  const sanitizedResult = clone(result);
+  for (const dayUpdate of sanitizedResult.dayUpdates) {
     if (!requested.has(dayUpdate.dayId)) throw new Error("FINAL_ROUTE_DETAIL_SCOPE_VIOLATION: 完善安排返回了范围外 Day。");
     for (const stop of dayUpdate.stops) {
       const current = currentStops.get(stop.stopId);
@@ -366,5 +367,5 @@ export function sanitizeFinalRouteRefineOutputV3(
       stop.costVerification = clone(current.costVerification);
     }
   }
-  return sanitized;
+  return { ...clone(output), result: sanitizedResult };
 }
