@@ -173,7 +173,7 @@ export function FinalRoutePanelV3({
       <small>地点可以先加入、后定位。添加地点不会自动设置住宿，也不会移动现有地点。</small>
     </section>}
 
-    {!rows.length ? <div className="final-route-empty-v3"><MapPin size={30}/><strong>最终线路还是空的</strong><p>先手动添加地点。Phase 3 会把“生成主要地点 / 生成详细地点”也直接接到这里。</p></div> : <div className="final-route-list-v3">
+    {!rows.length ? <div className="final-route-empty-v3"><MapPin size={30}/><strong>最终线路还是空的</strong><p>先手动添加地点。地点一旦加入，就直接成为这条最终线路的一部分。</p></div> : <div className="final-route-list-v3">
       {rows.map((row, rowIndex) => {
         const previous = rows[rowIndex - 1];
         const day = plan.days[row.dayNumber - 1];
@@ -193,10 +193,8 @@ export function FinalRoutePanelV3({
             onDrop={(event) => {
               event.preventDefault();
               if (!draggedNodeId || draggedNodeId === row.node.id) return;
-              const sourceIndex = rows.findIndex((item) => item.node.id === draggedNodeId);
-              const targetIndex = sourceIndex >= 0 && sourceIndex < row.index ? Math.max(0, row.index - 1) : row.index;
               setDraggedNodeId(null);
-              void onMoveNode(draggedNodeId, targetIndex);
+              void onMoveNode(draggedNodeId, row.index);
             }}
           >
             <button className="final-route-drag-v3" type="button" aria-label="拖动地点排序" title="拖动排序"><GripVertical size={17}/></button>
@@ -213,7 +211,7 @@ export function FinalRoutePanelV3({
           </article>
 
           {selected && <section className="final-route-editor-v3">
-            <div className="final-route-control-group-v3"><label>地点状态</label><div className="final-route-segmented-v3">{(["normal", "tentative", "no_go"] as FinalRouteNodeStatus[]).map((status) => <button type="button" key={status} className={row.node.status === status ? "active" : ""} disabled={busy} onClick={() => void onSetStatus(row.node.id, status)}>{finalRouteStatusLabelsV3[status]}</button>)}</div>{row.node.status !== "normal" && <small>保留在线路和地图原位置，但暂时不参与当前 Day 和交通路线。</small>}</div>
+            <div className="final-route-control-group-v3"><label>地点状态</label><div className="final-route-segmented-v3">{(["normal", "tentative", "no_go"] as FinalRouteNodeStatus[]).map((status) => <button type="button" key={status} className={row.node.status === status ? "active" : ""} disabled={busy || row.node.status === status} onClick={() => void onSetStatus(row.node.id, status)}>{finalRouteStatusLabelsV3[status]}</button>)}</div>{row.node.status !== "normal" && <small>保留在线路和地图原位置，但暂时不参与当前 Day 和交通路线。</small>}</div>
 
             <div className="final-route-control-group-v3"><label>当天是否在这里结束</label><div className="final-route-inline-actions-v3">{row.node.endsDay ? <><button className="button small" type="button" disabled={busy} onClick={() => void onSetBoundary(row.node.id, false)}>不住</button><button className="button small" type="button" disabled={busy || row.node.status !== "normal"} onClick={() => void onAddNight(row.node.id)}>多一晚</button></> : <button className="button small" type="button" disabled={busy || row.node.status !== "normal"} onClick={() => void onSetBoundary(row.node.id, true)}>住</button>}</div>{row.node.status !== "normal" && row.node.endsDay && <small>住宿分界仍保存，恢复“正常”后会在原位置重新生效。</small>}</div>
 
