@@ -73,14 +73,12 @@ export function applyMainRouteGenerationV3(
     throw new Error("FINAL_ROUTE_MAIN_GENERATION_REQUIRES_EMPTY_ROUTE: 已有最终线路时不能重新生成并覆盖；请使用详细地点生成或显式优化。");
   }
 
-  const seenCandidateIds = new Set<string>();
   const nodes: FinalRouteNode[] = [];
   for (const source of output.candidates) {
     const candidateId = idMappings[source.temporaryId];
-    if (!candidateId || seenCandidateIds.has(candidateId)) continue;
+    if (!candidateId) continue;
     const candidate = discoveredPlan.candidates.find((item) => item.id === candidateId);
     if (!candidate) throw new Error(`主地点生成未能找到正式 Candidate：${source.temporaryId}`);
-    seenCandidateIds.add(candidateId);
     const suggestion = source.routeSuggestion;
     nodes.push(emptyRouteNode({
       placeId: candidate.placeId,
@@ -107,16 +105,14 @@ export function applyMainRouteGenerationFromOutputV3(
   }
 
   const sourcePlaces = new Map(output.places.map((place) => [place.id, place]));
-  const seenPlaceIds = new Set<string>();
   const nodes: FinalRouteNode[] = [];
   for (const source of output.candidates) {
     const sourcePlace = sourcePlaces.get(source.placeTemporaryId);
     if (!sourcePlace) throw new Error(`主地点生成引用未知临时 Place：${source.placeTemporaryId}`);
     const placeId = formalPlaceIdForGeneratedPlace(discoveredPlan, sourcePlace);
-    if (!placeId || seenPlaceIds.has(placeId)) continue;
+    if (!placeId) throw new Error(`主地点生成未能正式化 Place：${source.placeTemporaryId}`);
     const candidate = discoveredPlan.candidates.find((item) => item.placeId === placeId);
     if (!candidate) throw new Error(`主地点生成没有找到正式 Candidate：${source.temporaryId}`);
-    seenPlaceIds.add(placeId);
     const suggestion = source.routeSuggestion;
     nodes.push(emptyRouteNode({
       placeId,
