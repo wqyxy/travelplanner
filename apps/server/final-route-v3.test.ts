@@ -15,6 +15,7 @@ import {
   removeFinalRouteNodeV3,
   setFinalRouteDayBoundaryV3,
   setFinalRouteNodeStatusV3,
+  syncFinalRouteForLegacyWriteV3,
   updateFinalRouteTransportV3,
 } from "./final-route-v3.js";
 
@@ -183,5 +184,78 @@ describe("final route v3", () => {
       finalRoute: { version: 0, nodes: [] },
     });
     expect(() => materializeLegacyFinalRouteV3(oldPlan)).toThrow(/OLD_TEST_PLAN_UNSUPPORTED/);
+  });
+
+  it("translates a transitional Day view into final-route nodes before persistence", () => {
+    const before = routePlan([], "a");
+    const after = TravelPlanDocumentSchema.parse({
+      ...before,
+      places: [...before.places, place("b"), place("c")],
+      days: [
+        {
+          id: "day-b", dayNumber: 1, date: null, title: "B", stayBlockId: "stay-b", transferMode: "drive", detailLevel: "planned", detailStatus: null,
+          startAnchor: { id: "start-b", placeId: "a", label: null, notes: null }, stops: [], endAnchor: { id: "end-b", placeId: "b", label: null, notes: null },
+        },
+        {
+          id: "day-c", dayNumber: 2, date: null, title: "C", transferMode: "rail", detailLevel: "planned", detailStatus: null,
+          startAnchor: { id: "start-c", placeId: "b", label: null, notes: null }, stops: [], endAnchor: { id: "end-c", placeId: "c", label: null, notes: null },
+        },
+      ],
+    });
+
+    const saved = syncFinalRouteForLegacyWriteV3(before, after);
+    expect(saved.finalRoute.nodes.map((item) => [item.id, item.placeId, item.endsDay, item.transportFromPrevious?.mode ?? null])).toEqual([
+      ["day-b", "b", true, "drive"],
+      ["day-c", "c", false, "rail"],
+    ]);
+    expect(saved.days.map((day) => [day.id, day.startAnchor.placeId, day.endAnchor.placeId, day.stayBlockId ?? null, day.transferMode])).toEqual([
+      ["day-b", "a", "b", "stay-b", "drive"],
+      ["day-c", "b", "c", null, "rail"],
+    ]);
+  });
+
+  it("preserves inactive nodes while a transitional Day edit changes active detail", () => {
+    const beforeBase = routePlan([
+      node("x", "x", { status: "tentative", endsDay: true }),
+      node("detail", "b", { activity: "B", period: "morning" }),
+      node("end", "c"),
+    ]);
+    const before = TravelPlanDocumentSchema.parse({ ...beforeBase, days: deriveFinalRouteDaysV3(beforeBase) });
+    const after = structuredClone(before);
+    after.days[0].stops[0].activity = "Updated B";
+    after.days[0].stops[0].startTime = "09:00";
+
+    const saved = syncFinalRouteForLegacyWriteV3(before, after);
+    expect(saved.finalRoute.nodes.find((item) => item.id === "x")).toMatchObject({ status: "tentative", endsDay: true });
+    expect(saved.finalRoute.nodes.find((item) => item.id === "detail")).toMatchObject({ activity: "Updated B", startTime: "09:00" });
+    expect(saved.days[0].stops[0]).toMatchObject({ id: "detail", activity: "Updated B", startTime: "09:00" });
+  });
+
+  it("keeps a Day start location and explicit detail when the trip origin is not set", () => {
+    const base = TravelPlanDocumentSchema.parse({
+      ...emptyTravelPlan(),
+      places: [place("city"), place("poi")],
+      finalRoute: { version: 1, nodes: [] },
+    });
+    const after = TravelPlanDocumentSchema.parse({
+      ...base,
+      days: [{
+        id: "day-city", dayNumber: 1, date: null, title: "City", transferMode: "none", detailLevel: "planned", detailStatus: null,
+        startAnchor: { id: "start-city", placeId: "city", label: "City", notes: null },
+        stops: [{
+          id: "poi-stop", candidateId: null, placeId: "poi", activity: "Visit", period: "morning", startTime: "09:00", endTime: null,
+          durationMinutes: 60, transportFromPrevious: null, scheduleVerification: { status: "estimated", checkedAt: null }, costNote: null, costVerification: null, notes: null,
+        }],
+        endAnchor: { id: "end-city", placeId: "city", label: "City", notes: null },
+      }],
+    });
+
+    const saved = syncFinalRouteForLegacyWriteV3(base, after);
+    expect(saved.finalRoute.nodes.map((item) => item.placeId)).toEqual(["city", "poi", "city"]);
+    expect(saved.days[0].startAnchor.placeId).toBe("city");
+    expect(saved.days[0].endAnchor.placeId).toBe("city");
+    expect(saved.days[0].detailLevel).toBe("detailed");
+    expect(saved.days[0].detailStatus).toBe("ready");
+    expect(saved.days[0].stops[0]).toMatchObject({ id: "poi-stop", activity: "Visit", period: "morning", startTime: "09:00" });
   });
 });
