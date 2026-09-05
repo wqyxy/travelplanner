@@ -197,8 +197,14 @@ export function deriveFinalRouteDaysV3(planValue: TravelPlanDocument): Day[] {
     const detailLevel: Day["detailLevel"] = inferredDetailed ? "detailed" : (sourceDay?.detailLevel ?? "planned");
     const detailStatus: Day["detailStatus"] = detailLevel === "detailed" ? (sourceDay?.detailStatus ?? "ready") : null;
     const transferMode = segment[0]?.transportFromPrevious?.mode ?? "none";
-    const startSource = sourceDay?.startAnchor.placeId === startPlaceId ? sourceDay.startAnchor : null;
-    const endSource = sourceDay?.endAnchor.placeId === endPlaceId ? sourceDay.endAnchor : null;
+    const preserveNullStart = sourceDay?.startAnchor.placeId === null;
+    const preserveNullEnd = sourceDay?.endAnchor.placeId === null;
+    const startSource = sourceDay && (preserveNullStart || sourceDay.startAnchor.placeId === startPlaceId)
+      ? sourceDay.startAnchor
+      : null;
+    const endSource = sourceDay && (preserveNullEnd || sourceDay.endAnchor.placeId === endPlaceId)
+      ? sourceDay.endAnchor
+      : null;
 
     result.push({
       id: dayId,
@@ -212,14 +218,14 @@ export function deriveFinalRouteDaysV3(planValue: TravelPlanDocument): Day[] {
       detailStatus,
       startAnchor: {
         id: startSource?.id ?? stableNodeId("route-start", dayId),
-        placeId: startPlaceId,
+        placeId: preserveNullStart ? null : startPlaceId,
         label: startSource?.label ?? null,
         notes: startSource?.notes ?? null,
       },
       stops: stopNodes.map((node) => dayStopFromNode(plan, node)),
       endAnchor: {
         id: endSource?.id ?? stableNodeId("route-end", dayId),
-        placeId: endPlaceId,
+        placeId: preserveNullEnd ? null : endPlaceId,
         label: endSource?.label ?? null,
         notes: endSource?.notes ?? null,
       },
@@ -289,6 +295,14 @@ function mergeInactiveNodesV3(beforeNodes: FinalRouteNode[], desiredActive: Fina
   return merged;
 }
 
+function dayStartPlaceIdV3(day: Day) {
+  return day.startAnchor.placeId ?? day.stops[0]?.placeId ?? day.endAnchor.placeId ?? null;
+}
+
+function dayEndPlaceIdV3(day: Day) {
+  return day.endAnchor.placeId ?? day.stops.at(-1)?.placeId ?? day.startAnchor.placeId ?? null;
+}
+
 function normalizedDayViewForLinearRouteV3(before: TravelPlanDocument, after: TravelPlanDocument) {
   const days = clone(after.days);
   const beforeById = new Map(before.days.map((day) => [day.id, day]));
@@ -303,15 +317,17 @@ function normalizedDayViewForLinearRouteV3(before: TravelPlanDocument, after: Tr
   for (let index = 0; index < days.length - 1; index += 1) {
     const current = days[index];
     const next = days[index + 1];
-    if (current.endAnchor.placeId === next.startAnchor.placeId) continue;
+    const currentEndPlaceId = dayEndPlaceIdV3(current);
+    const nextStartPlaceId = dayStartPlaceIdV3(next);
+    if (currentEndPlaceId === nextStartPlaceId) continue;
 
     const previousCurrent = beforeById.get(current.id);
     const previousNext = beforeById.get(next.id);
     const endChanged = Boolean(previousCurrent && current.endAnchor.placeId !== previousCurrent.endAnchor.placeId);
     const startChanged = Boolean(previousNext && next.startAnchor.placeId !== previousNext.startAnchor.placeId);
 
-    if (startChanged && !endChanged) current.endAnchor.placeId = next.startAnchor.placeId;
-    else next.startAnchor.placeId = current.endAnchor.placeId;
+    if (startChanged && !endChanged) current.endAnchor.placeId = nextStartPlaceId;
+    else next.startAnchor.placeId = currentEndPlaceId;
   }
 
   return { days, originPlaceId };
@@ -353,8 +369,8 @@ function rebuildFinalRouteFromDayViewV3(before: TravelPlanDocument, after: Trave
       desiredActive.push(node);
     });
 
-    const endPlaceId = day.endAnchor.placeId;
-    if (!endPlaceId) throw new Error(`FINAL_ROUTE_DAY_VIEW_UNREPRESENTABLE: Day ${day.id} 缺少终点地点。`);
+    const endPlaceId = dayEndPlaceIdV3(day);
+    if (!endPlaceId) throw new Error(`FINAL_ROUTE_DAY_VIEW_UNREPRESENTABLE: Day ${day.id} 没有可用于最终线路的地点。`);
     const existing = existingById.get(day.id);
     if (existing && existing.status !== "normal") {
       throw new Error(`FINAL_ROUTE_DAY_VIEW_CONFLICT: Day ${day.id} 对应的最终线路节点当前不是 normal。`);
