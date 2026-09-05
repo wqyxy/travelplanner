@@ -1,8 +1,9 @@
 import { CircleAlert, Info } from "lucide-react";
 import type { PlanningAdvisoryV3, WorkflowStepV3 } from "./v3-types";
 
-export function PlanningAdvisoryListV3({ advisories, step }: { advisories: PlanningAdvisoryV3[]; step: WorkflowStepV3 }) {
-  const items = advisories.filter((item) => item.workflowStep === step);
+export function PlanningAdvisoryListV3({ advisories, step, steps }: { advisories: PlanningAdvisoryV3[]; step?: WorkflowStepV3; steps?: WorkflowStepV3[] }) {
+  const visibleSteps = new Set(steps ?? (step ? [step] : []));
+  const items = visibleSteps.size ? advisories.filter((item) => visibleSteps.has(item.workflowStep)) : advisories;
   if (!items.length) return null;
   const warnings = items.filter((item) => item.severity === "warning");
   const infos = items.filter((item) => item.severity === "info");
