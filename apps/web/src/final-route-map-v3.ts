@@ -1,6 +1,7 @@
 import type { FinalRouteNodeStatus } from "./v2-types";
 import type { WorkspaceV3 } from "./v3-types";
 import { placeNamePresentation } from "./place-name-presentation";
+import { routeGeometryFeatures, type WorkspaceMapRouteFeature } from "./workspace-map-presentation-v2";
 
 export type FinalRouteMapPointFeatureV3 = {
   type: "Feature";
@@ -62,4 +63,33 @@ export function finalRouteMapPointFeaturesV3(workspace: WorkspaceV3): FinalRoute
       },
     }];
   });
+}
+
+function currentDaySegmentKeysV3(workspace: WorkspaceV3) {
+  return new Map(workspace.trip.plan.days.map((day) => {
+    const placeIds: string[] = [];
+    const push = (placeId: string | null) => {
+      if (!placeId || placeIds.at(-1) === placeId) return;
+      placeIds.push(placeId);
+    };
+    push(day.startAnchor.placeId);
+    day.stops.forEach((stop) => push(stop.placeId));
+    push(day.endAnchor.placeId);
+    const segments = new Set<string>();
+    for (let index = 1; index < placeIds.length; index += 1) segments.add(`${placeIds[index - 1]}\u0000${placeIds[index]}`);
+    return [day.id, segments] as const;
+  }));
+}
+
+export function finalRouteMapRouteGeometryFeaturesV3(workspace: WorkspaceV3): WorkspaceMapRouteFeature[] {
+  const currentSegments = currentDaySegmentKeysV3(workspace);
+  const routeStates = workspace.routeStates.map((state) => {
+    if (!state.route) return state;
+    const allowed = currentSegments.get(state.dayId);
+    const legs = allowed
+      ? state.route.legs.filter((leg) => allowed.has(`${leg.fromPlaceId}\u0000${leg.toPlaceId}`))
+      : [];
+    return { ...state, route: { ...state.route, legs } };
+  });
+  return routeGeometryFeatures({ ...workspace, routeStates } as any, null);
 }
