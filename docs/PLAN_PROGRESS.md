@@ -2,8 +2,8 @@
 
 ## Overall Status
 
-当前阶段：Phase 4 — P0 最终线路主交互闭环  
-总体状态：awaiting_local_test  
+当前阶段：Phase 4 — P0 最终线路主交互闭环
+总体状态：blocked_ui_validation
 最后更新时间：2026-09-06
 
 ---
@@ -71,7 +71,7 @@ Phase 3: PASS
 
 # Phase 4
 
-状态：awaiting_local_test
+状态：blocked_ui_validation
 
 目标：P0 最终线路主交互闭环。
 
@@ -105,15 +105,7 @@ mapPickReturnNodeId = 地图选点返回编辑上下文
 apps/web/src/FinalRouteEditorDrawerV4.tsx
 ```
 
-抽屉包含：
-
-- 行程安排；
-- 地点信息；
-- 定位状态 / 地址；
-- 重新识别；
-- 地图选点；
-- Google Maps 链接；
-- 删除当前 route node。
+抽屉包含行程安排、地点信息、定位状态 / 地址、重新识别、地图选点、Google Maps 链接、删除当前 route node。
 
 地点列表中的旧 inline `final-route-editor-v3` 已移除。
 
@@ -136,18 +128,11 @@ finalRoute normal nodes
 routeStates.route.legs
 ```
 
-并处理：
-
-- tentative / no_go 跳过；
-- 跨 Day 连接；
-- Day Anchor 使用不同 node ID 的情况；
-- route dirty 不暴露旧 distance / duration；
-- attention / pending / same_place；
-- 中间跳过 inactive 地点提示。
+并处理 tentative / no_go 跳过、跨 Day 连接、Day Anchor 使用不同 node ID、route dirty、attention / pending / same_place，以及跳过 inactive 地点提示。
 
 ### 5. 非卡片式交通条
 
-最终线路主视图现在直接显示：
+最终线路主视图直接显示：
 
 ```text
 交通方式 · Provider 距离 · Provider 时间
@@ -186,45 +171,104 @@ apps/web/src/final-route-ui-v3.test.ts
 apps/web/src/phase3-final-route-ai-cutover.test.ts
 ```
 
-旧 Phase 3 “详细安排必须写在 FinalRoutePanelV3 文件本身”测试契约已改为验证最终线路 + 独立编辑抽屉，避免把正确 UI 重构误判成回归。
+---
 
-## 静态 Review
-
-已完成静态检查：
-
-- diff 仅涉及最终线路前端及相关测试；
-- 未修改 server finalRoute / Day / Route 核心模型；
-- Hover 路径不创建 flyTo 请求；
-- flyTo 只由显式 `focusRequest` 触发；
-- Route dirty 时交通 ViewModel 不返回旧距离 / 时间；
-- 交通 ViewModel 有 tentative 跳过和跨 Day Anchor 的测试用例；
-- 编辑抽屉不再处于地点文档流中；
-- map-pick 保存 / 取消路径保留编辑返回上下文。
-
-**施工 Agent 未运行 test / typecheck / build / app / Provider / CI。**
-
-## 测试基线
+## 冻结测试基线
 
 ```text
 Test Branch: test/plan-phase4-final-route-interaction-20260906-r1
 Test HEAD: 6ced10e9fb68d76d5587d14726b78f248852cfd2
 ```
 
-说明：测试代码基线冻结在上述独立 Branch + HEAD。本进度记录写在 `main`，不会推进测试分支 HEAD。
+该测试分支 HEAD 继续保持冻结，不因为本进度文档或文档空白修复而移动。
 
-本地测试：**尚未由用户本地验证。**
+---
 
-## 必测风险
+## 2026-09-06 本地 Codex 验收结果
 
-1. 浏览器实际 Hover 地点时地图中心和 zoom 必须完全不动。
-2. 点击地点后才 flyTo；点击编辑 / 住 / 状态 / 交通不能误触发 flyTo。
-3. 抽屉应覆盖地图一部分，不能把最终线路列表往下撑。
-4. tentative / no_go 夹在 A/B 中间时，有效交通必须显示 A → B。
-5. 跨 Day 住宿边界后的交通必须读到目标 Day 的 Provider RouteLeg。
-6. Route dirty 时不能出现旧距离 / 时间伪装成当前事实。
-7. 地图选点成功和取消后都要恢复原地点编辑抽屉。
-8. 多一晚产生的空 Day 必须能被用户理解。
-9. 响应式 / 窄屏抽屉不能退化成 inline 展开。
+最终结论：
+
+```text
+Phase 4: FAIL
+原因：强制浏览器 UI Gate 无可用浏览器实例，无法执行。
+```
+
+### 静态 Review
+
+PASS。
+
+确认：
+
+- selected / hovered / editing / focusRequest / map-pick 状态解耦；
+- 显式 `focusRequest` 才 flyTo；
+- 抽屉替代 inline 编辑；
+- 有效交通 ViewModel 使用 active route + Day + RouteLeg；
+- dirty 时隐藏旧指标；
+- 无 finalRoute / Day / Route 服务端核心重构；
+- UI / AI 未写入 Provider 距离、时长或 geometry。
+
+### 自动测试
+
+```text
+Phase 4 + UI helper + Phase 2/3 + map/route 回归：9 files / 52 tests PASS
+npm run typecheck：PASS
+npm run build：PASS（仅 bundle 体积警告）
+完整 npm test：89 files / 514 tests PASS
+```
+
+因此当前没有已知的自动测试或类型 / 构建失败。
+
+### 强制浏览器 UI Gate
+
+未执行，原因：Codex 测试环境浏览器列表为空，无可用浏览器实例。
+
+以下 10 项均记为 **NOT VERIFIED / Gate FAIL**，不能记为产品行为失败：
+
+```text
+A Hover
+B Click
+C 编辑抽屉
+D 交通条
+E tentative / no_go
+F Day / 住宿
+G 地图选点
+H 未定位
+I 排序
+J 响应式
+```
+
+仍需真实浏览器验证：
+
+1. Hover 时地图中心和 zoom 确实完全不变；
+2. Click 地点才 flyTo；
+3. 编辑抽屉视觉上覆盖地图且不撑开列表；
+4. A → X(inactive) → B 时实际显示 A → B；
+5. 多一晚 / 不住的真实 Day 交互；
+6. map-pick 保存和取消后抽屉恢复；
+7. 真正的拖放行为；
+8. <=900px 响应式 Sheet；
+9. 未定位地点真实运行时行为；
+10. 实际地图 Marker hover / selected 视觉。
+
+### 其他发现
+
+`git diff --check` 报告 `docs/PLAN.md` 与 `docs/PLAN_PROGRESS.md` 存在已提交行尾空白。
+
+该问题属于文档卫生问题，不影响运行时。当前不为了清理文档空白移动已经冻结的 Phase 4 测试 Branch + HEAD；后续文档提交统一去除新增 trailing whitespace。
+
+真实外部 Route Provider 场景本轮仍未覆盖。
+
+---
+
+## Phase 4 Gate 结论
+
+当前状态不是“代码测试失败”，而是：
+
+> **自动化、类型和构建全部通过，但强制真实浏览器 UI 验收尚未完成。**
+
+因此 Phase 4 不能标记 `completed`，也不能进入 Phase 5。
+
+不需要因为当前结果创建 r2 或修改生产代码；除非真实浏览器验收发现具体交互 Bug，才针对 Bug 修复并冻结新的测试 Branch + HEAD。
 
 ---
 
@@ -232,7 +276,7 @@ Test HEAD: 6ced10e9fb68d76d5587d14726b78f248852cfd2
 
 状态：pending
 
-前置条件：Phase 4 必须由用户本地 Codex 对上述冻结 Branch + HEAD 返回 PASS。
+前置条件：Phase 4 必须完成真实浏览器 UI Gate 并返回 PASS。
 
 计划：
 
@@ -245,29 +289,16 @@ Test HEAD: 6ced10e9fb68d76d5587d14726b78f248852cfd2
 
 ---
 
-## 当前已知问题
-
-Phase 4 尚未经过执行测试与浏览器人工验收，因此当前不能声明可用性 PASS。
-
-Phase 5 的 AI 界面减法、Proposal 紧凑化、删除 Undo 等仍未施工。
-
----
-
-## 与原计划的偏差
-
-无产品方向偏差。
-
-实施时根据当前代码增加了一个独立 `FinalRouteEditorDrawerV4.tsx` 和 Phase 4 独立 CSS，而没有继续膨胀 `FinalRoutePanelV3.tsx` / `phase2-final-route.css`；这是为隔离抽屉职责和降低样式回归范围，不改变 PLAN 行为。
-
----
-
 ## 下一步
 
-等待用户本地 Codex 对以下冻结基线验收：
+保持以下代码基线不变：
 
 ```text
 Test Branch: test/plan-phase4-final-route-interaction-20260906-r1
 Test HEAD: 6ced10e9fb68d76d5587d14726b78f248852cfd2
 ```
 
-只有该基线返回 PASS 后，Phase 4 才能改为 `completed`，并开始 Phase 5。
+下一次只需要在**有真实浏览器的环境**补做 Phase 4 的 10 项 UI 人工验收。
+
+- 如果 10 项全部 PASS：Phase 4 可直接完成，不需要重跑一遍已经通过的完整自动测试。
+- 如果发现 UI Bug：记录具体场景，修复后新建 r2 冻结基线，并只重跑受影响测试 + typecheck/build + UI Gate，再决定是否进入 Phase 5。
