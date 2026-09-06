@@ -9,6 +9,7 @@ import "./workspace-v4.css";
 import "./stage-ai-v3.css";
 import "./phase6-workflow.css";
 import "./phase2-final-route.css";
+import "./phase4-final-route-interaction.css";
 import AppFinalRouteV3 from "./AppFinalRouteV3";
 
 setWorkerUrl(mapLibreWorkerUrl);
