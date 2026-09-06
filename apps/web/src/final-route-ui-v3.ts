@@ -4,6 +4,7 @@ import type {
   Place,
   PlaceKind,
   PlanCommand,
+  RouteState,
   Transport,
   TransportMode,
   TravelPlanDocument,
@@ -17,6 +18,34 @@ export type FinalRouteDisplayRowV3 = {
   candidate: TripCandidate | null;
   dayNumber: number;
   active: boolean;
+};
+
+export type FinalRouteTransportConnectionV4 = {
+  fromNodeId: string;
+  toNodeId: string;
+  fromPlaceId: string;
+  toPlaceId: string;
+  dayId: string | null;
+  dayNumber: number;
+  mode: TransportMode | null;
+  distanceKm: number | null;
+  durationMinutes: number | null;
+  state: "ready" | "dirty" | "attention" | "pending" | "unavailable" | "same_place";
+  warning: string | null;
+  skippedInactiveCount: number;
+};
+
+export type FinalRouteDayViewV4 = {
+  dayId: string;
+  dayNumber: number;
+  date: string | null;
+  title: string;
+  startPlaceId: string | null;
+  endPlaceId: string | null;
+  distanceKm: number | null;
+  durationMinutes: number | null;
+  routeState: "ready" | "dirty" | "attention" | "calculating" | "idle";
+  emptyDetail: boolean;
 };
 
 export type NewFinalRoutePlaceDraftV3 = {
@@ -68,6 +97,100 @@ export function finalRouteDayCountV3(plan: TravelPlanDocument) {
   if (!active.length) return 0;
   const boundaries = active.filter((node) => node.endsDay).length;
   return boundaries + (active.at(-1)?.endsDay ? 0 : 1);
+}
+
+function routeEndpointNodeId(
+  day: TravelPlanDocument["days"][number],
+  node: FinalRouteNode,
+  endpoint: "from" | "to",
+) {
+  if (day.stops.some((stop) => stop.id === node.id)) return node.id;
+  if (endpoint === "from" && day.startAnchor.placeId === node.placeId) return day.startAnchor.id;
+  if (endpoint === "to" && day.endAnchor.placeId === node.placeId) return day.endAnchor.id;
+  return null;
+}
+
+export function finalRouteTransportConnectionsV4(plan: TravelPlanDocument, routeStates: RouteState[]): FinalRouteTransportConnectionV4[] {
+  const rows = finalRouteDisplayRowsV3(plan);
+  const activeRows = rows.filter((row) => row.node.status === "normal");
+  const states = new Map(routeStates.map((state) => [state.dayId, state]));
+  const result: FinalRouteTransportConnectionV4[] = [];
+
+  for (let index = 1; index < activeRows.length; index += 1) {
+    const previous = activeRows[index - 1];
+    const current = activeRows[index];
+    const day = plan.days[current.dayNumber - 1];
+    const state = day ? states.get(day.id) ?? null : null;
+    const route = state?.route ?? null;
+    const dirty = Boolean(state?.dirty);
+    const samePlace = previous.node.placeId === current.node.placeId;
+    const fromRouteNodeId = day ? routeEndpointNodeId(day, previous.node, "from") : null;
+    const toRouteNodeId = day ? routeEndpointNodeId(day, current.node, "to") : null;
+    const leg = !dirty && route
+      ? fromRouteNodeId && toRouteNodeId
+        ? route.legs.find((item) => item.fromNodeId === fromRouteNodeId && item.toNodeId === toRouteNodeId) ?? null
+        : route.legs.find((item) => item.fromPlaceId === previous.node.placeId && item.toPlaceId === current.node.placeId) ?? null
+      : null;
+    const skippedInactiveCount = rows
+      .slice(previous.index + 1, current.index)
+      .filter((row) => row.node.status !== "normal")
+      .length;
+
+    const factlessAttention = leg?.status === "attention" && leg.distanceKm === null && leg.durationMinutes === null;
+    let connectionState: FinalRouteTransportConnectionV4["state"] = "pending";
+    if (samePlace) connectionState = "same_place";
+    else if (dirty) connectionState = "dirty";
+    else if ((route?.status === "attention" && !leg) || factlessAttention) connectionState = "unavailable";
+    else if (route?.status === "attention" || leg?.status === "attention") connectionState = "attention";
+    else if (leg) connectionState = "ready";
+
+    result.push({
+      fromNodeId: previous.node.id,
+      toNodeId: current.node.id,
+      fromPlaceId: previous.node.placeId,
+      toPlaceId: current.node.placeId,
+      dayId: day?.id ?? null,
+      dayNumber: current.dayNumber,
+      mode: current.node.transportFromPrevious?.mode ?? null,
+      distanceKm: connectionState === "ready" || connectionState === "attention" ? leg?.distanceKm ?? null : null,
+      durationMinutes: connectionState === "ready" || connectionState === "attention" ? leg?.durationMinutes ?? null : null,
+      state: connectionState,
+      warning: connectionState === "attention" || connectionState === "unavailable" ? leg?.warning ?? route?.warnings[0] ?? null : null,
+      skippedInactiveCount,
+    });
+  }
+
+  return result;
+}
+
+export function finalRouteDayViewsV4(plan: TravelPlanDocument, routeStates: RouteState[]): FinalRouteDayViewV4[] {
+  const states = new Map(routeStates.map((state) => [state.dayId, state]));
+  return plan.days.map((day) => {
+    const state = states.get(day.id) ?? null;
+    const route = state?.route ?? null;
+    const dirty = Boolean(state?.dirty);
+    const routeState: FinalRouteDayViewV4["routeState"] = dirty
+      ? "dirty"
+      : route?.status === "ready"
+        ? "ready"
+        : route?.status === "attention"
+          ? "attention"
+          : route?.status === "calculating"
+            ? "calculating"
+            : "idle";
+    return {
+      dayId: day.id,
+      dayNumber: day.dayNumber,
+      date: day.date,
+      title: day.title,
+      startPlaceId: day.startAnchor.placeId,
+      endPlaceId: day.endAnchor.placeId,
+      distanceKm: routeState === "ready" || routeState === "attention" ? route?.distanceKm ?? null : null,
+      durationMinutes: routeState === "ready" || routeState === "attention" ? route?.durationMinutes ?? null : null,
+      routeState,
+      emptyDetail: day.stops.length === 0 && day.startAnchor.placeId === day.endAnchor.placeId,
+    };
+  });
 }
 
 export function transportFromModeV3(mode: TransportMode | ""): Transport | null {

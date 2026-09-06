@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
-import { History, KeyRound, MapPinned, Menu, Moon, Plus, RefreshCw, Route, Sun, Trash2 } from "lucide-react";
+import { History, KeyRound, MapPinned, Menu, Moon, Plus, RefreshCw, Sun, Trash2 } from "lucide-react";
 import { api } from "./api";
 import { AiTaskTopbar } from "./AiTaskTopbar";
 import type { GoogleMapsPreviewV3, WorkflowPlaceEditChangesV3 } from "./CandidateWorkflowPanelV3";
@@ -54,7 +54,10 @@ export default function AppFinalRouteV3() {
   const [workspace, setWorkspace] = useState<WorkspaceV3 | null>(null);
   const [section, setSection] = useState<WorkspaceSectionV3>("planning");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
   const [mapPickPlaceId, setMapPickPlaceId] = useState<string | null>(null);
+  const [mapPickReturnNodeId, setMapPickReturnNodeId] = useState<string | null>(null);
   const [mapFocusRequest, setMapFocusRequest] = useState<FinalRouteMapFocusRequestV3 | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -77,14 +80,20 @@ export default function AppFinalRouteV3() {
   const activeTurn = [...requirementsMessages].reverse().find((item) => item.role === "user" && item.turn && ["queued", "starting", "active"].includes(item.turn.status));
   const aiActive = tasks.some((task) => ACTIVE_TASKS.has(task.status));
   const working = busy || Boolean(activeTurn) || aiActive;
-  const selectedNode = trip?.plan.finalRoute?.nodes.find((node) => node.id === selectedNodeId) ?? null;
-  const selectedPlaceId = selectedNode?.placeId ?? null;
   const assistantSelection: WorkspaceSelection = { type: "trip", id: null };
 
   const applySettings = (next: AppSettings) => { setSettings(next); setSidebar(next.ui.sidebarOpen); };
   const refreshTrips = async (showTrash = trash) => setTrips((await api<{ trips: Trip[] }>(`/api/trips?view=${showTrash ? "trash" : "active"}`)).trips);
   const refreshCodex = async () => setCodex(await api<CodexStatus>("/api/codex/status"));
   const saveUi = async (patch: Partial<AppSettings["ui"]>) => { const result = await api<{ settings: AppSettings }>("/api/settings/ui", { method: "PUT", body: JSON.stringify(patch) }); applySettings(result.settings); return result.settings; };
+  const clearRouteTransientState = () => { setHoveredNodeId(null); setEditingNodeId(null); setMapPickPlaceId(null); setMapPickReturnNodeId(null); setMapFocusRequest(null); };
+  const cancelMapPick = () => {
+    const returnNodeId = mapPickReturnNodeId;
+    setMapPickPlaceId(null);
+    setMapPickReturnNodeId(null);
+    setFocus(null);
+    if (returnNodeId) setEditingNodeId(returnNodeId);
+  };
 
   const loadTrip = async (id: string, resetSection = true) => {
     const token = ++loadToken.current;
@@ -92,10 +101,13 @@ export default function AppFinalRouteV3() {
     try {
       const next = await api<WorkspaceV3>(`/api/trips/${id}/workspace`);
       if (token !== loadToken.current) return;
+      const hasNode = (nodeId: string | null) => Boolean(nodeId && next.trip.plan.finalRoute?.nodes.some((node) => node.id === nodeId));
       setWorkspace(next);
       setMenu(null);
       if (resetSection) setSection(next.trip.plan.finalRoute?.nodes.length ? "route" : "planning");
-      setSelectedNodeId((current) => current && next.trip.plan.finalRoute?.nodes.some((node) => node.id === current) ? current : null);
+      setSelectedNodeId((current) => hasNode(current) ? current : null);
+      setHoveredNodeId((current) => hasNode(current) ? current : null);
+      setEditingNodeId((current) => hasNode(current) ? current : null);
       if (window.matchMedia("(max-width: 900px)").matches) setSidebar(false);
     } catch (cause) { if (token === loadToken.current) setError(cause instanceof Error ? cause.message : "无法加载旅行工作台。"); }
   };
@@ -110,8 +122,16 @@ export default function AppFinalRouteV3() {
   useEffect(() => { void api<Bootstrap>("/api/bootstrap").then((value) => { setUser(value.user); setConfigured(value.configured); applySettings(value.settings); if (value.authenticated) { void refreshTrips(false); void refreshCodex(); } }).catch(() => setUser(null)); }, []);
   useEffect(() => { document.documentElement.dataset.theme = settings.ui.theme; }, [settings.ui.theme]);
   useEffect(() => { if (user) void refreshTrips(trash); }, [trash, user?.id]);
-  useEffect(() => { const timer = window.setTimeout(() => window.dispatchEvent(new Event("travel-workspace-resize")), 220); return () => window.clearTimeout(timer); }, [sidebar, focus, settings.ui.workspaceSplitRatio]);
-  useEffect(() => { const escape = (event: KeyboardEvent) => { if (event.key === "Escape") { setFocus(null); setMapPickPlaceId(null); } }; window.addEventListener("keydown", escape); return () => window.removeEventListener("keydown", escape); }, []);
+  useEffect(() => { const timer = window.setTimeout(() => window.dispatchEvent(new Event("travel-workspace-resize")), 220); return () => window.clearTimeout(timer); }, [sidebar, focus, settings.ui.workspaceSplitRatio, editingNodeId]);
+  useEffect(() => {
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (mapPickPlaceId) cancelMapPick();
+      else { setFocus(null); setEditingNodeId(null); }
+    };
+    window.addEventListener("keydown", escape);
+    return () => window.removeEventListener("keydown", escape);
+  }, [mapPickPlaceId, mapPickReturnNodeId]);
   useEffect(() => {
     if (!user) return;
     let closed = false; let socket: WebSocket | null = null; let retryTimer: number | undefined;
@@ -137,7 +157,7 @@ export default function AppFinalRouteV3() {
     return () => { closed = true; if (retryTimer) window.clearTimeout(retryTimer); socket?.close(); };
   }, [user?.id]);
 
-  const createTrip = async () => { await runAction(async () => { const result = await api<{ trip: Trip }>("/api/trips", { method: "POST", body: "{}" }); setTrash(false); await refreshTrips(false); await loadTrip(result.trip.id); setSection("planning"); }, "无法新建旅行。"); };
+  const createTrip = async () => { await runAction(async () => { const result = await api<{ trip: Trip }>("/api/trips", { method: "POST", body: "{}" }); setTrash(false); clearRouteTransientState(); await refreshTrips(false); await loadTrip(result.trip.id); setSection("planning"); }, "无法新建旅行。"); };
   const send = async (messageStage: ConversationStage, message: string, currentSelection: WorkspaceSelection) => { if (!trip) return; await runAction(async () => { await api(`/api/trips/${trip.id}/stages/${messageStage}/turns`, { method: "POST", body: JSON.stringify({ message, selection: currentSelection }) }); await refreshWorkspace(); }, "无法发送消息。"); };
   const startCta = async (actionStage: ConversationStage, actionType: AiActionType, parameters: Record<string, unknown> = {}, targetIds: string[] = []) => { if (!trip) return; await runAction(async () => { await api(`/api/trips/${trip.id}/actions/cta`, { method: "POST", body: JSON.stringify({ stage: actionStage, actionType, parameters, targetIds, requestKey: crypto.randomUUID() }) }); await refreshWorkspace(); }, "无法启动这个操作。"); };
   const confirmAction = async (action: AiAction) => { if (!trip) return; await runAction(async () => { await api(`/api/trips/${trip.id}/actions/${encodeURIComponent(action.id)}/confirm`, { method: "POST", body: JSON.stringify({ expectedGeneration: action.baseGeneration }) }); await refreshWorkspace(); }, "无法确认操作。"); };
@@ -175,7 +195,13 @@ export default function AppFinalRouteV3() {
   const setRouteBoundary = async (nodeId: string, endsDay: boolean) => { await executeCommands([{ type: "set_final_route_boundary", nodeId, endsDay }]); };
   const addRouteNight = async (nodeId: string) => { await executeCommands([{ type: "add_final_route_night", nodeId, newNodeId: `tmp-route-${crypto.randomUUID()}` }]); };
   const setRouteTransport = async (nodeId: string, mode: TransportMode | "") => { await executeCommands([{ type: "set_final_route_transport", nodeId, transportFromPrevious: transportFromModeV3(mode) }]); };
-  const removeRouteNode = async (nodeId: string) => { const result = await executeCommands([{ type: "remove_final_route_node", nodeId }]); if (result && selectedNodeId === nodeId) setSelectedNodeId(null); };
+  const removeRouteNode = async (nodeId: string) => {
+    const result = await executeCommands([{ type: "remove_final_route_node", nodeId }]);
+    if (!result) return;
+    if (selectedNodeId === nodeId) setSelectedNodeId(null);
+    if (hoveredNodeId === nodeId) setHoveredNodeId(null);
+    if (editingNodeId === nodeId) setEditingNodeId(null);
+  };
   const updatePlace = async (placeId: string, changes: WorkflowPlaceEditChangesV3) => Boolean(await executeCommands([{ type: "update_place", placeId, changes }], "无法保存地点信息。"));
 
   const previewGoogleMapsLink = async (placeId: string, url: string) => {
@@ -198,7 +224,24 @@ export default function AppFinalRouteV3() {
       return true;
     }, force ? "无法重新定位地点。" : "无法重新识别地点。"));
   };
-  const setManualResolution = async (placeId: string, latitude: number, longitude: number) => { if (!trip) return; await runAction(async () => { await api(`/api/trips/${trip.id}/resolutions/${encodeURIComponent(placeId)}/manual`, { method: "PUT", body: JSON.stringify({ expectedGeneration: trip.contentGeneration, method: "map_pick", latitude, longitude, address: null }) }); setMapPickPlaceId(null); await loadTrip(trip.id, false); }, "无法保存地点位置。"); };
+  const beginMapPick = (placeId: string, nodeId: string) => {
+    setMapPickReturnNodeId(nodeId);
+    setEditingNodeId(null);
+    setMapPickPlaceId(placeId);
+    setFocus("map");
+  };
+  const setManualResolution = async (placeId: string, latitude: number, longitude: number) => {
+    if (!trip) return;
+    const returnNodeId = mapPickReturnNodeId;
+    await runAction(async () => {
+      await api(`/api/trips/${trip.id}/resolutions/${encodeURIComponent(placeId)}/manual`, { method: "PUT", body: JSON.stringify({ expectedGeneration: trip.contentGeneration, method: "map_pick", latitude, longitude, address: null }) });
+      setMapPickPlaceId(null);
+      setMapPickReturnNodeId(null);
+      setFocus(null);
+      if (returnNodeId) setEditingNodeId(returnNodeId);
+      await loadTrip(trip.id, false);
+    }, "无法保存地点位置。");
+  };
   const recalculateDirtyRoutes = async () => { if (!trip) return; await runAction(async () => { await api(`/api/trips/${trip.id}/routes/recalculate`, { method: "POST", body: JSON.stringify({ expectedGeneration: trip.contentGeneration }) }); setRouteNotice(""); await loadTrip(trip.id, false); }, "无法更新地图路线。"); };
 
   const saveBrief = async (changes: Partial<TripFacts["brief"]>) => {
@@ -222,8 +265,8 @@ export default function AppFinalRouteV3() {
   const manage = async (item: Trip, action: "rename" | "duplicate" | "trash" | "restore" | "permanent") => {
     await runAction(async () => {
       if (action === "rename") { const title = window.prompt("旅行名称", item.title)?.trim(); if (!title) return; await api(`/api/trips/${item.id}`, { method: "PATCH", body: JSON.stringify({ title }) }); if (trip?.id === item.id) await loadTrip(item.id, false); }
-      if (action === "duplicate") { const result = await api<{ trip: Trip }>(`/api/trips/${item.id}/duplicate`, { method: "POST", body: "{}" }); setTrash(false); await refreshTrips(false); await loadTrip(result.trip.id); }
-      if (action === "trash") { if (!window.confirm(`将“${item.title}”移入回收站？`)) return; await api(`/api/trips/${item.id}`, { method: "DELETE" }); if (trip?.id === item.id) { loadToken.current += 1; setWorkspace(null); setSelectedNodeId(null); } await refreshTrips(false); }
+      if (action === "duplicate") { const result = await api<{ trip: Trip }>(`/api/trips/${item.id}/duplicate`, { method: "POST", body: "{}" }); setTrash(false); clearRouteTransientState(); await refreshTrips(false); await loadTrip(result.trip.id); }
+      if (action === "trash") { if (!window.confirm(`将“${item.title}”移入回收站？`)) return; await api(`/api/trips/${item.id}`, { method: "DELETE" }); if (trip?.id === item.id) { loadToken.current += 1; setWorkspace(null); setSelectedNodeId(null); clearRouteTransientState(); } await refreshTrips(false); }
       if (action === "restore") { await api(`/api/trips/${item.id}/restore`, { method: "POST", body: "{}" }); await refreshTrips(true); }
       if (action === "permanent") { if (!window.confirm(`永久删除“${item.title}”及其本机对话和版本？此操作不可恢复。`)) return; await api(`/api/trips/${item.id}/permanent`, { method: "DELETE" }); await refreshTrips(true); }
     }, "旅行管理操作失败。");
@@ -243,19 +286,20 @@ export default function AppFinalRouteV3() {
 
   const models = (codex?.models || []).filter((item) => item.model);
   const routeCount = (value: Trip) => value.plan.finalRoute?.nodes.length ?? 0;
+  const openPlanning = () => { setSection("planning"); setFocus(null); clearRouteTransientState(); };
   return <main className={`app-shell app-shell-v3 ${sidebar ? "sidebar-open" : "sidebar-closed"}`}>
-    <aside className={`sidebar ${sidebar ? "open" : ""}`}><div className="sidebar-head"><div className="brand-lockup"><span className="brand-mark">✦</span><span>AI Travel<small>可视化旅行工作台</small></span></div></div><button className="button primary new-trip" disabled={working || trash} onClick={() => void createTrip()}><Plus size={16}/>新建旅行</button><div className="sidebar-title"><span>{trash ? "回收站" : "我的旅行"}</span><button type="button" onClick={() => { setTrash((value) => !value); setWorkspace(null); setSelectedNodeId(null); }}>{trash ? "返回" : <Trash2 size={14}/>}</button></div><nav>{trips.map((item) => <div className={`trip-nav-item ${trip?.id === item.id ? "selected" : ""}`} key={item.id}><button className="trip-select" onClick={() => !trash && void loadTrip(item.id)}><b>{item.title}</b><small>{routeCount(item)} 个线路地点 · {item.plan.days.length ? `${item.plan.days.length} 天` : "待规划"}</small></button><button className="trip-menu" onClick={() => setMenu(menu === item.id ? null : item.id)}>•••</button>{menu === item.id && <div className="trip-actions">{trash ? <><button onClick={() => void manage(item, "restore")}>恢复</button><button className="danger" onClick={() => void manage(item, "permanent")}>永久删除</button></> : <><button onClick={() => void manage(item, "rename")}>重命名</button><button onClick={() => void manage(item, "duplicate")}>复制</button><button className="danger" onClick={() => void manage(item, "trash")}>移入回收站</button></>}</div>}</div>)}{!trips.length && <span className="sidebar-empty">{trash ? "回收站为空" : "还没有旅行"}</span>}</nav><footer><span>{user.username}</span><button onClick={() => void api("/api/auth/logout", { method: "POST", body: "{}" }).then(() => { setUser(null); setWorkspace(null); })}>退出登录</button></footer></aside>
+    <aside className={`sidebar ${sidebar ? "open" : ""}`}><div className="sidebar-head"><div className="brand-lockup"><span className="brand-mark">✦</span><span>AI Travel<small>可视化旅行工作台</small></span></div></div><button className="button primary new-trip" disabled={working || trash} onClick={() => void createTrip()}><Plus size={16}/>新建旅行</button><div className="sidebar-title"><span>{trash ? "回收站" : "我的旅行"}</span><button type="button" onClick={() => { setTrash((value) => !value); setWorkspace(null); setSelectedNodeId(null); clearRouteTransientState(); }}>{trash ? "返回" : <Trash2 size={14}/>}</button></div><nav>{trips.map((item) => <div className={`trip-nav-item ${trip?.id === item.id ? "selected" : ""}`} key={item.id}><button className="trip-select" onClick={() => { if (!trash) { clearRouteTransientState(); void loadTrip(item.id); } }}><b>{item.title}</b><small>{routeCount(item)} 个线路地点 · {item.plan.days.length ? `${item.plan.days.length} 天` : "待规划"}</small></button><button className="trip-menu" onClick={() => setMenu(menu === item.id ? null : item.id)}>•••</button>{menu === item.id && <div className="trip-actions">{trash ? <><button onClick={() => void manage(item, "restore")}>恢复</button><button className="danger" onClick={() => void manage(item, "permanent")}>永久删除</button></> : <><button onClick={() => void manage(item, "rename")}>重命名</button><button onClick={() => void manage(item, "duplicate")}>复制</button><button className="danger" onClick={() => void manage(item, "trash")}>移入回收站</button></>}</div>}</div>)}{!trips.length && <span className="sidebar-empty">{trash ? "回收站为空" : "还没有旅行"}</span>}</nav><footer><span>{user.username}</span><button onClick={() => void api("/api/auth/logout", { method: "POST", body: "{}" }).then(() => { setUser(null); setWorkspace(null); clearRouteTransientState(); })}>退出登录</button></footer></aside>
     <section className="main-panel">
       <header className="topbar"><div className="topbar-page-identity"><button className="icon-button sidebar-toggle" aria-label={sidebar ? "收起旅行菜单" : "打开旅行菜单"} onClick={() => void saveUi({ sidebarOpen: !sidebar })}><Menu size={21}/></button><div><h1>{trip?.title || (trash ? "回收站" : "旅行工作台")}</h1><small>{trip ? (section === "planning" ? "规划 · 旅行需求" : "行程 · 最终线路") : "地图用于展示，旅行修改都在右侧完成"}</small></div></div><div className="model-status">{trip && workspace && workspace.tasks.length > 0 && <AiTaskTopbar tasks={workspace.tasks} onStop={stopTask}/>}<span className={codex?.signedIn ? "status-dot connected" : "status-dot"}/>{codex?.signedIn ? <select className="ai-model-select-v3" aria-label="AI 模型" value={settings.ai.model} onChange={(event) => void api<{ settings: AppSettings }>("/api/settings/ai-model", { method: "PUT", body: JSON.stringify({ model: event.target.value, reasoningEffort: settings.ai.reasoningEffort }) }).then((value) => applySettings(value.settings))}>{models.map((model) => <option key={model.model} value={model.model}>{model.displayName || model.model}</option>)}</select> : <button className="button small" onClick={() => void api<{ authUrl: string }>("/api/codex/login/browser", { method: "POST", body: "{}" }).then((value) => window.open(value.authUrl, "_blank", "noopener,noreferrer"))}>登录 AI</button>}{trip && <select className="plan-language-select-v3" aria-label="地点名称语言" value={trip.planLanguage} onChange={(event) => void saveLanguage(event.target.value as Trip["planLanguage"])}><option value="zh">中文</option><option value="en">English</option><option value="bilingual">中英对照</option></select>}<button className="icon-button" aria-label="刷新 AI 状态" onClick={() => void refreshCodex()}><RefreshCw size={16}/></button><button className="icon-button" aria-label="切换主题" onClick={() => void saveUi({ theme: settings.ui.theme === "light" ? "dark" : "light" })}>{settings.ui.theme === "light" ? <Moon size={18}/> : <Sun size={18}/>}</button><button className="icon-button" aria-label="版本历史" disabled={!trip} onClick={() => setHistoryOpen(true)}><History size={18}/></button><button className="icon-button" aria-label="修改密码" onClick={() => setPasswordOpen(true)}><KeyRound size={17}/></button></div></header>
       <div className="main-workspace main-workspace-v3"><div className={`travel-workspace travel-workspace-v3 ${focus ? `focus-${focus}` : ""}`} ref={workspaceElement} style={{ gridTemplateColumns: `${settings.ui.workspaceSplitRatio}fr 10px ${1 - settings.ui.workspaceSplitRatio}fr` }}>
-        {workspace ? <FinalRouteMapV3 workspace={workspace} selectedNodeId={selectedNodeId} focusRequest={mapFocusRequest} mapPickPlaceId={mapPickPlaceId} fullscreen={focus === "map"} onSelectNode={(nodeId) => { setSection("route"); setSelectedNodeId(nodeId); setMapFocusRequest(null); }} onMapPick={(placeId, latitude, longitude) => void setManualResolution(placeId, latitude, longitude)} onFocusHandled={(requestId) => setMapFocusRequest((current) => current?.requestId === requestId ? null : current)} onToggleFullscreen={() => setFocus((current) => current === "map" ? null : "map")}/> : <section className="workspace-map-v2 no-trip"><div className="map-empty-overlay"><MapPinned size={34}/><strong>地图只展示规划结果</strong><span>所有旅行修改都从右侧开始</span></div></section>}
+        {workspace ? <FinalRouteMapV3 workspace={workspace} selectedNodeId={selectedNodeId} hoveredNodeId={hoveredNodeId} focusRequest={mapFocusRequest} mapPickPlaceId={mapPickPlaceId} fullscreen={focus === "map"} onSelectNode={(nodeId) => { setSection("route"); setSelectedNodeId(nodeId); setMapFocusRequest(null); }} onMapPick={(placeId, latitude, longitude) => void setManualResolution(placeId, latitude, longitude)} onCancelMapPick={cancelMapPick} onFocusHandled={(requestId) => setMapFocusRequest((current) => current?.requestId === requestId ? null : current)} onToggleFullscreen={() => setFocus((current) => current === "map" ? null : "map")}/> : <section className="workspace-map-v2 no-trip"><div className="map-empty-overlay"><MapPinned size={34}/><strong>地图只展示规划结果</strong><span>所有旅行修改都从右侧开始</span></div></section>}
         <div className="splitter" onPointerDown={resize}/>
-        <div className="workspace-side-v3">{workspace ? <>
-          <nav className="final-route-workspace-nav-v3" aria-label="旅行工作区"><button type="button" className={section === "planning" ? "active" : ""} onClick={() => { setSection("planning"); setMapPickPlaceId(null); }}><span>1</span><b>规划 · 旅行需求</b></button><button type="button" className={section === "route" ? "active" : ""} onClick={() => setSection("route")}><span>2</span><b>行程 · 最终线路</b></button></nav>
+        <div className={`workspace-side-v3 ${section === "route" && editingNodeId ? "route-editor-open-v4" : ""}`}>{workspace ? <>
+          <nav className="final-route-workspace-nav-v3" aria-label="旅行工作区"><button type="button" className={section === "planning" ? "active" : ""} onClick={openPlanning}><span>1</span><b>规划 · 旅行需求</b></button><button type="button" className={section === "route" ? "active" : ""} onClick={() => setSection("route")}><span>2</span><b>行程 · 最终线路</b></button></nav>
           {section === "planning" ? <PlanningAdvisoryListV3 advisories={workspace.advisories ?? []} step="requirements"/> : <PlanningAdvisoryListV3 advisories={workspace.advisories ?? []} steps={["backbone", "skeleton", "interests", "detail"]}/>}          
           <div className="workspace-step-content-v3">{section === "planning"
             ? <RequirementsPanelV3 facts={workspace.trip.plan.trip} busy={working} onSave={saveBrief} onGenerate={async () => setSection("route")}/>
-            : <FinalRoutePanelV3 workspace={workspace} selectedNodeId={selectedNodeId} busy={working} notice={routeNotice} onSelectNode={setSelectedNodeId} onFocusNode={(nodeId) => { setSelectedNodeId(nodeId); setMapFocusRequest({ nodeId, requestId: ++mapFocusSequence.current }); }} onAddPlace={addRoutePlace} onMoveNode={moveRouteNode} onSetStatus={setRouteStatus} onSetBoundary={setRouteBoundary} onAddNight={addRouteNight} onSetTransport={setRouteTransport} onRemoveNode={removeRouteNode} onUpdatePlace={updatePlace} onPreviewGoogleMapsLink={previewGoogleMapsLink} onApplyGoogleMapsLink={applyGoogleMapsLink} onRetry={retryResolutions} onBeginMapPick={(placeId) => { setMapPickPlaceId(placeId); setFocus("map"); }} onRecalculateDirtyRoutes={recalculateDirtyRoutes}/>}</div>
+            : <FinalRoutePanelV3 workspace={workspace} selectedNodeId={selectedNodeId} hoveredNodeId={hoveredNodeId} editingNodeId={editingNodeId} busy={working} notice={routeNotice} onSelectNode={setSelectedNodeId} onHoverNode={setHoveredNodeId} onFocusNode={(nodeId) => { setSelectedNodeId(nodeId); setMapFocusRequest({ nodeId, requestId: ++mapFocusSequence.current }); }} onEditNode={setEditingNodeId} onAddPlace={addRoutePlace} onMoveNode={moveRouteNode} onSetStatus={setRouteStatus} onSetBoundary={setRouteBoundary} onAddNight={addRouteNight} onSetTransport={setRouteTransport} onRemoveNode={removeRouteNode} onUpdatePlace={updatePlace} onPreviewGoogleMapsLink={previewGoogleMapsLink} onApplyGoogleMapsLink={applyGoogleMapsLink} onRetry={retryResolutions} onBeginMapPick={beginMapPick} onRecalculateDirtyRoutes={recalculateDirtyRoutes}/>}</div>
           {section === "planning" && <WorkflowAssistantV3 workflowStep="requirements" stage="requirements" workspace={workspace} selection={assistantSelection} busy={working} error={error} onSend={send} onConfirmAction={confirmAction} onCancelAction={cancelAction} onProposalAction={proposalAction} onStopTask={stopTask} onRetryCurrent={async () => { await refreshWorkspace(); }}/>}          
           {section === "route" && error && <p className="inline-error final-route-app-error-v3">{error}</p>}
         </> : <div className="workspace-empty-v3"><span className="brand-mark">✦</span><h2>选择一趟旅行</h2><p>地图用于展示，所有业务操作都集中在右侧。</p></div>}</div>
