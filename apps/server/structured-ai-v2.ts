@@ -59,8 +59,8 @@ const FORBIDDEN_SCHEMA_KEYS = new Set(["allOf", "not", "if", "then", "else", "de
 // Older Day documents may omit compatibility fields that newer saves can carry.
 // OpenAI structured output does not accept mixed required/optional objects, so the
 // transport schema requires these fields as nullable and normalization removes null where omission is meaningful.
-const NULLABLE_REQUIRED_TRANSPORT_FIELDS = new Set(["stayBlockId", "scheduleText", "endTransportFromPrevious"]);
-const OMIT_NULL_TRANSPORT_FIELDS = new Set(["stayBlockId", "endTransportFromPrevious"]);
+const NULLABLE_REQUIRED_TRANSPORT_FIELDS = new Set(["stayBlockId", "scheduleText", "endTransportFromPrevious", "routeSuggestion"]);
+const OMIT_NULL_TRANSPORT_FIELDS = new Set(["stayBlockId", "endTransportFromPrevious", "routeSuggestion"]);
 const TRIP_CANDIDATE_TRANSPORT_KEYS = [
   "id",
   "placeId",

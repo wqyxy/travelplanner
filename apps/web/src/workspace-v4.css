@@ -52,6 +52,13 @@
   min-height: 0;
 }
 
+.workspace-step-content-v3 > .final-route-panel-v3 {
+  height: 100%;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
 .workspace-step-content-v3 > .workspace-requirements-v3 {
   overflow-x: hidden;
   overflow-y: auto;

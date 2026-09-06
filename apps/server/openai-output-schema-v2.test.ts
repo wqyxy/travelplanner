@@ -9,6 +9,7 @@ import {
   MapResolutionAssistOutputSchema,
   PlanGenerationOutputSchema,
 } from "./contracts-v2.js";
+import { DestinationGenerateOutputSchema } from "./ai-action-contracts-v3.js";
 import {
   buildOpenAiStructuredOutputSchema,
   normalizeStructuredOutputTransport,
@@ -92,6 +93,33 @@ describe("OpenAI structured output adapter", () => {
     expect(converted.required).toContain("planningRole");
     expect(converted.properties.planningRole.anyOf).toBeUndefined();
     expect(converted.properties.planningRole.enum).toEqual(["planning_area", "core_visit", "detail_interest"]);
+  });
+
+  it("bridges an omitted route suggestion in main-route generation", () => {
+    const converted = buildOpenAiStructuredOutputSchema(DestinationGenerateOutputSchema) as any;
+    const item = converted.properties.candidates.items;
+    expect(item.required).toContain("routeSuggestion");
+    expect(item.properties.routeSuggestion.anyOf).toEqual(expect.arrayContaining([{ type: "null" }]));
+
+    const normalized = normalizeStructuredOutputTransport({
+      schemaVersion: 2,
+      baseGeneration: 0,
+      assistantMessage: "已生成主要地点。",
+      places: [],
+      candidates: [{
+        temporaryId: "candidate-1",
+        placeTemporaryId: "place-1",
+        planningRole: "planning_area",
+        parentCandidateRef: null,
+        aiReason: "适合作为停留区域",
+        aiScore: 90,
+        suggestedDurationMinutes: null,
+        tags: [],
+        defaultPreference: "optional",
+        routeSuggestion: null,
+      }],
+    }) as any;
+    expect(normalized.candidates[0]).not.toHaveProperty("routeSuggestion");
   });
 
   it("preserves partial update semantics through patch transport", () => {
