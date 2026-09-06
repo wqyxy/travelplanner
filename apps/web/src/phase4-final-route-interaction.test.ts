@@ -26,8 +26,11 @@ describe("Phase 4 final route interaction contract", () => {
 
   it("renders every route node as the same place card and keeps Day out of place names", () => {
     const panel = source("./FinalRoutePanelV3.tsx");
+    const drawer = source("./FinalRouteEditorDrawerV4.tsx");
     expect(panel).toContain('placeNamePresentation(row.place, workspace.trip.planLanguage, "未命名地点")');
+    expect(drawer).toContain('placeNamePresentation(row.place, workspace.trip.planLanguage, "未命名地点")');
     expect(panel).not.toContain('row.node.activity || "未命名地点"');
+    expect(drawer).not.toContain('row.node.activity || "未命名地点"');
     expect(panel).not.toContain("final-route-day-divider-v3");
     expect(panel).not.toContain("final-route-day-title-v4");
     expect(panel).toContain("final-route-night-divider-v4");
@@ -60,11 +63,11 @@ describe("Phase 4 final route interaction contract", () => {
     expect(css).toContain(".final-route-row-v3.drop-after:after");
   });
 
-  it("does not offer transport editing for the synthetic same-place hop created by another night", () => {
+  it("does not render a transport control for the synthetic same-place hop created by another night", () => {
     const panel = source("./FinalRoutePanelV3.tsx");
-    expect(panel).toContain('if (connection.state === "same_place") return "同地停留"');
-    expect(panel).toContain('connection.state === "same_place" ? "连续住宿" : connectionText(connection)');
-    expect(panel).toContain('transportEditingNodeId === row.node.id && connection.state !== "same_place"');
+    expect(panel).toContain('const effectiveConnection = connection?.state === "same_place" ? null : connection');
+    expect(panel).toContain("{effectiveConnection && <div className={`final-route-transport-connector-v4 state-${effectiveConnection.state}`}");
+    expect(panel).not.toContain('connection.state === "same_place" ? "连续住宿"');
   });
 
   it("loads the dedicated phase4 interaction styles", () => {
