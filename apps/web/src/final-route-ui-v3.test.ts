@@ -149,6 +149,31 @@ describe("final route UI helpers", () => {
     })]);
   });
 
+  it("maps a cross-Day connection through the derived Day anchor places rather than route-node ids", () => {
+    const a = node("a", "normal", true);
+    const b = node("b", "normal", true);
+    b.transportFromPrevious = transportFromModeV3("drive");
+    const source = plan([a, b]);
+    source.days = [
+      day("day-1", 1, a.placeId, a.placeId),
+      day("day-2", 2, a.placeId, b.placeId),
+    ];
+    const connections = finalRouteTransportConnectionsV4(source, [
+      routeState("day-1", { fromPlaceId: a.placeId, toPlaceId: a.placeId, distanceKm: 0, durationMinutes: 0 }),
+      routeState("day-2", { fromPlaceId: a.placeId, toPlaceId: b.placeId, distanceKm: 108, durationMinutes: 94 }),
+    ]);
+
+    expect(connections).toEqual([expect.objectContaining({
+      fromNodeId: "a",
+      toNodeId: "b",
+      dayId: "day-2",
+      dayNumber: 2,
+      distanceKm: 108,
+      durationMinutes: 94,
+      state: "ready",
+    })]);
+  });
+
   it("does not expose stale provider facts while a Day route is dirty", () => {
     const a = node("a", "normal");
     const b = node("b", "normal", true);
