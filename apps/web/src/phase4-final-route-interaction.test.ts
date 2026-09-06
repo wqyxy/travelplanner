@@ -46,18 +46,25 @@ describe("Phase 4 final route interaction contract", () => {
     expect(drawer).toContain("地图选点");
   });
 
-  it("starts drag from the handle but drags the whole place article and shows insertion position", () => {
+  it("starts drag only from the handle while the whole place card follows as the drag image", () => {
     const panel = source("./FinalRoutePanelV3.tsx");
     const css = source("./phase4-final-route-interaction.css");
-    expect(panel).toContain("dragArmedNodeId");
+    expect(panel).toContain('className="final-route-drag-v3"');
     expect(panel).toContain("draggable={!busy && !aiBusy}");
-    expect(panel).toContain("event.dataTransfer.setDragImage(event.currentTarget, 22, 22)");
+    expect(panel).toContain('event.currentTarget.closest(".final-route-row-v3")');
+    expect(panel).toContain("event.dataTransfer.setDragImage(card, 22, 22)");
     expect(panel).toContain("finalRouteMoveTargetIndexV4");
-    expect(panel).toContain("drop-before");
-    expect(panel).toContain("drop-after");
+    expect(panel).toContain('`drop-${currentDrop}`');
     expect(css).toContain(".final-route-row-v3.dragging");
     expect(css).toContain(".final-route-row-v3.drop-before:before");
     expect(css).toContain(".final-route-row-v3.drop-after:after");
+  });
+
+  it("does not offer transport editing for the synthetic same-place hop created by another night", () => {
+    const panel = source("./FinalRoutePanelV3.tsx");
+    expect(panel).toContain('if (connection.state === "same_place") return "同地停留"');
+    expect(panel).toContain('connection.state === "same_place" ? "连续住宿" : connectionText(connection)');
+    expect(panel).toContain('transportEditingNodeId === row.node.id && connection.state !== "same_place"');
   });
 
   it("loads the dedicated phase4 interaction styles", () => {
