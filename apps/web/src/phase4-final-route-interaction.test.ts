@@ -24,6 +24,18 @@ describe("Phase 4 final route interaction contract", () => {
     expect(map).not.toContain("[points, ready, selectedNodeId]");
   });
 
+  it("uses one eased camera motion for automatic and click-triggered map focus", () => {
+    const map = source("./FinalRouteMapV3.tsx");
+    const motion = source("./final-route-map-motion-v3.ts");
+    expect(map).toContain('import { finalRouteMapCameraMotionV3 } from "./final-route-map-motion-v3"');
+    expect(map.match(/\.\.\.finalRouteMapCameraMotionV3/g)).toHaveLength(4);
+    expect(map).not.toContain("duration: 450");
+    expect(map).not.toContain("duration: 400");
+    expect(motion).toContain("finalRouteMapEaseInOutCubicV3");
+    expect(motion).toContain("duration: 800");
+    expect(motion).toContain("essential: false");
+  });
+
   it("renders every route node as the same place card and keeps Day out of place names", () => {
     const panel = source("./FinalRoutePanelV3.tsx");
     const drawer = source("./FinalRouteEditorDrawerV4.tsx");

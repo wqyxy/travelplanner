@@ -1502,14 +1502,25 @@ export class TravelPlannerRuntimeV3 {
     this.emit("travel.route.changed", { tripId, dayId: `macro:${dayId}` }); return route;
   }
   async recalculateDirtyRoutes(tripId: string, input: any) {
-    const expectedGeneration = Number(input.expectedGeneration); const states = this.options.routes.workspaceRouteState(tripId); const ids = states.filter((state) => state.dirty).map((state) => state.dayId);
+    const expectedGeneration = Number(input.expectedGeneration);
+    if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 0) throw new Error("expectedGeneration 无效。");
+    if (this.options.store.requireTrip(tripId).contentGeneration !== expectedGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
+    const states = this.options.routes.workspaceRouteState(tripId); const ids = states.filter((state) => state.dirty).map((state) => state.dayId);
+    if (ids.length) this.startRouteBatch(tripId, expectedGeneration, ids);
     const routes = await Promise.all(ids.map((dayId) => this.recalculateRoute(tripId, dayId, expectedGeneration)));
     return { routes };
   }
   private startRouteBatch(tripId: string, expectedGeneration: number, dayIds: string[]) {
+    const existing = [...this.routeBatches.entries()].find(([, batch]) => batch.tripId === tripId && batch.expectedGeneration === expectedGeneration);
+    if (existing) return existing[0];
+    const dirtyDayIds = this.options.routes.workspaceRouteState(tripId)
+      .filter((state) => state.dirty)
+      .map((state) => state.dayId);
+    const targetDayIds = [...new Set([...dayIds, ...dirtyDayIds])];
+    if (!targetDayIds.length) return null;
     const taskId = `route:${randomUUID()}`; const controller = new AbortController();
     this.routeBatches.set(taskId, { tripId, expectedGeneration, controller });
-    this.options.tasks.start({ id: taskId, tripId, agent: "map", label: "计算每日路线", summary: `正在计算每日路线 0/${dayIds.length}`, canStop: true, metadata: { totalDays: dayIds.length, completedDays: 0, readyDays: 0, attentionDays: 0, peakDayConcurrency: ROUTE_DAY_BATCH_CONCURRENCY } });
+    this.options.tasks.start({ id: taskId, tripId, agent: "map", label: "计算每日路线", summary: `正在计算每日路线 0/${targetDayIds.length}`, canStop: true, metadata: { totalDays: targetDayIds.length, completedDays: 0, readyDays: 0, attentionDays: 0, peakDayConcurrency: ROUTE_DAY_BATCH_CONCURRENCY } });
     void (async () => {
       let completed = 0; let ready = 0; let attention = 0;
       const calculate = async (dayId: string) => {
@@ -1517,19 +1528,19 @@ export class TravelPlannerRuntimeV3 {
           const route = await this.options.routes.recalculate(tripId, dayId, expectedGeneration, controller.signal);
           completed += 1; if (route.status === "ready") ready += 1; else attention += 1;
           this.emit("travel.route.changed", { tripId, dayId });
-          const summary = `正在计算每日路线 ${completed}/${dayIds.length} · ready ${ready} · attention ${attention}`;
-          this.options.tasks.metadata(taskId, { totalDays: dayIds.length, completedDays: completed, readyDays: ready, attentionDays: attention, peakDayConcurrency: ROUTE_DAY_BATCH_CONCURRENCY });
+          const summary = `正在计算每日路线 ${completed}/${targetDayIds.length} · ready ${ready} · attention ${attention}`;
+          this.options.tasks.metadata(taskId, { totalDays: targetDayIds.length, completedDays: completed, readyDays: ready, attentionDays: attention, peakDayConcurrency: ROUTE_DAY_BATCH_CONCURRENCY });
           this.options.tasks.update(taskId, "running", summary, "route:day-completed");
         } catch (error) {
           const message = aiErrorMessageV3(error);
           if (message === "CONTENT_GENERATION_SUPERSEDED") throw error;
           if (controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError")) return;
           completed += 1; attention += 1;
-          this.options.tasks.update(taskId, "running", `正在计算每日路线 ${completed}/${dayIds.length} · ready ${ready} · attention ${attention}`, "route:day-failed");
+          this.options.tasks.update(taskId, "running", `正在计算每日路线 ${completed}/${targetDayIds.length} · ready ${ready} · attention ${attention}`, "route:day-failed");
         }
       };
       try {
-        await Promise.all(dayIds.map(calculate));
+        await Promise.all(targetDayIds.map(calculate));
         const status = controller.signal.aborted ? "stopped" : "completed";
         this.options.tasks.update(taskId, status, controller.signal.aborted ? "每日路线计算已停止" : `每日路线计算完成 · ready ${ready} · attention ${attention}`, "task:completed");
       } catch (error) {

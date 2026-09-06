@@ -1,5 +1,5 @@
 import { ChevronRight, Copy, GripVertical, LocateFixed, MapPin, Pencil, Plus, RefreshCw, Route, Sparkles, Trash2, WandSparkles, X } from "lucide-react";
-import { Fragment, type DragEvent, useEffect, useMemo, useState } from "react";
+import { Fragment, type DragEvent, type ReactNode, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import { FinalRouteEditorDrawerV4 } from "./FinalRouteEditorDrawerV4";
 import { finalRouteMoveTargetIndexV4, type FinalRouteDropPositionV4 } from "./final-route-drag-v4";
@@ -33,6 +33,7 @@ const ADD_AT_START = "__route_start__";
 const ADD_AT_END = "__route_end__";
 const finalRouteQuickStatusLabelsV5: Record<FinalRouteNodeStatus, string> = { normal: "必去", tentative: "待定", no_go: "不去" };
 const finalRouteQuickStatusMarksV5: Record<FinalRouteNodeStatus, string> = { normal: "★", tentative: "○", no_go: "×" };
+const ACTIVE_TASK_STATUSES_V5 = new Set(["starting", "running", "waiting", "reconnecting"]);
 
 type AddDraft = { nameZh: string; kind: PlaceKind };
 type DropTarget = { nodeId: string; position: FinalRouteDropPositionV4 };
@@ -43,8 +44,8 @@ function locationAttentionLabel(status: "resolving" | "resolved" | "unresolved" 
   return "未定位";
 }
 
-function connectionText(connection: FinalRouteTransportConnectionV4) {
-  if (connection.state === "dirty") return "路线更新中";
+function connectionText(connection: FinalRouteTransportConnectionV4, routeUpdating: boolean) {
+  if (connection.state === "dirty") return routeUpdating ? "路线更新中" : "路线待更新";
   if (connection.state === "pending") return "路线待计算";
   if (connection.state === "unavailable") return "路线暂不可用";
   const parts = [formatDistance(connection.distanceKm), formatRouteDuration(connection.durationMinutes)];
@@ -83,10 +84,10 @@ function dropPosition(event: DragEvent<HTMLElement>): FinalRouteDropPositionV4 {
   return event.clientY < rect.top + rect.height / 2 ? "before" : "after";
 }
 
-function finalRouteDayMarkerV5(dayNumber: number) {
+function finalRouteDayMarkerV5(dayNumber: number, actions: ReactNode) {
   return <div className="final-route-day-marker-v5" aria-label={`第 ${dayNumber} 天`}>
     <strong>第 {dayNumber} 天</strong>
-    <div className="final-route-day-actions-v5" aria-hidden="true" />
+    <div className="final-route-day-actions-v5">{actions}</div>
   </div>;
 }
 
@@ -166,6 +167,7 @@ export function FinalRoutePanelV3({
   const firstNormalRowIndex = rows.findIndex((row) => row.node.status === "normal");
   const wholeAreaIds = [...new Set(normalRows.flatMap((row) => planningAreaByPlace.get(row.node.placeId)?.id ?? []))];
   const dirtyCount = workspace.routeStates.filter((item) => item.dirty).length;
+  const routeUpdating = workspace.tasks.some((task) => task.agent === "map" && ACTIVE_TASK_STATUSES_V5.has(task.status));
   const unresolvedPlaceIds = [...new Set(rows
     .filter((row) => !hasResolvedLocation(resolutions.get(row.node.placeId)))
     .map((row) => row.node.placeId))];
@@ -184,18 +186,12 @@ export function FinalRoutePanelV3({
   const [aiMessage, setAiMessage] = useState("");
   const [segmentFrom, setSegmentFrom] = useState<string>("");
   const [segmentTo, setSegmentTo] = useState<string>("");
-  const [aiDayId, setAiDayId] = useState<string>("");
 
   useEffect(() => {
     const ids = normalRows.map((row) => row.node.id);
     if (!ids.includes(segmentFrom)) setSegmentFrom(ids[0] ?? "");
     if (!ids.includes(segmentTo)) setSegmentTo(ids.at(-1) ?? "");
   }, [normalRows.map((row) => row.node.id).join("|")]);
-
-  useEffect(() => {
-    const ids = plan.days.map((day) => day.id);
-    if (!ids.includes(aiDayId)) setAiDayId(ids[0] ?? "");
-  }, [plan.days.map((day) => day.id).join("|")]);
 
   useEffect(() => {
     if (addPosition === ADD_AT_START || addPosition === ADD_AT_END) return;
@@ -283,8 +279,16 @@ export function FinalRoutePanelV3({
   })();
   const segmentRows = segmentBounds ? rows.slice(segmentBounds.start, segmentBounds.end + 1).filter((row) => row.node.status === "normal") : [];
   const segmentAreaIds = [...new Set(segmentRows.flatMap((row) => planningAreaByPlace.get(row.node.placeId)?.id ?? []))];
-  const aiDay = plan.days.find((day) => day.id === aiDayId);
-  const aiDayAreaIds = areaIdsForDay(aiDay);
+  const dayActionsForNumber = (dayNumber: number) => {
+    const day = plan.days.find((item) => item.dayNumber === dayNumber);
+    if (!day) return null;
+    const dayAreaIds = areaIdsForDay(day);
+    return <>
+      <button className="button small" type="button" disabled={busy || aiBusy || !dayAreaIds.length} onClick={() => void startAi("interests", "interest.discover", { request: `final-route-detail-scope:day:${day.id}` }, dayAreaIds, "AI 已开始补充这一天的详细地点。")}>补充详细地点</button>
+      <button className="button small" type="button" disabled={busy || aiBusy || day.stops.length < 1} onClick={() => void startAi("itinerary", "itinerary.refine", { dayIds: [day.id], request: "完善这一天" }, [day.id], "AI 已开始补充这一天的时间和活动说明；完成后由你决定是否采用。")}>完善这一天</button>
+      <button className="button small" type="button" disabled={busy || aiBusy || day.stops.length < 2} onClick={() => void startAi("itinerary", "itinerary.day.optimize", { dayId: day.id, request: "优化这一天" }, [day.id], "AI 已开始分析这一天的顺序；完成后由你决定是否采用。")}>优化这一天</button>
+    </>;
+  };
   const visibleAiActions = workspace.actions.filter((action) => action.actionType === "itinerary.day.optimize" || action.actionType === "itinerary.repair" || action.actionType === "itinerary.refine");
   const visibleAiProposals = (() => {
     const byProposalId = new Map<string, { action: typeof visibleAiActions[number]; proposal: WorkspaceV3["proposals"][number] }>();
@@ -345,7 +349,7 @@ export function FinalRoutePanelV3({
         <span><b>{plan.days.length}</b> 天</span>
         <span><b>{rows.filter((row) => row.node.status === "tentative").length}</b> 待定</span>
         <span><b>{rows.filter((row) => row.node.status === "no_go").length}</b> 不去</span>
-        {dirtyCount > 0 && <button className="button small" type="button" disabled={busy || aiBusy} onClick={() => void onRecalculateDirtyRoutes()}><RefreshCw size={13}/>更新 {dirtyCount} 天地图路线</button>}
+        {dirtyCount > 0 && <button className="button small" type="button" disabled={busy || aiBusy || routeUpdating} onClick={() => void onRecalculateDirtyRoutes()}><RefreshCw size={13}/>{routeUpdating ? `正在更新 ${dirtyCount} 天地图路线` : `更新 ${dirtyCount} 天地图路线`}</button>}
       </div>
       {notice && <p className="final-route-notice-v3">{notice}</p>}
 
@@ -366,16 +370,6 @@ export function FinalRoutePanelV3({
                 <button className="button small" type="button" disabled={busy || aiBusy || normalRows.length < 2} onClick={() => void startAi("itinerary", "itinerary.repair", { request: "优化全程" }, [], "AI 已开始分析全程顺序；完成后会给你一份可采用或拒绝的方案。")}>优化全程</button>
               </div>
             </section>
-
-            {plan.days.length > 0 && <section>
-              <header><strong>按天</strong><small>Day 只用于 AI scope，不成为另一套线路层级。</small></header>
-              <label className="final-route-ai-select-v5"><span>选择一天</span><select value={aiDayId} disabled={busy || aiBusy} onChange={(event) => setAiDayId(event.target.value)}>{plan.days.map((day) => <option key={day.id} value={day.id}>第 {day.dayNumber} 天{day.date ? ` · ${day.date}` : ""}</option>)}</select></label>
-              <div className="final-route-inline-actions-v3">
-                <button className="button small" type="button" disabled={busy || aiBusy || !aiDay || !aiDayAreaIds.length} onClick={() => aiDay && void startAi("interests", "interest.discover", { request: `final-route-detail-scope:day:${aiDay.id}` }, aiDayAreaIds, "AI 已开始补充这一天的详细地点。")}>补充详细地点</button>
-                <button className="button small" type="button" disabled={busy || aiBusy || !aiDay || aiDay.stops.length < 1} onClick={() => aiDay && void startAi("itinerary", "itinerary.refine", { dayIds: [aiDay.id], request: "完善这一天" }, [aiDay.id], "AI 已开始补充这一天的时间和活动说明；完成后由你决定是否采用。")}>完善这一天</button>
-                <button className="button small" type="button" disabled={busy || aiBusy || !aiDay || aiDay.stops.length < 2} onClick={() => aiDay && void startAi("itinerary", "itinerary.day.optimize", { dayId: aiDay.id, request: "优化这一天" }, [aiDay.id], "AI 已开始分析这一天的顺序；完成后由你决定是否采用。")}>优化这一天</button>
-              </div>
-            </section>}
 
             {normalRows.length >= 2 && <section>
               <header><strong>按区段</strong><small>选择范围后，只处理这一段。</small></header>
@@ -437,7 +431,7 @@ export function FinalRoutePanelV3({
           const canRecalculateConnection = Boolean(effectiveConnection?.dayId) && !unavailableRouteReason?.includes("未定位");
           const hasFollowingNormalRow = rows.slice(row.index + 1).some((item) => item.node.status === "normal");
           return <Fragment key={row.node.id}>
-            {row.index === firstNormalRowIndex && finalRouteDayMarkerV5(row.dayNumber)}
+            {row.index === firstNormalRowIndex && finalRouteDayMarkerV5(row.dayNumber, dayActionsForNumber(row.dayNumber))}
             <div className="final-route-row-wrap-v3">
             {effectiveConnection && <div className={`final-route-transport-connector-v4 state-${effectiveConnection.state} ${routeHovered ? "hover-linked" : ""}`} onMouseEnter={() => onHoverRoute(effectiveConnection.toNodeId, effectiveConnection.toPlaceId)} onMouseLeave={() => onHoverRoute(null, null)}>
               <div className="final-route-transport-actions-v5">
@@ -445,7 +439,7 @@ export function FinalRoutePanelV3({
                   {transportOptions.map((mode) => <option key={mode} value={mode}>{transportModeLabelsV3[mode]}</option>)}
                 </select>
                 <button type="button" className="final-route-transport-main-v4" disabled={busy || aiBusy} title={unavailableRouteReason || effectiveConnection.warning || undefined} onClick={() => onFocusRoute(effectiveConnection.toNodeId, effectiveConnection.toPlaceId)}>
-                  <Route size={14}/><span>{unavailableRouteReason || connectionText(effectiveConnection)}</span>{effectiveConnection.skippedInactiveCount > 0 && <small>{fromName} → {toName} · 已跳过 {effectiveConnection.skippedInactiveCount} 个待定/不去地点</small>}
+                  <Route size={14}/><span>{unavailableRouteReason || connectionText(effectiveConnection, routeUpdating)}</span>{effectiveConnection.skippedInactiveCount > 0 && <small>{fromName} → {toName} · 已跳过 {effectiveConnection.skippedInactiveCount} 个待定/不去地点</small>}
                 </button>
                 {effectiveConnection.state === "unavailable" && <button className="final-route-recalculate-connection-v5" type="button" disabled={busy || aiBusy || !canRecalculateConnection} title={canRecalculateConnection ? "重新向路线 Provider 获取这一天的线路" : unavailableRouteReason || "缺少可用的线路范围"} onClick={() => effectiveConnection.dayId && void onRecalculateRoute(effectiveConnection.dayId)}><RefreshCw size={13}/>重新获取线路</button>}
               </div>
@@ -499,7 +493,7 @@ export function FinalRoutePanelV3({
             {row.node.status !== "normal" && <div className="final-route-inactive-note-v4">暂不参与当前 Day 和交通路线；恢复为“正常”后会在原位置重新生效。</div>}
             {row.node.status === "normal" && row.node.endsDay && <div className="final-route-night-divider-v4" aria-label={`第 ${row.dayNumber} 天结束，第 ${row.dayNumber} 晚`}><span/><strong>第 {row.dayNumber} 晚</strong><span/></div>}
             </div>
-            {row.node.status === "normal" && row.node.endsDay && hasFollowingNormalRow && finalRouteDayMarkerV5(row.dayNumber + 1)}
+            {row.node.status === "normal" && row.node.endsDay && hasFollowingNormalRow && finalRouteDayMarkerV5(row.dayNumber + 1, dayActionsForNumber(row.dayNumber + 1))}
           </Fragment>;
         })}
       </div>}

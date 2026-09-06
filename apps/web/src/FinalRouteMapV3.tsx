@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { WorkspaceV3 } from "./v3-types";
 import { placeNamePresentation } from "./place-name-presentation";
 import { finalRouteMapPointFeaturesV3, finalRouteMapRouteGeometryFeaturesV3, finalRouteMapStatusColorsV3 } from "./final-route-map-v3";
+import { finalRouteMapCameraMotionV3 } from "./final-route-map-motion-v3";
 import { dayRouteColors } from "./workspace-map-presentation-v2";
 import { finalRouteStatusLabelsV3 } from "./final-route-ui-v3";
 
@@ -260,7 +261,7 @@ export function FinalRouteMapV3({
         if (mapRef.current !== map) return;
         const bounds = new lib.LngLatBounds();
         points.forEach((point) => bounds.extend(point.geometry.coordinates));
-        if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 64, maxZoom: 14, duration: 450 });
+        if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 64, maxZoom: 14, ...finalRouteMapCameraMotionV3 });
         focusedViewKey.current = null;
         fitted.current = key;
       });
@@ -304,7 +305,7 @@ export function FinalRouteMapV3({
         if (mapRef.current !== map) return;
         const bounds = new lib.LngLatBounds();
         points.forEach((item) => bounds.extend(item.geometry.coordinates));
-        if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 64, maxZoom: 14, duration: 450 });
+        if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 64, maxZoom: 14, ...finalRouteMapCameraMotionV3 });
       });
     };
     if (focusedViewKey.current === targetKey) {
@@ -318,12 +319,12 @@ export function FinalRouteMapV3({
           if (mapRef.current !== map) return;
           const bounds = new lib.LngLatBounds();
           coordinates.forEach((coordinate) => bounds.extend(coordinate));
-          if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 72, maxZoom: 14, duration: 450 });
+          if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 72, maxZoom: 14, ...finalRouteMapCameraMotionV3 });
         });
         focusedViewKey.current = targetKey;
       }
     } else if (point) {
-      map.flyTo({ center: point.geometry.coordinates, zoom: Math.max(map.getZoom(), 14), duration: 400 });
+      map.flyTo({ center: point.geometry.coordinates, zoom: Math.max(map.getZoom(), 14), ...finalRouteMapCameraMotionV3 });
       focusedViewKey.current = targetKey;
     }
     onFocusHandled(focusRequest.requestId);

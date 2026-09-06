@@ -67,6 +67,16 @@ describe("Phase 5 final route polish contract", () => {
     expect(css).toContain(".final-route-transport-select-v5");
   });
 
+  it("distinguishes active route recalculation from a stale route waiting for refresh", () => {
+    const panel = source("./FinalRoutePanelV3.tsx");
+    const runtime = readFileSync(fileURLToPath(new URL("../../server/planner-runtime-v3.ts", import.meta.url)), "utf8");
+    expect(panel).toContain('const routeUpdating = workspace.tasks.some((task) => task.agent === "map"');
+    expect(panel).toContain('routeUpdating ? "路线更新中" : "路线待更新"');
+    expect(panel).toContain("正在更新 ${dirtyCount} 天地图路线");
+    expect(runtime).toContain("if (ids.length) this.startRouteBatch(tripId, expectedGeneration, ids);");
+    expect(runtime).toContain("const targetDayIds = [...new Set([...dayIds, ...dirtyDayIds])]");
+  });
+
   it("offers scoped recovery for unavailable routes and unresolved places", () => {
     const panel = source("./FinalRoutePanelV3.tsx");
     const app = source("./AppFinalRouteV3.tsx");
@@ -156,12 +166,17 @@ describe("Phase 5 final route polish contract", () => {
     const interactionCss = source("./phase4-final-route-interaction.css");
     const polishCss = source("./phase5-final-route-polish.css");
     expect(panel).toContain("finalRouteDayMarkerV5");
+    expect(panel).toContain("dayActionsForNumber");
     expect(panel).toContain('row.index === firstNormalRowIndex');
     expect(panel).toContain('row.node.endsDay && hasFollowingNormalRow');
     expect(panel).toContain('className="final-route-day-actions-v5"');
+    expect(panel).toContain("补充详细地点");
+    expect(panel).toContain("完善这一天");
+    expect(panel).toContain("优化这一天");
+    expect(panel).not.toContain('className="final-route-ai-select-v5"');
     expect(interactionCss).toContain("final-route-night-divider-v4");
     expect(polishCss).toContain(".final-route-day-marker-v5{position:sticky;top:0");
-    expect(polishCss).toContain(".final-route-day-actions-v5");
+    expect(polishCss).toContain(".final-route-day-actions-v5 .button");
   });
 
   it("loads Phase 5 after Phase 4 so compact polish styles win without changing the core interaction CSS", () => {

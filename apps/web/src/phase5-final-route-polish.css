@@ -14,8 +14,8 @@
 .final-route-ai-menu-body-v5 header{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
 .final-route-ai-menu-body-v5 header strong{font-size:11px}
 .final-route-ai-menu-body-v5 header small{color:var(--muted);font-size:9px;text-align:right}
-.final-route-ai-select-v5,.final-route-ai-segment-v5 label{display:flex;min-width:0;flex-direction:column;gap:4px;color:var(--muted);font-size:10px}
-.final-route-ai-select-v5 select,.final-route-ai-segment-v5 select{width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:8px;color:var(--text);background:var(--control);font:inherit}
+.final-route-ai-segment-v5 label{display:flex;min-width:0;flex-direction:column;gap:4px;color:var(--muted);font-size:10px}
+.final-route-ai-segment-v5 select{width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:8px;color:var(--text);background:var(--control);font:inherit}
 .final-route-ai-segment-v5{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}
 .final-route-ai-message-v5{padding:7px 8px;border-radius:8px;background:var(--surface);color:var(--muted);font-size:10px;line-height:1.45}
 
@@ -53,7 +53,8 @@
 
 .final-route-day-marker-v5{position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:42px;margin:0 0 8px;padding:8px 12px;border:1px solid color-mix(in srgb,var(--primary) 45%,var(--border));border-radius:9px;background:color-mix(in srgb,var(--primary-soft) 84%,#fff);box-shadow:0 4px 12px rgba(20,31,27,.14)}
 .final-route-day-marker-v5>strong{color:var(--primary);font-size:14px;font-weight:850;letter-spacing:.02em}
-.final-route-day-actions-v5{min-width:120px;min-height:22px}
+.final-route-day-actions-v5{display:flex;min-width:0;min-height:22px;align-items:center;justify-content:flex-end;gap:5px;flex-wrap:wrap}
+.final-route-day-actions-v5 .button{min-height:27px;padding:5px 8px;font-size:10px;white-space:nowrap}
 
 .final-route-panel-header-actions-v5{display:flex;align-items:center;justify-content:flex-end;gap:7px;max-width:100%;flex-wrap:wrap}
 .final-route-panel-header-actions-v5 .button{margin:0}
