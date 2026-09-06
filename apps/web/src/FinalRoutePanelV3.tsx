@@ -44,6 +44,7 @@ function locationAttentionLabel(status: "resolving" | "resolved" | "unresolved" 
 function connectionText(connection: FinalRouteTransportConnectionV4) {
   if (connection.state === "dirty") return "路线更新中";
   if (connection.state === "pending") return "路线待计算";
+  if (connection.state === "unavailable") return "路线暂不可用";
   const parts = [formatDistance(connection.distanceKm), formatRouteDuration(connection.durationMinutes)];
   if (connection.state === "attention") parts.push("需注意");
   return parts.join(" · ");
@@ -157,6 +158,12 @@ export function FinalRoutePanelV3({
     if (addPosition === ADD_AT_START || addPosition === ADD_AT_END) return;
     if (!rows.some((row) => row.node.id === addPosition)) setAddPosition(ADD_AT_END);
   }, [addPosition, rows.map((row) => row.node.id).join("|")]);
+
+  useEffect(() => {
+    if (!transportEditingNodeId) return;
+    const current = connectionsByDestination.get(transportEditingNodeId);
+    if (!current || current.state === "same_place") setTransportEditingNodeId(null);
+  }, [transportEditingNodeId, connectionsByDestination]);
 
   const addIndex = addPosition === ADD_AT_START
     ? 0
