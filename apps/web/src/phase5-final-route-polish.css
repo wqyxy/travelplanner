@@ -57,6 +57,7 @@
 .final-route-remove-confirm-v5>div{display:flex;justify-content:flex-end;gap:6px}
 
 .final-route-transport-connector-v4.state-unavailable .final-route-transport-main-v4{color:#9a6819;opacity:.82}
+.final-route-mobile-order-v5{display:none}
 
 /* A repeated same-place overnight node has no transport control between the two cards. */
 .final-route-row-wrap-v3+.final-route-row-wrap-v3{scroll-margin-top:8px}
@@ -70,4 +71,7 @@
   .final-route-add-fields-v5{grid-template-columns:1fr!important}
   .final-route-add-v5>header small{white-space:normal}
   .final-route-drag-v3{min-width:34px;min-height:36px}
+  .final-route-mobile-order-v5{display:flex;align-items:center;gap:4px}
+  .final-route-mobile-order-v5 button{min-height:27px;padding:4px 7px;border:1px solid var(--border);border-radius:7px;color:var(--muted);background:var(--surface);font-size:10px;font-weight:700}
+  .final-route-mobile-order-v5 button:disabled{opacity:.35}
 }
