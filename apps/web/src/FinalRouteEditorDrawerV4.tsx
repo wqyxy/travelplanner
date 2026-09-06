@@ -64,14 +64,16 @@ export function FinalRouteEditorDrawerV4({
   const stopOwner = useMemo(() => plan.days.find((day) => day.stops.some((stop) => stop.id === row.node.id)) ?? null, [plan.days, row.node.id]);
   const resolution = workspace.resolutions.find((item) => item.placeId === row.node.placeId) ?? null;
   const locationState = resolution?.status ?? "missing";
-  const display = placeNamePresentation(row.place, workspace.trip.planLanguage, row.node.activity || "未命名地点");
+  const display = placeNamePresentation(row.place, workspace.trip.planLanguage, "未命名地点");
   const [editDraft, setEditDraft] = useState<PlaceEditDraft | null>(null);
   const [detailDraft, setDetailDraft] = useState<DetailDraft | null>(null);
   const [preview, setPreview] = useState<GoogleMapsPreviewV3 | null>(null);
   const [message, setMessage] = useState("");
   const [savingDetail, setSavingDetail] = useState(false);
+  const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false);
 
   useEffect(() => {
+    setRemoveConfirmOpen(false);
     if (!row.place) {
       setEditDraft(null);
       setDetailDraft(null);
@@ -228,8 +230,12 @@ export function FinalRouteEditorDrawerV4({
 
       <section className="final-route-editor-section-v4 danger">
         <h3><Trash2 size={15}/>线路操作</h3>
-        <button className="button danger small" type="button" disabled={busy} onClick={() => { if (window.confirm(`从最终线路移除“${display.primary}”这一次出现？`)) void onRemoveNode(row.node.id); }}><Trash2 size={13}/>从线路移除</button>
-        <small>只移除这一次线路节点；同一现实地点在其他位置的节点不会一起删除。</small>
+        {!removeConfirmOpen ? <button className="button danger small" type="button" disabled={busy} onClick={() => setRemoveConfirmOpen(true)}><Trash2 size={13}/>从线路移除</button> : <div className="final-route-remove-confirm-v5" role="alert">
+          <strong>确认移除“{display.primary}”这一次出现？</strong>
+          <small>只删除当前 route node；同一现实地点在其他位置的节点不会一起删除。</small>
+          <div><button className="button small" type="button" disabled={busy} onClick={() => setRemoveConfirmOpen(false)}>取消</button><button className="button danger small" type="button" disabled={busy} onClick={() => { setRemoveConfirmOpen(false); void onRemoveNode(row.node.id); }}>确认移除</button></div>
+        </div>}
+        <small>删除会走现有 command / Revision 流程；如需恢复，可使用版本历史。</small>
       </section>
     </div>
   </aside>;
