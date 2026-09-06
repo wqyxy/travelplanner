@@ -1,4 +1,4 @@
-import { Crosshair, MapPinned, Maximize2, Minimize2, Route } from "lucide-react";
+import { Crosshair, MapPinned, Maximize2, Minimize2, Route, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { WorkspaceV3 } from "./v3-types";
 import { placeNamePresentation } from "./place-name-presentation";
@@ -11,21 +11,25 @@ export type FinalRouteMapFocusRequestV3 = { nodeId: string; requestId: number };
 export function FinalRouteMapV3({
   workspace,
   selectedNodeId,
+  hoveredNodeId,
   focusRequest,
   mapPickPlaceId,
   fullscreen,
   onSelectNode,
   onMapPick,
+  onCancelMapPick,
   onFocusHandled,
   onToggleFullscreen,
 }: {
   workspace: WorkspaceV3;
   selectedNodeId: string | null;
+  hoveredNodeId: string | null;
   focusRequest: FinalRouteMapFocusRequestV3 | null;
   mapPickPlaceId: string | null;
   fullscreen: boolean;
   onSelectNode: (nodeId: string) => void;
   onMapPick: (placeId: string, latitude: number, longitude: number) => void;
+  onCancelMapPick: () => void;
   onFocusHandled: (requestId: number) => void;
   onToggleFullscreen: () => void;
 }) {
@@ -141,8 +145,10 @@ export function FinalRouteMapV3({
     map.getSource("final-route-points")?.setData({ type: "FeatureCollection", features: points });
     map.getSource("final-route-lines")?.setData({ type: "FeatureCollection", features: currentRoutes });
     map.getSource("final-route-lines-dirty")?.setData({ type: "FeatureCollection", features: dirtyRoutes });
-    map.setPaintProperty("final-route-point-halo", "circle-radius", ["case", ["==", ["get", "routeNodeId"], selectedNodeId || "__none__"], 16, 12]);
-    map.setPaintProperty("final-route-point-halo", "circle-color", ["case", ["==", ["get", "routeNodeId"], selectedNodeId || "__none__"], "#f3b646", "#ffffff"]);
+    const hoverId = hoveredNodeId || "__none__";
+    const selectedId = selectedNodeId || "__none__";
+    map.setPaintProperty("final-route-point-halo", "circle-radius", ["case", ["==", ["get", "routeNodeId"], hoverId], 18, ["==", ["get", "routeNodeId"], selectedId], 16, 12]);
+    map.setPaintProperty("final-route-point-halo", "circle-color", ["case", ["==", ["get", "routeNodeId"], hoverId], "#f3b646", ["==", ["get", "routeNodeId"], selectedId], "#a9cde6", "#ffffff"]);
     const key = `${workspace.trip.id}:${workspace.trip.contentGeneration}:final-route`;
     if (points.length && fitted.current !== key) {
       void import("maplibre-gl").then((lib) => {
@@ -153,14 +159,7 @@ export function FinalRouteMapV3({
         fitted.current = key;
       });
     }
-  }, [currentRoutes, dirtyRoutes, points, ready, selectedNodeId, workspace.trip.contentGeneration, workspace.trip.id]);
-
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!ready || !map || !selectedNodeId) return;
-    const point = points.find((item) => item.properties.routeNodeId === selectedNodeId);
-    if (point) map.flyTo({ center: point.geometry.coordinates, zoom: Math.max(map.getZoom(), 13), duration: 350 });
-  }, [points, ready, selectedNodeId]);
+  }, [currentRoutes, dirtyRoutes, hoveredNodeId, points, ready, selectedNodeId, workspace.trip.contentGeneration, workspace.trip.id]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -178,7 +177,7 @@ export function FinalRouteMapV3({
   const selectedPlaceName = placeNamePresentation(selectedPlace, workspace.trip.planLanguage, "目标地点").combined;
   return <section className="workspace-map-v2 final-route-map-v3">
     <header><div><p className="eyebrow">MAP</p><h2>最终线路地图</h2><small><MapPinned size={13}/>已定位 {points.length}/{workspace.trip.plan.finalRoute?.nodes.length ?? 0}<Route size={13}/>路线 {currentRoutes.length}{dirtyRoutes.length ? ` · 待更新 ${dirtyRoutes.length}` : ""}</small></div><button className="icon-button panel-fullscreen" type="button" aria-label={fullscreen ? "退出地图全屏" : "地图全屏"} onClick={onToggleFullscreen}>{fullscreen ? <Minimize2 size={17}/> : <Maximize2 size={17}/>}</button></header>
-    <div className="workspace-map-canvas"><div className="workspace-map-element" ref={element}/>{mapPickPlaceId && <div className="map-pick-banner"><Crosshair size={18}/><span>在地图上点击 <strong>{selectedPlaceName}</strong> 的正确位置</span></div>}{!points.length && <div className="map-empty-overlay"><MapPinned size={34}/><strong>线路地点还没有可靠坐标</strong><span>地点仍会保留在线路中；请在右侧选择地点后修复定位</span></div>}{error && <div className="map-error-overlay">{error}</div>}</div>
+    <div className="workspace-map-canvas"><div className="workspace-map-element" ref={element}/>{mapPickPlaceId && <div className="map-pick-banner"><Crosshair size={18}/><span>在地图上点击 <strong>{selectedPlaceName}</strong> 的正确位置</span><button className="icon-button compact" type="button" aria-label="取消地图选点" onClick={onCancelMapPick}><X size={15}/></button></div>}{!points.length && <div className="map-empty-overlay"><MapPinned size={34}/><strong>线路地点还没有可靠坐标</strong><span>地点仍会保留在线路中；请在右侧选择地点后修复定位</span></div>}{error && <div className="map-error-overlay">{error}</div>}</div>
     <footer><span><i style={{ background: finalRouteMapStatusColorsV3.normal }}/>正常</span><span><i style={{ background: finalRouteMapStatusColorsV3.tentative }}/>待定</span><span><i style={{ background: finalRouteMapStatusColorsV3.no_go }}/>不去</span>{workspace.trip.plan.days.map((day) => <span key={day.id}><i style={{ background: routeColors.get(day.dayNumber) }}/>Day {day.dayNumber}</span>)}{dirtyRoutes.length > 0 && <span className="muted">虚线为待更新路线</span>}</footer>
   </section>;
 }
