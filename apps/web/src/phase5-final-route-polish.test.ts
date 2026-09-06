@@ -15,22 +15,25 @@ describe("Phase 5 final route polish contract", () => {
     expect(css).toContain(".final-route-ai-menu-body-v5");
   });
 
-  it("shows pending proposals compactly and moves settled proposals into collapsed history", () => {
+  it("shows every pending proposal compactly and limits only settled history", () => {
     const panel = source("./FinalRoutePanelV3.tsx");
     expect(panel).toContain("pendingAiProposals");
-    expect(panel).toContain("settledAiProposals");
+    expect(panel).toContain('visibleAiProposals.filter(({ proposal }) => proposal.status === "pending")');
+    expect(panel).toContain('visibleAiProposals.filter(({ proposal }) => proposal.status !== "pending").slice(0, 8)');
     expect(panel).toContain('className="final-route-proposal-v5"');
     expect(panel).toContain('className="final-route-ai-history-v5"');
     expect(panel).not.toContain("phase6-proposal-card");
   });
 
-  it("makes the add position explicit instead of silently depending on map or editing state", () => {
+  it("makes the add position explicit, defaults to route end, and disambiguates repeated place occurrences", () => {
     const panel = source("./FinalRoutePanelV3.tsx");
     expect(panel).toContain("ADD_AT_START");
     expect(panel).toContain("ADD_AT_END");
     expect(panel).toContain("addPosition");
+    expect(panel).toContain("setAddPosition(ADD_AT_END)");
     expect(panel).toContain("插入位置");
     expect(panel).toContain("将插入到：{addPositionLabel}");
+    expect(panel).toContain("在第 {row.index + 1} 个地点");
     expect(panel).toContain("插入位置始终以这里显示的选择为准");
   });
 
@@ -57,6 +60,16 @@ describe("Phase 5 final route polish contract", () => {
     expect(panel).toContain('if (connection.state === "unavailable") return "路线暂不可用"');
     expect(panel).toContain('if (!current || current.state === "same_place") setTransportEditingNodeId(null)');
     expect(css).toContain(".final-route-transport-connector-v4.state-unavailable");
+  });
+
+  it("keeps desktop ordering handle-only but exposes up/down fallback in the narrow layout", () => {
+    const panel = source("./FinalRoutePanelV3.tsx");
+    const css = source("./phase5-final-route-polish.css");
+    expect(panel).toContain('className="final-route-mobile-order-v5"');
+    expect(panel).toContain("row.index - 1");
+    expect(panel).toContain("row.index + 1");
+    expect(css).toContain(".final-route-mobile-order-v5{display:none}");
+    expect(css).toContain(".final-route-mobile-order-v5{display:flex");
   });
 
   it("loads Phase 5 after Phase 4 so compact polish styles win without changing the core interaction CSS", () => {
