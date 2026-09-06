@@ -1,9 +1,9 @@
-import { Copy, GripVertical, MapPin, Pencil, Plus, RefreshCw, Route, Sparkles, Trash2, WandSparkles } from "lucide-react";
+import { ChevronRight, Copy, GripVertical, LocateFixed, MapPin, Pencil, Plus, RefreshCw, Route, Sparkles, Trash2, WandSparkles, X } from "lucide-react";
 import { type DragEvent, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import { FinalRouteEditorDrawerV4 } from "./FinalRouteEditorDrawerV4";
 import { finalRouteMoveTargetIndexV4, type FinalRouteDropPositionV4 } from "./final-route-drag-v4";
-import type { FinalRouteNodeStatus, PlaceKind, TransportMode } from "./v2-types";
+import type { FinalRouteNodeStatus, PlaceKind, ProviderPlaceCandidate, TransportMode } from "./v2-types";
 import type { AiActionType, ConversationStage, WorkspaceV3 } from "./v3-types";
 import { placeNamePresentation } from "./place-name-presentation";
 import {
@@ -52,6 +52,19 @@ function connectionText(connection: FinalRouteTransportConnectionV4) {
   return parts.join(" · ");
 }
 
+function hasResolvedLocation(resolution: WorkspaceV3["resolutions"][number] | undefined) {
+  return resolution?.status === "resolved" && resolution.latitude !== null && resolution.longitude !== null;
+}
+
+function unavailableRouteMessage(connection: FinalRouteTransportConnectionV4, resolutions: Map<string, WorkspaceV3["resolutions"][number]>) {
+  const missingStart = !hasResolvedLocation(resolutions.get(connection.fromPlaceId));
+  const missingEnd = !hasResolvedLocation(resolutions.get(connection.toPlaceId));
+  if (missingStart && missingEnd) return "起点和终点未定位，完成定位后才能获取路线";
+  if (missingStart) return "起点未定位，完成定位后才能获取路线";
+  if (missingEnd) return "终点未定位，完成定位后才能获取路线";
+  return "路线暂不可用";
+}
+
 function proposalKindLabel(actionType: AiActionType) {
   return actionType === "itinerary.refine" ? "详细安排" : "顺序优化";
 }
@@ -95,7 +108,11 @@ export function FinalRoutePanelV3({
   onPreviewGoogleMapsLink,
   onApplyGoogleMapsLink,
   onRetry,
+  onSearchResolutionCandidates,
+  onSelectResolution,
   onBeginMapPick,
+  onRecalculateRoute,
+  onSyncMap,
   onRecalculateDirtyRoutes,
 }: {
   workspace: WorkspaceV3;
@@ -122,7 +139,11 @@ export function FinalRoutePanelV3({
   onPreviewGoogleMapsLink: (placeId: string, url: string) => Promise<GoogleMapsPreviewV3>;
   onApplyGoogleMapsLink: (placeId: string, url: string, changes: WorkflowPlaceEditChangesV3) => Promise<boolean>;
   onRetry: (placeIds: string[], force?: boolean) => Promise<boolean>;
+  onSearchResolutionCandidates: (placeId: string) => Promise<ProviderPlaceCandidate[]>;
+  onSelectResolution: (placeId: string, providerPlaceId: string) => Promise<boolean>;
   onBeginMapPick: (placeId: string, nodeId: string) => void;
+  onRecalculateRoute: (dayId: string) => Promise<boolean>;
+  onSyncMap: (placeIds: string[], dayIds: string[]) => Promise<boolean>;
   onRecalculateDirtyRoutes: () => Promise<void>;
 }) {
   const plan = workspace.trip.plan;
@@ -137,6 +158,12 @@ export function FinalRoutePanelV3({
   const normalRows = rows.filter((row) => row.node.status === "normal");
   const wholeAreaIds = [...new Set(normalRows.flatMap((row) => planningAreaByPlace.get(row.node.placeId)?.id ?? []))];
   const dirtyCount = workspace.routeStates.filter((item) => item.dirty).length;
+  const unresolvedPlaceIds = [...new Set(rows
+    .filter((row) => !hasResolvedLocation(resolutions.get(row.node.placeId)))
+    .map((row) => row.node.placeId))];
+  const unavailableConnections = connections.filter((connection) => connection.state === "unavailable");
+  const unavailableRouteDayIds = [...new Set(unavailableConnections.flatMap((connection) => connection.dayId ? [connection.dayId] : []))];
+  const canSyncMap = unresolvedPlaceIds.length > 0 || unavailableRouteDayIds.length > 0;
   const [addOpen, setAddOpen] = useState(false);
   const [addDraft, setAddDraft] = useState<AddDraft>({ nameZh: "", kind: "attraction" });
   const [addPosition, setAddPosition] = useState<string>(ADD_AT_END);
@@ -144,6 +171,7 @@ export function FinalRoutePanelV3({
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const [transportEditingNodeId, setTransportEditingNodeId] = useState<string | null>(null);
   const [removeConfirmNodeId, setRemoveConfirmNodeId] = useState<string | null>(null);
+  const [resolutionChoice, setResolutionChoice] = useState<{ placeId: string; loading: boolean; candidates: ProviderPlaceCandidate[]; error: string } | null>(null);
   const editingRow = rows.find((row) => row.node.id === editingNodeId) ?? null;
   const [aiBusy, setAiBusy] = useState(false);
   const [aiMessage, setAiMessage] = useState("");
@@ -184,6 +212,10 @@ export function FinalRoutePanelV3({
     : addPosition === ADD_AT_END
       ? "线路末尾"
       : `第 ${(addTargetRow?.index ?? 0) + 1} 个地点“${placeNamePresentation(addTargetRow?.place ?? null, workspace.trip.planLanguage, "未命名地点").primary}”之后`;
+
+  const syncMapTitle = unresolvedPlaceIds.length || unavailableRouteDayIds.length
+    ? `先定位 ${unresolvedPlaceIds.length} 个未定位地点，再重新获取 ${unavailableConnections.length} 条不可用路线`
+    : "当前没有需要同步的地图数据";
 
   const toggleAdd = () => {
     if (addOpen) {
@@ -270,6 +302,22 @@ export function FinalRoutePanelV3({
     setDropTarget(null);
   };
 
+  const openResolutionChoices = async (placeId: string) => {
+    setResolutionChoice({ placeId, loading: true, candidates: [], error: "" });
+    try {
+      const candidates = await onSearchResolutionCandidates(placeId);
+      setResolutionChoice((current) => current?.placeId === placeId ? { ...current, loading: false, candidates, error: candidates.length ? "" : "地图服务没有返回可选地点。" } : current);
+    } catch (cause) {
+      setResolutionChoice((current) => current?.placeId === placeId ? { ...current, loading: false, candidates: [], error: cause instanceof Error ? cause.message : "无法读取地点备选。" } : current);
+    }
+  };
+
+  const chooseResolutionCandidate = async (providerPlaceId: string) => {
+    if (!resolutionChoice) return;
+    const selected = await onSelectResolution(resolutionChoice.placeId, providerPlaceId);
+    if (selected) setResolutionChoice(null);
+  };
+
   const moveDroppedNode = (event: DragEvent<HTMLElement>, targetRowIndex: number) => {
     event.preventDefault();
     event.stopPropagation();
@@ -284,7 +332,11 @@ export function FinalRoutePanelV3({
     <section className="final-route-panel-v3">
       <header className="final-route-panel-head-v3">
         <div><p className="eyebrow">行程</p><h2>最终线路</h2><p>地点始终只表示地点；交通显示在地点之间，每晚用分隔线切开。拖动把手即可调整整张地点卡的顺序。</p></div>
-        <button className="button primary" type="button" disabled={busy || aiBusy} onClick={toggleAdd}><Plus size={15}/>{addOpen ? "收起添加" : "添加地点"}</button>
+        <div className="final-route-panel-header-actions-v5">
+          <button className="button small" type="button" disabled={busy || aiBusy || !canSyncMap} title={syncMapTitle} onClick={() => void onSyncMap(unresolvedPlaceIds, unavailableRouteDayIds)}><RefreshCw size={13}/>同步地图</button>
+          <button className="button primary" type="button" disabled={busy || aiBusy} onClick={toggleAdd}><Plus size={15}/>{addOpen ? "收起添加" : "添加地点"}</button>
+          {canSyncMap && <small className="final-route-sync-hint-v5">先定位 {unresolvedPlaceIds.length} 个地点，再获取 {unavailableConnections.length} 条不可用路线</small>}
+        </div>
       </header>
 
       <div className="final-route-summary-v3">
@@ -379,11 +431,16 @@ export function FinalRoutePanelV3({
           const routeHovered = effectiveConnection?.toNodeId === hoveredRouteNodeId;
           const fromName = effectiveConnection ? placesById.get(effectiveConnection.fromPlaceId)?.nameZh ?? "上一地点" : "";
           const toName = effectiveConnection ? placesById.get(effectiveConnection.toPlaceId)?.nameZh ?? display.primary : "";
+          const unavailableRouteReason = effectiveConnection?.state === "unavailable" ? unavailableRouteMessage(effectiveConnection, resolutions) : null;
+          const canRecalculateConnection = Boolean(effectiveConnection?.dayId) && !unavailableRouteReason?.includes("未定位");
           return <div className="final-route-row-wrap-v3" key={row.node.id}>
             {effectiveConnection && <div className={`final-route-transport-connector-v4 state-${effectiveConnection.state} ${routeHovered ? "hover-linked" : ""}`} onMouseEnter={() => onHoverRoute(effectiveConnection.toNodeId, effectiveConnection.toPlaceId)} onMouseLeave={() => onHoverRoute(null, null)}>
-              <button type="button" className="final-route-transport-main-v4" disabled={busy || aiBusy} title={effectiveConnection.warning || undefined} onClick={() => { onFocusRoute(effectiveConnection.toNodeId, effectiveConnection.toPlaceId); setTransportEditingNodeId((current) => current === row.node.id ? null : row.node.id); }}>
-                <Route size={14}/><strong>{effectiveConnection.mode ? transportModeLabelsV3[effectiveConnection.mode] : "交通待定"}</strong><span>{connectionText(effectiveConnection)}</span>{effectiveConnection.skippedInactiveCount > 0 && <small>{fromName} → {toName} · 已跳过 {effectiveConnection.skippedInactiveCount} 个待定/不去地点</small>}
-              </button>
+              <div className="final-route-transport-actions-v5">
+                <button type="button" className="final-route-transport-main-v4" disabled={busy || aiBusy} title={unavailableRouteReason || effectiveConnection.warning || undefined} onClick={() => { onFocusRoute(effectiveConnection.toNodeId, effectiveConnection.toPlaceId); setTransportEditingNodeId((current) => current === row.node.id ? null : row.node.id); }}>
+                  <Route size={14}/><strong>{effectiveConnection.mode ? transportModeLabelsV3[effectiveConnection.mode] : "交通待定"}</strong><span>{unavailableRouteReason || connectionText(effectiveConnection)}</span>{effectiveConnection.skippedInactiveCount > 0 && <small>{fromName} → {toName} · 已跳过 {effectiveConnection.skippedInactiveCount} 个待定/不去地点</small>}
+                </button>
+                {effectiveConnection.state === "unavailable" && <button className="final-route-recalculate-connection-v5" type="button" disabled={busy || aiBusy || !canRecalculateConnection} title={canRecalculateConnection ? "重新向路线 Provider 获取这一天的线路" : unavailableRouteReason || "缺少可用的线路范围"} onClick={() => effectiveConnection.dayId && void onRecalculateRoute(effectiveConnection.dayId)}><RefreshCw size={13}/>重新获取线路</button>}
+              </div>
               {transportEditingNodeId === row.node.id && <div className="final-route-transport-editor-v4">
                 <label><span>这段交通方式</span><select autoFocus value={row.node.transportFromPrevious?.mode ?? ""} disabled={busy || aiBusy} onChange={(event) => { const mode = event.target.value as TransportMode | ""; setTransportEditingNodeId(null); void onSetTransport(row.node.id, mode); }}><option value="">未设置</option>{transportOptions.map((mode) => <option key={mode} value={mode}>{transportModeLabelsV3[mode]}</option>)}</select></label>
                 <small>交通方式保存在“到达 {toName}”的线路节点上；距离和时间仍由路线 Provider 计算。</small>
@@ -417,7 +474,7 @@ export function FinalRoutePanelV3({
               </button>
               <div className="final-route-badges-v3">
                 {row.node.status !== "normal" && <span className={`status-pill-v3 ${row.node.status}`}>{finalRouteStatusLabelsV3[row.node.status]}</span>}
-                {locationAttention && <span className={`location-pill-v4 ${locationState}`}>{locationAttention}</span>}
+                {locationAttention && <div className={`final-route-location-actions-v5 ${locationState}`}><span className={`location-pill-v4 ${locationState}`}>{locationAttention}</span>{locationState !== "resolving" && <><button className="final-route-location-action-v5" type="button" disabled={busy || aiBusy || !row.place} onClick={() => row.place && void onRetry([row.place.id], true)}><LocateFixed size={12}/>重新定位</button><button className="final-route-location-action-v5" type="button" disabled={busy || aiBusy || !row.place} onClick={() => row.place && void openResolutionChoices(row.place.id)}><MapPin size={12}/>选择备选</button></>}</div>}
                 {row.node.status !== "normal" && row.node.endsDay && <span className="stay-pill-v3 inactive">住 · 暂不生效</span>}
               </div>
               <div className="final-route-quick-v4">
@@ -454,5 +511,6 @@ export function FinalRoutePanelV3({
       onBeginMapPick={onBeginMapPick}
       onRemoveNode={onRemoveNode}
     />}
+    {resolutionChoice && <div className="final-route-resolution-choice-backdrop-v5" onMouseDown={(event) => { if (event.target === event.currentTarget) setResolutionChoice(null); }}><section className="final-route-resolution-choice-v5" aria-label="选择地点备选"><header><div><strong>选择地点备选</strong><small>仅显示地图 Provider 返回的候选；选中后会作为该地点的新定位。</small></div><button className="icon-button" type="button" aria-label="关闭地点备选" onClick={() => setResolutionChoice(null)}><X size={17}/></button></header><div>{resolutionChoice.loading && <p><RefreshCw className="spin" size={14}/>正在查询地图服务…</p>}{resolutionChoice.error && <p className="inline-error">{resolutionChoice.error}</p>}{resolutionChoice.candidates.map((candidate) => <button className="final-route-resolution-candidate-v5" type="button" key={candidate.providerPlaceId} disabled={busy || aiBusy} onClick={() => void chooseResolutionCandidate(candidate.providerPlaceId)}><MapPin size={16}/><span><strong>{candidate.name || candidate.displayName.split(",")[0]}</strong><small>{candidate.displayName}</small><em>{candidate.provider} · {candidate.placeType || candidate.category || "地点"}</em></span><ChevronRight size={16}/></button>)}</div></section></div>}
   </>;
 }

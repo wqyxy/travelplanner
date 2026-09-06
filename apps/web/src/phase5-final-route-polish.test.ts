@@ -62,6 +62,39 @@ describe("Phase 5 final route polish contract", () => {
     expect(css).toContain(".final-route-transport-connector-v4.state-unavailable");
   });
 
+  it("offers scoped recovery for unavailable routes and unresolved places", () => {
+    const panel = source("./FinalRoutePanelV3.tsx");
+    const app = source("./AppFinalRouteV3.tsx");
+    const css = source("./phase5-final-route-polish.css");
+    expect(panel).toContain("unavailableRouteMessage");
+    expect(panel).toContain("起点和终点未定位，完成定位后才能获取路线");
+    expect(panel).toContain("重新获取线路");
+    expect(panel).toContain("onRecalculateRoute(effectiveConnection.dayId)");
+    expect(panel).toContain("重新定位");
+    expect(panel).toContain("选择备选");
+    expect(panel).toContain("openResolutionChoices");
+    expect(panel).toContain("final-route-resolution-choice-v5");
+    expect(app).toContain("resolutions/${encodeURIComponent(placeId)}/candidates?expectedGeneration=");
+    expect(app).toContain("resolutions/${encodeURIComponent(placeId)}/select");
+    expect(app).toContain("routes/${encodeURIComponent(dayId)}/recalculate");
+    expect(css).toContain(".final-route-recalculate-connection-v5:disabled");
+    expect(css).toContain(".final-route-location-actions-v5");
+  });
+
+  it("syncs the map by locating unresolved places before recalculating unavailable routes", () => {
+    const panel = source("./FinalRoutePanelV3.tsx");
+    const app = source("./AppFinalRouteV3.tsx");
+    const server = readFileSync(fileURLToPath(new URL("../../server/final-route-ai-v3.ts", import.meta.url)), "utf8");
+    const css = source("./phase5-final-route-polish.css");
+    expect(panel).toContain('className="final-route-panel-header-actions-v5"');
+    expect(panel).toContain('className="final-route-sync-hint-v5"');
+    expect(panel).toContain('onClick={() => void onSyncMap(unresolvedPlaceIds, unavailableRouteDayIds)}');
+    expect(app).toContain('force: true');
+    expect(app).toContain('await Promise.all(uniqueDayIds.map');
+    expect(server).toContain('newNodes.map((candidate) => emptyRouteNode({ placeId: candidate.placeId, transportMode: "drive" }))');
+    expect(css).toContain('.final-route-panel-header-actions-v5');
+  });
+
   it("keeps desktop ordering handle-only but exposes up/down fallback in the narrow layout", () => {
     const panel = source("./FinalRoutePanelV3.tsx");
     const css = source("./phase5-final-route-polish.css");

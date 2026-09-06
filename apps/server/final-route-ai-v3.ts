@@ -158,7 +158,7 @@ export function insertDetailDiscoveryIntoFinalRouteV3(input: {
     const candidate = input.discoveredPlan.candidates.find((item) => item.id === candidateId);
     if (!candidate) continue;
     seenCandidateIds.add(candidateId);
-    newNodes.push(emptyRouteNode({ placeId: candidate.placeId }));
+    newNodes.push(emptyRouteNode({ placeId: candidate.placeId, transportMode: "drive" }));
   }
   if (!newNodes.length) return rebuildFinalRouteDaysV3(input.discoveredPlan);
 
@@ -251,7 +251,7 @@ export function insertNewDetailCandidatesFromPlanV3(input: {
     }
     const index = nodes.findIndex((node) => node.id === point.nodeId);
     if (index < 0) throw new Error(`详细地点生成找不到线路锚点：${point.nodeId}`);
-    const newNodes = candidates.map((candidate) => emptyRouteNode({ placeId: candidate.placeId }));
+    const newNodes = candidates.map((candidate) => emptyRouteNode({ placeId: candidate.placeId, transportMode: "drive" }));
     const insertionIndex = point.placement === "after" ? index + 1 : index;
     nodes = [...nodes.slice(0, insertionIndex), ...newNodes, ...nodes.slice(insertionIndex)];
   }

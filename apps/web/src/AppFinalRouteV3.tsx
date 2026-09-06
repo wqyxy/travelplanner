@@ -11,7 +11,7 @@ import { RequirementsPanelV3 } from "./RequirementsPanelV3";
 import { VersionDrawerV2 } from "./VersionDrawerV2";
 import { WorkflowAssistantV3 } from "./WorkflowAssistantV3";
 import { newFinalRoutePlaceCommandsV3, transportFromModeV3 } from "./final-route-ui-v3";
-import type { AppSettings, PlanCommand, TransportMode, Trip, TripFacts, WorkspaceSelection } from "./v2-types";
+import type { AppSettings, PlanCommand, ProviderPlaceCandidate, TransportMode, Trip, TripFacts, WorkspaceSelection } from "./v2-types";
 import type { AiAction, AiActionType, ConversationStage, WorkspaceV3 } from "./v3-types";
 import { proposalActionPath, type ProposalAction } from "./proposal-ui-v2";
 
@@ -236,6 +236,18 @@ export default function AppFinalRouteV3() {
       return true;
     }, force ? "无法重新定位地点。" : "无法重新识别地点。"));
   };
+  const searchResolutionCandidates = async (placeId: string) => {
+    if (!trip) return [];
+    return (await api<{ candidates: ProviderPlaceCandidate[] }>(`/api/trips/${trip.id}/resolutions/${encodeURIComponent(placeId)}/candidates?expectedGeneration=${trip.contentGeneration}`)).candidates;
+  };
+  const selectResolution = async (placeId: string, providerPlaceId: string) => {
+    if (!trip) return false;
+    return Boolean(await runAction(async () => {
+      await api(`/api/trips/${trip.id}/resolutions/${encodeURIComponent(placeId)}/select`, { method: "POST", body: JSON.stringify({ expectedGeneration: trip.contentGeneration, providerPlaceId }) });
+      await loadTrip(trip.id, false);
+      return true;
+    }, "无法选择地图地点。"));
+  };
   const beginMapPick = (placeId: string, nodeId: string) => {
     setMapPickReturnNodeId(nodeId);
     setEditingNodeId(null);
@@ -253,6 +265,31 @@ export default function AppFinalRouteV3() {
       if (returnNodeId) setEditingNodeId(returnNodeId);
       await loadTrip(trip.id, false);
     }, "无法保存地点位置。");
+  };
+  const recalculateRoute = async (dayId: string) => {
+    if (!trip) return false;
+    return Boolean(await runAction(async () => {
+      await api(`/api/trips/${trip.id}/routes/${encodeURIComponent(dayId)}/recalculate`, { method: "POST", body: JSON.stringify({ expectedGeneration: trip.contentGeneration }) });
+      setRouteNotice("");
+      await loadTrip(trip.id, false);
+      return true;
+    }, "无法重新获取这段路线。"));
+  };
+  const syncMap = async (placeIds: string[], dayIds: string[]) => {
+    if (!trip || (!placeIds.length && !dayIds.length)) return false;
+    return Boolean(await runAction(async () => {
+      const uniquePlaceIds = [...new Set(placeIds)];
+      const uniqueDayIds = [...new Set(dayIds)];
+      if (uniquePlaceIds.length) {
+        await api(`/api/trips/${trip.id}/resolutions/retry`, { method: "POST", body: JSON.stringify({ expectedGeneration: trip.contentGeneration, placeIds: uniquePlaceIds, force: true }) });
+      }
+      if (uniqueDayIds.length) {
+        await Promise.all(uniqueDayIds.map((dayId) => api(`/api/trips/${trip.id}/routes/${encodeURIComponent(dayId)}/recalculate`, { method: "POST", body: JSON.stringify({ expectedGeneration: trip.contentGeneration }) })));
+      }
+      setRouteNotice("");
+      await loadTrip(trip.id, false);
+      return true;
+    }, "无法同步地图。"));
   };
   const recalculateDirtyRoutes = async () => { if (!trip) return; await runAction(async () => { await api(`/api/trips/${trip.id}/routes/recalculate`, { method: "POST", body: JSON.stringify({ expectedGeneration: trip.contentGeneration }) }); setRouteNotice(""); await loadTrip(trip.id, false); }, "无法更新地图路线。"); };
 
@@ -311,7 +348,7 @@ export default function AppFinalRouteV3() {
           {section === "planning" ? <PlanningAdvisoryListV3 advisories={workspace.advisories ?? []} step="requirements"/> : <PlanningAdvisoryListV3 advisories={workspace.advisories ?? []} steps={["backbone", "skeleton", "interests", "detail"]}/>}          
           <div className="workspace-step-content-v3">{section === "planning"
             ? <RequirementsPanelV3 facts={workspace.trip.plan.trip} busy={working} onSave={saveBrief} onGenerate={async () => setSection("route")}/>
-             : <FinalRoutePanelV3 workspace={workspace} selectedNodeId={selectedNodeId} hoveredNodeId={hoveredNodeId} hoveredRouteNodeId={hoveredRouteNodeId} editingNodeId={editingNodeId} busy={working} notice={routeNotice} onSelectNode={setSelectedNodeId} onHoverNode={setHoveredNodeId} onHoverRoute={(nodeId, placeId = null) => { setHoveredRouteNodeId(nodeId); setHoveredRoutePlaceId(placeId); }} onFocusNode={(nodeId) => { setSelectedNodeId(nodeId); setMapFocusRequest({ nodeId, requestId: ++mapFocusSequence.current }); }} onFocusRoute={(nodeId, placeId = null) => { setSelectedNodeId(nodeId); setMapFocusRequest({ nodeId, placeId, kind: "route", requestId: ++mapFocusSequence.current }); }} onEditNode={setEditingNodeId} onAddPlace={addRoutePlace} onCopyNode={copyRouteNode} onMoveNode={moveRouteNode} onSetStatus={setRouteStatus} onSetBoundary={setRouteBoundary} onSetTransport={setRouteTransport} onRemoveNode={removeRouteNode} onUpdatePlace={updatePlace} onPreviewGoogleMapsLink={previewGoogleMapsLink} onApplyGoogleMapsLink={applyGoogleMapsLink} onRetry={retryResolutions} onBeginMapPick={beginMapPick} onRecalculateDirtyRoutes={recalculateDirtyRoutes}/>}</div>
+             : <FinalRoutePanelV3 workspace={workspace} selectedNodeId={selectedNodeId} hoveredNodeId={hoveredNodeId} hoveredRouteNodeId={hoveredRouteNodeId} editingNodeId={editingNodeId} busy={working} notice={routeNotice} onSelectNode={setSelectedNodeId} onHoverNode={setHoveredNodeId} onHoverRoute={(nodeId, placeId = null) => { setHoveredRouteNodeId(nodeId); setHoveredRoutePlaceId(placeId); }} onFocusNode={(nodeId) => { setSelectedNodeId(nodeId); setMapFocusRequest({ nodeId, requestId: ++mapFocusSequence.current }); }} onFocusRoute={(nodeId, placeId = null) => { setSelectedNodeId(nodeId); setMapFocusRequest({ nodeId, placeId, kind: "route", requestId: ++mapFocusSequence.current }); }} onEditNode={setEditingNodeId} onAddPlace={addRoutePlace} onCopyNode={copyRouteNode} onMoveNode={moveRouteNode} onSetStatus={setRouteStatus} onSetBoundary={setRouteBoundary} onSetTransport={setRouteTransport} onRemoveNode={removeRouteNode} onUpdatePlace={updatePlace} onPreviewGoogleMapsLink={previewGoogleMapsLink} onApplyGoogleMapsLink={applyGoogleMapsLink} onRetry={retryResolutions} onSearchResolutionCandidates={searchResolutionCandidates} onSelectResolution={selectResolution} onBeginMapPick={beginMapPick} onRecalculateRoute={recalculateRoute} onSyncMap={syncMap} onRecalculateDirtyRoutes={recalculateDirtyRoutes}/>}</div>
           {section === "planning" && <WorkflowAssistantV3 workflowStep="requirements" stage="requirements" workspace={workspace} selection={assistantSelection} busy={working} error={error} onSend={send} onConfirmAction={confirmAction} onCancelAction={cancelAction} onProposalAction={proposalAction} onStopTask={stopTask} onRetryCurrent={async () => { await refreshWorkspace(); }}/>}          
           {section === "route" && error && <p className="inline-error final-route-app-error-v3">{error}</p>}
         </> : <div className="workspace-empty-v3"><span className="brand-mark">✦</span><h2>选择一趟旅行</h2><p>地图用于展示，所有业务操作都集中在右侧。</p></div>}</div>

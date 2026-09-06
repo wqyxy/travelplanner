@@ -175,6 +175,7 @@ describe("final route AI write permissions", () => {
     const oldIds = new Set(before.finalRoute.nodes.map((item) => item.id));
     expect(result.finalRoute.nodes.filter((item) => oldIds.has(item.id))).toEqual(before.finalRoute.nodes);
     expect(result.finalRoute.nodes.map((item) => item.placeId)).toEqual(["detail-1", "detail-2", "area", "x", "b"]);
+    expect(result.finalRoute.nodes.slice(0, 2).map((item) => item.transportFromPrevious?.mode)).toEqual(["drive", "drive"]);
     expect(result.finalRoute.nodes.find((item) => item.id === "x-node")).toMatchObject({ status: "tentative", endsDay: true });
   });
 
