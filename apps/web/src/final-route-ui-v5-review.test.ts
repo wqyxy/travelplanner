@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { FinalRouteNode, RouteState, TravelPlanDocument } from "./v2-types";
+import type { DayStop, FinalRouteNode, RouteState, TravelPlanDocument } from "./v2-types";
 import { finalRouteTransportConnectionsV4, transportFromModeV3 } from "./final-route-ui-v3";
 
 function routeNode(id: string, placeId: string, endsDay = false): FinalRouteNode {
@@ -22,10 +22,25 @@ function routeNode(id: string, placeId: string, endsDay = false): FinalRouteNode
   };
 }
 
-function twoPlacePlan(): TravelPlanDocument {
-  const a = routeNode("node-a", "place-a");
-  const b = routeNode("node-b", "place-b", true);
-  b.transportFromPrevious = transportFromModeV3("drive");
+function stop(id: string, placeId: string): DayStop {
+  return {
+    id,
+    candidateId: null,
+    placeId,
+    activity: placeId,
+    period: null,
+    startTime: null,
+    endTime: null,
+    durationMinutes: null,
+    transportFromPrevious: transportFromModeV3("drive"),
+    scheduleVerification: null,
+    costNote: null,
+    costVerification: null,
+    notes: null,
+  };
+}
+
+function basePlan(nodes: FinalRouteNode[]): TravelPlanDocument {
   return {
     schemaVersion: 2,
     stage: "itinerary_planning",
@@ -48,22 +63,31 @@ function twoPlacePlan(): TravelPlanDocument {
       { id: "place-b", nameZh: "B", nameLocal: null, nameEn: null, kind: "city", city: null, region: null, country: null, countryCode: null, approximate: false },
     ],
     candidates: [],
-    finalRoute: { version: 1, nodes: [a, b] },
-    days: [{
-      id: "node-b",
-      dayNumber: 1,
-      date: null,
-      title: "B",
-      transferMode: "none",
-      endTransportFromPrevious: b.transportFromPrevious,
-      detailLevel: "planned",
-      detailStatus: null,
-      startAnchor: { id: "route-start-node-b", placeId: "place-a", label: null, notes: null },
-      stops: [],
-      endAnchor: { id: "route-end-node-b", placeId: "place-b", label: null, notes: null },
-    }],
+    finalRoute: { version: 1, nodes },
+    days: [],
     warnings: [],
   };
+}
+
+function twoPlacePlan(): TravelPlanDocument {
+  const a = routeNode("node-a", "place-a");
+  const b = routeNode("node-b", "place-b", true);
+  b.transportFromPrevious = transportFromModeV3("drive");
+  const plan = basePlan([a, b]);
+  plan.days = [{
+    id: "node-b",
+    dayNumber: 1,
+    date: null,
+    title: "B",
+    transferMode: "none",
+    endTransportFromPrevious: b.transportFromPrevious,
+    detailLevel: "planned",
+    detailStatus: null,
+    startAnchor: { id: "route-start-node-b", placeId: "place-a", label: null, notes: null },
+    stops: [],
+    endAnchor: { id: "route-end-node-b", placeId: "place-b", label: null, notes: null },
+  }];
+  return plan;
 }
 
 describe("Phase 5 route connection review", () => {
@@ -95,5 +119,55 @@ describe("Phase 5 route connection review", () => {
       durationMinutes: null,
       warning: "provider unavailable",
     });
+  });
+
+  it("matches repeated A-to-B occurrences by derived Day node ids instead of taking the first Place-id match", () => {
+    const a1 = routeNode("node-a1", "place-a");
+    const b1 = routeNode("node-b1", "place-b");
+    const a2 = routeNode("node-a2", "place-a");
+    const b2 = routeNode("node-b2", "place-b", true);
+    for (const node of [b1, a2, b2]) node.transportFromPrevious = transportFromModeV3("drive");
+    const plan = basePlan([a1, b1, a2, b2]);
+    plan.days = [{
+      id: "node-b2",
+      dayNumber: 1,
+      date: null,
+      title: "loop",
+      transferMode: "none",
+      endTransportFromPrevious: b2.transportFromPrevious,
+      detailLevel: "planned",
+      detailStatus: null,
+      startAnchor: { id: "start-day", placeId: "place-a", label: null, notes: null },
+      stops: [stop("node-b1", "place-b"), stop("node-a2", "place-a")],
+      endAnchor: { id: "end-day", placeId: "place-b", label: null, notes: null },
+    }];
+    const states: RouteState[] = [{
+      dayId: "node-b2",
+      dirty: false,
+      route: {
+        tripId: "trip-1",
+        dayId: "node-b2",
+        version: 1,
+        inputFingerprint: "fp",
+        status: "ready",
+        distanceKm: 60,
+        durationMinutes: 90,
+        geometry: null,
+        warnings: [],
+        calculatedAt: null,
+        legs: [
+          { id: "leg-1", fromNodeId: "start-day", toNodeId: "node-b1", fromPlaceId: "place-a", toPlaceId: "place-b", mode: "drive", status: "ready", distanceKm: 10, durationMinutes: 15, geometry: null, warning: null },
+          { id: "leg-2", fromNodeId: "node-b1", toNodeId: "node-a2", fromPlaceId: "place-b", toPlaceId: "place-a", mode: "drive", status: "ready", distanceKm: 20, durationMinutes: 30, geometry: null, warning: null },
+          { id: "leg-3", fromNodeId: "node-a2", toNodeId: "end-day", fromPlaceId: "place-a", toPlaceId: "place-b", mode: "drive", status: "ready", distanceKm: 30, durationMinutes: 45, geometry: null, warning: null },
+        ],
+      },
+    }];
+
+    const connections = finalRouteTransportConnectionsV4(plan, states);
+    expect(connections.map((connection) => [connection.fromNodeId, connection.toNodeId, connection.distanceKm])).toEqual([
+      ["node-a1", "node-b1", 10],
+      ["node-b1", "node-a2", 20],
+      ["node-a2", "node-b2", 30],
+    ]);
   });
 });
