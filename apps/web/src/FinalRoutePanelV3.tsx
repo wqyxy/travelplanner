@@ -135,7 +135,6 @@ export function FinalRoutePanelV3({
   const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const [transportEditingNodeId, setTransportEditingNodeId] = useState<string | null>(null);
-  const selectedRow = rows.find((row) => row.node.id === selectedNodeId) ?? null;
   const editingRow = rows.find((row) => row.node.id === editingNodeId) ?? null;
   const [aiBusy, setAiBusy] = useState(false);
   const [aiMessage, setAiMessage] = useState("");
@@ -170,18 +169,19 @@ export function FinalRoutePanelV3({
     : addPosition === ADD_AT_END
       ? rows.length
       : (rows.find((row) => row.node.id === addPosition)?.index ?? rows.length - 1) + 1;
+  const addTargetRow = rows.find((row) => row.node.id === addPosition) ?? null;
   const addPositionLabel = addPosition === ADD_AT_START
     ? "线路最前面"
     : addPosition === ADD_AT_END
       ? "线路末尾"
-      : `“${placeNamePresentation(rows.find((row) => row.node.id === addPosition)?.place ?? null, workspace.trip.planLanguage, "未命名地点").primary}”之后`;
+      : `第 ${(addTargetRow?.index ?? 0) + 1} 个地点“${placeNamePresentation(addTargetRow?.place ?? null, workspace.trip.planLanguage, "未命名地点").primary}”之后`;
 
   const toggleAdd = () => {
     if (addOpen) {
       setAddOpen(false);
       return;
     }
-    setAddPosition(selectedRow?.node.id ?? ADD_AT_END);
+    setAddPosition(ADD_AT_END);
     setAddOpen(true);
   };
 
@@ -251,12 +251,10 @@ export function FinalRoutePanelV3({
       const proposal = workspace.proposals.find((item) => item.id === action.proposalId);
       if (proposal) byProposalId.set(proposal.id, { action, proposal });
     }
-    return [...byProposalId.values()]
-      .sort((left, right) => right.proposal.updatedAt.localeCompare(left.proposal.updatedAt))
-      .slice(0, 8);
+    return [...byProposalId.values()].sort((left, right) => right.proposal.updatedAt.localeCompare(left.proposal.updatedAt));
   })();
   const pendingAiProposals = visibleAiProposals.filter(({ proposal }) => proposal.status === "pending");
-  const settledAiProposals = visibleAiProposals.filter(({ proposal }) => proposal.status !== "pending");
+  const settledAiProposals = visibleAiProposals.filter(({ proposal }) => proposal.status !== "pending").slice(0, 8);
 
   const clearDrag = () => {
     setDraggedNodeId(null);
@@ -344,14 +342,14 @@ export function FinalRoutePanelV3({
           </div>
         </details>)}
         {settledAiProposals.length > 0 && <details className="final-route-ai-history-v5">
-          <summary>AI 历史 · {settledAiProposals.length}</summary>
+          <summary>最近 AI 历史 · {settledAiProposals.length}</summary>
           <div>{settledAiProposals.map(({ action, proposal }) => <div className="final-route-ai-history-row-v5" key={proposal.id}><span><strong>{proposal.title}</strong><small>{proposalKindLabel(action.actionType)} · {proposalStatusLabel(proposal.status)}</small></span>{proposal.status === "applied" && <button className="button small" type="button" disabled={busy || aiBusy || workspace.trip.contentGeneration !== proposal.baseGeneration + 1} onClick={() => void handleProposal(proposal.id, "undo")}>撤销</button>}</div>)}</div>
         </details>}
       </section>}
 
       {addOpen && <section className="final-route-add-v3 final-route-add-v5">
         <header><div><strong>添加地点</strong><small>将插入到：{addPositionLabel}</small></div></header>
-        <label className="final-route-add-position-v5"><span>插入位置</span><select value={addPosition} disabled={busy || aiBusy} onChange={(event) => setAddPosition(event.target.value)}><option value={ADD_AT_START}>线路最前面</option>{rows.map((row) => <option key={row.node.id} value={row.node.id}>在“{placeNamePresentation(row.place, workspace.trip.planLanguage, "未命名地点").primary}”之后</option>)}<option value={ADD_AT_END}>线路末尾</option></select></label>
+        <label className="final-route-add-position-v5"><span>插入位置</span><select value={addPosition} disabled={busy || aiBusy} onChange={(event) => setAddPosition(event.target.value)}><option value={ADD_AT_START}>线路最前面</option>{rows.map((row) => <option key={row.node.id} value={row.node.id}>在第 {row.index + 1} 个地点“{placeNamePresentation(row.place, workspace.trip.planLanguage, "未命名地点").primary}”之后</option>)}<option value={ADD_AT_END}>线路末尾</option></select></label>
         <div className="final-route-add-fields-v5"><input autoFocus value={addDraft.nameZh} disabled={busy || aiBusy} placeholder="地点名称，例如：Hobbiton" onChange={(event) => setAddDraft((current) => ({ ...current, nameZh: event.target.value }))}/><select value={addDraft.kind} disabled={busy || aiBusy} onChange={(event) => setAddDraft((current) => ({ ...current, kind: event.target.value as PlaceKind }))}>{Object.entries(placeKindLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><button className="button primary" type="button" disabled={busy || aiBusy || !addDraft.nameZh.trim()} onClick={() => void submitAdd()}>加入线路</button></div>
         <small>插入位置始终以这里显示的选择为准，不会暗中使用编辑状态或地图选择。地点可以先加入、后定位。</small>
       </section>}
