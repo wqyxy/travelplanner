@@ -1,12 +1,12 @@
 import { GripVertical, MapPin, Pencil, Plus, RefreshCw, Route, Sparkles, WandSparkles } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { type DragEvent, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import { FinalRouteEditorDrawerV4 } from "./FinalRouteEditorDrawerV4";
+import { finalRouteMoveTargetIndexV4, type FinalRouteDropPositionV4 } from "./final-route-drag-v4";
 import type { FinalRouteNodeStatus, PlaceKind, TransportMode } from "./v2-types";
 import type { AiActionType, ConversationStage, WorkspaceV3 } from "./v3-types";
 import { placeNamePresentation } from "./place-name-presentation";
 import {
-  finalRouteDayViewsV4,
   finalRouteDisplayRowsV3,
   finalRouteStatusLabelsV3,
   finalRouteTransportConnectionsV4,
@@ -31,19 +31,12 @@ const placeKindLabels: Record<PlaceKind, string> = {
 const transportOptions: TransportMode[] = ["walk", "drive", "bike", "transit", "rail", "flight", "ferry"];
 
 type AddDraft = { nameZh: string; kind: PlaceKind };
+type DropTarget = { nodeId: string; position: FinalRouteDropPositionV4 };
 
 function locationAttentionLabel(status: "resolving" | "resolved" | "unresolved" | "missing") {
   if (status === "resolved") return null;
   if (status === "resolving") return "定位中";
   return "未定位";
-}
-
-function dayRouteLabel(state: ReturnType<typeof finalRouteDayViewsV4>[number]["routeState"]) {
-  if (state === "dirty") return "路线更新中";
-  if (state === "attention") return "路线需注意";
-  if (state === "calculating") return "路线计算中";
-  if (state === "idle") return "路线待计算";
-  return null;
 }
 
 function connectionText(connection: FinalRouteTransportConnectionV4) {
@@ -53,6 +46,11 @@ function connectionText(connection: FinalRouteTransportConnectionV4) {
   const parts = [formatDistance(connection.distanceKm), formatRouteDuration(connection.durationMinutes)];
   if (connection.state === "attention") parts.push("需注意");
   return parts.join(" · ");
+}
+
+function dropPosition(event: DragEvent<HTMLElement>): FinalRouteDropPositionV4 {
+  const rect = event.currentTarget.getBoundingClientRect();
+  return event.clientY < rect.top + rect.height / 2 ? "before" : "after";
 }
 
 export function FinalRoutePanelV3({
@@ -106,10 +104,8 @@ export function FinalRoutePanelV3({
 }) {
   const plan = workspace.trip.plan;
   const rows = useMemo(() => finalRouteDisplayRowsV3(plan), [plan]);
-  const dayViews = useMemo(() => finalRouteDayViewsV4(plan, workspace.routeStates), [plan, workspace.routeStates]);
   const connections = useMemo(() => finalRouteTransportConnectionsV4(plan, workspace.routeStates), [plan, workspace.routeStates]);
   const connectionsByDestination = useMemo(() => new Map(connections.map((connection) => [connection.toNodeId, connection])), [connections]);
-  const dayViewsByNumber = useMemo(() => new Map(dayViews.map((day) => [day.dayNumber, day])), [dayViews]);
   const resolutions = useMemo(() => new Map(workspace.resolutions.map((item) => [item.placeId, item])), [workspace.resolutions]);
   const placesById = useMemo(() => new Map(plan.places.map((place) => [place.id, place])), [plan.places]);
   const planningAreaByPlace = useMemo(() => new Map(plan.candidates
@@ -120,7 +116,9 @@ export function FinalRoutePanelV3({
   const dirtyCount = workspace.routeStates.filter((item) => item.dirty).length;
   const [addOpen, setAddOpen] = useState(false);
   const [addDraft, setAddDraft] = useState<AddDraft>({ nameZh: "", kind: "attraction" });
+  const [dragArmedNodeId, setDragArmedNodeId] = useState<string | null>(null);
   const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const [transportEditingNodeId, setTransportEditingNodeId] = useState<string | null>(null);
   const selectedRow = rows.find((row) => row.node.id === selectedNodeId) ?? null;
   const editingRow = rows.find((row) => row.node.id === editingNodeId) ?? null;
@@ -128,12 +126,18 @@ export function FinalRoutePanelV3({
   const [aiMessage, setAiMessage] = useState("");
   const [segmentFrom, setSegmentFrom] = useState<string>("");
   const [segmentTo, setSegmentTo] = useState<string>("");
+  const [aiDayId, setAiDayId] = useState<string>("");
 
   useEffect(() => {
     const ids = normalRows.map((row) => row.node.id);
     if (!ids.includes(segmentFrom)) setSegmentFrom(ids[0] ?? "");
     if (!ids.includes(segmentTo)) setSegmentTo(ids.at(-1) ?? "");
   }, [normalRows.map((row) => row.node.id).join("|")]);
+
+  useEffect(() => {
+    const ids = plan.days.map((day) => day.id);
+    if (!ids.includes(aiDayId)) setAiDayId(ids[0] ?? "");
+  }, [plan.days.map((day) => day.id).join("|")]);
 
   const addIndex = selectedRow ? selectedRow.index + 1 : rows.length;
   const submitAdd = async () => {
@@ -191,15 +195,33 @@ export function FinalRoutePanelV3({
   })();
   const segmentRows = segmentBounds ? rows.slice(segmentBounds.start, segmentBounds.end + 1).filter((row) => row.node.status === "normal") : [];
   const segmentAreaIds = [...new Set(segmentRows.flatMap((row) => planningAreaByPlace.get(row.node.placeId)?.id ?? []))];
+  const aiDay = plan.days.find((day) => day.id === aiDayId);
+  const aiDayAreaIds = areaIdsForDay(aiDay);
   const visibleAiActions = workspace.actions.filter((action) => action.actionType === "itinerary.day.optimize" || action.actionType === "itinerary.repair" || action.actionType === "itinerary.refine");
   const visibleAiProposals = visibleAiActions.flatMap((action) => action.proposalId
     ? workspace.proposals.filter((proposal) => proposal.id === action.proposalId).map((proposal) => ({ action, proposal }))
     : []).slice(-6).reverse();
 
+  const clearDrag = () => {
+    setDragArmedNodeId(null);
+    setDraggedNodeId(null);
+    setDropTarget(null);
+  };
+
+  const moveDroppedNode = (event: DragEvent<HTMLElement>, targetRowIndex: number) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const nodeId = draggedNodeId || event.dataTransfer.getData("text/plain");
+    const dragIndex = rows.findIndex((row) => row.node.id === nodeId);
+    const targetIndex = finalRouteMoveTargetIndexV4(dragIndex, targetRowIndex, dropPosition(event), rows.length);
+    clearDrag();
+    if (nodeId && targetIndex !== null) void onMoveNode(nodeId, targetIndex);
+  };
+
   return <>
     <section className="final-route-panel-v3">
       <header className="final-route-panel-head-v3">
-        <div><p className="eyebrow">行程</p><h2>最终线路</h2><p>地点是块、交通是线、住宿切出 Day。鼠标经过地点只高亮地图，点击地点才定位到地图。</p></div>
+        <div><p className="eyebrow">行程</p><h2>最终线路</h2><p>地点始终只表示地点；交通显示在地点之间，每晚用分隔线切开。拖动把手即可调整整张地点卡的顺序。</p></div>
         <button className="button primary" type="button" disabled={busy || aiBusy} onClick={() => setAddOpen((value) => !value)}><Plus size={15}/>添加地点</button>
       </header>
 
@@ -222,6 +244,14 @@ export function FinalRoutePanelV3({
             <button className="button small" type="button" disabled={busy || aiBusy || !wholeAreaIds.length} onClick={() => void startAi("interests", "interest.discover", { request: "final-route-detail-scope:trip" }, wholeAreaIds, "AI 已开始补充详细地点，只会新增地点，不会移动现有线路。")}>生成详细地点</button>
             <button className="button small" type="button" disabled={busy || aiBusy || normalRows.length < 2} onClick={() => void startAi("itinerary", "itinerary.repair", { request: "优化全程" }, [], "AI 已开始分析全程顺序；完成后会给你一份可采用或拒绝的方案。")}>优化全程</button>
           </div>
+          {plan.days.length > 0 && <div className="final-route-day-ai-v4">
+            <label><span>按天操作</span><select value={aiDayId} disabled={busy || aiBusy} onChange={(event) => setAiDayId(event.target.value)}>{plan.days.map((day) => <option key={day.id} value={day.id}>第 {day.dayNumber} 天{day.date ? ` · ${day.date}` : ""}</option>)}</select></label>
+            <div className="final-route-inline-actions-v3">
+              <button className="button small" type="button" disabled={busy || aiBusy || !aiDay || !aiDayAreaIds.length} onClick={() => aiDay && void startAi("interests", "interest.discover", { request: `final-route-detail-scope:day:${aiDay.id}` }, aiDayAreaIds, "AI 已开始补充这一天的详细地点。")}>补充详细地点</button>
+              <button className="button small" type="button" disabled={busy || aiBusy || !aiDay || aiDay.stops.length < 1} onClick={() => aiDay && void startAi("itinerary", "itinerary.refine", { dayIds: [aiDay.id], request: "完善这一天" }, [aiDay.id], "AI 已开始补充这一天的时间和活动说明；完成后由你决定是否采用。")}>完善这一天</button>
+              <button className="button small" type="button" disabled={busy || aiBusy || !aiDay || aiDay.stops.length < 2} onClick={() => aiDay && void startAi("itinerary", "itinerary.day.optimize", { dayId: aiDay.id, request: "优化这一天" }, [aiDay.id], "AI 已开始分析这一天的顺序；完成后由你决定是否采用。")}>优化这一天</button>
+            </div>
+          </div>}
           {normalRows.length >= 2 && <div className="final-route-segment-ai-v3">
             <label><span>这一段从</span><select value={segmentFrom} disabled={busy || aiBusy} onChange={(event) => setSegmentFrom(event.target.value)}>{normalRows.map((row) => <option key={row.node.id} value={row.node.id}>{row.index + 1}. {row.place?.nameZh ?? "未命名地点"}</option>)}</select></label>
             <label><span>到</span><select value={segmentTo} disabled={busy || aiBusy} onChange={(event) => setSegmentTo(event.target.value)}>{normalRows.map((row) => <option key={row.node.id} value={row.node.id}>{row.index + 1}. {row.place?.nameZh ?? "未命名地点"}</option>)}</select></label>
@@ -251,33 +281,21 @@ export function FinalRoutePanelV3({
         <small>地点可以先加入、后定位。添加地点不会自动设置住宿，也不会移动现有地点。</small>
       </section>}
 
-      {!rows.length ? <div className="final-route-empty-v3"><MapPin size={30}/><strong>最终线路还是空的</strong><p>可以手动添加，也可以让 AI 先生成主要地点。生成结果会直接成为最终线路。</p></div> : <div className="final-route-list-v3">
-        {rows.map((row, rowIndex) => {
-          const previous = rows[rowIndex - 1];
-          const day = plan.days[row.dayNumber - 1];
-          const dayView = dayViewsByNumber.get(row.dayNumber) ?? null;
-          const showDay = !previous || previous.dayNumber !== row.dayNumber;
-          const dayAreaIds = showDay ? areaIdsForDay(day) : [];
+      {!rows.length ? <div className="final-route-empty-v3"><MapPin size={30}/><strong>最终线路还是空的</strong><p>可以手动添加，也可以让 AI 先生成主要地点。生成结果会直接成为最终线路。</p></div> : <div className={`final-route-list-v3 ${draggedNodeId ? "drag-active" : ""}`}>
+        {rows.map((row) => {
           const resolution = resolutions.get(row.node.placeId);
           const locationState = resolution?.status ?? "missing";
           const locationAttention = locationAttentionLabel(locationState);
-          const display = placeNamePresentation(row.place, workspace.trip.planLanguage, row.node.activity || "未命名地点");
+          const display = placeNamePresentation(row.place, workspace.trip.planLanguage, "未命名地点");
           const selected = row.node.id === selectedNodeId;
           const hovered = row.node.id === hoveredNodeId;
           const editing = row.node.id === editingNodeId;
+          const dragging = row.node.id === draggedNodeId;
+          const currentDrop = dropTarget?.nodeId === row.node.id ? dropTarget.position : null;
           const connection = row.node.status === "normal" ? connectionsByDestination.get(row.node.id) ?? null : null;
           const fromName = connection ? placesById.get(connection.fromPlaceId)?.nameZh ?? "上一地点" : "";
           const toName = connection ? placesById.get(connection.toPlaceId)?.nameZh ?? display.primary : "";
           return <div className="final-route-row-wrap-v3" key={row.node.id}>
-            {showDay && <section className="final-route-day-divider-v3">
-              <div className="final-route-day-title-v4"><b>Day {row.dayNumber}</b><div><strong>{dayView?.title || day?.title || "当日行程"}</strong><span>{dayView?.date || day?.date || "日期待定"}</span></div></div>
-              <div className="final-route-day-route-v4">
-                {dayView?.routeState === "ready" || dayView?.routeState === "attention" ? <><span>{formatDistance(dayView.distanceKm)}</span><span>{formatRouteDuration(dayView.durationMinutes)}</span></> : <span>{dayView ? dayRouteLabel(dayView.routeState) : "路线待计算"}</span>}
-              </div>
-              <div className="final-route-inline-actions-v3"><button className="button small" type="button" disabled={busy || aiBusy || !dayAreaIds.length} onClick={() => void startAi("interests", "interest.discover", { request: `final-route-detail-scope:day:${day?.id ?? ""}` }, dayAreaIds, "AI 已开始补充这一天的详细地点。")}>补充详细地点</button><button className="button small" type="button" disabled={busy || aiBusy || !day || day.stops.length < 1} onClick={() => day && void startAi("itinerary", "itinerary.refine", { dayIds: [day.id], request: "完善这一天" }, [day.id], "AI 已开始补充这一天的时间和活动说明；完成后由你决定是否采用。")}>完善这一天</button><button className="button small" type="button" disabled={busy || aiBusy || !day || day.stops.length < 2} onClick={() => day && void startAi("itinerary", "itinerary.day.optimize", { dayId: day.id, request: "优化这一天" }, [day.id], "AI 已开始分析这一天的顺序；完成后由你决定是否采用。")}>优化这一天</button></div>
-              {dayView?.emptyDetail && <div className="final-route-day-empty-v4"><strong>这一天还没有详细安排</strong><span>目前是同一地点连续住宿形成的空日程，可以继续添加地点或让 AI 补充。</span></div>}
-            </section>}
-
             {connection && <div className={`final-route-transport-connector-v4 state-${connection.state}`}>
               <button type="button" className="final-route-transport-main-v4" disabled={busy || aiBusy} title={connection.warning || undefined} onClick={() => setTransportEditingNodeId((current) => current === row.node.id ? null : row.node.id)}>
                 <Route size={14}/><strong>{connection.mode ? transportModeLabelsV3[connection.mode] : "交通待定"}</strong><span>{connectionText(connection)}</span>{connection.skippedInactiveCount > 0 && <small>{fromName} → {toName} · 已跳过 {connection.skippedInactiveCount} 个待定/不去地点</small>}
@@ -289,18 +307,32 @@ export function FinalRoutePanelV3({
             </div>}
 
             <article
-              className={`final-route-row-v3 status-${row.node.status} ${selected ? "map-selected" : ""} ${hovered ? "hover-linked" : ""} ${editing ? "editing" : ""}`}
+              className={`final-route-row-v3 status-${row.node.status} ${selected ? "map-selected" : ""} ${hovered ? "hover-linked" : ""} ${editing ? "editing" : ""} ${dragging ? "dragging" : ""} ${currentDrop ? `drop-${currentDrop}` : ""}`}
+              draggable={!busy && !aiBusy}
               onMouseEnter={() => onHoverNode(row.node.id)}
               onMouseLeave={() => onHoverNode(null)}
-              onDragOver={(event) => event.preventDefault()}
-              onDrop={(event) => {
-                event.preventDefault();
-                if (!draggedNodeId || draggedNodeId === row.node.id) return;
-                setDraggedNodeId(null);
-                void onMoveNode(draggedNodeId, row.index);
+              onDragStart={(event) => {
+                if (dragArmedNodeId !== row.node.id) {
+                  event.preventDefault();
+                  return;
+                }
+                event.stopPropagation();
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData("text/plain", row.node.id);
+                event.dataTransfer.setDragImage(event.currentTarget, 22, 22);
+                setDraggedNodeId(row.node.id);
+                setDropTarget(null);
               }}
+              onDragOver={(event) => {
+                if (!draggedNodeId || draggedNodeId === row.node.id) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+                setDropTarget({ nodeId: row.node.id, position: dropPosition(event) });
+              }}
+              onDrop={(event) => moveDroppedNode(event, row.index)}
+              onDragEnd={clearDrag}
             >
-              <button className="final-route-drag-v3" type="button" draggable={!busy && !aiBusy} disabled={busy || aiBusy} aria-label="拖动地点排序" title="拖动排序" onDragStart={(event) => { event.stopPropagation(); setDraggedNodeId(row.node.id); }} onDragEnd={() => setDraggedNodeId(null)}><GripVertical size={17}/></button>
+              <button className="final-route-drag-v3" type="button" draggable={false} disabled={busy || aiBusy} aria-label="拖动地点排序" title="按住并拖动整张地点卡排序" onPointerDown={(event) => { event.stopPropagation(); setDragArmedNodeId(row.node.id); }} onPointerUp={() => { if (!draggedNodeId) setDragArmedNodeId(null); }} onPointerCancel={() => { if (!draggedNodeId) setDragArmedNodeId(null); }}><GripVertical size={17}/></button>
               <button className="final-route-main-v3" type="button" onClick={() => onFocusNode(row.node.id)}>
                 <span className="final-route-index-v3">{row.index + 1}</span>
                 <span><strong>{display.primary}</strong>{display.secondary && <small>{display.secondary}</small>}<small>{placeKindLabels[row.place?.kind ?? "waypoint"]}{row.node.startTime || row.node.scheduleText ? ` · ${row.node.startTime || row.node.scheduleText}` : ""}</small></span>
@@ -319,6 +351,7 @@ export function FinalRoutePanelV3({
             </article>
 
             {row.node.status !== "normal" && <div className="final-route-inactive-note-v4">暂不参与当前 Day 和交通路线；恢复为“正常”后会在原位置重新生效。</div>}
+            {row.node.status === "normal" && row.node.endsDay && <div className="final-route-night-divider-v4" aria-label={`第 ${row.dayNumber} 天结束，第 ${row.dayNumber} 晚`}><span/><strong>第 {row.dayNumber} 晚</strong><span/></div>}
           </div>;
         })}
       </div>}
