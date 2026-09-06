@@ -1,0 +1,71 @@
+/* Phase 5: compact AI, proposal, add-position, and product-native confirmation UI. */
+
+.final-route-ai-shell-v5{display:grid;gap:8px;padding:10px 11px;border:1px solid var(--border);border-radius:12px;background:color-mix(in srgb,var(--surface-subtle) 58%,var(--surface))}
+.final-route-ai-shell-v5>strong{display:flex;align-items:center;gap:6px;font-size:12px}
+.final-route-ai-menu-v5>summary{display:grid;grid-template-columns:auto auto minmax(0,1fr);align-items:center;gap:7px;min-height:34px;cursor:pointer;list-style:none;color:var(--text)}
+.final-route-ai-menu-v5>summary::-webkit-details-marker{display:none}
+.final-route-ai-menu-v5>summary strong{font-size:12px}
+.final-route-ai-menu-v5>summary span{overflow:hidden;color:var(--muted);font-size:10px;text-overflow:ellipsis;white-space:nowrap}
+.final-route-ai-menu-v5>summary:after{margin-left:auto;color:var(--muted);content:"▾";font-size:11px;transition:transform .12s ease}
+.final-route-ai-menu-v5[open]>summary:after{transform:rotate(180deg)}
+.final-route-ai-menu-body-v5{display:grid;gap:10px;margin-top:7px;padding-top:9px;border-top:1px solid var(--border)}
+.final-route-ai-menu-body-v5>section{display:grid;gap:7px;padding:0 0 10px;border-bottom:1px solid var(--border)}
+.final-route-ai-menu-body-v5>section:last-child{padding-bottom:0;border-bottom:0}
+.final-route-ai-menu-body-v5 header{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.final-route-ai-menu-body-v5 header strong{font-size:11px}
+.final-route-ai-menu-body-v5 header small{color:var(--muted);font-size:9px;text-align:right}
+.final-route-ai-select-v5,.final-route-ai-segment-v5 label{display:flex;min-width:0;flex-direction:column;gap:4px;color:var(--muted);font-size:10px}
+.final-route-ai-select-v5 select,.final-route-ai-segment-v5 select{width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:8px;color:var(--text);background:var(--control);font:inherit}
+.final-route-ai-segment-v5{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}
+.final-route-ai-message-v5{padding:7px 8px;border-radius:8px;background:var(--surface);color:var(--muted);font-size:10px;line-height:1.45}
+
+.final-route-proposals-v5{display:grid;gap:6px;padding:9px 10px;border:1px solid var(--border);border-radius:12px;background:var(--surface)}
+.final-route-proposals-head-v5{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.final-route-proposals-head-v5>strong{display:flex;align-items:center;gap:6px;font-size:12px}
+.final-route-proposals-head-v5>span{padding:2px 6px;border-radius:999px;background:var(--primary-soft);color:var(--primary);font-size:9px;font-weight:800}
+.final-route-proposal-v5{border:1px solid var(--border);border-radius:9px;background:var(--surface-subtle)}
+.final-route-proposal-v5>summary{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:7px;padding:8px 9px;cursor:pointer;list-style:none}
+.final-route-proposal-v5>summary::-webkit-details-marker{display:none}
+.final-route-proposal-v5>summary>div{display:flex;min-width:0;flex-direction:column;gap:1px}
+.final-route-proposal-v5>summary strong{overflow:hidden;font-size:11px;text-overflow:ellipsis;white-space:nowrap}
+.final-route-proposal-v5>summary small{color:var(--muted);font-size:9px}
+.final-route-proposal-v5>summary em{color:var(--primary);font-size:9px;font-style:normal;font-weight:800}
+.final-route-proposal-body-v5{display:grid;gap:8px;padding:0 9px 9px;border-top:1px solid var(--border)}
+.final-route-proposal-body-v5 p{margin:8px 0 0;color:var(--muted);font-size:10px;line-height:1.5}
+.final-route-proposal-body-v5>small{color:#9a6819;font-size:9px}
+.final-route-proposal-body-v5 footer{display:flex;justify-content:flex-end;gap:6px}
+.final-route-ai-history-v5>summary{cursor:pointer;color:var(--muted);font-size:10px;list-style:none}
+.final-route-ai-history-v5>summary::-webkit-details-marker{display:none}
+.final-route-ai-history-v5>div{display:grid;gap:4px;margin-top:6px}
+.final-route-ai-history-row-v5{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 7px;border-radius:7px;background:var(--surface-subtle)}
+.final-route-ai-history-row-v5>span{display:flex;min-width:0;flex-direction:column;gap:1px}
+.final-route-ai-history-row-v5 strong{overflow:hidden;font-size:10px;text-overflow:ellipsis;white-space:nowrap}
+.final-route-ai-history-row-v5 small{color:var(--muted);font-size:9px}
+
+.final-route-add-v5{gap:8px}
+.final-route-add-v5>header{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.final-route-add-v5>header>div{display:flex;min-width:0;flex-direction:column;gap:2px}
+.final-route-add-v5>header strong{font-size:12px}
+.final-route-add-v5>header small{overflow:hidden;color:var(--muted);font-size:10px;text-overflow:ellipsis;white-space:nowrap}
+.final-route-add-position-v5{display:flex;flex-direction:column;gap:4px;color:var(--muted);font-size:10px}
+.final-route-add-position-v5 select{width:100%;padding:7px 8px;border:1px solid var(--border);border-radius:8px;color:var(--text);background:var(--control);font:inherit}
+.final-route-add-fields-v5{display:grid!important;grid-template-columns:minmax(0,1fr) 145px auto!important;gap:8px}
+
+.final-route-remove-confirm-v5{display:grid;gap:7px;padding:9px;border:1px solid color-mix(in srgb,#b84b4b 35%,var(--border));border-radius:9px;background:color-mix(in srgb,#b84b4b 5%,var(--surface))}
+.final-route-remove-confirm-v5 strong{font-size:11px}
+.final-route-remove-confirm-v5 small{color:var(--muted);font-size:10px;line-height:1.45}
+.final-route-remove-confirm-v5>div{display:flex;justify-content:flex-end;gap:6px}
+
+/* A repeated same-place overnight node has no transport control between the two cards. */
+.final-route-row-wrap-v3+.final-route-row-wrap-v3{scroll-margin-top:8px}
+
+@media(max-width:900px){
+  .final-route-ai-menu-body-v5 header{align-items:flex-start;flex-direction:column;gap:2px}
+  .final-route-ai-menu-body-v5 header small{text-align:left}
+  .final-route-ai-segment-v5{grid-template-columns:1fr}
+  .final-route-proposal-v5>summary{grid-template-columns:auto minmax(0,1fr)}
+  .final-route-proposal-v5>summary em{grid-column:2}
+  .final-route-add-fields-v5{grid-template-columns:1fr!important}
+  .final-route-add-v5>header small{white-space:normal}
+  .final-route-drag-v3{min-width:34px;min-height:36px}
+}
