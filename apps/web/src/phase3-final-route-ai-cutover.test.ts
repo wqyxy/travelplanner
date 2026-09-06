@@ -18,11 +18,14 @@ describe("Phase 3 final route AI cutover", () => {
     expect(panel).not.toContain('"itinerary.detail.generate"');
   });
 
-  it("keeps detailed time and notes editable inside the final-route panel instead of restoring Step 5", () => {
+  it("keeps detailed time and notes editable from the final-route experience without restoring Step 5", () => {
     const panel = source("./FinalRoutePanelV3.tsx");
-    for (const label of ["详细安排", "活动说明", "时段", "开始时间", "结束时间", "停留分钟", "备注", "保存详细安排"]) expect(panel).toContain(label);
-    expect(panel).toContain('actionType: "itinerary.edit"');
-    expect(panel).toContain("selectedStopOwner");
+    const drawer = source("./FinalRouteEditorDrawerV4.tsx");
+    expect(panel).toContain("FinalRouteEditorDrawerV4");
+    for (const label of ["行程安排", "活动说明", "时段", "开始时间", "结束时间", "停留分钟", "备注", "保存详细安排"]) expect(drawer).toContain(label);
+    expect(drawer).toContain('actionType: "itinerary.edit"');
+    expect(drawer).toContain("stopOwner");
+    expect(panel).not.toContain("final-route-editor-v3");
   });
 
   it("does not reintroduce route business buttons into the map", () => {
