@@ -24,6 +24,16 @@ describe("Phase 4 final route interaction contract", () => {
     expect(map).not.toContain("[points, ready, selectedNodeId]");
   });
 
+  it("renders every route node as the same place card and keeps Day out of place names", () => {
+    const panel = source("./FinalRoutePanelV3.tsx");
+    expect(panel).toContain('placeNamePresentation(row.place, workspace.trip.planLanguage, "未命名地点")');
+    expect(panel).not.toContain('row.node.activity || "未命名地点"');
+    expect(panel).not.toContain("final-route-day-divider-v3");
+    expect(panel).not.toContain("final-route-day-title-v4");
+    expect(panel).toContain("final-route-night-divider-v4");
+    expect(panel).toContain("第 {row.dayNumber} 晚");
+  });
+
   it("keeps place editing out of the inline route list", () => {
     const panel = source("./FinalRoutePanelV3.tsx");
     const drawer = source("./FinalRouteEditorDrawerV4.tsx");
@@ -36,12 +46,26 @@ describe("Phase 4 final route interaction contract", () => {
     expect(drawer).toContain("地图选点");
   });
 
+  it("starts drag from the handle but drags the whole place article and shows insertion position", () => {
+    const panel = source("./FinalRoutePanelV3.tsx");
+    const css = source("./phase4-final-route-interaction.css");
+    expect(panel).toContain("dragArmedNodeId");
+    expect(panel).toContain("draggable={!busy && !aiBusy}");
+    expect(panel).toContain("event.dataTransfer.setDragImage(event.currentTarget, 22, 22)");
+    expect(panel).toContain("finalRouteMoveTargetIndexV4");
+    expect(panel).toContain("drop-before");
+    expect(panel).toContain("drop-after");
+    expect(css).toContain(".final-route-row-v3.dragging");
+    expect(css).toContain(".final-route-row-v3.drop-before:before");
+    expect(css).toContain(".final-route-row-v3.drop-after:after");
+  });
+
   it("loads the dedicated phase4 interaction styles", () => {
     const main = source("./main.tsx");
     const css = source("./phase4-final-route-interaction.css");
     expect(main).toContain('import "./phase4-final-route-interaction.css"');
     expect(css).toContain(".final-route-transport-connector-v4");
+    expect(css).toContain(".final-route-night-divider-v4");
     expect(css).toContain(".final-route-editor-drawer-v4");
-    expect(css).toContain(".final-route-day-divider-v3");
   });
 });
