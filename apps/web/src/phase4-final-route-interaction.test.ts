@@ -33,6 +33,8 @@ describe("Phase 4 final route interaction contract", () => {
     expect(drawer).not.toContain('row.node.activity || "未命名地点"');
     expect(panel).not.toContain("final-route-day-divider-v3");
     expect(panel).not.toContain("final-route-day-title-v4");
+    expect(panel).toContain("finalRouteDayMarkerV5");
+    expect(panel).toContain("firstNormalRowIndex");
     expect(panel).toContain("final-route-night-divider-v4");
     expect(panel).toContain("第 {row.dayNumber} 晚");
   });
@@ -77,5 +79,6 @@ describe("Phase 4 final route interaction contract", () => {
     expect(css).toContain(".final-route-transport-connector-v4");
     expect(css).toContain(".final-route-night-divider-v4");
     expect(css).toContain(".final-route-editor-drawer-v4");
+    expect(css).toContain(".final-route-transport-select-v5");
   });
 });

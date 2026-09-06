@@ -1,5 +1,5 @@
 import { ChevronRight, Copy, GripVertical, LocateFixed, MapPin, Pencil, Plus, RefreshCw, Route, Sparkles, Trash2, WandSparkles, X } from "lucide-react";
-import { type DragEvent, useEffect, useMemo, useState } from "react";
+import { Fragment, type DragEvent, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import { FinalRouteEditorDrawerV4 } from "./FinalRouteEditorDrawerV4";
 import { finalRouteMoveTargetIndexV4, type FinalRouteDropPositionV4 } from "./final-route-drag-v4";
@@ -83,6 +83,13 @@ function dropPosition(event: DragEvent<HTMLElement>): FinalRouteDropPositionV4 {
   return event.clientY < rect.top + rect.height / 2 ? "before" : "after";
 }
 
+function finalRouteDayMarkerV5(dayNumber: number) {
+  return <div className="final-route-day-marker-v5" aria-label={`第 ${dayNumber} 天`}>
+    <strong>第 {dayNumber} 天</strong>
+    <div className="final-route-day-actions-v5" aria-hidden="true" />
+  </div>;
+}
+
 export function FinalRoutePanelV3({
   workspace,
   selectedNodeId,
@@ -156,6 +163,7 @@ export function FinalRoutePanelV3({
     .filter((candidate) => candidate.planningRole === "planning_area")
     .map((candidate) => [candidate.placeId, candidate])), [plan.candidates]);
   const normalRows = rows.filter((row) => row.node.status === "normal");
+  const firstNormalRowIndex = rows.findIndex((row) => row.node.status === "normal");
   const wholeAreaIds = [...new Set(normalRows.flatMap((row) => planningAreaByPlace.get(row.node.placeId)?.id ?? []))];
   const dirtyCount = workspace.routeStates.filter((item) => item.dirty).length;
   const unresolvedPlaceIds = [...new Set(rows
@@ -169,7 +177,6 @@ export function FinalRoutePanelV3({
   const [addPosition, setAddPosition] = useState<string>(ADD_AT_END);
   const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
-  const [transportEditingNodeId, setTransportEditingNodeId] = useState<string | null>(null);
   const [removeConfirmNodeId, setRemoveConfirmNodeId] = useState<string | null>(null);
   const [resolutionChoice, setResolutionChoice] = useState<{ placeId: string; loading: boolean; candidates: ProviderPlaceCandidate[]; error: string } | null>(null);
   const editingRow = rows.find((row) => row.node.id === editingNodeId) ?? null;
@@ -194,12 +201,6 @@ export function FinalRoutePanelV3({
     if (addPosition === ADD_AT_START || addPosition === ADD_AT_END) return;
     if (!rows.some((row) => row.node.id === addPosition)) setAddPosition(ADD_AT_END);
   }, [addPosition, rows.map((row) => row.node.id).join("|")]);
-
-  useEffect(() => {
-    if (!transportEditingNodeId) return;
-    const current = connectionsByDestination.get(transportEditingNodeId);
-    if (!current || current.state === "same_place") setTransportEditingNodeId(null);
-  }, [transportEditingNodeId, connectionsByDestination]);
 
   const addIndex = addPosition === ADD_AT_START
     ? 0
@@ -428,23 +429,26 @@ export function FinalRoutePanelV3({
           const currentDrop = dropTarget?.nodeId === row.node.id ? dropTarget.position : null;
           const connection = row.node.status === "normal" ? connectionsByDestination.get(row.node.id) ?? null : null;
           const effectiveConnection = connection?.state === "same_place" ? null : connection;
+          const effectiveTransportMode = effectiveConnection?.mode ?? "drive";
           const routeHovered = effectiveConnection?.toNodeId === hoveredRouteNodeId;
           const fromName = effectiveConnection ? placesById.get(effectiveConnection.fromPlaceId)?.nameZh ?? "上一地点" : "";
           const toName = effectiveConnection ? placesById.get(effectiveConnection.toPlaceId)?.nameZh ?? display.primary : "";
           const unavailableRouteReason = effectiveConnection?.state === "unavailable" ? unavailableRouteMessage(effectiveConnection, resolutions) : null;
           const canRecalculateConnection = Boolean(effectiveConnection?.dayId) && !unavailableRouteReason?.includes("未定位");
-          return <div className="final-route-row-wrap-v3" key={row.node.id}>
+          const hasFollowingNormalRow = rows.slice(row.index + 1).some((item) => item.node.status === "normal");
+          return <Fragment key={row.node.id}>
+            {row.index === firstNormalRowIndex && finalRouteDayMarkerV5(row.dayNumber)}
+            <div className="final-route-row-wrap-v3">
             {effectiveConnection && <div className={`final-route-transport-connector-v4 state-${effectiveConnection.state} ${routeHovered ? "hover-linked" : ""}`} onMouseEnter={() => onHoverRoute(effectiveConnection.toNodeId, effectiveConnection.toPlaceId)} onMouseLeave={() => onHoverRoute(null, null)}>
               <div className="final-route-transport-actions-v5">
-                <button type="button" className="final-route-transport-main-v4" disabled={busy || aiBusy} title={unavailableRouteReason || effectiveConnection.warning || undefined} onClick={() => { onFocusRoute(effectiveConnection.toNodeId, effectiveConnection.toPlaceId); setTransportEditingNodeId((current) => current === row.node.id ? null : row.node.id); }}>
-                  <Route size={14}/><strong>{effectiveConnection.mode ? transportModeLabelsV3[effectiveConnection.mode] : "交通待定"}</strong><span>{unavailableRouteReason || connectionText(effectiveConnection)}</span>{effectiveConnection.skippedInactiveCount > 0 && <small>{fromName} → {toName} · 已跳过 {effectiveConnection.skippedInactiveCount} 个待定/不去地点</small>}
+                <select className="final-route-transport-select-v5" aria-label={`到达 ${toName} 的交通方式`} value={effectiveTransportMode} disabled={busy || aiBusy} onChange={(event) => void onSetTransport(row.node.id, event.target.value as TransportMode)}>
+                  {transportOptions.map((mode) => <option key={mode} value={mode}>{transportModeLabelsV3[mode]}</option>)}
+                </select>
+                <button type="button" className="final-route-transport-main-v4" disabled={busy || aiBusy} title={unavailableRouteReason || effectiveConnection.warning || undefined} onClick={() => onFocusRoute(effectiveConnection.toNodeId, effectiveConnection.toPlaceId)}>
+                  <Route size={14}/><span>{unavailableRouteReason || connectionText(effectiveConnection)}</span>{effectiveConnection.skippedInactiveCount > 0 && <small>{fromName} → {toName} · 已跳过 {effectiveConnection.skippedInactiveCount} 个待定/不去地点</small>}
                 </button>
                 {effectiveConnection.state === "unavailable" && <button className="final-route-recalculate-connection-v5" type="button" disabled={busy || aiBusy || !canRecalculateConnection} title={canRecalculateConnection ? "重新向路线 Provider 获取这一天的线路" : unavailableRouteReason || "缺少可用的线路范围"} onClick={() => effectiveConnection.dayId && void onRecalculateRoute(effectiveConnection.dayId)}><RefreshCw size={13}/>重新获取线路</button>}
               </div>
-              {transportEditingNodeId === row.node.id && <div className="final-route-transport-editor-v4">
-                <label><span>这段交通方式</span><select autoFocus value={row.node.transportFromPrevious?.mode ?? ""} disabled={busy || aiBusy} onChange={(event) => { const mode = event.target.value as TransportMode | ""; setTransportEditingNodeId(null); void onSetTransport(row.node.id, mode); }}><option value="">未设置</option>{transportOptions.map((mode) => <option key={mode} value={mode}>{transportModeLabelsV3[mode]}</option>)}</select></label>
-                <small>交通方式保存在“到达 {toName}”的线路节点上；距离和时间仍由路线 Provider 计算。</small>
-              </div>}
             </div>}
 
             <article
@@ -494,7 +498,9 @@ export function FinalRoutePanelV3({
             {removeConfirmNodeId === row.node.id && <div className="final-route-delete-confirm-v5" role="alert"><span>确认删除“{display.primary}”这一次出现？</span><div><button className="button small" type="button" disabled={busy || aiBusy} onClick={() => setRemoveConfirmNodeId(null)}>取消</button><button className="button danger small" type="button" disabled={busy || aiBusy} onClick={() => { setRemoveConfirmNodeId(null); void onRemoveNode(row.node.id); }}>确认删除</button></div></div>}
             {row.node.status !== "normal" && <div className="final-route-inactive-note-v4">暂不参与当前 Day 和交通路线；恢复为“正常”后会在原位置重新生效。</div>}
             {row.node.status === "normal" && row.node.endsDay && <div className="final-route-night-divider-v4" aria-label={`第 ${row.dayNumber} 天结束，第 ${row.dayNumber} 晚`}><span/><strong>第 {row.dayNumber} 晚</strong><span/></div>}
-          </div>;
+            </div>
+            {row.node.status === "normal" && row.node.endsDay && hasFollowingNormalRow && finalRouteDayMarkerV5(row.dayNumber + 1)}
+          </Fragment>;
         })}
       </div>}
     </section>

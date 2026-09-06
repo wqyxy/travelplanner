@@ -54,12 +54,17 @@ describe("Phase 5 final route polish contract", () => {
     expect(drawer).toContain('placeNamePresentation(row.place, workspace.trip.planLanguage, "未命名地点")');
   });
 
-  it("shows unavailable provider routes explicitly and closes transport editing when its effective connection disappears", () => {
+  it("shows unavailable provider routes explicitly and keeps transport selection inline", () => {
     const panel = source("./FinalRoutePanelV3.tsx");
     const css = source("./phase5-final-route-polish.css");
     expect(panel).toContain('if (connection.state === "unavailable") return "路线暂不可用"');
-    expect(panel).toContain('if (!current || current.state === "same_place") setTransportEditingNodeId(null)');
+    expect(panel).toContain('className="final-route-transport-select-v5"');
+    expect(panel).toContain('value={effectiveTransportMode}');
+    expect(panel).not.toContain("final-route-transport-editor-v4");
+    expect(panel).not.toContain('<option value="">未设置</option>');
+    expect(panel).not.toContain("交通方式保存在");
     expect(css).toContain(".final-route-transport-connector-v4.state-unavailable");
+    expect(css).toContain(".final-route-transport-select-v5");
   });
 
   it("offers scoped recovery for unavailable routes and unresolved places", () => {
@@ -120,6 +125,8 @@ describe("Phase 5 final route polish contract", () => {
     expect(panel).toContain('className="final-route-delete-confirm-v5"');
     expect(css).toContain(".final-route-quick-v4{grid-column:3;grid-row:1");
     expect(css).toContain("color:#e05c45!important");
+    expect(css).toContain(".final-route-quick-button-v5.stay{color:color-mix(in srgb,var(--muted) 58%,var(--surface))}");
+    expect(css).toContain(".final-route-quick-button-v5.stay.active{color:#304fb0");
     expect(css).toContain(".final-route-quick-button-v5.status.tentative{color:#c58b2b!important}");
     expect(css).toContain(".final-route-quick-button-v5.status.no_go{color:#667085!important}");
   });
@@ -142,6 +149,19 @@ describe("Phase 5 final route polish contract", () => {
     expect(map).toContain('const routeNodeId = hoveredRouteNodeId');
     expect(map).toContain('metrics.textContent = route.properties.summary');
     expect(css).toContain('.final-route-transport-connector-v4.hover-linked');
+  });
+
+  it("renders sticky day markers with a reserved action area", () => {
+    const panel = source("./FinalRoutePanelV3.tsx");
+    const interactionCss = source("./phase4-final-route-interaction.css");
+    const polishCss = source("./phase5-final-route-polish.css");
+    expect(panel).toContain("finalRouteDayMarkerV5");
+    expect(panel).toContain('row.index === firstNormalRowIndex');
+    expect(panel).toContain('row.node.endsDay && hasFollowingNormalRow');
+    expect(panel).toContain('className="final-route-day-actions-v5"');
+    expect(interactionCss).toContain("final-route-night-divider-v4");
+    expect(polishCss).toContain(".final-route-day-marker-v5{position:sticky;top:0");
+    expect(polishCss).toContain(".final-route-day-actions-v5");
   });
 
   it("loads Phase 5 after Phase 4 so compact polish styles win without changing the core interaction CSS", () => {

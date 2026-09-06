@@ -55,6 +55,21 @@ describe("DayRouteServiceV2", () => {
     store.close();
   });
 
+  it("defaults a missing transport mode to drive for provider calculation", async () => {
+    const { store, trip } = await setup();
+    const next = structuredClone(trip.plan);
+    next.days[0].stops[0].transportFromPrevious = null;
+    const written = store.writePlan(trip.id, next, trip.contentGeneration);
+    let requestedMode: string | null = null;
+    const service = new DayRouteServiceV2({ store, maps: { route: async (mode) => {
+      requestedMode = mode;
+      return { geometry: { type: "LineString", coordinates: [[2, 1], [4, 3]] }, distanceKm: 5, durationMinutes: 10, warning: null };
+    } } });
+    await service.recalculate(trip.id, "d1", written.generation);
+    expect(requestedMode).toBe("drive");
+    store.close();
+  });
+
   it("keeps Macro and Detail routes isolated and dirties both on coordinate-only changes", async () => {
     const { store, trip } = await setup();
     const service = new DayRouteServiceV2({ store, maps: { route: async () => ({ geometry: { type: "LineString", coordinates: [[2, 1], [4, 3]] }, distanceKm: 5, durationMinutes: 10, warning: null }) } });

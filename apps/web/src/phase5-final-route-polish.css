@@ -51,6 +51,10 @@
 .final-route-add-position-v5 select{width:100%;padding:7px 8px;border:1px solid var(--border);border-radius:8px;color:var(--text);background:var(--control);font:inherit}
 .final-route-add-fields-v5{display:grid!important;grid-template-columns:minmax(0,1fr) 145px auto!important;gap:8px}
 
+.final-route-day-marker-v5{position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:42px;margin:0 0 8px;padding:8px 12px;border:1px solid color-mix(in srgb,var(--primary) 45%,var(--border));border-radius:9px;background:color-mix(in srgb,var(--primary-soft) 84%,#fff);box-shadow:0 4px 12px rgba(20,31,27,.14)}
+.final-route-day-marker-v5>strong{color:var(--primary);font-size:14px;font-weight:850;letter-spacing:.02em}
+.final-route-day-actions-v5{min-width:120px;min-height:22px}
+
 .final-route-panel-header-actions-v5{display:flex;align-items:center;justify-content:flex-end;gap:7px;max-width:100%;flex-wrap:wrap}
 .final-route-panel-header-actions-v5 .button{margin:0}
 .final-route-sync-hint-v5{flex-basis:100%;color:#9a6819;font-size:9px;text-align:right}
@@ -70,7 +74,8 @@
 .final-route-quick-button-v5:hover:not(:disabled){background:var(--surface);color:var(--text)}
 .final-route-quick-button-v5:disabled{cursor:not-allowed;opacity:.38}
 .final-route-quick-button-v5.active{color:var(--text);background:var(--surface);box-shadow:0 1px 2px rgba(0,0,0,.08)}
-.final-route-quick-button-v5.stay.active{color:#4d5ea8;background:#edf1ff}
+.final-route-quick-button-v5.stay{color:color-mix(in srgb,var(--muted) 58%,var(--surface))}
+.final-route-quick-button-v5.stay.active{color:#304fb0;background:#e1e9ff;box-shadow:0 0 0 1px color-mix(in srgb,#304fb0 18%,transparent),0 1px 2px rgba(48,79,176,.18);font-weight:900}
 .final-route-quick-button-v5.status{width:24px;padding:2px 4px;font-size:15px;line-height:1}
 .final-route-quick-button-v5.status.normal{color:#e05c45!important}
 .final-route-quick-button-v5.status.tentative{color:#c58b2b!important}
@@ -89,6 +94,8 @@
 
 .final-route-transport-connector-v4.state-unavailable .final-route-transport-main-v4{color:#9a6819;opacity:.82}
 .final-route-transport-actions-v5{display:flex;align-items:center;gap:6px}
+.final-route-transport-select-v5{flex:0 0 auto;min-height:27px;padding:4px 22px 4px 7px;border:1px solid var(--border);border-radius:7px;color:var(--text);background:var(--control);font-size:10px;font-weight:800;line-height:1.2}
+.final-route-transport-select-v5:focus{border-color:var(--primary);outline:2px solid color-mix(in srgb,var(--primary) 18%,transparent);outline-offset:1px}
 .final-route-transport-actions-v5 .final-route-transport-main-v4{flex:1;width:auto}
 .final-route-recalculate-connection-v5{display:inline-flex;flex:0 0 auto;align-items:center;gap:4px;min-height:25px;padding:4px 7px;border:1px solid color-mix(in srgb,#9a6819 42%,var(--border));border-radius:7px;color:#875c17;background:color-mix(in srgb,#fff3d8 68%,var(--surface));font-size:10px;font-weight:800;white-space:nowrap}
 .final-route-recalculate-connection-v5:hover:not(:disabled){border-color:#9a6819;background:#fff1d1}
@@ -128,6 +135,7 @@
   .final-route-panel-header-actions-v5{width:100%;justify-content:stretch}
   .final-route-panel-header-actions-v5 .button{flex:1;width:auto}
   .final-route-sync-hint-v5{text-align:left}
+  .final-route-day-marker-v5{margin-right:0;margin-left:0}
   .final-route-add-v5>header small{white-space:normal}
   .final-route-drag-v3{min-width:34px;min-height:36px}
   .final-route-quick-v4{grid-column:2/-1;grid-row:auto;justify-content:flex-start}

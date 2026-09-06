@@ -151,7 +151,9 @@ export function finalRouteTransportConnectionsV4(plan: TravelPlanDocument, route
       toPlaceId: current.node.placeId,
       dayId: day?.id ?? null,
       dayNumber: current.dayNumber,
-      mode: current.node.transportFromPrevious?.mode ?? null,
+      mode: current.node.transportFromPrevious?.mode && current.node.transportFromPrevious.mode !== "none"
+        ? current.node.transportFromPrevious.mode
+        : "drive",
       distanceKm: connectionState === "ready" || connectionState === "attention" ? leg?.distanceKm ?? null : null,
       durationMinutes: connectionState === "ready" || connectionState === "attention" ? leg?.durationMinutes ?? null : null,
       state: connectionState,

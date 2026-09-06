@@ -37,6 +37,10 @@ function hash(value: unknown) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
+function effectiveTransportMode(mode: TransportMode | null | undefined): TransportMode {
+  return mode && mode !== "none" ? mode : "drive";
+}
+
 function nodes(day: Day): RouteNode[] {
   const values: RouteNode[] = [];
   const push = (node: RouteNode) => {
@@ -44,15 +48,15 @@ function nodes(day: Day): RouteNode[] {
     values.push(node);
   };
   if (day.startAnchor.placeId) push({ id: day.startAnchor.id, placeId: day.startAnchor.placeId, modeFromPrevious: "none" });
-  for (const stop of day.stops) push({ id: stop.id, placeId: stop.placeId, modeFromPrevious: stop.transportFromPrevious?.mode ?? "none" });
+  for (const stop of day.stops) push({ id: stop.id, placeId: stop.placeId, modeFromPrevious: effectiveTransportMode(stop.transportFromPrevious?.mode) });
   // New final-route days can carry the explicit mode used to arrive at the end anchor.
-  // Older days keep the previous fallback so existing saved trips remain readable.
+  // Legacy days without an explicit mode use the same drive default as the UI.
   if (day.endAnchor.placeId) {
     push({
       id: day.endAnchor.id,
       placeId: day.endAnchor.placeId,
-      modeFromPrevious: day.endTransportFromPrevious?.mode
-        ?? (day.stops.length ? day.stops.at(-1)?.transportFromPrevious?.mode ?? "none" : day.transferMode),
+      modeFromPrevious: effectiveTransportMode(day.endTransportFromPrevious?.mode
+        ?? (day.stops.length ? day.stops.at(-1)?.transportFromPrevious?.mode : day.transferMode)),
     });
   }
   return values;
