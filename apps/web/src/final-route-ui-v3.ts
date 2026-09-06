@@ -30,7 +30,7 @@ export type FinalRouteTransportConnectionV4 = {
   mode: TransportMode | null;
   distanceKm: number | null;
   durationMinutes: number | null;
-  state: "ready" | "dirty" | "attention" | "pending" | "same_place";
+  state: "ready" | "dirty" | "attention" | "pending" | "unavailable" | "same_place";
   warning: string | null;
   skippedInactiveCount: number;
 };
@@ -124,6 +124,7 @@ export function finalRouteTransportConnectionsV4(plan: TravelPlanDocument, route
     let connectionState: FinalRouteTransportConnectionV4["state"] = "pending";
     if (samePlace) connectionState = "same_place";
     else if (dirty) connectionState = "dirty";
+    else if (route?.status === "attention" && !leg) connectionState = "unavailable";
     else if (route?.status === "attention" || leg?.status === "attention") connectionState = "attention";
     else if (leg) connectionState = "ready";
 
@@ -138,7 +139,7 @@ export function finalRouteTransportConnectionsV4(plan: TravelPlanDocument, route
       distanceKm: connectionState === "ready" || connectionState === "attention" ? leg?.distanceKm ?? null : null,
       durationMinutes: connectionState === "ready" || connectionState === "attention" ? leg?.durationMinutes ?? null : null,
       state: connectionState,
-      warning: connectionState === "attention" ? leg?.warning ?? route?.warnings[0] ?? null : null,
+      warning: connectionState === "attention" || connectionState === "unavailable" ? leg?.warning ?? route?.warnings[0] ?? null : null,
       skippedInactiveCount,
     });
   }
