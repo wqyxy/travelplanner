@@ -83,8 +83,8 @@ function routeState(dayId: string, input: { dirty?: boolean; status?: "ready" | 
       geometry: null,
       legs: [{
         id: `leg-${dayId}`,
-        fromNodeId: `from-${dayId}`,
-        toNodeId: `to-${dayId}`,
+        fromNodeId: `start-${dayId}`,
+        toNodeId: `end-${dayId}`,
         fromPlaceId: input.fromPlaceId,
         toPlaceId: input.toPlaceId,
         mode: "drive",
