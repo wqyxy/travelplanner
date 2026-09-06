@@ -2,13 +2,13 @@
 
 ## Overall Status
 
-当前阶段：本轮 PLAN 已完成  
-总体状态：completed  
+当前阶段：Phase 4 — P0 最终线路主交互闭环  
+总体状态：in_progress  
 最后更新时间：2026-09-06
 
 ---
 
-## 最终产品决定
+## 已确认的产品决定
 
 - 用户只维护一份最终线路：`finalRoute`。
 - 正常产品只有两个工作区：
@@ -23,11 +23,18 @@
 - 交通属于“到达当前节点”。
 - 住 / 不住只控制 `endsDay`；多一晚新增同 Place 独立 route node。
 - Day 根据 finalRoute 自动派生；最后一天不要求住宿分界。
-- 右侧最终线路是唯一业务入口；地图只负责展示、选择、聚焦和从右侧发起的定位选点。
-- 普通 AI 生成只能新增节点，不能修改已有节点。
-- “完善这一天”只能修改授权节点的详细安排。
-- 只有用户显式点击优化时，AI 才能重排服务端授权范围内的已有 normal 节点。
 - Provider 坐标、真实距离、真实时长、geometry、verified 事实不能由 UI / AI / API 调用方伪造。
+- 本次追加 UI 改造不重新设计 finalRoute / Day / Route 服务端核心模型。
+- 地点 Hover、地图选择、地点编辑必须拆成独立 UI 状态。
+- Hover 地点只高亮地点块和地图 Marker，不移动 / 缩放地图。
+- Click 地点才触发地图 flyTo，不打开编辑。
+- Click 独立“编辑”按钮才打开地点编辑抽屉，并且不触发 flyTo。
+- 编辑抽屉从最终线路列表左侧向地图方向覆盖，不再在地点下面 inline 展开。
+- 交通显示在两个当前有效地点之间，使用非卡片式连接条。
+- 交通距离 / 时间来自现有 Route Provider / RouteLeg，不能前端估算。
+- 住 / 不住 / 多一晚移到地点块主界面。
+- Day 提升为明确日程块，但仍然只展示派生 Day，不维护第二份 Day 数据。
+- 正常 / 已定位等常态不长期显示，主要展示异常状态。
 
 ---
 
@@ -97,26 +104,120 @@ Build: PASS
 - Proposal apply / reject / undo、generation / stale proposal 路径已验证。
 - Proposal apply / undo 后自动启动 Route batch。
 - 正常生产入口仍只有“旅行需求 / 最终线路”，Map Popup 没有第二套业务 mutation。
-- `PRODUCT.md` / `TECHNICAL.md` 已同步为当前两工作区现状。
 
 ---
 
-## 测试历史
+# Phase 4
 
-Phase 3 R1 和 R2 都按 Gate 判 FAIL 后修复并重新冻结，没有用旧 PASS 覆盖新代码：
+状态：in_progress
 
-- R1：TypeScript / refine 测试夹具 / Prompt 字面问题。
-- R2：两个正式测试契约仍停留在旧实现。
-- R3：全部正式 Gate PASS。
+目标：P0 最终线路主交互闭环。
 
-施工 Agent 全程没有运行 test / typecheck / build / app / Provider / migration / CI；正式结果来自用户本地 Codex 的冻结基线测试。
+计划完成：
+
+- Hover 地点只高亮 Marker，不移动 / 缩放地图；
+- Click 地点才 flyTo；
+- 独立编辑按钮；
+- 左侧编辑抽屉；
+- 移除地点 inline 大表单；
+- 有效交通连接 ViewModel；
+- 非卡片式真实交通条；
+- Day 日程块；
+- 住 / 不住 / 多一晚主界面操作；
+- 正常 / 已定位常态标签减法；
+- hover / map selection / editing 状态解耦；
+- 拖动只从手柄开始。
+
+当前完成：
+
+- 已完成代码 Review；
+- 已确认当前 `selectedNodeId` 同时承担地图飞行和 inline 编辑，是主要交互耦合点；
+- 已确认 `RouteLeg` 数据包含 Provider distance / duration，可作为交通条事实来源；
+- 已确认派生 Day 的结束节点可能使用 `endAnchor.id`，交通 ViewModel 不能简单按视觉相邻 row 或只按 finalRoute node id 匹配；
+- `docs/PLAN.md` 已追加第 31–47 节 UI / 交互目标；
+- `docs/PLAN_EXECUTION.md` 已生成 Phase 4 / Phase 5 施工与本地测试方案。
+
+未完成：
+
+- Phase 4 业务代码尚未修改；
+- Phase 4 测试尚未冻结；
+- 尚未由用户本地验证。
+
+测试基线：
+
+```text
+Test Branch: 待 Phase 4 代码施工完成后填写
+Test HEAD: 待 Phase 4 代码施工完成后填写
+```
+
+本地测试：尚未由用户本地验证。
+
+当前重点风险：
+
+1. `RouteLeg` 的 from/to node ID 与 finalRoute route-node ID 并非所有 Day 边界都一一相同，交通条必须基于派生 Day 结构正确映射。
+2. Hover 高亮不能误触发已有 `selectedNodeId` 驱动的 flyTo effect。
+3. 编辑抽屉的按钮事件必须全部阻止冒泡，避免触发地点 Click。
+4. map-pick 完成 / 取消后要恢复 editing 上下文。
+5. route dirty 时不得把旧距离 / 时间显示成当前事实。
 
 ---
 
-## 本轮 PLAN 结论
+# Phase 5
 
-本轮 `PLAN.md` 对应施工已经完成。
+状态：pending
 
-当前代码仍保留少量旧 Runtime / Action / UI 源码作为内部兼容、测试或过渡桥，但它们不再从正常生产入口形成第二套用户规划流程，也不能成为 finalRoute 之外的第二份用户线路来源。
+前置条件：Phase 4 必须由用户本地 Codex 对冻结 Branch + HEAD 返回 PASS。
 
-后续新需求应基于当前 `PRODUCT.md`、`TECHNICAL.md` 和 finalRoute 两工作区继续演进，不再以旧五步产品为当前设计基线。
+计划：
+
+- Day AI 操作折叠；
+- 全程 AI 操作收敛；
+- Pending Proposal 紧凑化；
+- 添加地点插入位置显式化；
+- 桌面排序入口简化；
+- 删除产品内确认 / Undo；
+- 桌面与窄屏响应式细节。
+
+测试基线：
+
+```text
+Test Branch: 待 Phase 5 代码施工完成后填写
+Test HEAD: 待 Phase 5 代码施工完成后填写
+```
+
+本地测试：尚未由用户本地验证。
+
+---
+
+## 当前已知问题
+
+- 当前最终线路地点 Click 仍会同时承担地图选中与 inline 编辑。
+- 当前地点编辑会把大量表单直接展开在列表中。
+- 当前主线路看不到地点之间的真实交通距离 / 时间。
+- 当前 Day 视觉层级不足。
+- 当前住 / 不住 / 多一晚入口过深。
+- 当前 AI 操作和 Proposal 仍然较占空间。
+
+---
+
+## 与原计划的偏差
+
+前 1–30 节原计划已经实现并完成 Phase 1–3。
+
+2026-09-06 根据实际使用 Review，新增 `PLAN.md` 第 31–47 节作为后续 UI / 交互目标。
+
+本次没有推翻 Phase 1–3 的数据结构和 AI 权限设计，而是在其上新增 Phase 4 / Phase 5。
+
+---
+
+## 下一步
+
+开始 Phase 4 代码施工。
+
+施工完成后：
+
+1. 只做静态 Review，不运行 test / typecheck / build / app；
+2. 固定实际 Test Branch + 40 位 Test HEAD；
+3. 同步更新 `PLAN_PROGRESS.md` 和 `PLAN_EXECUTION.md`；
+4. 输出 Phase 4 Codex 本地测试 Prompt；
+5. 等待用户本地 PASS 后才进入 Phase 5。
