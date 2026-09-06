@@ -56,6 +56,8 @@
 .final-route-remove-confirm-v5 small{color:var(--muted);font-size:10px;line-height:1.45}
 .final-route-remove-confirm-v5>div{display:flex;justify-content:flex-end;gap:6px}
 
+.final-route-transport-connector-v4.state-unavailable .final-route-transport-main-v4{color:#9a6819;opacity:.82}
+
 /* A repeated same-place overnight node has no transport control between the two cards. */
 .final-route-row-wrap-v3+.final-route-row-wrap-v3{scroll-margin-top:8px}
 
