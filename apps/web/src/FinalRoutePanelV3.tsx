@@ -29,6 +29,8 @@ const placeKindLabels: Record<PlaceKind, string> = {
   waypoint: "途经点",
 };
 const transportOptions: TransportMode[] = ["walk", "drive", "bike", "transit", "rail", "flight", "ferry"];
+const ADD_AT_START = "__route_start__";
+const ADD_AT_END = "__route_end__";
 
 type AddDraft = { nameZh: string; kind: PlaceKind };
 type DropTarget = { nodeId: string; position: FinalRouteDropPositionV4 };
@@ -40,7 +42,6 @@ function locationAttentionLabel(status: "resolving" | "resolved" | "unresolved" 
 }
 
 function connectionText(connection: FinalRouteTransportConnectionV4) {
-  if (connection.state === "same_place") return "同地停留";
   if (connection.state === "dirty") return "路线更新中";
   if (connection.state === "pending") return "路线待计算";
   const parts = [formatDistance(connection.distanceKm), formatRouteDuration(connection.durationMinutes)];
@@ -48,9 +49,17 @@ function connectionText(connection: FinalRouteTransportConnectionV4) {
   return parts.join(" · ");
 }
 
-function connectionModeLabel(connection: FinalRouteTransportConnectionV4) {
-  if (connection.state === "same_place") return "同地停留";
-  return connection.mode ? transportModeLabelsV3[connection.mode] : "交通待定";
+function proposalKindLabel(actionType: AiActionType) {
+  return actionType === "itinerary.refine" ? "详细安排" : "顺序优化";
+}
+
+function proposalStatusLabel(status: WorkspaceV3["proposals"][number]["status"]) {
+  if (status === "pending") return "待你决定";
+  if (status === "applied") return "已采用";
+  if (status === "rejected") return "未采用";
+  if (status === "superseded") return "已失效";
+  if (status === "undone") return "已撤销";
+  return status;
 }
 
 function dropPosition(event: DragEvent<HTMLElement>): FinalRouteDropPositionV4 {
@@ -121,6 +130,7 @@ export function FinalRoutePanelV3({
   const dirtyCount = workspace.routeStates.filter((item) => item.dirty).length;
   const [addOpen, setAddOpen] = useState(false);
   const [addDraft, setAddDraft] = useState<AddDraft>({ nameZh: "", kind: "attraction" });
+  const [addPosition, setAddPosition] = useState<string>(ADD_AT_END);
   const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const [transportEditingNodeId, setTransportEditingNodeId] = useState<string | null>(null);
@@ -143,7 +153,31 @@ export function FinalRoutePanelV3({
     if (!ids.includes(aiDayId)) setAiDayId(ids[0] ?? "");
   }, [plan.days.map((day) => day.id).join("|")]);
 
-  const addIndex = selectedRow ? selectedRow.index + 1 : rows.length;
+  useEffect(() => {
+    if (addPosition === ADD_AT_START || addPosition === ADD_AT_END) return;
+    if (!rows.some((row) => row.node.id === addPosition)) setAddPosition(ADD_AT_END);
+  }, [addPosition, rows.map((row) => row.node.id).join("|")]);
+
+  const addIndex = addPosition === ADD_AT_START
+    ? 0
+    : addPosition === ADD_AT_END
+      ? rows.length
+      : (rows.find((row) => row.node.id === addPosition)?.index ?? rows.length - 1) + 1;
+  const addPositionLabel = addPosition === ADD_AT_START
+    ? "线路最前面"
+    : addPosition === ADD_AT_END
+      ? "线路末尾"
+      : `“${placeNamePresentation(rows.find((row) => row.node.id === addPosition)?.place ?? null, workspace.trip.planLanguage, "未命名地点").primary}”之后`;
+
+  const toggleAdd = () => {
+    if (addOpen) {
+      setAddOpen(false);
+      return;
+    }
+    setAddPosition(selectedRow?.node.id ?? ADD_AT_END);
+    setAddOpen(true);
+  };
+
   const submitAdd = async () => {
     const nameZh = addDraft.nameZh.trim();
     if (!nameZh || busy) return;
@@ -151,6 +185,7 @@ export function FinalRoutePanelV3({
     if (!nodeId) return;
     setAddDraft({ nameZh: "", kind: "attraction" });
     setAddOpen(false);
+    setAddPosition(ADD_AT_END);
     onSelectNode(nodeId);
   };
 
@@ -202,9 +237,19 @@ export function FinalRoutePanelV3({
   const aiDay = plan.days.find((day) => day.id === aiDayId);
   const aiDayAreaIds = areaIdsForDay(aiDay);
   const visibleAiActions = workspace.actions.filter((action) => action.actionType === "itinerary.day.optimize" || action.actionType === "itinerary.repair" || action.actionType === "itinerary.refine");
-  const visibleAiProposals = visibleAiActions.flatMap((action) => action.proposalId
-    ? workspace.proposals.filter((proposal) => proposal.id === action.proposalId).map((proposal) => ({ action, proposal }))
-    : []).slice(-6).reverse();
+  const visibleAiProposals = (() => {
+    const byProposalId = new Map<string, { action: typeof visibleAiActions[number]; proposal: WorkspaceV3["proposals"][number] }>();
+    for (const action of visibleAiActions) {
+      if (!action.proposalId) continue;
+      const proposal = workspace.proposals.find((item) => item.id === action.proposalId);
+      if (proposal) byProposalId.set(proposal.id, { action, proposal });
+    }
+    return [...byProposalId.values()]
+      .sort((left, right) => right.proposal.updatedAt.localeCompare(left.proposal.updatedAt))
+      .slice(0, 8);
+  })();
+  const pendingAiProposals = visibleAiProposals.filter(({ proposal }) => proposal.status === "pending");
+  const settledAiProposals = visibleAiProposals.filter(({ proposal }) => proposal.status !== "pending");
 
   const clearDrag = () => {
     setDraggedNodeId(null);
@@ -225,7 +270,7 @@ export function FinalRoutePanelV3({
     <section className="final-route-panel-v3">
       <header className="final-route-panel-head-v3">
         <div><p className="eyebrow">行程</p><h2>最终线路</h2><p>地点始终只表示地点；交通显示在地点之间，每晚用分隔线切开。拖动把手即可调整整张地点卡的顺序。</p></div>
-        <button className="button primary" type="button" disabled={busy || aiBusy} onClick={() => setAddOpen((value) => !value)}><Plus size={15}/>添加地点</button>
+        <button className="button primary" type="button" disabled={busy || aiBusy} onClick={toggleAdd}><Plus size={15}/>{addOpen ? "收起添加" : "添加地点"}</button>
       </header>
 
       <div className="final-route-summary-v3">
@@ -237,51 +282,71 @@ export function FinalRoutePanelV3({
       </div>
       {notice && <p className="final-route-notice-v3">{notice}</p>}
 
-      <section className="final-route-add-v3 final-route-ai-tools-v3">
-        <strong><Sparkles size={15}/>AI 辅助</strong>
-        {!rows.length ? <div className="final-route-inline-actions-v3">
-          <button className="button primary" type="button" disabled={busy || aiBusy || !plan.trip.brief.destination.trim()} onClick={() => void startAi("destinations", "destination.generate", { request: "生成主要地点" }, [], "AI 已开始生成主要地点，结果会直接进入最终线路。")}>生成主要地点</button>
-          {!plan.trip.brief.destination.trim() && <small>先在“旅行需求”填写目的地。</small>}
-        </div> : <>
+      <section className="final-route-ai-shell-v5">
+        {!rows.length ? <>
+          <strong><Sparkles size={15}/>AI 辅助</strong>
           <div className="final-route-inline-actions-v3">
-            <button className="button small" type="button" disabled={busy || aiBusy || !wholeAreaIds.length} onClick={() => void startAi("interests", "interest.discover", { request: "final-route-detail-scope:trip" }, wholeAreaIds, "AI 已开始补充详细地点，只会新增地点，不会移动现有线路。")}>生成详细地点</button>
-            <button className="button small" type="button" disabled={busy || aiBusy || normalRows.length < 2} onClick={() => void startAi("itinerary", "itinerary.repair", { request: "优化全程" }, [], "AI 已开始分析全程顺序；完成后会给你一份可采用或拒绝的方案。")}>优化全程</button>
+            <button className="button primary" type="button" disabled={busy || aiBusy || !plan.trip.brief.destination.trim()} onClick={() => void startAi("destinations", "destination.generate", { request: "生成主要地点" }, [], "AI 已开始生成主要地点，结果会直接进入最终线路。")}>生成主要地点</button>
+            {!plan.trip.brief.destination.trim() && <small>先在“旅行需求”填写目的地。</small>}
           </div>
-          {plan.days.length > 0 && <div className="final-route-day-ai-v4">
-            <label><span>按天操作</span><select value={aiDayId} disabled={busy || aiBusy} onChange={(event) => setAiDayId(event.target.value)}>{plan.days.map((day) => <option key={day.id} value={day.id}>第 {day.dayNumber} 天{day.date ? ` · ${day.date}` : ""}</option>)}</select></label>
-            <div className="final-route-inline-actions-v3">
-              <button className="button small" type="button" disabled={busy || aiBusy || !aiDay || !aiDayAreaIds.length} onClick={() => aiDay && void startAi("interests", "interest.discover", { request: `final-route-detail-scope:day:${aiDay.id}` }, aiDayAreaIds, "AI 已开始补充这一天的详细地点。")}>补充详细地点</button>
-              <button className="button small" type="button" disabled={busy || aiBusy || !aiDay || aiDay.stops.length < 1} onClick={() => aiDay && void startAi("itinerary", "itinerary.refine", { dayIds: [aiDay.id], request: "完善这一天" }, [aiDay.id], "AI 已开始补充这一天的时间和活动说明；完成后由你决定是否采用。")}>完善这一天</button>
-              <button className="button small" type="button" disabled={busy || aiBusy || !aiDay || aiDay.stops.length < 2} onClick={() => aiDay && void startAi("itinerary", "itinerary.day.optimize", { dayId: aiDay.id, request: "优化这一天" }, [aiDay.id], "AI 已开始分析这一天的顺序；完成后由你决定是否采用。")}>优化这一天</button>
-            </div>
-          </div>}
-          {normalRows.length >= 2 && <div className="final-route-segment-ai-v3">
-            <label><span>这一段从</span><select value={segmentFrom} disabled={busy || aiBusy} onChange={(event) => setSegmentFrom(event.target.value)}>{normalRows.map((row) => <option key={row.node.id} value={row.node.id}>{row.index + 1}. {row.place?.nameZh ?? "未命名地点"}</option>)}</select></label>
-            <label><span>到</span><select value={segmentTo} disabled={busy || aiBusy} onChange={(event) => setSegmentTo(event.target.value)}>{normalRows.map((row) => <option key={row.node.id} value={row.node.id}>{row.index + 1}. {row.place?.nameZh ?? "未命名地点"}</option>)}</select></label>
-            <div className="final-route-inline-actions-v3">
-              <button className="button small" type="button" disabled={busy || aiBusy || !segmentAreaIds.length || segmentFrom === segmentTo} onClick={() => void startAi("interests", "interest.discover", { request: `final-route-detail-scope:segment:${segmentFrom}:${segmentTo}` }, segmentAreaIds, "AI 已开始补充这一段的详细地点，不会移动已有节点。")}>补充这一段</button>
-              <button className="button small" type="button" disabled={busy || aiBusy || segmentRows.length < 2 || segmentFrom === segmentTo} onClick={() => void startAi("itinerary", "itinerary.repair", { request: "优化这一段" }, [segmentFrom, segmentTo], "AI 已开始分析这一段；完成后由你决定是否采用新顺序。")}>优化这一段</button>
-            </div>
-          </div>}
-        </>}
-        <small>普通生成只能插入新地点；“完善这一天”只能补时间和备注。只有你明确点击“优化”时，AI 才能提出已有地点的重排方案。</small>
-        {aiMessage && <small className="final-route-edit-message-v3">{aiMessage}</small>}
+        </> : <details className="final-route-ai-menu-v5">
+          <summary><Sparkles size={15}/><strong>AI 操作</strong><span>生成、补充或优化线路</span></summary>
+          <div className="final-route-ai-menu-body-v5">
+            <section>
+              <header><strong>全程</strong><small>普通生成只新增地点；只有“优化”可以提出重排。</small></header>
+              <div className="final-route-inline-actions-v3">
+                <button className="button small" type="button" disabled={busy || aiBusy || !wholeAreaIds.length} onClick={() => void startAi("interests", "interest.discover", { request: "final-route-detail-scope:trip" }, wholeAreaIds, "AI 已开始补充详细地点，只会新增地点，不会移动现有线路。")}>生成详细地点</button>
+                <button className="button small" type="button" disabled={busy || aiBusy || normalRows.length < 2} onClick={() => void startAi("itinerary", "itinerary.repair", { request: "优化全程" }, [], "AI 已开始分析全程顺序；完成后会给你一份可采用或拒绝的方案。")}>优化全程</button>
+              </div>
+            </section>
+
+            {plan.days.length > 0 && <section>
+              <header><strong>按天</strong><small>Day 只用于 AI scope，不成为另一套线路层级。</small></header>
+              <label className="final-route-ai-select-v5"><span>选择一天</span><select value={aiDayId} disabled={busy || aiBusy} onChange={(event) => setAiDayId(event.target.value)}>{plan.days.map((day) => <option key={day.id} value={day.id}>第 {day.dayNumber} 天{day.date ? ` · ${day.date}` : ""}</option>)}</select></label>
+              <div className="final-route-inline-actions-v3">
+                <button className="button small" type="button" disabled={busy || aiBusy || !aiDay || !aiDayAreaIds.length} onClick={() => aiDay && void startAi("interests", "interest.discover", { request: `final-route-detail-scope:day:${aiDay.id}` }, aiDayAreaIds, "AI 已开始补充这一天的详细地点。")}>补充详细地点</button>
+                <button className="button small" type="button" disabled={busy || aiBusy || !aiDay || aiDay.stops.length < 1} onClick={() => aiDay && void startAi("itinerary", "itinerary.refine", { dayIds: [aiDay.id], request: "完善这一天" }, [aiDay.id], "AI 已开始补充这一天的时间和活动说明；完成后由你决定是否采用。")}>完善这一天</button>
+                <button className="button small" type="button" disabled={busy || aiBusy || !aiDay || aiDay.stops.length < 2} onClick={() => aiDay && void startAi("itinerary", "itinerary.day.optimize", { dayId: aiDay.id, request: "优化这一天" }, [aiDay.id], "AI 已开始分析这一天的顺序；完成后由你决定是否采用。")}>优化这一天</button>
+              </div>
+            </section>}
+
+            {normalRows.length >= 2 && <section>
+              <header><strong>按区段</strong><small>选择范围后，只处理这一段。</small></header>
+              <div className="final-route-ai-segment-v5">
+                <label><span>从</span><select value={segmentFrom} disabled={busy || aiBusy} onChange={(event) => setSegmentFrom(event.target.value)}>{normalRows.map((row) => <option key={row.node.id} value={row.node.id}>{row.index + 1}. {placeNamePresentation(row.place, workspace.trip.planLanguage, "未命名地点").primary}</option>)}</select></label>
+                <label><span>到</span><select value={segmentTo} disabled={busy || aiBusy} onChange={(event) => setSegmentTo(event.target.value)}>{normalRows.map((row) => <option key={row.node.id} value={row.node.id}>{row.index + 1}. {placeNamePresentation(row.place, workspace.trip.planLanguage, "未命名地点").primary}</option>)}</select></label>
+              </div>
+              <div className="final-route-inline-actions-v3">
+                <button className="button small" type="button" disabled={busy || aiBusy || !segmentAreaIds.length || segmentFrom === segmentTo} onClick={() => void startAi("interests", "interest.discover", { request: `final-route-detail-scope:segment:${segmentFrom}:${segmentTo}` }, segmentAreaIds, "AI 已开始补充这一段的详细地点，不会移动已有节点。")}>补充这一段</button>
+                <button className="button small" type="button" disabled={busy || aiBusy || segmentRows.length < 2 || segmentFrom === segmentTo} onClick={() => void startAi("itinerary", "itinerary.repair", { request: "优化这一段" }, [segmentFrom, segmentTo], "AI 已开始分析这一段；完成后由你决定是否采用新顺序。")}>优化这一段</button>
+              </div>
+            </section>}
+          </div>
+        </details>}
+        {aiMessage && <small className="final-route-ai-message-v5">{aiMessage}</small>}
       </section>
 
-      {visibleAiProposals.length > 0 && <section className="final-route-add-v3 final-route-ai-proposals-v3">
-        <strong><WandSparkles size={15}/>AI 方案</strong>
-        {visibleAiProposals.map(({ action, proposal }) => <article key={proposal.id} className={`phase6-proposal-card ${proposal.status}`}>
-          <header><strong>{proposal.title}</strong><span>{action.actionType === "itinerary.refine" ? "详细安排" : "顺序优化"} · {proposal.status === "pending" ? "待你决定" : proposal.status === "applied" ? "已采用" : proposal.status === "rejected" ? "未采用" : proposal.status === "superseded" ? "已失效" : proposal.status === "undone" ? "已撤销" : proposal.status}</span></header>
-          <p>{proposal.explanation}</p>
-          {proposal.status === "pending" && <footer><button className="button" type="button" disabled={busy || aiBusy} onClick={() => void handleProposal(proposal.id, "reject")}>不采用</button><button className="button primary" type="button" disabled={busy || aiBusy || proposal.baseGeneration !== workspace.trip.contentGeneration} onClick={() => void handleProposal(proposal.id, "apply")}>采用这个方案</button></footer>}
-          {proposal.status === "applied" && <footer><button className="button" type="button" disabled={busy || aiBusy || workspace.trip.contentGeneration !== proposal.baseGeneration + 1} onClick={() => void handleProposal(proposal.id, "undo")}>撤销这次方案</button></footer>}
-        </article>)}
+      {visibleAiProposals.length > 0 && <section className="final-route-proposals-v5">
+        <div className="final-route-proposals-head-v5"><strong><WandSparkles size={15}/>AI 方案</strong>{pendingAiProposals.length > 0 && <span>{pendingAiProposals.length} 个待决定</span>}</div>
+        {pendingAiProposals.map(({ action, proposal }) => <details key={proposal.id} className="final-route-proposal-v5">
+          <summary><span>✨</span><div><strong>{proposal.title}</strong><small>{proposalKindLabel(action.actionType)} · 待你决定</small></div><em>查看</em></summary>
+          <div className="final-route-proposal-body-v5">
+            <p>{proposal.explanation}</p>
+            {proposal.baseGeneration !== workspace.trip.contentGeneration && <small>当前线路已经变化，这个方案基于旧版本，不能直接采用。</small>}
+            <footer><button className="button small" type="button" disabled={busy || aiBusy} onClick={() => void handleProposal(proposal.id, "reject")}>不采用</button><button className="button primary small" type="button" disabled={busy || aiBusy || proposal.baseGeneration !== workspace.trip.contentGeneration} onClick={() => void handleProposal(proposal.id, "apply")}>采用这个方案</button></footer>
+          </div>
+        </details>)}
+        {settledAiProposals.length > 0 && <details className="final-route-ai-history-v5">
+          <summary>AI 历史 · {settledAiProposals.length}</summary>
+          <div>{settledAiProposals.map(({ action, proposal }) => <div className="final-route-ai-history-row-v5" key={proposal.id}><span><strong>{proposal.title}</strong><small>{proposalKindLabel(action.actionType)} · {proposalStatusLabel(proposal.status)}</small></span>{proposal.status === "applied" && <button className="button small" type="button" disabled={busy || aiBusy || workspace.trip.contentGeneration !== proposal.baseGeneration + 1} onClick={() => void handleProposal(proposal.id, "undo")}>撤销</button>}</div>)}</div>
+        </details>}
       </section>}
 
-      {addOpen && <section className="final-route-add-v3">
-        <strong>{selectedRow ? `添加在“${selectedRow.place?.nameZh ?? "当前地点"}”之后` : "添加到线路末尾"}</strong>
-        <div><input autoFocus value={addDraft.nameZh} disabled={busy || aiBusy} placeholder="地点名称，例如：Hobbiton" onChange={(event) => setAddDraft((current) => ({ ...current, nameZh: event.target.value }))}/><select value={addDraft.kind} disabled={busy || aiBusy} onChange={(event) => setAddDraft((current) => ({ ...current, kind: event.target.value as PlaceKind }))}>{Object.entries(placeKindLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><button className="button primary" type="button" disabled={busy || aiBusy || !addDraft.nameZh.trim()} onClick={() => void submitAdd()}>加入线路</button></div>
-        <small>地点可以先加入、后定位。添加地点不会自动设置住宿，也不会移动现有地点。</small>
+      {addOpen && <section className="final-route-add-v3 final-route-add-v5">
+        <header><div><strong>添加地点</strong><small>将插入到：{addPositionLabel}</small></div></header>
+        <label className="final-route-add-position-v5"><span>插入位置</span><select value={addPosition} disabled={busy || aiBusy} onChange={(event) => setAddPosition(event.target.value)}><option value={ADD_AT_START}>线路最前面</option>{rows.map((row) => <option key={row.node.id} value={row.node.id}>在“{placeNamePresentation(row.place, workspace.trip.planLanguage, "未命名地点").primary}”之后</option>)}<option value={ADD_AT_END}>线路末尾</option></select></label>
+        <div className="final-route-add-fields-v5"><input autoFocus value={addDraft.nameZh} disabled={busy || aiBusy} placeholder="地点名称，例如：Hobbiton" onChange={(event) => setAddDraft((current) => ({ ...current, nameZh: event.target.value }))}/><select value={addDraft.kind} disabled={busy || aiBusy} onChange={(event) => setAddDraft((current) => ({ ...current, kind: event.target.value as PlaceKind }))}>{Object.entries(placeKindLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><button className="button primary" type="button" disabled={busy || aiBusy || !addDraft.nameZh.trim()} onClick={() => void submitAdd()}>加入线路</button></div>
+        <small>插入位置始终以这里显示的选择为准，不会暗中使用编辑状态或地图选择。地点可以先加入、后定位。</small>
       </section>}
 
       {!rows.length ? <div className="final-route-empty-v3"><MapPin size={30}/><strong>最终线路还是空的</strong><p>可以手动添加，也可以让 AI 先生成主要地点。生成结果会直接成为最终线路。</p></div> : <div className={`final-route-list-v3 ${draggedNodeId ? "drag-active" : ""}`}>
@@ -296,14 +361,15 @@ export function FinalRoutePanelV3({
           const dragging = row.node.id === draggedNodeId;
           const currentDrop = dropTarget?.nodeId === row.node.id ? dropTarget.position : null;
           const connection = row.node.status === "normal" ? connectionsByDestination.get(row.node.id) ?? null : null;
-          const fromName = connection ? placesById.get(connection.fromPlaceId)?.nameZh ?? "上一地点" : "";
-          const toName = connection ? placesById.get(connection.toPlaceId)?.nameZh ?? display.primary : "";
+          const effectiveConnection = connection?.state === "same_place" ? null : connection;
+          const fromName = effectiveConnection ? placesById.get(effectiveConnection.fromPlaceId)?.nameZh ?? "上一地点" : "";
+          const toName = effectiveConnection ? placesById.get(effectiveConnection.toPlaceId)?.nameZh ?? display.primary : "";
           return <div className="final-route-row-wrap-v3" key={row.node.id}>
-            {connection && <div className={`final-route-transport-connector-v4 state-${connection.state}`}>
-              <button type="button" className="final-route-transport-main-v4" disabled={busy || aiBusy} title={connection.warning || undefined} onClick={() => setTransportEditingNodeId((current) => current === row.node.id ? null : row.node.id)}>
-                <Route size={14}/><strong>{connectionModeLabel(connection)}</strong><span>{connection.state === "same_place" ? "连续住宿" : connectionText(connection)}</span>{connection.skippedInactiveCount > 0 && <small>{fromName} → {toName} · 已跳过 {connection.skippedInactiveCount} 个待定/不去地点</small>}
+            {effectiveConnection && <div className={`final-route-transport-connector-v4 state-${effectiveConnection.state}`}>
+              <button type="button" className="final-route-transport-main-v4" disabled={busy || aiBusy} title={effectiveConnection.warning || undefined} onClick={() => setTransportEditingNodeId((current) => current === row.node.id ? null : row.node.id)}>
+                <Route size={14}/><strong>{effectiveConnection.mode ? transportModeLabelsV3[effectiveConnection.mode] : "交通待定"}</strong><span>{connectionText(effectiveConnection)}</span>{effectiveConnection.skippedInactiveCount > 0 && <small>{fromName} → {toName} · 已跳过 {effectiveConnection.skippedInactiveCount} 个待定/不去地点</small>}
               </button>
-              {transportEditingNodeId === row.node.id && connection.state !== "same_place" && <div className="final-route-transport-editor-v4">
+              {transportEditingNodeId === row.node.id && <div className="final-route-transport-editor-v4">
                 <label><span>这段交通方式</span><select autoFocus value={row.node.transportFromPrevious?.mode ?? ""} disabled={busy || aiBusy} onChange={(event) => { const mode = event.target.value as TransportMode | ""; setTransportEditingNodeId(null); void onSetTransport(row.node.id, mode); }}><option value="">未设置</option>{transportOptions.map((mode) => <option key={mode} value={mode}>{transportModeLabelsV3[mode]}</option>)}</select></label>
                 <small>交通方式保存在“到达 {toName}”的线路节点上；距离和时间仍由路线 Provider 计算。</small>
               </div>}
