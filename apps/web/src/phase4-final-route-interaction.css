@@ -9,29 +9,28 @@
 .final-route-panel-v3{gap:12px}
 .final-route-panel-head-v3 p{max-width:620px}
 
-/* Day is the primary visual group. */
-.final-route-day-divider-v3{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px 12px;margin:16px 0 8px;padding:12px 12px 10px;border:1px solid var(--border);border-radius:12px;background:color-mix(in srgb,var(--surface-subtle) 76%,var(--surface));color:var(--text)}
-.final-route-day-divider-v3:first-child{margin-top:4px}
-.final-route-day-title-v4{display:flex;min-width:0;align-items:center;gap:10px}
-.final-route-day-title-v4>b{display:grid;min-width:58px;height:32px;place-items:center;border:1px solid var(--border-strong);border-radius:999px;background:var(--surface);font-size:12px;white-space:nowrap}
-.final-route-day-title-v4>div{display:flex;min-width:0;flex-direction:column;gap:2px}
-.final-route-day-title-v4 strong{overflow:hidden;font-size:13px;text-overflow:ellipsis;white-space:nowrap}
-.final-route-day-title-v4 span{color:var(--muted);font-size:11px}
-.final-route-day-route-v4{display:flex;align-items:center;justify-content:flex-end;gap:8px;color:var(--muted);font-size:11px;white-space:nowrap}
-.final-route-day-route-v4 span+span:before{margin-right:8px;color:var(--border-strong);content:"·"}
-.final-route-day-divider-v3>.final-route-inline-actions-v3{grid-column:1/-1;margin-left:68px}
-.final-route-day-empty-v4{grid-column:1/-1;display:grid;gap:3px;margin:2px 0 0 68px;padding:9px 10px;border:1px dashed var(--border-strong);border-radius:9px;background:var(--surface);font-size:11px}
-.final-route-day-empty-v4 span{color:var(--muted);line-height:1.45}
+/* Day-specific AI lives in the AI control area, not inside place cards or
+   as a visual Day container in the route itself. */
+.final-route-day-ai-v4{display:grid!important;grid-template-columns:minmax(150px,220px) minmax(0,1fr)!important;align-items:end;gap:8px!important;padding-top:8px;border-top:1px solid var(--border)}
+.final-route-day-ai-v4 label{display:flex;min-width:0;flex-direction:column;gap:4px;color:var(--muted);font-size:11px}
+.final-route-day-ai-v4 select{width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:8px;color:var(--text);background:var(--control);font:inherit}
+.final-route-day-ai-v4>.final-route-inline-actions-v3{justify-content:flex-start}
 
-/* Location rows stay compact. Hover and map selection are intentionally
-   different visuals; neither opens the editor. */
+/* Every route node is the same place card. Day information never replaces
+   the place name. Hover, map selection and editing stay independent. */
 .final-route-row-wrap-v3:before{left:31px;background:color-mix(in srgb,var(--border-strong) 75%,transparent)}
-.final-route-row-v3{grid-template-columns:27px minmax(0,1fr) auto;gap:8px;margin-bottom:7px;transition:border-color .12s ease,box-shadow .12s ease,background .12s ease}
+.final-route-row-v3{grid-template-columns:27px minmax(0,1fr) auto;gap:8px;margin-bottom:7px;transition:border-color .12s ease,box-shadow .12s ease,background .12s ease,opacity .12s ease,transform .12s ease}
 .final-route-row-v3.hover-linked{border-color:color-mix(in srgb,#f3b646 70%,var(--border));background:color-mix(in srgb,#f3b646 5%,var(--surface));box-shadow:0 0 0 2px color-mix(in srgb,#f3b646 10%,transparent)}
 .final-route-row-v3.map-selected{border-color:color-mix(in srgb,var(--primary) 52%,var(--border));box-shadow:0 0 0 2px color-mix(in srgb,var(--primary) 9%,transparent)}
 .final-route-row-v3.editing{border-color:var(--primary);background:color-mix(in srgb,var(--primary-soft) 36%,var(--surface))}
-.final-route-drag-v3[draggable="true"]{cursor:grab}
-.final-route-drag-v3[draggable="true"]:active{cursor:grabbing}
+.final-route-row-v3.dragging{opacity:.28;transform:scale(.985)}
+.final-route-row-v3.drop-before:before,.final-route-row-v3.drop-after:after{position:absolute;z-index:12;right:5px;left:5px;height:3px;border-radius:999px;background:var(--primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--primary) 12%,transparent);content:"";pointer-events:none}
+.final-route-row-v3.drop-before:before{top:-6px}
+.final-route-row-v3.drop-after:after{bottom:-6px}
+.final-route-list-v3.drag-active .final-route-row-v3:not(.dragging){cursor:grabbing}
+.final-route-drag-v3{touch-action:none;user-select:none}
+.final-route-drag-v3:not(:disabled){cursor:grab}
+.final-route-drag-v3:not(:disabled):active{cursor:grabbing}
 .final-route-main-v3{min-height:38px}
 .final-route-main-v3 strong{font-size:13px}
 .final-route-main-v3 small{color:var(--muted)}
@@ -56,6 +55,12 @@
 .final-route-status-menu-v4{opacity:.45;transition:opacity .12s ease}
 .final-route-row-v3:hover .final-route-status-menu-v4,.final-route-status-menu-v4[open],.final-route-status-menu-v4:focus-within{opacity:1}
 .final-route-inactive-note-v4{margin:-2px 8px 7px 40px;color:var(--muted);font-size:10px;line-height:1.45}
+
+/* endsDay is shown only as a night separator between place cards. There is
+   intentionally no Day card/header wrapping locations. */
+.final-route-night-divider-v4{position:relative;z-index:4;display:grid;grid-template-columns:minmax(18px,1fr) auto minmax(18px,1fr);align-items:center;gap:9px;margin:2px 5px 10px 40px;color:var(--muted)}
+.final-route-night-divider-v4>span{height:1px;background:var(--border-strong)}
+.final-route-night-divider-v4>strong{padding:2px 8px;border-radius:999px;background:var(--surface);font-size:10px;font-weight:800;letter-spacing:.02em;white-space:nowrap}
 
 /* Transport is a line/connector, never a sibling card. */
 .final-route-transport-connector-v4{position:relative;z-index:2;margin:0 12px 7px 40px;padding-left:14px}
@@ -100,9 +105,7 @@
 .map-pick-banner .icon-button{margin-left:auto;flex:0 0 auto;color:inherit}
 
 @media(max-width:1180px){
-  .final-route-day-divider-v3{grid-template-columns:1fr}
-  .final-route-day-route-v4{justify-content:flex-start;margin-left:68px}
-  .final-route-day-divider-v3>.final-route-inline-actions-v3{margin-left:68px}
+  .final-route-day-ai-v4{grid-template-columns:1fr!important}
   .final-route-transport-main-v4 small{display:none}
   .final-route-editor-drawer-v4{width:min(390px,44vw)}
 }
@@ -111,12 +114,11 @@
   .workspace-side-v3.route-editor-open-v4{overflow:hidden}
   .workspace-side-v3.route-editor-open-v4 .workspace-step-content-v3{overflow:hidden}
   .final-route-editor-drawer-v4{position:fixed;z-index:120;inset:var(--topbar-height) 0 0 0;width:auto;border:0;border-radius:0}
-  .final-route-day-divider-v3{margin-top:12px}
-  .final-route-day-divider-v3>.final-route-inline-actions-v3,.final-route-day-route-v4,.final-route-day-empty-v4{margin-left:0}
   .final-route-row-v3{grid-template-columns:25px minmax(0,1fr) auto}
   .final-route-badges-v3{grid-column:2/-1;justify-content:flex-start}
   .final-route-quick-v4{grid-column:2/-1;justify-content:flex-start;flex-wrap:wrap}
   .final-route-status-menu-v4{opacity:1}
+  .final-route-night-divider-v4{margin-left:25px}
   .final-route-transport-connector-v4{margin-left:25px}
   .final-route-transport-main-v4{flex-wrap:wrap}
   .final-route-transport-main-v4 small{display:block;width:100%;margin-left:20px}
