@@ -136,10 +136,11 @@ export function finalRouteTransportConnectionsV4(plan: TravelPlanDocument, route
       .filter((row) => row.node.status !== "normal")
       .length;
 
+    const factlessAttention = leg?.status === "attention" && leg.distanceKm === null && leg.durationMinutes === null;
     let connectionState: FinalRouteTransportConnectionV4["state"] = "pending";
     if (samePlace) connectionState = "same_place";
     else if (dirty) connectionState = "dirty";
-    else if (route?.status === "attention" && !leg) connectionState = "unavailable";
+    else if ((route?.status === "attention" && !leg) || factlessAttention) connectionState = "unavailable";
     else if (route?.status === "attention" || leg?.status === "attention") connectionState = "attention";
     else if (leg) connectionState = "ready";
 
