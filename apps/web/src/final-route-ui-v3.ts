@@ -99,6 +99,17 @@ export function finalRouteDayCountV3(plan: TravelPlanDocument) {
   return boundaries + (active.at(-1)?.endsDay ? 0 : 1);
 }
 
+function routeEndpointNodeId(
+  day: TravelPlanDocument["days"][number],
+  node: FinalRouteNode,
+  endpoint: "from" | "to",
+) {
+  if (day.stops.some((stop) => stop.id === node.id)) return node.id;
+  if (endpoint === "from" && day.startAnchor.placeId === node.placeId) return day.startAnchor.id;
+  if (endpoint === "to" && day.endAnchor.placeId === node.placeId) return day.endAnchor.id;
+  return null;
+}
+
 export function finalRouteTransportConnectionsV4(plan: TravelPlanDocument, routeStates: RouteState[]): FinalRouteTransportConnectionV4[] {
   const rows = finalRouteDisplayRowsV3(plan);
   const activeRows = rows.filter((row) => row.node.status === "normal");
@@ -113,8 +124,12 @@ export function finalRouteTransportConnectionsV4(plan: TravelPlanDocument, route
     const route = state?.route ?? null;
     const dirty = Boolean(state?.dirty);
     const samePlace = previous.node.placeId === current.node.placeId;
+    const fromRouteNodeId = day ? routeEndpointNodeId(day, previous.node, "from") : null;
+    const toRouteNodeId = day ? routeEndpointNodeId(day, current.node, "to") : null;
     const leg = !dirty && route
-      ? route.legs.find((item) => item.fromPlaceId === previous.node.placeId && item.toPlaceId === current.node.placeId) ?? null
+      ? fromRouteNodeId && toRouteNodeId
+        ? route.legs.find((item) => item.fromNodeId === fromRouteNodeId && item.toNodeId === toRouteNodeId) ?? null
+        : route.legs.find((item) => item.fromPlaceId === previous.node.placeId && item.toPlaceId === current.node.placeId) ?? null
       : null;
     const skippedInactiveCount = rows
       .slice(previous.index + 1, current.index)
