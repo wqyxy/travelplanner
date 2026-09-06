@@ -1,6 +1,6 @@
 import type { CandidatePreference, PlaceResolution, TransportMode, Workspace } from "./v2-types";
 import { placeNamePresentation } from "./place-name-presentation";
-import { candidateRows } from "./workspace-v2";
+import { candidateRows, formatDistance, formatRouteDuration } from "./workspace-v2";
 
 export type WorkspaceMapView = "candidates" | "itinerary";
 
@@ -31,6 +31,10 @@ export type WorkspaceMapRouteFeature = {
   geometry: unknown;
   properties: {
     id: string;
+    fromNodeId: string;
+    toNodeId: string;
+    fromPlaceId: string;
+    toPlaceId: string;
     dayId: string;
     dayNumber: number;
     mode: TransportMode;
@@ -42,6 +46,7 @@ export type WorkspaceMapRouteFeature = {
     calculatedAt: string;
     color: string;
     straightLine: boolean;
+    summary: string;
   };
 };
 
@@ -219,6 +224,10 @@ export function routeGeometryFeatures(workspace: Workspace, selectedDayId: strin
         geometry,
         properties: {
           id,
+          fromNodeId: leg.fromNodeId,
+          toNodeId: leg.toNodeId,
+          fromPlaceId: leg.fromPlaceId,
+          toPlaceId: leg.toPlaceId,
           dayId: state.dayId,
           dayNumber,
           mode: leg.mode,
@@ -230,6 +239,7 @@ export function routeGeometryFeatures(workspace: Workspace, selectedDayId: strin
           calculatedAt: state.route?.calculatedAt || "",
           color: colors.get(dayNumber) || "#64748b",
           straightLine,
+          summary: `${transportModeLabels[leg.mode]} · ${formatDistance(state.dirty ? null : leg.distanceKm)} · ${formatRouteDuration(state.dirty ? null : leg.durationMinutes)}`,
         },
       }];
     }) ?? [];

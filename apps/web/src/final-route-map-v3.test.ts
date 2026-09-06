@@ -130,5 +130,8 @@ describe("final route map presentation", () => {
     const routes = finalRouteMapRouteGeometryFeaturesV3(value);
     expect(routes.map((item) => item.id)).toEqual(["route-leg:day-1:current-a-y"]);
     expect(routes[0].properties.dirty).toBe(true);
+    expect(routes[0].properties.fromNodeId).toBe("start");
+    expect(routes[0].properties.toNodeId).toBe("end");
+    expect(routes[0].properties.summary).toContain("驾车");
   });
 });

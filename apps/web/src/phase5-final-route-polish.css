@@ -56,7 +56,35 @@
 .final-route-remove-confirm-v5 small{color:var(--muted);font-size:10px;line-height:1.45}
 .final-route-remove-confirm-v5>div{display:flex;justify-content:flex-end;gap:6px}
 
+/* Keep route controls on the place row. Status choices remain visible, while
+   the destructive action still opens a compact inline confirmation. */
+.final-route-row-v3{grid-template-columns:27px minmax(0,1fr) minmax(0,max-content)}
+.final-route-badges-v3{grid-column:2;grid-row:2;justify-content:flex-start}
+.final-route-quick-v4{grid-column:3;grid-row:1;align-self:center;max-width:100%;margin-top:0;gap:5px;flex-wrap:wrap}
+.final-route-quick-group-v5{display:flex;align-items:center;gap:1px;padding:2px;border:1px solid var(--border);border-radius:8px;background:var(--surface-subtle)}
+.final-route-quick-button-v5{min-height:24px;padding:3px 6px;border:0;border-radius:6px;color:var(--muted);background:transparent;font-size:10px;font-weight:800;line-height:1;white-space:nowrap}
+.final-route-quick-button-v5:hover:not(:disabled){background:var(--surface);color:var(--text)}
+.final-route-quick-button-v5:disabled{cursor:not-allowed;opacity:.38}
+.final-route-quick-button-v5.active{color:var(--text);background:var(--surface);box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.final-route-quick-button-v5.stay.active{color:#4d5ea8;background:#edf1ff}
+.final-route-quick-button-v5.status{width:24px;padding:2px 4px;font-size:15px;line-height:1}
+.final-route-quick-button-v5.status.normal{color:#e05c45!important}
+.final-route-quick-button-v5.status.tentative{color:#c58b2b!important}
+.final-route-quick-button-v5.status.no_go{color:#667085!important}
+.final-route-quick-button-v5.status:disabled{cursor:default;opacity:1}
+.final-route-quick-group-v5.status .final-route-quick-button-v5.active.normal{color:#e05c45!important;background:color-mix(in srgb,#e05c45 12%,var(--surface))}
+.final-route-quick-group-v5.status .final-route-quick-button-v5.active.tentative{color:#c58b2b!important;background:color-mix(in srgb,#c58b2b 15%,var(--surface))}
+.final-route-quick-group-v5.status .final-route-quick-button-v5.active.no_go{color:#667085!important;background:color-mix(in srgb,#667085 15%,var(--surface))}
+.final-route-edit-action-v4,.final-route-copy-action-v5,.final-route-delete-action-v5{display:inline-flex;align-items:center;gap:4px}
+.final-route-copy-action-v5{color:var(--muted)!important}
+.final-route-delete-action-v5{color:#b84b4b!important}
+.final-route-delete-action-v5:hover:not(:disabled){border-color:color-mix(in srgb,#b84b4b 38%,var(--border))!important;background:color-mix(in srgb,#b84b4b 8%,var(--surface-subtle))!important;color:#9e3838!important}
+.final-route-delete-confirm-v5{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:-2px 8px 7px 40px;padding:7px 8px;border:1px solid color-mix(in srgb,#b84b4b 35%,var(--border));border-radius:8px;background:color-mix(in srgb,#b84b4b 5%,var(--surface));font-size:10px}
+.final-route-delete-confirm-v5>span{color:var(--text);font-weight:700}
+.final-route-delete-confirm-v5>div{display:flex;flex:0 0 auto;gap:5px}
+
 .final-route-transport-connector-v4.state-unavailable .final-route-transport-main-v4{color:#9a6819;opacity:.82}
+.final-route-transport-connector-v4.hover-linked .final-route-transport-main-v4{color:var(--text);background:color-mix(in srgb,#f3b646 18%,var(--surface));box-shadow:0 0 0 2px color-mix(in srgb,#f3b646 42%,transparent)}
 .final-route-mobile-order-v5{display:none}
 
 /* A repeated same-place overnight node has no transport control between the two cards. */
@@ -71,6 +99,8 @@
   .final-route-add-fields-v5{grid-template-columns:1fr!important}
   .final-route-add-v5>header small{white-space:normal}
   .final-route-drag-v3{min-width:34px;min-height:36px}
+  .final-route-quick-v4{grid-column:2/-1;grid-row:auto;justify-content:flex-start}
+  .final-route-delete-confirm-v5{align-items:flex-start;flex-direction:column}
   .final-route-mobile-order-v5{display:flex;align-items:center;gap:4px}
   .final-route-mobile-order-v5 button{min-height:27px;padding:4px 7px;border:1px solid var(--border);border-radius:7px;color:var(--muted);background:var(--surface);font-size:10px;font-weight:700}
   .final-route-mobile-order-v5 button:disabled{opacity:.35}

@@ -107,6 +107,17 @@ describe("final route v3", () => {
     expect(restored.days[0].endAnchor.placeId).toBe("b");
   });
 
+  it("allows a user to save a boundary on an inactive node without activating it", () => {
+    const plan = routePlan([
+      node("b", "b", { status: "tentative" }),
+      node("c", "c"),
+    ]);
+    const updated = setFinalRouteDayBoundaryV3(plan, "b", true).plan;
+    expect(updated.finalRoute.nodes.find((item) => item.id === "b")).toMatchObject({ status: "tentative", endsDay: true });
+    expect(updated.days).toHaveLength(1);
+    expect(updated.days[0].endAnchor.placeId).toBe("c");
+  });
+
   it("uses the next active node's own transport when an intermediate node is skipped", () => {
     const plan = routePlan([
       node("x", "x", { transportFromPrevious: transport("drive") }),

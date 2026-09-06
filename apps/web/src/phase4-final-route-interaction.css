@@ -40,20 +40,11 @@
 .status-pill-v3.normal{display:none}
 
 .final-route-quick-v4{grid-column:2/-1;display:flex;align-items:center;justify-content:flex-end;gap:5px;margin-top:-2px}
-.final-route-quick-v4>button,.final-route-quick-v4 summary{min-height:27px;padding:4px 7px;border:1px solid transparent;border-radius:7px;color:var(--muted);background:transparent;font-size:10px;font-weight:700;list-style:none;white-space:nowrap}
-.final-route-quick-v4>button:hover,.final-route-quick-v4 summary:hover{border-color:var(--border);color:var(--text);background:var(--surface-subtle)}
+.final-route-quick-v4>button{min-height:27px;padding:4px 7px;border:1px solid transparent;border-radius:7px;color:var(--muted);background:transparent;font-size:10px;font-weight:700;white-space:nowrap}
+.final-route-quick-v4>button:hover{border-color:var(--border);color:var(--text);background:var(--surface-subtle)}
 .final-route-edit-action-v4{display:inline-flex;align-items:center;gap:4px}
 .final-route-edit-action-v4.active{border-color:var(--primary)!important;color:var(--primary)!important;background:var(--primary-soft)!important}
 .final-route-stay-action-v4{color:#4d5ea8!important}
-.final-route-stay-menu-v4,.final-route-status-menu-v4{position:relative}
-.final-route-stay-menu-v4>summary,.final-route-status-menu-v4>summary{cursor:pointer}
-.final-route-stay-menu-v4>summary::-webkit-details-marker,.final-route-status-menu-v4>summary::-webkit-details-marker{display:none}
-.final-route-stay-menu-v4>div,.final-route-status-menu-v4>div{position:absolute;z-index:40;top:31px;right:0;display:grid;min-width:94px;padding:5px;border:1px solid var(--border);border-radius:9px;background:var(--surface);box-shadow:var(--shadow)}
-.final-route-stay-menu-v4>div button,.final-route-status-menu-v4>div button{padding:7px 8px;border:0;border-radius:6px;color:var(--text);background:transparent;text-align:left;font-size:11px;white-space:nowrap}
-.final-route-stay-menu-v4>div button:hover,.final-route-status-menu-v4>div button:hover{background:var(--surface-subtle)}
-.final-route-stay-menu-v4>summary{border-color:color-mix(in srgb,#4d5ea8 25%,var(--border))!important;color:#4d5ea8!important;background:#edf1ff!important}
-.final-route-status-menu-v4{opacity:.45;transition:opacity .12s ease}
-.final-route-row-v3:hover .final-route-status-menu-v4,.final-route-status-menu-v4[open],.final-route-status-menu-v4:focus-within{opacity:1}
 .final-route-inactive-note-v4{margin:-2px 8px 7px 40px;color:var(--muted);font-size:10px;line-height:1.45}
 
 /* endsDay is shown only as a night separator between place cards. There is
@@ -117,7 +108,6 @@
   .final-route-row-v3{grid-template-columns:25px minmax(0,1fr) auto}
   .final-route-badges-v3{grid-column:2/-1;justify-content:flex-start}
   .final-route-quick-v4{grid-column:2/-1;justify-content:flex-start;flex-wrap:wrap}
-  .final-route-status-menu-v4{opacity:1}
   .final-route-night-divider-v4{margin-left:25px}
   .final-route-transport-connector-v4{margin-left:25px}
   .final-route-transport-main-v4{flex-wrap:wrap}

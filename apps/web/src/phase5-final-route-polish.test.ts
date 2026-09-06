@@ -72,6 +72,45 @@ describe("Phase 5 final route polish contract", () => {
     expect(css).toContain(".final-route-mobile-order-v5{display:flex");
   });
 
+  it("uses compact icon status controls, a stay toggle, and copy/delete actions on the place row", () => {
+    const panel = source("./FinalRoutePanelV3.tsx");
+    const css = source("./phase5-final-route-polish.css");
+    for (const mark of ["★", "○", "×"]) expect(panel).toContain(mark);
+    expect(panel).toContain('aria-label={row.node.endsDay ? "不住" : "住"}');
+    expect(panel).toContain('onClick={() => void onSetBoundary(row.node.id, !row.node.endsDay)}');
+    expect(panel).not.toContain("不住</button>");
+    expect(panel).not.toContain("多住晚");
+    expect(panel).not.toContain("final-route-stay-menu-v4");
+    expect(panel).not.toContain("final-route-status-menu-v4");
+    expect(panel).toContain('className="final-route-copy-action-v5"');
+    expect(panel).toContain('className="final-route-delete-action-v5"');
+    expect(panel).toContain('className="final-route-delete-confirm-v5"');
+    expect(css).toContain(".final-route-quick-v4{grid-column:3;grid-row:1");
+    expect(css).toContain("color:#e05c45!important");
+    expect(css).toContain(".final-route-quick-button-v5.status.tentative{color:#c58b2b!important}");
+    expect(css).toContain(".final-route-quick-button-v5.status.no_go{color:#667085!important}");
+  });
+
+  it("links route hover to the map line and toggles focused map view back to the full route", () => {
+    const panel = source("./FinalRoutePanelV3.tsx");
+    const map = source("./FinalRouteMapV3.tsx");
+    const css = source("./phase5-final-route-polish.css");
+    expect(panel).toContain('onMouseEnter={() => onHoverNode(row.node.id)}');
+    expect(panel).toContain('onMouseEnter={() => onHoverRoute(effectiveConnection.toNodeId, effectiveConnection.toPlaceId)}');
+    expect(panel).toContain('onFocusNode(row.node.id)');
+    expect(panel).toContain('onFocusRoute(effectiveConnection.toNodeId, effectiveConnection.toPlaceId)');
+    expect(map).toContain('final-route-lines-hit');
+    expect(map).toContain('final-route-line-labels');
+    expect(map).toContain('const viewKind = focusRequest.kind ?? "node"');
+    expect(map).toContain('focusRouteRef.current(nodeId, routePlaceId)');
+    expect(map).toContain('routeCoordinates(feature.geometry)');
+    expect(map).toContain('focusedViewKey.current === targetKey');
+    expect(map).toContain('const routeHoverId = hoveredRouteNodeId || "__none__"');
+    expect(map).toContain('const routeNodeId = hoveredRouteNodeId');
+    expect(map).toContain('metrics.textContent = route.properties.summary');
+    expect(css).toContain('.final-route-transport-connector-v4.hover-linked');
+  });
+
   it("loads Phase 5 after Phase 4 so compact polish styles win without changing the core interaction CSS", () => {
     const main = source("./main.tsx");
     expect(main).toContain('import "./phase4-final-route-interaction.css"');

@@ -486,7 +486,6 @@ export function setFinalRouteDayBoundaryV3(
 ): FinalRouteMutationResultV3 {
   return applyMutation(plan, (nodes) => {
     const { node } = requireNode(nodes, nodeId);
-    if (node.status !== "normal" && endsDay) throw new Error("只有正常地点可以新增当前生效的日程分界。");
     node.endsDay = endsDay;
   });
 }

@@ -1,4 +1,4 @@
-import { GripVertical, MapPin, Pencil, Plus, RefreshCw, Route, Sparkles, WandSparkles } from "lucide-react";
+import { Copy, GripVertical, MapPin, Pencil, Plus, RefreshCw, Route, Sparkles, Trash2, WandSparkles } from "lucide-react";
 import { type DragEvent, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import { FinalRouteEditorDrawerV4 } from "./FinalRouteEditorDrawerV4";
@@ -31,6 +31,8 @@ const placeKindLabels: Record<PlaceKind, string> = {
 const transportOptions: TransportMode[] = ["walk", "drive", "bike", "transit", "rail", "flight", "ferry"];
 const ADD_AT_START = "__route_start__";
 const ADD_AT_END = "__route_end__";
+const finalRouteQuickStatusLabelsV5: Record<FinalRouteNodeStatus, string> = { normal: "必去", tentative: "待定", no_go: "不去" };
+const finalRouteQuickStatusMarksV5: Record<FinalRouteNodeStatus, string> = { normal: "★", tentative: "○", no_go: "×" };
 
 type AddDraft = { nameZh: string; kind: PlaceKind };
 type DropTarget = { nodeId: string; position: FinalRouteDropPositionV4 };
@@ -72,18 +74,21 @@ export function FinalRoutePanelV3({
   workspace,
   selectedNodeId,
   hoveredNodeId,
+  hoveredRouteNodeId,
   editingNodeId,
   busy,
   notice,
   onSelectNode,
   onHoverNode,
+  onHoverRoute,
   onFocusNode,
+  onFocusRoute,
   onEditNode,
   onAddPlace,
+  onCopyNode,
   onMoveNode,
   onSetStatus,
   onSetBoundary,
-  onAddNight,
   onSetTransport,
   onRemoveNode,
   onUpdatePlace,
@@ -96,18 +101,21 @@ export function FinalRoutePanelV3({
   workspace: WorkspaceV3;
   selectedNodeId: string | null;
   hoveredNodeId: string | null;
+  hoveredRouteNodeId: string | null;
   editingNodeId: string | null;
   busy: boolean;
   notice?: string;
   onSelectNode: (nodeId: string) => void;
   onHoverNode: (nodeId: string | null) => void;
+  onHoverRoute: (nodeId: string | null, placeId?: string | null) => void;
   onFocusNode: (nodeId: string) => void;
+  onFocusRoute: (nodeId: string, placeId?: string | null) => void;
   onEditNode: (nodeId: string | null) => void;
   onAddPlace: (draft: AddDraft, index: number) => Promise<string | null>;
+  onCopyNode: (nodeId: string, targetIndex: number) => Promise<string | null>;
   onMoveNode: (nodeId: string, targetIndex: number) => Promise<void>;
   onSetStatus: (nodeId: string, status: FinalRouteNodeStatus) => Promise<void>;
   onSetBoundary: (nodeId: string, endsDay: boolean) => Promise<void>;
-  onAddNight: (nodeId: string) => Promise<void>;
   onSetTransport: (nodeId: string, mode: TransportMode | "") => Promise<void>;
   onRemoveNode: (nodeId: string) => Promise<void>;
   onUpdatePlace: (placeId: string, changes: WorkflowPlaceEditChangesV3) => Promise<boolean>;
@@ -135,6 +143,7 @@ export function FinalRoutePanelV3({
   const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const [transportEditingNodeId, setTransportEditingNodeId] = useState<string | null>(null);
+  const [removeConfirmNodeId, setRemoveConfirmNodeId] = useState<string | null>(null);
   const editingRow = rows.find((row) => row.node.id === editingNodeId) ?? null;
   const [aiBusy, setAiBusy] = useState(false);
   const [aiMessage, setAiMessage] = useState("");
@@ -367,11 +376,12 @@ export function FinalRoutePanelV3({
           const currentDrop = dropTarget?.nodeId === row.node.id ? dropTarget.position : null;
           const connection = row.node.status === "normal" ? connectionsByDestination.get(row.node.id) ?? null : null;
           const effectiveConnection = connection?.state === "same_place" ? null : connection;
+          const routeHovered = effectiveConnection?.toNodeId === hoveredRouteNodeId;
           const fromName = effectiveConnection ? placesById.get(effectiveConnection.fromPlaceId)?.nameZh ?? "上一地点" : "";
           const toName = effectiveConnection ? placesById.get(effectiveConnection.toPlaceId)?.nameZh ?? display.primary : "";
           return <div className="final-route-row-wrap-v3" key={row.node.id}>
-            {effectiveConnection && <div className={`final-route-transport-connector-v4 state-${effectiveConnection.state}`}>
-              <button type="button" className="final-route-transport-main-v4" disabled={busy || aiBusy} title={effectiveConnection.warning || undefined} onClick={() => setTransportEditingNodeId((current) => current === row.node.id ? null : row.node.id)}>
+            {effectiveConnection && <div className={`final-route-transport-connector-v4 state-${effectiveConnection.state} ${routeHovered ? "hover-linked" : ""}`} onMouseEnter={() => onHoverRoute(effectiveConnection.toNodeId, effectiveConnection.toPlaceId)} onMouseLeave={() => onHoverRoute(null, null)}>
+              <button type="button" className="final-route-transport-main-v4" disabled={busy || aiBusy} title={effectiveConnection.warning || undefined} onClick={() => { onFocusRoute(effectiveConnection.toNodeId, effectiveConnection.toPlaceId); setTransportEditingNodeId((current) => current === row.node.id ? null : row.node.id); }}>
                 <Route size={14}/><strong>{effectiveConnection.mode ? transportModeLabelsV3[effectiveConnection.mode] : "交通待定"}</strong><span>{connectionText(effectiveConnection)}</span>{effectiveConnection.skippedInactiveCount > 0 && <small>{fromName} → {toName} · 已跳过 {effectiveConnection.skippedInactiveCount} 个待定/不去地点</small>}
               </button>
               {transportEditingNodeId === row.node.id && <div className="final-route-transport-editor-v4">
@@ -411,14 +421,20 @@ export function FinalRoutePanelV3({
                 {row.node.status !== "normal" && row.node.endsDay && <span className="stay-pill-v3 inactive">住 · 暂不生效</span>}
               </div>
               <div className="final-route-quick-v4">
-                {row.node.status === "normal" && !row.node.endsDay && <button className="final-route-stay-action-v4" type="button" disabled={busy || aiBusy} onClick={() => void onSetBoundary(row.node.id, true)}>+ 住</button>}
-                {row.node.status === "normal" && row.node.endsDay && <details className="final-route-stay-menu-v4"><summary>住 ▾</summary><div><button type="button" disabled={busy || aiBusy} onClick={(event) => { event.preventDefault(); void onAddNight(row.node.id); }}>多一晚</button><button type="button" disabled={busy || aiBusy} onClick={(event) => { event.preventDefault(); void onSetBoundary(row.node.id, false); }}>不住</button></div></details>}
-                <details className="final-route-status-menu-v4"><summary>状态</summary><div>{(["normal", "tentative", "no_go"] as FinalRouteNodeStatus[]).map((status) => <button type="button" key={status} disabled={busy || aiBusy || row.node.status === status} onClick={(event) => { event.preventDefault(); void onSetStatus(row.node.id, status); }}>{finalRouteStatusLabelsV3[status]}</button>)}</div></details>
+                <div className="final-route-quick-group-v5" aria-label="住宿安排">
+                  <button className={`final-route-quick-button-v5 stay ${row.node.endsDay ? "active" : ""}`} type="button" aria-label={row.node.endsDay ? "不住" : "住"} aria-pressed={row.node.endsDay} disabled={busy || aiBusy} onClick={() => void onSetBoundary(row.node.id, !row.node.endsDay)}>住</button>
+                </div>
+                <div className="final-route-quick-group-v5 status" aria-label="线路状态">
+                  {(["normal", "tentative", "no_go"] as FinalRouteNodeStatus[]).map((status) => <button className={`final-route-quick-button-v5 status ${status} ${row.node.status === status ? "active" : ""}`} type="button" key={status} aria-label={`状态：${finalRouteQuickStatusLabelsV5[status]}`} title={`状态：${finalRouteQuickStatusLabelsV5[status]}`} aria-pressed={row.node.status === status} disabled={busy || aiBusy || row.node.status === status} onClick={() => void onSetStatus(row.node.id, status)}><span aria-hidden="true">{finalRouteQuickStatusMarksV5[status]}</span></button>)}
+                </div>
                 <div className="final-route-mobile-order-v5"><button type="button" disabled={busy || aiBusy || row.index === 0} onClick={() => void onMoveNode(row.node.id, row.index - 1)}>上移</button><button type="button" disabled={busy || aiBusy || row.index === rows.length - 1} onClick={() => void onMoveNode(row.node.id, row.index + 1)}>下移</button></div>
                 <button className={`final-route-edit-action-v4 ${editing ? "active" : ""}`} type="button" disabled={busy || aiBusy || !row.place} onClick={() => onEditNode(editing ? null : row.node.id)}><Pencil size={13}/>编辑</button>
+                <button className="final-route-copy-action-v5" type="button" disabled={busy || aiBusy} aria-label={`复制${display.primary}`} title="复制此线路地点" onClick={() => void onCopyNode(row.node.id, row.index + 1).then((nodeId) => { if (nodeId) onSelectNode(nodeId); })}><Copy size={13}/>复制</button>
+                <button className="final-route-delete-action-v5" type="button" disabled={busy || aiBusy} aria-label={`删除${display.primary}`} onClick={() => setRemoveConfirmNodeId(row.node.id)}><Trash2 size={13}/>删除</button>
               </div>
             </article>
 
+            {removeConfirmNodeId === row.node.id && <div className="final-route-delete-confirm-v5" role="alert"><span>确认删除“{display.primary}”这一次出现？</span><div><button className="button small" type="button" disabled={busy || aiBusy} onClick={() => setRemoveConfirmNodeId(null)}>取消</button><button className="button danger small" type="button" disabled={busy || aiBusy} onClick={() => { setRemoveConfirmNodeId(null); void onRemoveNode(row.node.id); }}>确认删除</button></div></div>}
             {row.node.status !== "normal" && <div className="final-route-inactive-note-v4">暂不参与当前 Day 和交通路线；恢复为“正常”后会在原位置重新生效。</div>}
             {row.node.status === "normal" && row.node.endsDay && <div className="final-route-night-divider-v4" aria-label={`第 ${row.dayNumber} 天结束，第 ${row.dayNumber} 晚`}><span/><strong>第 {row.dayNumber} 晚</strong><span/></div>}
           </div>;
