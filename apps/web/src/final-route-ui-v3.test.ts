@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
-import type { FinalRouteNode, TravelPlanDocument } from "./v2-types";
-import { finalRouteDayCountV3, finalRouteDisplayRowsV3, newFinalRoutePlaceCommandsV3, transportFromModeV3 } from "./final-route-ui-v3";
+import type { Day, FinalRouteNode, RouteState, TravelPlanDocument } from "./v2-types";
+import {
+  finalRouteDayCountV3,
+  finalRouteDayViewsV4,
+  finalRouteDisplayRowsV3,
+  finalRouteTransportConnectionsV4,
+  newFinalRoutePlaceCommandsV3,
+  transportFromModeV3,
+} from "./final-route-ui-v3";
 
 const node = (id: string, status: FinalRouteNode["status"], endsDay = false): FinalRouteNode => ({
   id,
@@ -46,6 +53,53 @@ function plan(nodes: FinalRouteNode[]): TravelPlanDocument {
   };
 }
 
+function day(id: string, dayNumber: number, startPlaceId: string, endPlaceId: string, stops: Day["stops"] = []): Day {
+  return {
+    id,
+    dayNumber,
+    date: null,
+    title: `Day ${dayNumber}`,
+    transferMode: "drive",
+    detailLevel: "planned",
+    detailStatus: null,
+    startAnchor: { id: `start-${id}`, placeId: startPlaceId, label: null, notes: null },
+    stops,
+    endAnchor: { id: `end-${id}`, placeId: endPlaceId, label: null, notes: null },
+  };
+}
+
+function routeState(dayId: string, input: { dirty?: boolean; status?: "ready" | "attention"; fromPlaceId: string; toPlaceId: string; distanceKm?: number; durationMinutes?: number }): RouteState {
+  return {
+    dayId,
+    dirty: input.dirty ?? false,
+    route: {
+      tripId: "trip-1",
+      dayId,
+      version: 1,
+      inputFingerprint: "fp",
+      status: input.status ?? "ready",
+      distanceKm: input.distanceKm ?? 20,
+      durationMinutes: input.durationMinutes ?? 30,
+      geometry: null,
+      legs: [{
+        id: `leg-${dayId}`,
+        fromNodeId: `from-${dayId}`,
+        toNodeId: `to-${dayId}`,
+        fromPlaceId: input.fromPlaceId,
+        toPlaceId: input.toPlaceId,
+        mode: "drive",
+        status: input.status === "attention" ? "attention" : "ready",
+        distanceKm: input.distanceKm ?? 20,
+        durationMinutes: input.durationMinutes ?? 30,
+        geometry: null,
+        warning: input.status === "attention" ? "route warning" : null,
+      }],
+      warnings: input.status === "attention" ? ["route warning"] : [],
+      calculatedAt: null,
+    },
+  };
+}
+
 describe("final route UI helpers", () => {
   it("assigns display Day numbers only from active boundaries", () => {
     const source = plan([
@@ -68,6 +122,68 @@ describe("final route UI helpers", () => {
   it("does not create an extra Day merely because a non-boundary node exists before the last boundary", () => {
     expect(finalRouteDayCountV3(plan([node("a", "normal"), node("b", "normal", true)]))).toBe(1);
     expect(finalRouteDayCountV3(plan([node("a", "normal", true), node("b", "normal")]))).toBe(2);
+  });
+
+  it("connects current active places while skipping tentative rows", () => {
+    const a = node("a", "normal");
+    const x = node("x", "tentative");
+    const b = node("b", "normal", true);
+    b.transportFromPrevious = transportFromModeV3("drive");
+    const source = plan([a, x, b]);
+    source.days = [day("day-1", 1, a.placeId, b.placeId)];
+    const connections = finalRouteTransportConnectionsV4(source, [routeState("day-1", {
+      fromPlaceId: a.placeId,
+      toPlaceId: b.placeId,
+      distanceKm: 72,
+      durationMinutes: 58,
+    })]);
+
+    expect(connections).toEqual([expect.objectContaining({
+      fromNodeId: "a",
+      toNodeId: "b",
+      mode: "drive",
+      distanceKm: 72,
+      durationMinutes: 58,
+      state: "ready",
+      skippedInactiveCount: 1,
+    })]);
+  });
+
+  it("does not expose stale provider facts while a Day route is dirty", () => {
+    const a = node("a", "normal");
+    const b = node("b", "normal", true);
+    b.transportFromPrevious = transportFromModeV3("drive");
+    const source = plan([a, b]);
+    source.days = [day("day-1", 1, a.placeId, b.placeId)];
+    const [connection] = finalRouteTransportConnectionsV4(source, [routeState("day-1", {
+      dirty: true,
+      fromPlaceId: a.placeId,
+      toPlaceId: b.placeId,
+      distanceKm: 999,
+      durationMinutes: 999,
+    })]);
+    expect(connection.state).toBe("dirty");
+    expect(connection.distanceKm).toBeNull();
+    expect(connection.durationMinutes).toBeNull();
+  });
+
+  it("derives Day summaries from current route state without creating a second Day model", () => {
+    const a = node("a", "normal", true);
+    const source = plan([a]);
+    source.days = [day("day-1", 1, a.placeId, a.placeId)];
+    expect(finalRouteDayViewsV4(source, [routeState("day-1", {
+      fromPlaceId: a.placeId,
+      toPlaceId: a.placeId,
+      distanceKm: 12,
+      durationMinutes: 18,
+    })])).toEqual([expect.objectContaining({
+      dayId: "day-1",
+      dayNumber: 1,
+      routeState: "ready",
+      distanceKm: 12,
+      durationMinutes: 18,
+      emptyDetail: true,
+    })]);
   });
 
   it("creates one batch that adds the Place/internal detail anchor and its route occurrence", () => {
