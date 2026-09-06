@@ -5,9 +5,9 @@ export function finalRouteMapEaseInOutCubicV3(progress: number): number {
     : 1 - Math.pow(-2 * clamped + 2, 3) / 2;
 }
 
-// `essential: false` lets MapLibre honor the user's reduced-motion preference.
+// Map motion is an explicit workspace interaction, so it must not collapse to a jump.
 export const finalRouteMapCameraMotionV3 = {
   duration: 800,
   easing: finalRouteMapEaseInOutCubicV3,
-  essential: false,
+  essential: true,
 } as const;

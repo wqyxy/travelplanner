@@ -33,7 +33,9 @@ describe("Phase 4 final route interaction contract", () => {
     expect(map).not.toContain("duration: 400");
     expect(motion).toContain("finalRouteMapEaseInOutCubicV3");
     expect(motion).toContain("duration: 800");
-    expect(motion).toContain("essential: false");
+    expect(motion).toContain("essential: true");
+    expect(map).toContain('map.zoomIn(finalRouteMapCameraMotionV3)');
+    expect(map).toContain('map.zoomOut(finalRouteMapCameraMotionV3)');
   });
 
   it("renders every route node as the same place card and keeps Day out of place names", () => {

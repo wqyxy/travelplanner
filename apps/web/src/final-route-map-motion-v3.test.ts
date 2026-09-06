@@ -6,7 +6,7 @@ describe("final route map camera motion", () => {
     expect(finalRouteMapEaseInOutCubicV3(0)).toBe(0);
     expect(finalRouteMapEaseInOutCubicV3(1)).toBe(1);
     expect(finalRouteMapCameraMotionV3.duration).toBe(800);
-    expect(finalRouteMapCameraMotionV3.essential).toBe(false);
+    expect(finalRouteMapCameraMotionV3.essential).toBe(true);
   });
 
   it("accelerates into and decelerates out of the camera movement", () => {

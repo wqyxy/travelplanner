@@ -108,6 +108,7 @@ export function FinalRouteMapV3({
     let cancelled = false;
     let map: any;
     let observer: ResizeObserver | null = null;
+    let removeAnimatedZoomControls: (() => void) | null = null;
     void import("maplibre-gl").then((lib) => {
       if (cancelled || !element.current) return;
       map = new lib.Map({
@@ -121,6 +122,20 @@ export function FinalRouteMapV3({
         zoom: 2.5,
       });
       map.addControl(new lib.NavigationControl({ showCompass: false }), "bottom-right");
+      const mapContainer = map.getContainer();
+      const onZoomControlClick = (event: MouseEvent) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        const zoomIn = target.closest(".maplibregl-ctrl-zoom-in");
+        const zoomOut = target.closest(".maplibregl-ctrl-zoom-out");
+        if (!zoomIn && !zoomOut) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (zoomIn) map.zoomIn(finalRouteMapCameraMotionV3);
+        else map.zoomOut(finalRouteMapCameraMotionV3);
+      };
+      mapContainer.addEventListener("click", onZoomControlClick, true);
+      removeAnimatedZoomControls = () => mapContainer.removeEventListener("click", onZoomControlClick, true);
       map.on("load", () => {
         const empty = { type: "FeatureCollection", features: [] };
         map.addSource("final-route-lines", { type: "geojson", data: empty });
@@ -228,6 +243,7 @@ export function FinalRouteMapV3({
     return () => {
       cancelled = true;
       observer?.disconnect();
+      removeAnimatedZoomControls?.();
       popupRef.current?.remove();
       routePopupRef.current?.remove();
       map?.remove();
