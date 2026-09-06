@@ -51,6 +51,14 @@ describe("Phase 5 final route polish contract", () => {
     expect(drawer).toContain('placeNamePresentation(row.place, workspace.trip.planLanguage, "未命名地点")');
   });
 
+  it("shows unavailable provider routes explicitly and closes transport editing when its effective connection disappears", () => {
+    const panel = source("./FinalRoutePanelV3.tsx");
+    const css = source("./phase5-final-route-polish.css");
+    expect(panel).toContain('if (connection.state === "unavailable") return "路线暂不可用"');
+    expect(panel).toContain('if (!current || current.state === "same_place") setTransportEditingNodeId(null)');
+    expect(css).toContain(".final-route-transport-connector-v4.state-unavailable");
+  });
+
   it("loads Phase 5 after Phase 4 so compact polish styles win without changing the core interaction CSS", () => {
     const main = source("./main.tsx");
     expect(main).toContain('import "./phase4-final-route-interaction.css"');
