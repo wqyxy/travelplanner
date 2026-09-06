@@ -28,31 +28,15 @@ Phase 3：AI 生成、详细安排、显式优化
 
 本次不重新设计 finalRoute 数据模型，也不重新拆 Day / Route 后端语义。
 
-本次目标是：
+本次新增目标来自 `PLAN.md` 第 31–47 节：
 
-> **把已经正确的数据逻辑，重新做成一个真正可读、可操作的“旅行线路编辑器”，而不是配置表单。**
-
----
-
-# 2. 当前代码中与本次改造直接相关的问题
-
-当前 `FinalRoutePanelV3` 存在以下交互耦合：
-
-1. 地点 Click 通过 `selectedNodeId` 同时触发选中、地图 flyTo 和 inline 编辑。
-2. 选中地点后，详细安排和地点信息直接在地点下方展开，导致线路列表不断被撑长。
-3. 交通方式被放在地点展开表单中，用户无法直接读出“两个地点之间怎么走”。
-4. `RouteLeg` 已经有真实距离和时长，但最终线路主视图没有展示。
-5. Day 当前更像 divider，不像真正的日程块。
-6. 住 / 不住 / 多一晚属于主操作，却被藏在展开编辑区。
-7. 正常 / 已定位等常态标签长期占据地点块空间。
-8. 地点整块 draggable，同时又有上移 / 下移按钮，操作入口重复。
-9. AI Day 操作和 Proposal 卡片长期挤占线路空间。
+> **把已经正确的数据逻辑，重新做成一个真正可读、可操作的旅行线路编辑器，而不是配置表单。**
 
 ---
 
-# 3. 已确认的关键产品决定
+# 2. 已确认的交互合同
 
-本次实施必须严格遵守：
+必须严格遵守：
 
 ```text
 Hover 地点 = 只高亮地点块 + 地图 Marker，不移动地图、不缩放
@@ -62,342 +46,241 @@ Click 交通条 = 修改这一段交通方式
 Click 住 / 不住 / 多一晚 = 修改 Day 分界
 ```
 
-前端 UI 状态必须从单一 `selectedNodeId` 语义中拆开，至少形成：
+前端状态必须区分：
 
 ```text
+地图当前选中节点
 hoveredNodeId
-mapSelectedNodeId / mapFocusedNodeId
 editingNodeId
+显式 map focus request
+map-pick 上下文
 ```
 
-编辑抽屉从最终线路列表左侧向地图方向弹出，覆盖地图一部分，不把地点列表向下撑开。
+交通条表达的是当前**有效线路**，不能机械连接视觉上相邻的 DOM 地点。
 
-交通条放在当前有效线路的两个地点之间，显示：
-
-```text
-交通方式 · Provider 距离 · Provider 时间
-```
-
-距离、时长、geometry 仍只能来自 Provider。
+距离、时长、geometry 继续只能来自 Route Provider。
 
 ---
 
-# 4. 实施策略
+# 3. 实施 Phase
 
-本次分成两个 Phase，尽量减少测试次数，同时隔离主交互风险与次级 UI 清理。
+本次只拆两个 Phase：
 
 ```text
 Phase 4：P0 最终线路主交互闭环
 Phase 5：P1 界面减法与辅助交互收敛
 ```
 
-不再细拆“地图 / 抽屉 / 交通 / Day”多个测试 Phase，因为它们共同组成同一个完整用户闭环；拆开会产生无法正常使用的半成品。
+Phase 4 未经用户本地测试 PASS 前，不进入 Phase 5。
 
 ---
 
-# 5. Phase 4 — P0 最终线路主交互闭环
+# 4. Phase 4 — P0 最终线路主交互闭环
 
-状态：pending
+状态：`awaiting_local_test`
 
-## 5.1 目标
+## 4.1 已完成修改
 
-一次性完成：
+### UI 状态解耦
 
-```text
-地点 Hover 只高亮
-地点 Click 才 flyTo
-独立编辑按钮
-左侧编辑抽屉
-移除 inline 大表单
-地点间真实交通条
-Day 日程块视觉
-住 / 不住 / 多一晚主界面操作
-异常状态精简显示
-hover / map selection / editing 状态解耦
-```
-
-Phase 4 完成后，用户应该能够不打开任何编辑表单直接阅读完整旅行线路。
-
-## 5.2 主要修改范围
-
-优先涉及：
+`AppFinalRouteV3.tsx` 已拆分：
 
 ```text
-apps/web/src/AppFinalRouteV3.tsx
-apps/web/src/FinalRoutePanelV3.tsx
-apps/web/src/FinalRouteMapV3.tsx
-apps/web/src/final-route-ui-v3.ts
-apps/web/src/final-route-map-v3.ts
-apps/web/src/phase2-final-route.css
-相关前端测试文件
+selectedNodeId      = 地图当前选中
+hoveredNodeId       = Hover 联动
+editingNodeId       = 当前编辑抽屉节点
+mapFocusRequest     = 只有地点 Click 才创建的 flyTo 请求
+mapPickReturnNodeId = 地图选点完成 / 取消后恢复编辑上下文
 ```
 
-如果实现 ViewModel 需要新增小型纯函数文件，可以新增，但不要扩大到后端 finalRoute 核心模型。
+原来地图因为 `selectedNodeId` 变化自动 flyTo 的 effect 已移除。
 
-## 5.3 UI 状态解耦
+### 独立编辑抽屉
 
-将当前“一个 selectedNodeId 控制全部”的模式拆开：
-
-- `hoveredNodeId`：仅视觉联动；
-- `mapSelectedNodeId`：地图选中 / flyTo 目标；
-- `editingNodeId`：编辑抽屉当前节点；
-- map-pick 状态继续独立存在。
-
-必须保证：
+新增：
 
 ```text
-Hover 不触发 flyTo
-Hover 不触发编辑
-地点 Click 不触发编辑
-编辑按钮不触发地点 Click
-住宿 / 状态 / 交通等按钮不触发地点 Click
+apps/web/src/FinalRouteEditorDrawerV4.tsx
 ```
 
-地图 Marker Click 可以选中 / 聚焦，但不能自动打开业务编辑抽屉。
+编辑抽屉从最终线路列表左侧向地图方向覆盖，不进入地点列表文档流。
 
-## 5.4 地图 Hover 高亮
-
-为 `FinalRouteMapV3` 增加 Hover 高亮输入。
-
-规则：
-
-- 地点块 hover 时，对应 Marker 增加轻量 halo / 高亮；
-- 地图中心和 zoom 必须保持不变；
-- hover 结束恢复；
-- map selected 高亮与 hover 高亮可以同时存在，但 selected 应具有更高视觉优先级。
-
-## 5.5 地点 Click 地图定位
-
-地点块主体 Click：
-
-```text
-设置 mapSelectedNodeId
-触发 focusRequest / flyTo
-```
-
-不得：
-
-```text
-打开 editingNodeId
-展开 inline editor
-修改数据
-```
-
-如果地点未定位，Click 不应报错或伪造位置；可以保持选中并通过异常状态提醒用户未定位。
-
-## 5.6 独立“编辑”按钮与编辑抽屉
-
-地点块新增明确“编辑”按钮。
-
-点击后：
-
-- `editingNodeId = 当前节点`；
-- 再点当前节点编辑按钮则关闭；
-- 点另一个地点的编辑则直接切换内容；
-- Esc / 关闭按钮 / 切换旅行 / 切换工作区 / 删除当前节点后关闭。
-
-抽屉内容迁移现有 inline editor：
+包含：
 
 ```text
 行程安排
 地点信息
-定位状态 / 地址
+地图定位
 重新识别
 地图选点
 Google Maps 链接
 删除当前 route node
 ```
 
-必须删除地点列表中的 inline `final-route-editor-v3` 大块展开方式。
+交通方式不放进地点编辑抽屉。
 
-交通方式不进入抽屉。
+### 有效交通连接 ViewModel
 
-窄屏下可以是 overlay Sheet，但不能退回 inline 展开。
-
-## 5.7 地图选点与编辑抽屉协调
-
-点击“地图选点”时：
-
-- 保存当前 `editingNodeId` 上下文；
-- 抽屉临时收起或变成紧凑态；
-- 地图显示明显选点提示；
-- 保存成功后恢复该地点编辑抽屉；
-- 取消后也恢复原上下文。
-
-## 5.8 有效交通连接 ViewModel
-
-新增可测试的纯函数 / ViewModel，用于从：
+`apps/web/src/final-route-ui-v3.ts` 新增：
 
 ```text
-finalRoute nodes
+finalRouteTransportConnectionsV4
+finalRouteDayViewsV4
+```
+
+输入只使用：
+
+```text
+finalRoute
 派生 plan.days
 routeStates.route.legs
 ```
 
-生成主视图交通连接。
-
-不能简单使用视觉上的 `rows[rowIndex - 1]`。
-
-必须正确处理：
+处理：
 
 ```text
-tentative / no_go 被跳过
-Day endAnchor / startAnchor
-普通 stop
-重复 Place
-多一晚产生的同 Place route node
+tentative / no_go 跳过
+跨 Day 住宿边界
+Day Anchor node id 与 finalRoute node id 不同
 route dirty
 route attention
-Provider 尚未返回
+Provider pending
+同 Place 连续住宿
 ```
 
-特别注意：派生 Day 中 Day 结束节点可能对应 `endAnchor.id`，RouteLeg 的 from/to node id 不一定总是原 finalRoute node id；映射逻辑必须基于现有 `deriveFinalRouteDaysV3` 和 Route 生成逻辑，而不是猜测。
+Route dirty 时 ViewModel 不返回旧 distance / duration。
 
-## 5.9 非卡片式交通条
+### 非卡片式交通条
 
-在当前有效地点之间显示：
+`FinalRoutePanelV3` 在两个当前有效地点之间显示轻量连接：
 
 ```text
-🚗 自驾 · 72 km · 58 分
+交通方式 · Provider 距离 · Provider 时间
 ```
 
-状态：
+点击交通条修改的仍然是目标节点的 `transportFromPrevious`。
 
-- ready：显示 Provider 距离 / 时间；
-- dirty：显示交通方式 + “路线更新中”，不能把旧数值当当前事实；
-- attention：显示可用事实 + 注意状态，具体按现有 Route 状态；
-- 无 route：显示“路线待计算”；
-- Provider 失败：显示“路线暂不可用”。
+### Day 日程块
 
-交通条本身不能使用和地点卡片同等级的厚边框卡片样式。
-
-点击交通条打开轻量交通方式选择器；保存仍调用现有 `set_final_route_transport`。
-
-## 5.10 Day 日程块
-
-按派生 Day 对地点重新组织视觉分组。
-
-每个 Day 顶部至少显示：
+Day 顶部现在显示：
 
 ```text
 Day N
 日期
-Day title / 起终点摘要
-DayRoute ready 时：总距离 / 总交通时间
-Dirty / attention 时：路线状态
+标题
+总距离 / 总交通时间（Route ready）
+路线更新中 / 需注意 / 待计算
 ```
 
-Day 只是展示分组，数据仍来自现有 `plan.days` 和 `routeStates`，不能创建第二份可独立编辑 Day 数据。
-
-多一晚产生的空 Day 必须显示“这一天还没有详细安排”。
-
-## 5.11 住宿主操作
-
-将：
+同地点连续住宿形成的空 Day 显示：
 
 ```text
-住
-不住
-多一晚
+这一天还没有详细安排
 ```
 
-从地点编辑抽屉移到地点块主操作区。
+### 住宿 / 状态 / 排序
 
-普通地点：
+- 普通地点直接显示 `+ 住`。
+- 住宿边界显示 `住 ▾ → 多一晚 / 不住`。
+- 正常 / 已定位不长期显示 badge。
+- 待定 / 不去 / 未定位 / 定位中继续显示。
+- 只有拖动手柄是 draggable 起点。
+
+### 地图选点
+
+点击编辑抽屉“地图选点”：
 
 ```text
-+ 住
+保存 editingNodeId 上下文
+→ 抽屉暂时关闭
+→ 地图进入选点模式
+→ 保存 / 取消
+→ 恢复原地点编辑抽屉
 ```
 
-已有住宿分界：
+### 样式
+
+新增：
 
 ```text
-住 ▾ → 多一晚 / 不住
+apps/web/src/phase4-final-route-interaction.css
 ```
 
-底层继续调用现有 `set_final_route_boundary` 和 `add_final_route_night`。
+桌面抽屉覆盖地图；窄屏使用覆盖式 Sheet，不回退为 inline 展开。
 
-## 5.12 状态标签减法
-
-默认隐藏：
+## 4.2 主要修改文件
 
 ```text
-正常
-已定位
+apps/web/src/AppFinalRouteV3.tsx
+apps/web/src/FinalRouteMapV3.tsx
+apps/web/src/FinalRoutePanelV3.tsx
+apps/web/src/FinalRouteEditorDrawerV4.tsx
+apps/web/src/final-route-ui-v3.ts
+apps/web/src/phase4-final-route-interaction.css
+apps/web/src/main.tsx
+apps/web/src/final-route-ui-v3.test.ts
+apps/web/src/phase4-final-route-interaction.test.ts
+apps/web/src/phase3-final-route-ai-cutover.test.ts
 ```
 
-只显示异常：
+未修改 server finalRoute / Day / Route 核心模型。
+
+## 4.3 静态 Review 完成条件
+
+已静态确认：
+
+- 地点 Hover 不创建 flyTo 请求；
+- 地图 flyTo 只由显式 `focusRequest` 触发；
+- 编辑不再使用 inline `final-route-editor-v3`；
+- 编辑抽屉与地点主列表分离；
+- 交通条按 active nodes 构造；
+- tentative / no_go 中间节点不会成为有效交通端点；
+- Route dirty 不暴露旧距离 / 时间；
+- 跨 Day Anchor 映射已有对应测试用例；
+- 地图选点保存 / 取消均保留编辑返回上下文；
+- Provider 事实边界没有放松；
+- 没有修改后端核心数据语义。
+
+施工 Agent 没有运行 test / typecheck / build / app / Provider / CI。
+
+## 4.4 冻结测试基线
 
 ```text
-待定
-不去
-未定位
-定位中
+Test Branch: test/plan-phase4-final-route-interaction-20260906-r1
+Test HEAD: 6ced10e9fb68d76d5587d14726b78f248852cfd2
 ```
 
-地点状态修改入口仍保留，但不要让“正常”成为长期 badge。
+说明：上述 Branch + HEAD 是实际待测代码。本文档记录更新在 `main`，不会改变测试分支 HEAD。
 
-## 5.13 排序基础调整
+## 4.5 Phase 4 本地测试要求
 
-Phase 4 至少要做到：
-
-- 只有拖动手柄作为 draggable 起点；
-- 地点块主体不再整体 draggable；
-- 拖动不能和地点 Click 地图定位冲突。
-
-是否彻底移除桌面 ↑ / ↓ 可以留到 Phase 5。
-
-## 5.14 代码施工完成条件
-
-静态 Review 必须确认：
-
-- 不再存在地点 Click 直接展开 inline editor；
-- hover 和 flyTo 代码路径分离；
-- 编辑按钮使用 stopPropagation；
-- 住宿 / 状态 / 交通按钮不冒泡触发 flyTo；
-- inline editor 已从地点流中移除；
-- 交通条使用有效线路 ViewModel；
-- Route dirty 时不把旧距离 / 时间当当前事实；
-- Day 分组完全来自现有派生 Day；
-- Provider 事实边界没有被放松；
-- 没有修改 finalRoute 服务端核心数据语义。
-
-## 5.15 本地测试要求
-
-Phase 4 必须由用户本地 Codex 验证：
+必须至少覆盖：
 
 ```text
-相关 unit / component tests
+相关 unit / contract tests
 typecheck
 build
 浏览器 UI 人工验证
-至少一趟包含 3+ Day 的真实测试旅行
-至少一个 tentative/no_go 中间节点
-至少一个多一晚场景
-至少一个 route dirty 场景
-至少一个未定位地点
+3+ Day 测试旅行
+tentative / no_go 中间节点
+多一晚 / 空 Day
+Route dirty
+未定位地点
+地图选点保存 + 取消
+桌面 + 窄屏
 ```
 
-浏览器人工验证是本 Phase 强制 Gate，因为前一轮缺失的主要问题正是 UI E2E 未覆盖。
+浏览器人工验证是 Phase 4 强制 Gate。
 
-## 5.16 Codex 本地测试 Prompt
-
-代码完成并冻结后再填写：
-
-```text
-Test Branch: <PHASE4_BRANCH>
-Test HEAD: <PHASE4_FULL_SHA>
-```
-
-测试 Prompt：
+## 4.6 Codex 本地测试 Prompt
 
 ```text
 请独立验收 TravelPlanner Phase 4：最终线路 P0 主交互闭环。
 
 本次测试只允许针对以下 Git 基线：
 
-Test Branch: <PHASE4_BRANCH>
-Test HEAD: <PHASE4_FULL_SHA>
+Test Branch: test/plan-phase4-final-route-interaction-20260906-r1
+Test HEAD: 6ced10e9fb68d76d5587d14726b78f248852cfd2
 
 在任何测试前先运行：
 
@@ -411,41 +294,117 @@ git status --short
 如果存在会改变待测生产代码的本地未提交修改：
 立即停止，输出 TEST_WORKTREE_DIRTY。
 
-先阅读：
+然后阅读：
 - docs/PLAN.md 第 31–47 节
-- docs/PLAN_EXECUTION.md Phase 4
-- docs/PLAN_PROGRESS.md Phase 4
+- docs/PLAN_EXECUTION.md Phase 4（如果测试分支中的文档尚未含冻结 SHA，以本 Prompt 的 Branch + HEAD 为唯一测试基线）
+- docs/PLAN_PROGRESS.md Phase 4（同上）
 
 不要相信施工 Agent 的结论，不要为了让测试通过而修改生产代码。
 
-重点验证：
-1. Hover 地点只高亮地点块和 Marker，地图中心 / zoom 完全不变。
-2. Click 地点才 flyTo，且不打开编辑抽屉。
-3. Click 编辑不触发 flyTo，打开左侧/覆盖式独立编辑抽屉。
-4. 编辑抽屉不把地点列表向下撑开，可切换地点、关闭、Esc。
-5. 地图选点完成 / 取消后能恢复编辑上下文。
-6. 地点之间直接显示交通方式、Provider 距离、Provider 时间。
-7. tentative/no_go 中间节点不会污染当前有效交通连接。
-8. route dirty 时不会把旧距离 / 时间当当前事实。
-9. 点击交通条能修改到达当前有效节点的 transportFromPrevious，并触发既有 Route 更新逻辑。
-10. Day 是明确日程块，显示日期与 Route 摘要。
-11. 住 / 不住 / 多一晚在地点主界面可操作，多一晚产生清楚的空 Day。
-12. 正常 / 已定位不再长期占 badge；异常状态仍清楚。
-13. 拖动只从手柄开始，不与地点 Click 冲突。
-14. Provider 事实边界、finalRoute 数据语义、AI 权限无回归。
+第一部分：静态 Review
+1. 检查 AppFinalRouteV3 的 selected / hovered / editing / focusRequest / map-pick 状态是否真正解耦。
+2. 检查 FinalRouteMapV3 是否只有显式 focusRequest 才调用 flyTo；hover / selected 变化不能移动地图。
+3. 检查 FinalRoutePanelV3 是否彻底移除 inline final-route-editor-v3。
+4. 检查 FinalRouteEditorDrawerV4 是否只编辑地点自身；交通不在抽屉中。
+5. 检查交通 ViewModel 是否基于 active finalRoute + 派生 Day + RouteLeg，而不是 DOM 相邻 row。
+6. 检查 route dirty 是否不会显示旧 distance / duration。
+7. 检查任何用户输入都不能伪造 Provider distance / duration / geometry。
+8. 检查本 Phase 没有无关后端核心重构。
 
-请运行你认为必要的 unit / integration / typecheck / build，并启动浏览器做 UI 人工验收。
+第二部分：执行测试
+请在本地执行项目现有必要的测试，包括至少：
+- Phase 4 新增 / 修改测试；
+- final-route UI helper 测试；
+- Phase 2 / Phase 3 final-route 回归测试；
+- 相关 map / route 测试；
+- 完整 typecheck；
+- 完整 build；
+- 如果成本合理，运行完整 npm test。
+
+第三部分：浏览器人工验收（本 Phase 强制）
+使用一趟至少 3 Day 的测试旅行，逐项验证：
+
+A. Hover
+- 记录地图当前中心和 zoom。
+- 鼠标移入多个地点块。
+- 地点块与对应 Marker 应高亮。
+- 地图中心和 zoom 必须完全不变。
+
+B. Click 地点
+- 点击地点主体。
+- 地图应 flyTo 当前地点并保持 Marker 选中。
+- 不应打开编辑抽屉。
+
+C. 编辑按钮
+- 点击某地点“编辑”。
+- 地图不能因为编辑动作 flyTo。
+- 编辑抽屉应从最终线路左侧覆盖地图区域。
+- 最终线路后续地点不能被向下撑开。
+- 再点当前地点“编辑”应关闭。
+- 编辑 A 后点 B 的编辑，应直接切换到 B。
+- Esc / 关闭按钮应关闭。
+
+D. 交通条
+- A/B 均 normal 且 Route ready 时，应直接显示交通方式、Provider 距离、Provider 时间。
+- 点击交通条修改方式，确认保存到 B 的 transportFromPrevious，并触发 Route 更新。
+- Route dirty 期间不能继续把旧距离 / 时间显示成当前事实。
+
+E. tentative / no_go
+构造：
+A
+X（待定或不去）
+B
+确认：
+- X 仍在列表和地图。
+- X 不参与当前交通。
+- 主线路显示有效 A → B 交通，而不是 A → X → B。
+
+F. Day / 住宿
+- 普通地点可以直接点“+ 住”。
+- 已住宿地点可以“多一晚 / 不住”。
+- Day 编号 / 分组自动变化。
+- Day ready 时显示总距离 / 时间。
+- 多一晚形成空 Day 时显示“这一天还没有详细安排”。
+
+G. 地图选点
+- 打开地点编辑 → 地图选点。
+- 抽屉应暂时退出，地图可操作。
+- 成功保存后恢复同一个地点编辑抽屉。
+- 再验证一次取消选点，也应恢复原编辑上下文。
+
+H. 未定位地点
+- Hover / Click 未定位地点不能报错或伪造坐标。
+- UI 应显示未定位异常状态。
+
+I. 排序
+- 只有拖动手柄能够开始拖动。
+- 点击地点主体不应误拖。
+- 拖动后 Day / Route / 交通条仍跟随最终线路更新。
+
+J. 响应式
+- 桌面验证抽屉覆盖地图但不挤压线路。
+- <=900px 验证编辑使用覆盖式 Sheet，不能退回地点下方 inline 展开。
 
 最终输出必须包含：
-Test Branch: ...
-Test HEAD: ...
+
+Test Branch: test/plan-phase4-final-route-interaction-20260906-r1
+Test HEAD: 6ced10e9fb68d76d5587d14726b78f248852cfd2
 Phase 4: PASS / FAIL
 
 实际执行的测试：
 - ...
 
-UI 人工验证场景：
-- ...
+浏览器人工验收：
+- A Hover: PASS / FAIL
+- B Click: PASS / FAIL
+- C 编辑抽屉: PASS / FAIL
+- D 交通条: PASS / FAIL
+- E tentative/no_go: PASS / FAIL
+- F Day/住宿: PASS / FAIL
+- G 地图选点: PASS / FAIL
+- H 未定位: PASS / FAIL
+- I 排序: PASS / FAIL
+- J 响应式: PASS / FAIL
 
 发现的问题：
 - ...
@@ -458,208 +417,34 @@ UI 人工验证场景：
 
 ---
 
-# 6. Phase 5 — P1 界面减法与辅助交互收敛
+# 5. Phase 5 — P1 界面减法与辅助交互收敛
 
-状态：pending
+状态：`pending`
 
-前置条件：Phase 4 必须由用户本地 Codex 对冻结 Branch + HEAD 返回 PASS。
+前置条件：Phase 4 对冻结 Branch + HEAD 本地验证 PASS。
 
-## 6.1 目标
-
-在 Phase 4 主闭环稳定以后进一步减少界面噪音：
+计划内容：
 
 ```text
-AI Day 操作折叠
+Day AI 操作折叠
 全程 AI 操作收敛
 Pending Proposal 紧凑化
 添加地点插入位置显式化
-桌面排序入口简化
-删除确认 / Undo 体验统一
-响应式细节完善
+桌面排序入口进一步简化
+删除产品内确认 / Undo
+响应式细节
 ```
 
-## 6.2 AI 操作收敛
-
-每个 Day 不再长期显示多个 AI 按钮。
-
-收敛为：
-
-```text
-Day N                              AI ▾
-```
-
-菜单：
-
-```text
-补充详细地点
-完善这一天
-优化这一天
-```
-
-全程 AI 也收敛为单一入口，保留现有 Action / Scope 权限，不改后端语义。
-
-## 6.3 Proposal 紧凑化
-
-Pending Proposal 只显示紧凑提醒：
-
-```text
-✨ AI 有一个“Day 4 顺序优化”方案    查看
-```
-
-点击后再查看详情和 Apply / Reject。
-
-已采用 / 已拒绝 / 已撤销的历史 Proposal 不长期占据最终线路主流，可折叠或进入历史区域。
-
-## 6.4 添加地点插入位置显式化
-
-添加地点按钮必须明确说明位置：
-
-```text
-+ 在“陶波”后添加
-```
-
-或：
-
-```text
-+ 添加到线路末尾
-```
-
-不能依赖用户看不到的 map selected / editing 临时状态决定插入位置。
-
-如果继续支持“在某地点后添加”，必须使用单独显式 insertion anchor 状态或由用户从具体位置发起。
-
-## 6.5 桌面排序入口简化
-
-桌面以拖动手柄为主，长期显示 ↑ / ↓ 可以移除或放进更多菜单。
-
-移动端保留易用的上移 / 下移作为备选。
-
-## 6.6 删除反馈
-
-优先将浏览器 `window.confirm` 替换为产品内确认 / 撤销体验。
-
-如果现有 Revision / Undo 可以安全支持：
-
-```text
-地点已移除    撤销
-```
-
-否则先做产品内二次确认，不为了 Undo 新增复杂后端。
-
-## 6.7 响应式
-
-检查：
-
-- 中等宽度地图 + 抽屉 + 线路布局；
-- 移动端编辑 Sheet；
-- Day header；
-- 交通条；
-- 长地点名；
-- 中英双语地点名；
-- 操作菜单不会溢出。
-
-## 6.8 代码施工完成条件
-
-静态 Review 确认：
-
-- AI 权限没有变化；
-- 添加位置始终显式；
-- 桌面主界面无重复排序入口；
-- Proposal 历史不会长期压缩线路空间；
-- 删除只作用于当前 route node；
-- Phase 4 的 Hover / Click / Edit / 交通 / Day 行为没有回归。
-
-## 6.9 本地测试要求
-
-Phase 5 必须由用户本地 Codex执行：
-
-```text
-相关 unit / component tests
-typecheck
-build
-浏览器 UI 回归
-桌面 + 至少一个窄屏尺寸
-```
-
-## 6.10 Codex 本地测试 Prompt
-
-代码完成并冻结后再填写：
-
-```text
-Test Branch: <PHASE5_BRANCH>
-Test HEAD: <PHASE5_FULL_SHA>
-```
-
-测试 Prompt：
-
-```text
-请独立验收 TravelPlanner Phase 5：P1 界面减法与辅助交互收敛。
-
-本次测试只允许针对以下 Git 基线：
-
-Test Branch: <PHASE5_BRANCH>
-Test HEAD: <PHASE5_FULL_SHA>
-
-在任何测试前先运行：
-
-git branch --show-current
-git rev-parse HEAD
-git status --short
-
-如果当前 Branch 或 HEAD 不匹配，输出 TEST_BASE_MISMATCH 并停止。
-如果存在影响待测生产代码的未提交修改，输出 TEST_WORKTREE_DIRTY 并停止。
-
-阅读 docs/PLAN.md 第 31–47 节、docs/PLAN_EXECUTION.md Phase 5、docs/PLAN_PROGRESS.md。
-
-重点验证：
-1. Day AI 操作已收敛，但原 AI Scope / 权限不变。
-2. Pending Proposal 紧凑，历史 Proposal 不长期挤占线路。
-3. 添加地点位置始终对用户显式可见。
-4. 桌面排序入口不重复，移动端仍可用。
-5. 删除体验已产品内统一，且只删除当前 route node。
-6. 桌面 / 窄屏布局中编辑抽屉、交通条、Day header 不溢出。
-7. Phase 4 全部核心交互无回归。
-
-运行必要 unit / integration / typecheck / build，并做浏览器 UI 回归。
-
-最终输出：
-Test Branch: ...
-Test HEAD: ...
-Phase 5: PASS / FAIL
-
-实际执行的测试：
-- ...
-
-发现的问题：
-- ...
-
-未覆盖或无法验证：
-- ...
-
-是否建议结束本轮 PLAN：是 / 否
-```
+Phase 5 不得扩大为 finalRoute / Day / Route 数据模型重构。
 
 ---
 
-# 7. 测试纪律
+# 6. 测试纪律
 
-继续严格遵守 `PLAN_IMPLEMENTATION_PROMPT.md`：
+继续遵守 `PLAN_IMPLEMENTATION_PROMPT.md`：
 
-- 施工 Agent 不运行 test / typecheck / build / app / CI；
-- 施工 Agent只做代码修改、静态 Review、测试代码准备；
-- 每个 Phase 代码完成后固定实际 Git Branch + 40 位 HEAD；
-- `PLAN_PROGRESS.md` 和本文件同时记录该基线；
-- 用户本地 Codex 返回完全一致 Branch + HEAD 的 PASS 后才进入下一 Phase；
-- 任何新提交都会使旧 PASS 失效。
-
----
-
-# 8. 完工条件
-
-Phase 4 和 Phase 5 都由用户本地验证 PASS 后：
-
-1. 最终静态 Review `PLAN.md` 第 31–47 节；
-2. 检查 `PRODUCT.md` 是否需要同步新的最终线路交互；
-3. 检查 `TECHNICAL.md` 是否需要记录新的 UI 状态与 ViewModel；
-4. 更新 `PLAN_PROGRESS.md` 为 completed；
-5. 记录浏览器 UI 覆盖范围和仍未覆盖的真实外部 Route Provider 场景。
+- 施工 Agent 不运行任何测试 / typecheck / build / app / CI；
+- 每个 Phase 只对明确 Test Branch + Test HEAD 接受测试结果；
+- 如果测试代码 HEAD 改变，旧 PASS 立即失效；
+- Phase 4 未 PASS 前不施工 Phase 5；
+- 用户本地 Codex 不得为了通过测试修改生产代码。
