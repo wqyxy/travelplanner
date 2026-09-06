@@ -48,6 +48,11 @@ function connectionText(connection: FinalRouteTransportConnectionV4) {
   return parts.join(" · ");
 }
 
+function connectionModeLabel(connection: FinalRouteTransportConnectionV4) {
+  if (connection.state === "same_place") return "同地停留";
+  return connection.mode ? transportModeLabelsV3[connection.mode] : "交通待定";
+}
+
 function dropPosition(event: DragEvent<HTMLElement>): FinalRouteDropPositionV4 {
   const rect = event.currentTarget.getBoundingClientRect();
   return event.clientY < rect.top + rect.height / 2 ? "before" : "after";
@@ -116,7 +121,6 @@ export function FinalRoutePanelV3({
   const dirtyCount = workspace.routeStates.filter((item) => item.dirty).length;
   const [addOpen, setAddOpen] = useState(false);
   const [addDraft, setAddDraft] = useState<AddDraft>({ nameZh: "", kind: "attraction" });
-  const [dragArmedNodeId, setDragArmedNodeId] = useState<string | null>(null);
   const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const [transportEditingNodeId, setTransportEditingNodeId] = useState<string | null>(null);
@@ -203,7 +207,6 @@ export function FinalRoutePanelV3({
     : []).slice(-6).reverse();
 
   const clearDrag = () => {
-    setDragArmedNodeId(null);
     setDraggedNodeId(null);
     setDropTarget(null);
   };
@@ -298,9 +301,9 @@ export function FinalRoutePanelV3({
           return <div className="final-route-row-wrap-v3" key={row.node.id}>
             {connection && <div className={`final-route-transport-connector-v4 state-${connection.state}`}>
               <button type="button" className="final-route-transport-main-v4" disabled={busy || aiBusy} title={connection.warning || undefined} onClick={() => setTransportEditingNodeId((current) => current === row.node.id ? null : row.node.id)}>
-                <Route size={14}/><strong>{connection.mode ? transportModeLabelsV3[connection.mode] : "交通待定"}</strong><span>{connectionText(connection)}</span>{connection.skippedInactiveCount > 0 && <small>{fromName} → {toName} · 已跳过 {connection.skippedInactiveCount} 个待定/不去地点</small>}
+                <Route size={14}/><strong>{connectionModeLabel(connection)}</strong><span>{connection.state === "same_place" ? "连续住宿" : connectionText(connection)}</span>{connection.skippedInactiveCount > 0 && <small>{fromName} → {toName} · 已跳过 {connection.skippedInactiveCount} 个待定/不去地点</small>}
               </button>
-              {transportEditingNodeId === row.node.id && <div className="final-route-transport-editor-v4">
+              {transportEditingNodeId === row.node.id && connection.state !== "same_place" && <div className="final-route-transport-editor-v4">
                 <label><span>这段交通方式</span><select autoFocus value={row.node.transportFromPrevious?.mode ?? ""} disabled={busy || aiBusy} onChange={(event) => { const mode = event.target.value as TransportMode | ""; setTransportEditingNodeId(null); void onSetTransport(row.node.id, mode); }}><option value="">未设置</option>{transportOptions.map((mode) => <option key={mode} value={mode}>{transportModeLabelsV3[mode]}</option>)}</select></label>
                 <small>交通方式保存在“到达 {toName}”的线路节点上；距离和时间仍由路线 Provider 计算。</small>
               </div>}
@@ -308,21 +311,8 @@ export function FinalRoutePanelV3({
 
             <article
               className={`final-route-row-v3 status-${row.node.status} ${selected ? "map-selected" : ""} ${hovered ? "hover-linked" : ""} ${editing ? "editing" : ""} ${dragging ? "dragging" : ""} ${currentDrop ? `drop-${currentDrop}` : ""}`}
-              draggable={!busy && !aiBusy}
               onMouseEnter={() => onHoverNode(row.node.id)}
               onMouseLeave={() => onHoverNode(null)}
-              onDragStart={(event) => {
-                if (dragArmedNodeId !== row.node.id) {
-                  event.preventDefault();
-                  return;
-                }
-                event.stopPropagation();
-                event.dataTransfer.effectAllowed = "move";
-                event.dataTransfer.setData("text/plain", row.node.id);
-                event.dataTransfer.setDragImage(event.currentTarget, 22, 22);
-                setDraggedNodeId(row.node.id);
-                setDropTarget(null);
-              }}
               onDragOver={(event) => {
                 if (!draggedNodeId || draggedNodeId === row.node.id) return;
                 event.preventDefault();
@@ -330,9 +320,16 @@ export function FinalRoutePanelV3({
                 setDropTarget({ nodeId: row.node.id, position: dropPosition(event) });
               }}
               onDrop={(event) => moveDroppedNode(event, row.index)}
-              onDragEnd={clearDrag}
             >
-              <button className="final-route-drag-v3" type="button" draggable={false} disabled={busy || aiBusy} aria-label="拖动地点排序" title="按住并拖动整张地点卡排序" onPointerDown={(event) => { event.stopPropagation(); setDragArmedNodeId(row.node.id); }} onPointerUp={() => { if (!draggedNodeId) setDragArmedNodeId(null); }} onPointerCancel={() => { if (!draggedNodeId) setDragArmedNodeId(null); }}><GripVertical size={17}/></button>
+              <button className="final-route-drag-v3" type="button" draggable={!busy && !aiBusy} disabled={busy || aiBusy} aria-label="拖动地点排序" title="按住并拖动整张地点卡排序" onDragStart={(event) => {
+                event.stopPropagation();
+                const card = event.currentTarget.closest(".final-route-row-v3") as HTMLElement | null;
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData("text/plain", row.node.id);
+                if (card) event.dataTransfer.setDragImage(card, 22, 22);
+                setDraggedNodeId(row.node.id);
+                setDropTarget(null);
+              }} onDragEnd={clearDrag}><GripVertical size={17}/></button>
               <button className="final-route-main-v3" type="button" onClick={() => onFocusNode(row.node.id)}>
                 <span className="final-route-index-v3">{row.index + 1}</span>
                 <span><strong>{display.primary}</strong>{display.secondary && <small>{display.secondary}</small>}<small>{placeKindLabels[row.place?.kind ?? "waypoint"]}{row.node.startTime || row.node.scheduleText ? ` · ${row.node.startTime || row.node.scheduleText}` : ""}</small></span>
