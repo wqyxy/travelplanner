@@ -46,6 +46,7 @@ type Maps = {
   search(query: string, countryCode?: string | null, signal?: AbortSignal): Promise<MapCandidate[]>;
   reverse(latitude: number, longitude: number, signal?: AbortSignal): Promise<MapCandidate | null>;
 };
+type PlaceResolutionStore = Pick<TravelStoreV2, "requireTrip" | "listPlaceResolutions" | "upsertPlaceResolution">;
 type MatchFacts = { nameScore: number; countryMatch: boolean; cityMatch: boolean; regionMatch: boolean; typeScore: number };
 type SearchState = { raw: MapCandidate[]; ranked: RankedProviderCandidate[]; searchCount: number; queries: Set<string> };
 
@@ -228,7 +229,7 @@ function unresolved(tripId: string, place: Place, message: string, method: "prov
 }
 
 export class PlaceResolverV2 {
-  constructor(private readonly options: { store: TravelStoreV2; maps: Maps; assist?: PlaceResolutionAssist }) {}
+  constructor(private readonly options: { store: PlaceResolutionStore; maps: Maps; assist?: PlaceResolutionAssist }) {}
 
   private currentTrip(tripId: string, expectedGeneration: number) {
     const trip = this.options.store.requireTrip(tripId);
