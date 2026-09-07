@@ -1,12 +1,13 @@
 import { AiTaskMonitorV3, aiErrorMessageV3 } from "./ai-task-monitor-v3.js";
-import type { PlaceResolutionBatchProgress, PlaceResolverV2 } from "./place-resolver-v2.js";
+import type { PlaceResolutionBatchProgress } from "./place-resolver-v2.js";
+import type { PlannerPlaceResolverCapabilityV3 } from "./provider-resolver-capability-v3.js";
 import type { TravelStoreV3 } from "./travel-store-v3.js";
 
 export class PlannerResolutionCoordinatorV3 {
   constructor(private readonly options: {
     store: TravelStoreV3;
     tasks: AiTaskMonitorV3;
-    resolver: PlaceResolverV2;
+    resolver: PlannerPlaceResolverCapabilityV3;
     emitChanged: (tripId: string, placeId: string) => void;
   }) {}
 
