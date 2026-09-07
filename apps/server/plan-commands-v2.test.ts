@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { TravelPlanDocumentSchema, emptyTravelPlan, type TravelPlanDocument } from "./contracts-v2.js";
+import { syncFinalRouteForLegacyWriteV3 } from "./final-route-v3.js";
 import { applyPlanCommandBatchToStore, applyPlanCommands, assertCommandsWithinScope } from "./plan-commands-v2.js";
 import { TravelStoreV2 } from "./travel-store-v2.js";
 
@@ -42,7 +43,12 @@ function plan(): TravelPlanDocument {
       endAnchor: { id: "a-2-end", placeId: null, label: "大阪住宿待定", notes: null },
     },
   );
-  return TravelPlanDocumentSchema.parse(value);
+  value.finalRoute = { version: 1, nodes: [] };
+  const dayOnly = TravelPlanDocumentSchema.parse(value);
+  return syncFinalRouteForLegacyWriteV3(
+    TravelPlanDocumentSchema.parse({ ...dayOnly, days: [] }),
+    dayOnly,
+  );
 }
 
 describe("applyPlanCommands", () => {
