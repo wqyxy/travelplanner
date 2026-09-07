@@ -16,6 +16,7 @@ import {
 } from "./ai-action-contracts-v3.js";
 import { AiLedMicroCandidateDiscoveryOutputSchema } from "./ai-led-micro-contract-v2.js";
 import { semanticPlaceKey } from "./plan-commands-v2.js";
+import { computePlaceScore, type PlaceScoreBreakdown } from "./place-score-v3.js";
 import { effectivePlanningRole } from "./planning-roles-v3.js";
 import type { TravelStoreV2, TripDetailV2 } from "./travel-store-v2.js";
 
@@ -56,38 +57,57 @@ export type StoredCandidateDiscoveryResult = CandidateDiscoveryApplyResult & { t
 export type StoredPlanGenerationResult = PlanGenerationApplyResult & { trip: TripDetailV2; generation: number; version: number };
 
 const clone = <T>(value: T): T => structuredClone(value);
+const SCORE_TAG_PREFIX = "__place_score:";
+
+function scoreTags(scores: PlaceScoreBreakdown | null | undefined) {
+  if (!scores) return [];
+  return [
+    `${SCORE_TAG_PREFIX}uniqueness=${scores.uniqueness}`,
+    `${SCORE_TAG_PREFIX}scenery=${scores.scenery}`,
+    `${SCORE_TAG_PREFIX}culture=${scores.culture}`,
+    `${SCORE_TAG_PREFIX}experience=${scores.experience}`,
+    `${SCORE_TAG_PREFIX}representativeness=${scores.representativeness}`,
+  ];
+}
 
 function mergeTags(left: string[], right: string[]) {
-  return [...new Set([...left, ...right])].slice(0, 30);
+  const cleanedLeft = left.filter((tag) => !tag.startsWith(SCORE_TAG_PREFIX));
+  const incomingScores = right.filter((tag) => tag.startsWith(SCORE_TAG_PREFIX));
+  const incomingRegular = right.filter((tag) => !tag.startsWith(SCORE_TAG_PREFIX));
+  return [...new Set([...cleanedLeft, ...incomingRegular, ...incomingScores])].slice(0, 30);
 }
 
 function candidateMetadata(output: {
   aiReason: string;
   aiScore: number;
+  scoreBreakdown?: PlaceScoreBreakdown | null;
   suggestedDurationMinutes: number | null;
   tags: string[];
 }) {
+  const hasScores = Boolean(output.scoreBreakdown);
   return {
     aiReason: output.aiReason,
-    aiScore: output.aiScore,
+    aiScore: hasScores ? computePlaceScore(output.scoreBreakdown!) : output.aiScore,
     suggestedDurationMinutes: output.suggestedDurationMinutes,
-    tags: output.tags,
+    tags: mergeTags(output.tags, scoreTags(output.scoreBreakdown)),
   };
 }
 
 function updateAiMetadata(existing: TripCandidate, source: {
   aiReason: string;
   aiScore: number;
+  scoreBreakdown?: PlaceScoreBreakdown | null;
   suggestedDurationMinutes: number | null;
   tags: string[];
 }) {
+  const computedScore = source.scoreBreakdown ? computePlaceScore(source.scoreBreakdown) : source.aiScore;
   const previousScore = existing.aiScore ?? -1;
-  if (source.aiScore >= previousScore) {
+  if (computedScore >= previousScore) {
     existing.aiReason = source.aiReason;
-    existing.aiScore = source.aiScore;
+    existing.aiScore = computedScore;
     existing.suggestedDurationMinutes = source.suggestedDurationMinutes;
   }
-  existing.tags = mergeTags(existing.tags, source.tags);
+  existing.tags = mergeTags(existing.tags, [...source.tags, ...scoreTags(source.scoreBreakdown)]);
 }
 
 export function applyBackboneDiscoveryV3(current: TravelPlanDocument, value: unknown): BackboneDiscoveryApplyResult {
@@ -188,14 +208,10 @@ export function applyBackboneDiscoveryV3(current: TravelPlanDocument, value: unk
     return candidate;
   };
 
-  // Phase A: formalize all Planning Areas first. Generated parent references in Phase B
-  // can then resolve to canonical Candidate IDs, including semantic duplicates that map
-  // onto an already-existing Planning Area.
   for (const source of output.candidates.filter((candidate) => candidate.planningRole === "planning_area")) {
     formalizeCandidate(source, null);
   }
 
-  // Phase B: formalize Core Visits only after every possible generated parent is known.
   for (const source of output.candidates.filter((candidate) => candidate.planningRole === "core_visit")) {
     const parentRef = source.parentCandidateRef;
     if (!parentRef) throw new Error(`Core Visit 缺少 parentCandidateRef：${source.temporaryId}`);
@@ -305,7 +321,7 @@ export function applyCandidateDiscovery(
         existing.planningAreaCandidateId = parentId;
         updatedCandidateIds.add(existing.id);
       }
-      updateAiMetadata(existing, source);
+      updateAiMetadata(existing, source as typeof source & { scoreBreakdown?: PlaceScoreBreakdown | null });
       updatedCandidateIds.add(existing.id);
       mergedDuplicateCount += 1;
       continue;
@@ -316,7 +332,7 @@ export function applyCandidateDiscovery(
       planningAreaCandidateId: parentId,
       preference: "optional",
       source: "ai",
-      ...candidateMetadata(source),
+      ...candidateMetadata(source as typeof source & { scoreBreakdown?: PlaceScoreBreakdown | null }),
     };
     plan.candidates.push(candidate);
     candidateByPlaceId.set(placeId, candidate);
