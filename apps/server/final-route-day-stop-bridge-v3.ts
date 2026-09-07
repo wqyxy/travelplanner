@@ -99,11 +99,13 @@ function rebuildWithActiveOrder(plan: TravelPlanDocument, desiredActive: FinalRo
 
 /**
  * Translate an existing legacy `update_day_stop` mutation into a canonical
- * finalRoute node mutation when the old Day semantics are losslessly
- * representable by finalRoute.
+ * finalRoute node mutation.
  *
- * Returns null for legacy-only semantics that finalRoute intentionally does not
- * store, so callers can keep a temporary fallback while write paths migrate.
+ * `candidateId` is not stored independently in finalRoute. The canonical node
+ * Place identity is authoritative and the Day candidate link is re-derived from
+ * the current Candidate set. Therefore legacy candidate detach requests no
+ * longer create a second relationship state: a place-only edit changes Place;
+ * `candidateId: null` without a Place change is route-wise a no-op.
  */
 export function updateDerivedStopViaFinalRouteV3(
   planValue: TravelPlanDocument,
@@ -117,11 +119,7 @@ export function updateDerivedStopViaFinalRouteV3(
   const node = nodes.find((item) => item.id === stopId);
   if (!node || node.status !== "normal" || node.endsDay) return null;
 
-  // candidateId is derived from the canonical node Place. A request that only
-  // clears/rebinds candidateId without a representable Place identity change
-  // has no canonical finalRoute equivalent and must stay on the temporary path.
-  if (Object.hasOwn(changes, "candidateId")) {
-    if (changes.candidateId === null) return null;
+  if (Object.hasOwn(changes, "candidateId") && changes.candidateId) {
     const candidate = plan.candidates.find((item) => item.id === changes.candidateId);
     if (!candidate) throw new Error(`未知 Candidate：${changes.candidateId}`);
     if (changes.placeId !== undefined && changes.placeId !== candidate.placeId) {
@@ -129,9 +127,8 @@ export function updateDerivedStopViaFinalRouteV3(
     }
     node.placeId = candidate.placeId;
   } else if (changes.placeId !== undefined) {
-    // The old Day command implicitly detached candidateId for a place-only edit.
-    // finalRoute derives candidateId from Place, so that behavior is not lossless.
-    return null;
+    if (!plan.places.some((place) => place.id === changes.placeId)) throw new Error(`未知 Place：${changes.placeId}`);
+    node.placeId = changes.placeId;
   }
 
   for (const field of DETAIL_FIELDS) {
@@ -166,6 +163,8 @@ export function removeDerivedStopViaFinalRouteV3(
 /**
  * Insert a legacy Day stop by inserting an equivalent normal finalRoute node
  * immediately before the target Day stop (or the target Day boundary node).
+ * Candidate identity is derived from the inserted node Place on the next Day
+ * derivation; callers do not need a second candidate-link state.
  */
 export function addDerivedStopViaFinalRouteV3(
   planValue: TravelPlanDocument,
@@ -184,9 +183,6 @@ export function addDerivedStopViaFinalRouteV3(
     const candidate = plan.candidates.find((item) => item.id === stop.candidateId);
     if (!candidate) throw new Error(`未知 Candidate：${stop.candidateId}`);
     if (candidate.placeId !== stop.placeId) throw new Error(`Stop Candidate 与 Place 不一致：${candidate.id}`);
-  } else if (plan.candidates.some((candidate) => candidate.placeId === stop.placeId)) {
-    // finalRoute would automatically re-attach that Candidate on derivation.
-    return null;
   }
 
   const routeNode: FinalRouteNode = {
