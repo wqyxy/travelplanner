@@ -4,7 +4,6 @@ import {
   PlanCommandSchema,
   ProposalScopeSchema,
   TravelPlanDocumentSchema,
-  emptyTravelPlan,
   type PlanCommand,
   type ProposalScope,
 } from "./contracts-v2.js";
@@ -35,6 +34,7 @@ import { markImpact } from "./planner-itinerary-impact-v3.js";
 import { validateItineraryReferences } from "./planner-itinerary-validation-v3.js";
 import { proposalDiff } from "./planner-proposal-v3.js";
 import { PlannerResolutionCoordinatorV3 } from "./planner-resolution-coordinator-v3.js";
+import { buildRequirementsMutationV3 } from "./planner-requirements-mutation-v3.js";
 import { currentPlaceResolutions } from "./planner-resolution-state-v3.js";
 import { PlannerRouteCoordinatorV3 } from "./planner-route-coordinator-v3.js";
 import type { PlannerPlaceResolverCapabilityV3 } from "./provider-resolver-capability-v3.js";
@@ -61,7 +61,6 @@ const dialoguePromptIds: Record<ConversationStage, "dialogue.requirements" | "di
   interests: "dialogue.interests",
   itinerary: "dialogue.itinerary",
 };
-const REQUIREMENT_FIELDS = ["title", "brief", "dates", "travelers", "budget", "pace", "themes", "preferences", "constraints", "assumptions"] as const;
 
 type ActiveRun = { tripId: string; interrupt: () => Promise<void>; actionId?: string; messageId?: string; stage?: ConversationStage };
 type ActionOutput = Record<string, any>;
@@ -427,34 +426,16 @@ export class TravelPlannerRuntimeV3 {
   private async executeDeterministic(action: AiActionRecord) {
     const trip = this.options.store.requireTrip(action.tripId);
     if (trip.contentGeneration !== action.baseGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
-    if (action.actionType === "requirements.capture") {
-      const additionalRequirements = String(action.parameters.additionalRequirements ?? "").trim();
-      if (!additionalRequirements) throw new Error("requirements.capture 缺少其他需求。");
-      const next = structuredClone(trip.plan);
-      next.trip.brief.additionalRequirements = additionalRequirements;
-      const parsed = TravelPlanDocumentSchema.parse(next);
-      const written = this.options.store.writePlan(action.tripId, parsed, action.baseGeneration, { source: "action:requirements.capture", summary: "记录其他需求" }, { keepActionId: action.id });
-      this.emit("travel.document.changed", { tripId: action.tripId, generation: written.generation, changedDayIds: [] });
-      return `generation:${written.generation}`;
-    }
-    if (action.actionType === "requirements.update" || action.actionType === "requirements.clear") {
-      const defaults = emptyTravelPlan().trip;
-      const next = structuredClone(trip.plan);
-      if (action.actionType === "requirements.update") {
-        const raw = action.parameters.changes && typeof action.parameters.changes === "object" && !Array.isArray(action.parameters.changes) ? action.parameters.changes as Record<string, unknown> : {};
-        if (!Object.keys(raw).length) throw new Error("requirements.update 没有可执行字段。");
-        for (const key of REQUIREMENT_FIELDS) {
-          if (!(key in raw)) continue;
-          if (key === "brief") next.trip.brief = { ...next.trip.brief, ...(raw.brief as Record<string, string>) };
-          else (next.trip as any)[key] = structuredClone(raw[key]);
-        }
-      } else {
-        const fields = Array.isArray(action.parameters.fields) ? action.parameters.fields.map(String) : [];
-        if (!fields.length) throw new Error("requirements.clear 没有指定字段。");
-        for (const key of fields) if ((REQUIREMENT_FIELDS as readonly string[]).includes(key)) (next.trip as any)[key] = structuredClone((defaults as any)[key]);
-      }
-      const parsed = TravelPlanDocumentSchema.parse(next);
-      const written = this.options.store.writePlan(action.tripId, parsed, action.baseGeneration, { source: `action:${action.actionType}`, summary: "更新旅行需求" }, { keepActionId: action.id });
+
+    const requirementsMutation = buildRequirementsMutationV3(action, trip.plan);
+    if (requirementsMutation) {
+      const written = this.options.store.writePlan(
+        action.tripId,
+        requirementsMutation.plan,
+        action.baseGeneration,
+        requirementsMutation.revision,
+        { keepActionId: action.id },
+      );
       this.emit("travel.document.changed", { tripId: action.tripId, generation: written.generation, changedDayIds: [] });
       return `generation:${written.generation}`;
     }
