@@ -30,11 +30,11 @@ function publicMapText(value: string | null | undefined, fallback: string) {
   return publicSafeTextV3(translated, fallback);
 }
 
-function publicTaskSummary(task: AiTaskV3) {
+export function publicTaskSummary(task: AiTaskV3) {
   if (task.agent === "map") return publicMapText(task.summary, "地图路线状态已更新");
   if (ACTIVE.has(task.status)) return `正在${publicTaskLabel(task)}`;
   if (task.status === "completed") return `${publicTaskLabel(task)}已完成`;
-  if (task.status === "failed") return publicSafeTextV3(task.lastError, `${publicTaskLabel(task)}未完成，请按页面提示重试`);
+  if (task.status === "failed") return publicSafeTextV3(task.lastError || task.summary, `${publicTaskLabel(task)}未完成，请按页面提示重试`);
   return statusLabels[task.status] || "状态已更新";
 }
 

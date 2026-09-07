@@ -140,6 +140,15 @@ describe("Phase 3 Backbone discovery", () => {
     expect(core.planningAreaCandidateId).not.toBe("tmp-area");
   });
 
+  it("keeps an unparented Core Visit when the generation omits a Planning Area", () => {
+    const output = mixedBackboneOutput();
+    output.candidates[1].parentCandidateRef = null;
+    const result = applyBackboneDiscoveryV3(emptyTravelPlan(), output);
+    const core = result.plan.candidates.find((candidate) => candidate.id === result.idMappings["tmp-core"]);
+
+    expect(core).toMatchObject({ planningRole: "core_visit", planningAreaCandidateId: null });
+  });
+
   it("upgrades an existing Detail Interest to Core while preserving preference and source", () => {
     const current = existingBackbonePlan();
     const result = applyBackboneDiscoveryV3(current, {

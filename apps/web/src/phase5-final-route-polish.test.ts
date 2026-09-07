@@ -87,6 +87,8 @@ describe("Phase 5 final route polish contract", () => {
     expect(panel).toContain("onRecalculateRoute(effectiveConnection.dayId)");
     expect(panel).toContain("重新定位");
     expect(panel).toContain("选择备选");
+    expect(panel).toContain('locationState === "resolved"');
+    expect(panel).toContain("unresolvedLocation && <button");
     expect(panel).toContain("openResolutionChoices");
     expect(panel).toContain("final-route-resolution-choice-v5");
     expect(app).toContain("resolutions/${encodeURIComponent(placeId)}/candidates?expectedGeneration=");

@@ -23,6 +23,7 @@ const outputSchemas = [
   AdjustmentProposalOutputSchema,
   DetailBatchOutputV2Schema,
   MapResolutionAssistOutputSchema,
+  DestinationGenerateOutputSchema,
 ] as const;
 
 function assertOpenAiCompatible(value: unknown) {
@@ -95,9 +96,11 @@ describe("OpenAI structured output adapter", () => {
     expect(converted.properties.planningRole.enum).toEqual(["planning_area", "core_visit", "detail_interest"]);
   });
 
-  it("bridges an omitted route suggestion in main-route generation", () => {
+  it("bridges optional backbone score and route fields in main-route generation", () => {
     const converted = buildOpenAiStructuredOutputSchema(DestinationGenerateOutputSchema) as any;
     const item = converted.properties.candidates.items;
+    expect(item.required).toContain("scoreBreakdown");
+    expect(item.properties.scoreBreakdown.anyOf).toEqual(expect.arrayContaining([{ type: "null" }]));
     expect(item.required).toContain("routeSuggestion");
     expect(item.properties.routeSuggestion.anyOf).toEqual(expect.arrayContaining([{ type: "null" }]));
 
@@ -105,7 +108,7 @@ describe("OpenAI structured output adapter", () => {
       schemaVersion: 2,
       baseGeneration: 0,
       assistantMessage: "已生成主要地点。",
-      places: [],
+      places: [{ id: "place-1", nameZh: "测试城市", nameLocal: null, nameEn: "Test City", kind: "city", city: "Test City", region: null, country: "Test", countryCode: "TT", approximate: false }],
       candidates: [{
         temporaryId: "candidate-1",
         placeTemporaryId: "place-1",
@@ -116,10 +119,13 @@ describe("OpenAI structured output adapter", () => {
         suggestedDurationMinutes: null,
         tags: [],
         defaultPreference: "optional",
+        scoreBreakdown: null,
         routeSuggestion: null,
       }],
     }) as any;
     expect(normalized.candidates[0]).not.toHaveProperty("routeSuggestion");
+    expect(normalized.candidates[0]).toHaveProperty("scoreBreakdown", null);
+    expect(DestinationGenerateOutputSchema.safeParse(normalized).success).toBe(true);
   });
 
   it("preserves partial update semantics through patch transport", () => {

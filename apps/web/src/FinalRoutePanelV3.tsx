@@ -122,6 +122,7 @@ export function FinalRoutePanelV3({
   onRecalculateRoute,
   onSyncMap,
   onRecalculateDirtyRoutes,
+  onRefreshWorkspace,
 }: {
   workspace: WorkspaceV3;
   selectedNodeId: string | null;
@@ -153,6 +154,7 @@ export function FinalRoutePanelV3({
   onRecalculateRoute: (dayId: string) => Promise<boolean>;
   onSyncMap: (placeIds: string[], dayIds: string[]) => Promise<boolean>;
   onRecalculateDirtyRoutes: () => Promise<void>;
+  onRefreshWorkspace: () => Promise<void>;
 }) {
   const plan = workspace.trip.plan;
   const rows = useMemo(() => finalRouteDisplayRowsV3(plan), [plan]);
@@ -243,6 +245,7 @@ export function FinalRoutePanelV3({
         method: "POST",
         body: JSON.stringify({ stage, actionType, parameters, targetIds, requestKey: crypto.randomUUID() }),
       });
+      await onRefreshWorkspace();
       setAiMessage(message);
     } catch (cause) {
       setAiMessage(cause instanceof Error ? cause.message : "AI 操作没有启动，请重试。");
@@ -474,7 +477,7 @@ export function FinalRoutePanelV3({
               </button>
               <div className="final-route-badges-v3">
                 {row.node.status !== "normal" && <span className={`status-pill-v3 ${row.node.status}`}>{finalRouteStatusLabelsV3[row.node.status]}</span>}
-                {locationAttention && <div className={`final-route-location-actions-v5 ${locationState}`}><span className={`location-pill-v4 ${locationState}`}>{locationAttention}</span>{locationState !== "resolving" && <><button className="final-route-location-action-v5" type="button" disabled={busy || aiBusy || !row.place} onClick={() => row.place && void onRetry([row.place.id], true)}><LocateFixed size={12}/>重新定位</button><button className="final-route-location-action-v5" type="button" disabled={busy || aiBusy || !row.place} onClick={() => row.place && void openResolutionChoices(row.place.id)}><MapPin size={12}/>选择备选</button></>}</div>}
+                {(locationAttention || locationState === "resolved") && <div className={`final-route-location-actions-v5 ${locationState}`}>{locationAttention && <span className={`location-pill-v4 ${locationState}`}>{locationAttention}</span>}{unresolvedLocation && <button className="final-route-location-action-v5" type="button" disabled={busy || aiBusy || !row.place} onClick={() => row.place && void onRetry([row.place.id], true)}><LocateFixed size={12}/>重新定位</button>}{locationState !== "resolving" && <button className="final-route-location-action-v5" type="button" disabled={busy || aiBusy || !row.place} onClick={() => row.place && void openResolutionChoices(row.place.id)}><MapPin size={12}/>选择备选</button>}</div>}
                 {row.node.status !== "normal" && row.node.endsDay && <span className="stay-pill-v3 inactive">住 · 暂不生效</span>}
               </div>
               <div className="final-route-quick-v4">

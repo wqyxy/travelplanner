@@ -1,13 +1,11 @@
 import type {
-  DestinationGenerateOutput,
   ItineraryDayOptimizeOutput,
   ItineraryRefineOutput,
   ItineraryRepairOutput,
 } from "./ai-action-contracts-v3.js";
 import type { AiActionRecord } from "./ai-stage-contracts-v3.js";
-import { TravelPlanDocumentSchema, type ProposalScope } from "./contracts-v2.js";
+import { type ProposalScope } from "./contracts-v2.js";
 import {
-  applyMainRouteGenerationFromOutputV3,
   finalRouteMoveCommandsForOrderedSubsetV3,
   finalRouteTargetNodeIdsForOptimizationV3,
   insertNewDetailCandidatesFromPlanV3,
@@ -17,7 +15,6 @@ import {
 import { TravelPlannerRuntimeV3 } from "./planner-runtime-v3.js";
 import { TravelStoreV3 } from "./travel-store-v3.js";
 
-const mainGenerationOutputs = new Map<string, DestinationGenerateOutput>();
 const isRouteOptimizationAction = (actionType: string | undefined) => actionType === "itinerary.day.optimize" || actionType === "itinerary.repair";
 
 const storePrototype = TravelStoreV3.prototype as any;
@@ -34,14 +31,6 @@ storePrototype.writePlan = function finalRouteAwareWritePlan(
   const source = revision?.source ?? "";
   const actionId = options?.keepActionId ?? null;
 
-  if (source === "action:destination.generate" && actionId) {
-    const output = mainGenerationOutputs.get(actionId);
-    if (!output) throw new Error("FINAL_ROUTE_MAIN_GENERATION_CONTEXT_MISSING: 主地点生成缺少本轮 AI 输出上下文。");
-    const before = this.requireTrip(id).plan;
-    const discovered = TravelPlanDocumentSchema.parse(value);
-    nextValue = applyMainRouteGenerationFromOutputV3(before, discovered, output);
-  }
-
   if ((source === "action:interest.discover" || source === "action:interest.supplement") && actionId) {
     const before = this.requireTrip(id).plan;
     const discovered = TravelPlanDocumentSchema.parse(value);
@@ -54,31 +43,6 @@ storePrototype.writePlan = function finalRouteAwareWritePlan(
 };
 
 const runtimePrototype = TravelPlannerRuntimeV3.prototype as any;
-const originalPersistDestinationGenerate = runtimePrototype.persistDestinationGenerate as Function;
-runtimePrototype.persistDestinationGenerate = async function persistDestinationGenerateToFinalRoute(
-  this: TravelPlannerRuntimeV3,
-  action: AiActionRecord,
-  output: DestinationGenerateOutput,
-  taskId: string | null = null,
-) {
-  const runtime = this as any;
-  const before = runtime.options.store.requireTrip(action.tripId);
-  if (before.plan.finalRoute.nodes.length) {
-    throw new Error("FINAL_ROUTE_MAIN_GENERATION_REQUIRES_EMPTY_ROUTE: 已有最终线路时不能重新生成主要地点覆盖用户线路。");
-  }
-  mainGenerationOutputs.set(action.id, output);
-  try {
-    const result = await originalPersistDestinationGenerate.call(this, action, output, taskId);
-    const current = runtime.options.store.requireTrip(action.tripId);
-    if (current.contentGeneration === action.baseGeneration + 1 && current.plan.days.length) {
-      runtime.startRouteBatch(action.tripId, current.contentGeneration, current.plan.days.map((day: any) => day.id));
-    }
-    return result;
-  } finally {
-    mainGenerationOutputs.delete(action.id);
-  }
-};
-
 const originalPersistInterestDiscovery = runtimePrototype.persistInterestDiscovery as Function;
 runtimePrototype.persistInterestDiscovery = async function persistInterestDiscoveryToFinalRoute(
   this: TravelPlannerRuntimeV3,

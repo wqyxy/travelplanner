@@ -124,7 +124,7 @@ describe("PlaceResolverV2", () => {
     store.close();
   });
 
-  it("keeps the Provider request budget bounded when AI declines weak candidates", async () => {
+  it("falls back to the highest-ranked Provider candidate when AI declines", async () => {
     const { store, tripId, generation } = seededStore();
     let searches = 0;
     let assists = 0;
@@ -137,7 +137,54 @@ describe("PlaceResolverV2", () => {
     const result = await resolver.resolve(tripId, "p-1", generation);
     expect(searches).toBe(PLACE_RESOLUTION_BASE_SEARCH_LIMIT);
     expect(assists).toBe(1);
-    expect(result.resolution.status).toBe("unresolved");
+    expect(result.resolution).toMatchObject({ status: "resolved", method: "provider_match", providerPlaceId: "weak" });
+    store.close();
+  });
+
+  it("falls back to the highest-ranked Provider candidate when AI output is invalid or fails", async () => {
+    const { store, tripId, generation } = seededStore();
+    const top = candidate({ providerPlaceId: "top" });
+    const lower = candidate({ providerPlaceId: "lower", name: "Kiyomizu Temple", displayName: "Kiyomizu Temple, Japan", latitude: 35, longitude: 135.8, city: null, region: null, category: null, placeType: null });
+    const invalid = new PlaceResolverV2({
+      store,
+      maps: { search: async () => [top, lower], reverse: async () => null },
+      assist: async () => ({ invalid: true } as unknown as MapResolutionAssistOutput),
+    });
+    const invalidResult = await invalid.resolve(tripId, "p-1", generation);
+    expect(invalidResult.resolution).toMatchObject({ status: "resolved", method: "provider_match", providerPlaceId: "top" });
+
+    const failing = new PlaceResolverV2({
+      store,
+      maps: { search: async () => [top, lower], reverse: async () => null },
+      assist: async () => { throw new Error("AI unavailable"); },
+    });
+    const failingResult = await failing.resolve(tripId, "p-1", generation, undefined, undefined, true);
+    expect(failingResult.resolution).toMatchObject({ status: "resolved", method: "provider_match", providerPlaceId: "top" });
+    store.close();
+  });
+
+  it("keeps the Place unresolved when neither Provider nor AI returns a candidate", async () => {
+    const { store, tripId, generation } = seededStore();
+    const resolver = new PlaceResolverV2({
+      store,
+      maps: { search: async () => [], reverse: async () => null },
+      assist: async () => ({ schemaVersion: 1, action: "unresolved", providerPlaceId: null, searchHints: [], reason: "没有可用候选。" }),
+    });
+    const result = await resolver.resolve(tripId, "p-1", generation);
+    expect(result.resolution).toMatchObject({ status: "unresolved", method: "provider_match", providerPlaceId: null });
+    store.close();
+  });
+
+  it("does not commit a Provider fallback after cancellation", async () => {
+    const { store, tripId, generation } = seededStore();
+    const controller = new AbortController();
+    const resolver = new PlaceResolverV2({
+      store,
+      maps: { search: async () => [candidate()], reverse: async () => null },
+      assist: async () => { controller.abort(); return { schemaVersion: 1, action: "unresolved", providerPlaceId: null, searchHints: [], reason: "取消。" }; },
+    });
+    await expect(resolver.resolve(tripId, "p-1", generation, controller.signal)).rejects.toThrow();
+    expect(store.getPlaceResolution(tripId, "p-1")).toMatchObject({ status: "unresolved", providerPlaceId: null });
     store.close();
   });
 
@@ -209,7 +256,7 @@ describe("PlaceResolverV2", () => {
     store.close();
   });
 
-  it("does not auto-select a same-named station and avoids duplicating AI hint context", async () => {
+  it("uses the top Provider fallback after AI hint search cannot decide", async () => {
     const { store, tripId, generation } = seededStore(picton);
     const station = candidate({ providerPlaceId: "picton-station", name: "Picton", displayName: "Picton Station, Picton, Marlborough, New Zealand", latitude: -41.28837, longitude: 174.00486, category: "railway", placeType: "station", countryCode: "nz", region: "Marlborough", city: "Picton" });
     const queries: string[] = [];
@@ -223,7 +270,7 @@ describe("PlaceResolverV2", () => {
     const result = await resolver.resolve(tripId, picton.id, generation);
     expect(queries).toContain("Picton town centre, Marlborough, New Zealand");
     expect(queries).not.toContain("Picton town centre, Marlborough, New Zealand, Picton, New Zealand");
-    expect(result.resolution).toMatchObject({ status: "unresolved", providerPlaceId: null, latitude: null, longitude: null });
+    expect(result.resolution).toMatchObject({ status: "resolved", method: "provider_match", providerPlaceId: "picton-station" });
     store.close();
   });
 
@@ -284,7 +331,7 @@ describe("PlaceResolverV2", () => {
     store.close();
   });
 
-  it("keeps a linear place unresolved when only arbitrary path segments remain", async () => {
+  it("uses the top Provider fallback when AI cannot decide a linear place", async () => {
     const { store, tripId, generation } = seededStore(coastalTrack);
     const pathSegment = candidate({ providerPlaceId: "path-segment", name: "Coastal Walking Track", displayName: "Coastal Walking Track, Coastal Region, New Zealand", category: "highway", placeType: "path", countryCode: "nz", region: "Coastal Region", city: null });
     let searches = 0;
@@ -295,7 +342,7 @@ describe("PlaceResolverV2", () => {
     });
     const result = await resolver.resolve(tripId, coastalTrack.id, generation);
     expect(searches).toBe(PLACE_RESOLUTION_BASE_SEARCH_LIMIT);
-    expect(result.resolution).toMatchObject({ status: "unresolved", providerPlaceId: null, latitude: null, longitude: null });
+    expect(result.resolution).toMatchObject({ status: "resolved", method: "provider_match", providerPlaceId: "path-segment" });
     store.close();
   });
 

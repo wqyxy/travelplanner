@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getAiTaskTopbarState } from "./AiTaskTopbar";
+import { getAiTaskTopbarState, publicTaskSummary } from "./AiTaskTopbar";
 import type { AiTaskV3 } from "./v3-types";
 
 const task = (id: string, status: AiTaskV3["status"], updatedAt: string): AiTaskV3 => ({
@@ -75,5 +75,11 @@ describe("AI task topbar state", () => {
 
     const completed = { ...running, status: "completed" as const, updatedAt: "2026-08-28T00:02:00.000Z", canStop: false };
     expect(getAiTaskTopbarState([completed]).selected?.status).toBe("completed");
+  });
+
+  it("shows the stored failed-task summary when no separate last error exists", () => {
+    const failed = { ...task("failed", "failed", "2026-08-28T00:01:00.000Z"), summary: "输出结构配置不兼容", lastError: null };
+    expect(publicTaskSummary(failed)).toBe("输出结构配置不兼容");
+    expect(publicTaskSummary({ ...failed, summary: "", lastError: null })).toBe("AI 助手未完成，请按页面提示重试");
   });
 });

@@ -267,18 +267,37 @@ export class PlaceResolverV2 {
   private async askAi(place: Place, candidates: RankedProviderCandidate[], round: 1 | 2, signal: AbortSignal | undefined, assertCurrent: () => void) {
     if (!this.options.assist) return { decision: null as MapResolutionAssistOutput | null, selected: null as RankedProviderCandidate | null };
     throwIfAborted(signal);
-    const raw = await this.options.assist({ place, candidates: candidates.map((item) => item.candidate), round, signal });
+    let raw: unknown;
+    try {
+      raw = await this.options.assist({ place, candidates: candidates.map((item) => item.candidate), round, signal });
+    } catch {
+      throwIfAborted(signal);
+      assertCurrent();
+      return { decision: null as MapResolutionAssistOutput | null, selected: null as RankedProviderCandidate | null };
+    }
     throwIfAborted(signal); assertCurrent();
-    const decision = raw ? MapResolutionAssistOutputSchema.parse(raw) : null;
+    let decision: MapResolutionAssistOutput | null = null;
+    try { decision = raw ? MapResolutionAssistOutputSchema.parse(raw) : null; }
+    catch { return { decision: null, selected: null }; }
     const selected = decision?.action === "choose_candidate" ? candidates.find((item) => item.candidate.providerPlaceId === decision.providerPlaceId) ?? null : null;
     return { decision, selected };
+  }
+
+  private fallbackToTopCandidate(place: Place, state: SearchState, reason: string) {
+    return {
+      geoFingerprint: placeGeoFingerprint(place),
+      selected: state.ranked[0] ?? null,
+      candidates: state.ranked,
+      method: "provider_match" as const,
+      reason,
+    };
   }
 
   private async resolveAmbiguity(place: Place, state: SearchState, signal: AbortSignal | undefined, assertCurrent: () => void): Promise<PlaceResolutionPreview> {
     const first = await this.askAi(place, state.ranked, 1, signal, assertCurrent);
     if (first.selected) return { geoFingerprint: placeGeoFingerprint(place), selected: first.selected, candidates: state.ranked, method: "provider_choice", reason: first.decision?.reason ?? null };
-    if (!first.decision) return { geoFingerprint: placeGeoFingerprint(place), selected: null, candidates: state.ranked, method: "provider_choice", reason: "地图消歧 Agent 暂时无法判断目标实体。" };
-    if (first.decision.action === "unresolved") return { geoFingerprint: placeGeoFingerprint(place), selected: null, candidates: state.ranked, method: "provider_choice", reason: first.decision.reason };
+    if (!first.decision) return this.fallbackToTopCandidate(place, state, "地图消歧 Agent 暂时无法判断目标实体。");
+    if (first.decision.action === "unresolved") return this.fallbackToTopCandidate(place, state, first.decision.reason);
 
     let supplemented = false;
     for (const hint of first.decision.searchHints) {
@@ -287,16 +306,16 @@ export class PlaceResolverV2 {
       if (!searched) continue;
       supplemented = true;
     }
-    if (!supplemented) return { geoFingerprint: placeGeoFingerprint(place), selected: null, candidates: state.ranked, method: "provider_choice", reason: first.decision.reason || "搜索预算已用尽，仍无法确认目标实体。" };
+    if (!supplemented) return this.fallbackToTopCandidate(place, state, first.decision.reason || "搜索预算已用尽，仍无法确认目标实体。");
     const second = await this.askAi(place, state.ranked, 2, signal, assertCurrent);
     if (second.selected) return { geoFingerprint: placeGeoFingerprint(place), selected: second.selected, candidates: state.ranked, method: "provider_choice", reason: second.decision?.reason ?? null };
-    return { geoFingerprint: placeGeoFingerprint(place), selected: null, candidates: state.ranked, method: "provider_choice", reason: second.decision?.reason ?? first.decision.reason ?? "最终地图消歧仍无法确认目标实体。" };
+    return this.fallbackToTopCandidate(place, state, second.decision?.reason ?? first.decision.reason ?? "最终地图消歧仍无法确认目标实体。");
   }
 
   private async matchPlace(place: Place, signal?: AbortSignal, assertCurrent: () => void = () => undefined): Promise<PlaceResolutionPreview> {
     const state: SearchState = { raw: [], ranked: [], searchCount: 0, queries: new Set() };
     for (const query of buildPlaceSearchQueries(place)) await this.runSearch(place, query, state, signal, assertCurrent);
-    if (!this.options.assist) return { geoFingerprint: placeGeoFingerprint(place), selected: null, candidates: state.ranked, method: "provider_choice", reason: "地图消歧 Agent 暂时无法判断目标实体。" };
+    if (!this.options.assist) return this.fallbackToTopCandidate(place, state, "地图消歧 Agent 暂时无法判断目标实体。");
     return this.resolveAmbiguity(place, state, signal, assertCurrent);
   }
 

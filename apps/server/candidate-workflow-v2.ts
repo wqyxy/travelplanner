@@ -162,7 +162,6 @@ export function applyBackboneDiscoveryV3(current: TravelPlanDocument, value: unk
     const place = plan.places.find((item) => item.id === placeId);
     if (!place) throw new Error(`Backbone Discovery 找不到正式 Place：${placeId}`);
     if (source.planningRole === "planning_area" && parentId !== null) throw new Error("Planning Area 不得绑定父 Candidate。");
-    if (source.planningRole === "core_visit" && !parentId) throw new Error("Core Visit 必须绑定 Planning Area。");
 
     const existing = candidateByPlaceId.get(placeId);
     if (existing) {
@@ -214,11 +213,10 @@ export function applyBackboneDiscoveryV3(current: TravelPlanDocument, value: unk
 
   for (const source of output.candidates.filter((candidate) => candidate.planningRole === "core_visit")) {
     const parentRef = source.parentCandidateRef;
-    if (!parentRef) throw new Error(`Core Visit 缺少 parentCandidateRef：${source.temporaryId}`);
-    let parentId: string;
-    if (parentRef.type === "existing") {
+    let parentId: string | null = null;
+    if (parentRef?.type === "existing") {
       parentId = parentRef.candidateId;
-    } else {
+    } else if (parentRef?.type === "generated") {
       const parentSource = sourceByTemporaryId.get(parentRef.temporaryCandidateId);
       if (!parentSource || parentSource.planningRole !== "planning_area") {
         throw new Error(`generated parent 不是本轮 Planning Area：${parentRef.temporaryCandidateId}`);
@@ -227,7 +225,7 @@ export function applyBackboneDiscoveryV3(current: TravelPlanDocument, value: unk
       if (!mapped) throw new Error(`generated parent 尚未正式化：${parentRef.temporaryCandidateId}`);
       parentId = mapped;
     }
-    requirePlanningAreaParent(parentId);
+    if (parentId) requirePlanningAreaParent(parentId);
     formalizeCandidate(source, parentId);
   }
 

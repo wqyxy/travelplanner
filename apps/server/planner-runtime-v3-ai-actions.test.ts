@@ -263,6 +263,7 @@ describe("TravelPlannerRuntimeV3 AI action regressions", () => {
     expect(sawSavedCandidates).toBe(true);
     expect(core.planningAreaCandidateId).toBe(area.id);
     expect(core.planningAreaCandidateId).not.toBe("tmp-area");
+    expect(plan.finalRoute.nodes.map((node) => node.placeId)).toEqual([area.placeId, core.placeId]);
     expect(plan.days).toEqual([]);
     expect(resolvedIds).toHaveLength(2);
     expect(store.listPlaceResolutions(created.id).filter((item) => item.status === "resolved")).toHaveLength(2);

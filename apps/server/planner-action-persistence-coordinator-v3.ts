@@ -25,6 +25,7 @@ import {
   detailedReplacementCommandsPhase5V3,
   validateDetailedSchedulingOutcomeV3,
 } from "./detail-itinerary-v3.js";
+import { applyMainRouteGenerationV3 } from "./final-route-ai-v3.js";
 import {
   applySkeletonPlanV3,
   deriveItineraryUpdateStateV3,
@@ -135,7 +136,10 @@ export class PlannerActionPersistenceCoordinatorV3 {
     assertDestinationOutputWithinBrief(trip.plan, output);
     const normalized = normalizeCandidateDiscoveryOutput(output, "macro");
     const applied = applyCandidateDiscovery(trip.plan, normalized);
-    const plan = markImpact(trip.plan, applied.plan);
+    const plan = markImpact(
+      trip.plan,
+      applyMainRouteGenerationV3(trip.plan, applied.plan, output, applied.idMappings),
+    );
     const resolutionPlaceIds = [...new Set<string>(
       normalized.candidates
         .map((candidate: any) => applied.idMappings[candidate.placeTemporaryId])
