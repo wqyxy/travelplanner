@@ -48,7 +48,7 @@ import {
   detailedReplacementCommandsPhase5V3,
   validateDetailedSchedulingOutcomeV3,
 } from "./detail-itinerary-v3.js";
-import { ROUTE_DAY_BATCH_CONCURRENCY, type DayRouteServiceV2 } from "./day-route-v2.js";
+import type { DayRouteServiceV2 } from "./day-route-v2.js";
 import {
   applySkeletonPlanV3,
   deriveItineraryUpdateStateV3,
@@ -73,9 +73,11 @@ import { markImpact } from "./planner-itinerary-impact-v3.js";
 import { refinementCommands, replacementCommands } from "./planner-itinerary-commands-v3.js";
 import { validateItineraryReferences } from "./planner-itinerary-validation-v3.js";
 import { proposalDiff } from "./planner-proposal-v3.js";
+import { PlannerResolutionCoordinatorV3 } from "./planner-resolution-coordinator-v3.js";
 import { currentPlaceResolutions, currentResolvedPlaces } from "./planner-resolution-state-v3.js";
+import { PlannerRouteCoordinatorV3 } from "./planner-route-coordinator-v3.js";
 import { effectivePlanningRole } from "./planning-roles-v3.js";
-import type { PlaceResolutionBatchProgress, PlaceResolverV2 } from "./place-resolver-v2.js";
+import type { PlaceResolverV2 } from "./place-resolver-v2.js";
 import { placeGeoFingerprint } from "./place-resolver-v2.js";
 import { GoogleMapsLinkService } from "./google-maps-link.js";
 import { assertProposalCommandsWithinScope } from "./proposal-scope-policy-v2.js";
@@ -105,7 +107,6 @@ const REQUIREMENT_FIELDS = ["title", "brief", "dates", "travelers", "budget", "p
 const INTEREST_DISCOVERY_CONCURRENCY = 4;
 
 type ActiveRun = { tripId: string; interrupt: () => Promise<void>; actionId?: string; messageId?: string; stage?: ConversationStage };
-type RouteBatch = { tripId: string; expectedGeneration: number; controller: AbortController };
 type ActionOutput = Record<string, any>;
 type InterestFailure = { targetId: string; errorSummary: string };
 type DetailPlanningContextV3 = ReturnType<typeof buildDetailPlanningContextV3>;
@@ -144,8 +145,9 @@ function assertDetailMacroCurrent(_context: DetailPlanningContextV3) {
 
 export class TravelPlannerRuntimeV3 {
   private readonly active = new Map<string, ActiveRun>();
-  private readonly routeBatches = new Map<string, RouteBatch>();
   private readonly aiExecutingTrips = new Set<string>();
+  private readonly resolutionCoordinator: PlannerResolutionCoordinatorV3;
+  private readonly routeCoordinator: PlannerRouteCoordinatorV3;
 
   constructor(private readonly options: {
     store: TravelStoreV3;
@@ -156,7 +158,20 @@ export class TravelPlannerRuntimeV3 {
     routes: DayRouteServiceV2;
     googleMapsLinks?: GoogleMapsLinkService;
     emit: (event: RuntimeEventV3) => void;
-  }) {}
+  }) {
+    this.resolutionCoordinator = new PlannerResolutionCoordinatorV3({
+      store: options.store,
+      tasks: options.tasks,
+      resolver: options.resolver,
+      emitChanged: (tripId, placeId) => this.emit("travel.resolution.changed", { tripId, placeId }),
+    });
+    this.routeCoordinator = new PlannerRouteCoordinatorV3({
+      store: options.store,
+      tasks: options.tasks,
+      routes: options.routes,
+      emitChanged: (tripId, dayId) => this.emit("travel.route.changed", { tripId, dayId }),
+    });
+  }
 
   private emit(kind: RuntimeEventV3["kind"], payload: any) { this.options.emit({ kind, payload } as RuntimeEventV3); }
 
@@ -202,11 +217,7 @@ export class TravelPlannerRuntimeV3 {
   stopTask(tripId: string, taskId: string) {
     const active = this.active.get(taskId);
     if (active?.tripId === tripId) void active.interrupt().catch(() => undefined);
-    else {
-      const batch = this.routeBatches.get(taskId);
-      if (!batch || batch.tripId !== tripId) throw new Error("当前任务已经结束。");
-      batch.controller.abort();
-    }
+    else if (!this.routeCoordinator.stopTask(tripId, taskId)) throw new Error("当前任务已经结束。");
     return { ok: true };
   }
 
@@ -488,31 +499,8 @@ export class TravelPlannerRuntimeV3 {
     return `generation:${written.generation}`;
   }
 
-  private resolutionProgress(tripId: string, taskId?: string) {
-    return (progress: PlaceResolutionBatchProgress) => {
-      this.emit("travel.resolution.changed", { tripId, placeId: progress.placeId });
-      if (!taskId) return;
-      const state = progress.status === "resolving" ? "定位中" : progress.status === "resolved" ? "已定位" : "未定位";
-      this.options.tasks.update(taskId, "running", `正在定位地点 ${progress.completed}/${progress.total} · ${state}`, "map:resolution");
-    };
-  }
-
-  private async resolveChangedPlaces(tripId: string, placeIds: string[], expectedGeneration: number, taskId?: string, signal?: AbortSignal) {
-    if (signal?.aborted) throw new Error("AI 任务已停止。");
-    const current = this.options.store.requireTrip(tripId);
-    if (current.contentGeneration !== expectedGeneration) return [];
-    const existing = new Set(current.plan.places.map((place) => place.id));
-    const ids = [...new Set(placeIds)].filter((placeId) => existing.has(placeId));
-    if (!ids.length) return [];
-    try {
-      const result = await this.options.resolver.resolveMany(tripId, ids, expectedGeneration, signal, this.resolutionProgress(tripId, taskId));
-      if (signal?.aborted) throw new Error("AI 任务已停止。");
-      return result;
-    } catch (error) {
-      if (signal?.aborted) throw new Error("AI 任务已停止。");
-      if (aiErrorMessageV3(error) === "CONTENT_GENERATION_SUPERSEDED") return [];
-      return [];
-    }
+  private resolveChangedPlaces(tripId: string, placeIds: string[], expectedGeneration: number, taskId?: string, signal?: AbortSignal) {
+    return this.resolutionCoordinator.resolveChangedPlaces(tripId, placeIds, expectedGeneration, taskId, signal);
   }
 
   private async persistAiActionOutput(action: AiActionRecord, output: ActionOutput, taskId: string | null = null) {
@@ -990,8 +978,8 @@ export class TravelPlannerRuntimeV3 {
     return { ...applied, plan, trip: written.trip, generation: written.generation, version: written.version };
   }
 
-  async retryResolutions(tripId: string, placeIds: string[], expectedGeneration: number, force = false) {
-    return this.options.resolver.resolveMany(tripId, placeIds, expectedGeneration, undefined, this.resolutionProgress(tripId), force);
+  retryResolutions(tripId: string, placeIds: string[], expectedGeneration: number, force = false) {
+    return this.resolutionCoordinator.retryResolutions(tripId, placeIds, expectedGeneration, force);
   }
   searchResolutionCandidates(tripId: string, placeId: string, expectedGeneration: number) { return this.options.resolver.searchCandidates(tripId, placeId, expectedGeneration); }
   selectResolution(tripId: string, placeId: string, input: unknown) { return (this.options.resolver as any).selectCandidate(tripId, placeId, input); }
@@ -1054,77 +1042,24 @@ export class TravelPlannerRuntimeV3 {
     this.emit("travel.resolution.changed", { tripId, placeId });
     return { trip: written.trip, resolution: written.resolution, generation: written.generation, version: written.version };
   }
-  async recalculateRoute(tripId: string, dayId: string, expectedGeneration: number) {
-    const route = await this.options.routes.recalculate(tripId, dayId, expectedGeneration);
-    this.emit("travel.route.changed", { tripId, dayId }); return route;
+  recalculateRoute(tripId: string, dayId: string, expectedGeneration: number) {
+    return this.routeCoordinator.recalculateRoute(tripId, dayId, expectedGeneration);
   }
-  async recalculateMacroRoute(tripId: string, dayId: string, expectedGeneration: number) {
-    const route = await this.options.routes.recalculateMacro(tripId, dayId, expectedGeneration);
-    this.emit("travel.route.changed", { tripId, dayId: `macro:${dayId}` }); return route;
+  recalculateMacroRoute(tripId: string, dayId: string, expectedGeneration: number) {
+    return this.routeCoordinator.recalculateMacroRoute(tripId, dayId, expectedGeneration);
   }
-  async recalculateDirtyRoutes(tripId: string, input: any) {
-    const expectedGeneration = Number(input.expectedGeneration);
-    if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 0) throw new Error("expectedGeneration 无效。");
-    if (this.options.store.requireTrip(tripId).contentGeneration !== expectedGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
-    const states = this.options.routes.workspaceRouteState(tripId); const ids = states.filter((state) => state.dirty).map((state) => state.dayId);
-    if (ids.length) this.startRouteBatch(tripId, expectedGeneration, ids);
-    const routes = await Promise.all(ids.map((dayId) => this.recalculateRoute(tripId, dayId, expectedGeneration)));
-    return { routes };
+  recalculateDirtyRoutes(tripId: string, input: any) {
+    return this.routeCoordinator.recalculateDirtyRoutes(tripId, input);
   }
   private startRouteBatch(tripId: string, expectedGeneration: number, dayIds: string[]) {
-    const existing = [...this.routeBatches.entries()].find(([, batch]) => batch.tripId === tripId && batch.expectedGeneration === expectedGeneration);
-    if (existing) return existing[0];
-    const dirtyDayIds = this.options.routes.workspaceRouteState(tripId)
-      .filter((state) => state.dirty)
-      .map((state) => state.dayId);
-    const targetDayIds = [...new Set([...dayIds, ...dirtyDayIds])];
-    if (!targetDayIds.length) return null;
-    const taskId = `route:${randomUUID()}`; const controller = new AbortController();
-    this.routeBatches.set(taskId, { tripId, expectedGeneration, controller });
-    this.options.tasks.start({ id: taskId, tripId, agent: "map", label: "计算每日路线", summary: `正在计算每日路线 0/${targetDayIds.length}`, canStop: true, metadata: { totalDays: targetDayIds.length, completedDays: 0, readyDays: 0, attentionDays: 0, peakDayConcurrency: ROUTE_DAY_BATCH_CONCURRENCY } });
-    void (async () => {
-      let completed = 0; let ready = 0; let attention = 0;
-      const calculate = async (dayId: string) => {
-        try {
-          const route = await this.options.routes.recalculate(tripId, dayId, expectedGeneration, controller.signal);
-          completed += 1; if (route.status === "ready") ready += 1; else attention += 1;
-          this.emit("travel.route.changed", { tripId, dayId });
-          const summary = `正在计算每日路线 ${completed}/${targetDayIds.length} · ready ${ready} · attention ${attention}`;
-          this.options.tasks.metadata(taskId, { totalDays: targetDayIds.length, completedDays: completed, readyDays: ready, attentionDays: attention, peakDayConcurrency: ROUTE_DAY_BATCH_CONCURRENCY });
-          this.options.tasks.update(taskId, "running", summary, "route:day-completed");
-        } catch (error) {
-          const message = aiErrorMessageV3(error);
-          if (message === "CONTENT_GENERATION_SUPERSEDED") throw error;
-          if (controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError")) return;
-          completed += 1; attention += 1;
-          this.options.tasks.update(taskId, "running", `正在计算每日路线 ${completed}/${targetDayIds.length} · ready ${ready} · attention ${attention}`, "route:day-failed");
-        }
-      };
-      try {
-        await Promise.all(targetDayIds.map(calculate));
-        const status = controller.signal.aborted ? "stopped" : "completed";
-        this.options.tasks.update(taskId, status, controller.signal.aborted ? "每日路线计算已停止" : `每日路线计算完成 · ready ${ready} · attention ${attention}`, "task:completed");
-      } catch (error) {
-        const superseded = aiErrorMessageV3(error) === "CONTENT_GENERATION_SUPERSEDED";
-        controller.abort();
-        this.options.tasks.update(taskId, superseded ? "cancelled_by_generation" : "failed", superseded ? "计划已变化，停止旧路线计算" : "每日路线计算失败", "task:failed");
-      } finally { this.routeBatches.delete(taskId); }
-    })();
-    return taskId;
+    return this.routeCoordinator.startRouteBatch(tripId, expectedGeneration, dayIds);
   }
 
-  async recalculateDirtyMacroRoutes(tripId: string, input: any) {
-    const expectedGeneration = Number(input.expectedGeneration); const states = this.options.routes.workspaceMacroRouteState(tripId); const routes = [];
-    for (const state of states) if (state.required && state.dirty) { const route = await this.options.routes.recalculateMacro(tripId, state.dayId, expectedGeneration); if (route) routes.push(route); this.emit("travel.route.changed", { tripId, dayId: `macro:${state.dayId}` }); }
-    return { routes };
+  recalculateDirtyMacroRoutes(tripId: string, input: any) {
+    return this.routeCoordinator.recalculateDirtyMacroRoutes(tripId, input);
   }
 
-  private async recalculateAllMacroRoutes(tripId: string, expectedGeneration: number) {
-    const trip = this.options.store.requireTrip(tripId);
-    for (const day of trip.plan.days) {
-      if (day.startAnchor.placeId === day.endAnchor.placeId) continue;
-      try { const route = await this.options.routes.recalculateMacro(tripId, day.id, expectedGeneration); if (route) this.emit("travel.route.changed", { tripId, dayId: `macro:${day.id}` }); }
-      catch (error) { if (aiErrorMessageV3(error) === "CONTENT_GENERATION_SUPERSEDED") return; }
-    }
+  private recalculateAllMacroRoutes(tripId: string, expectedGeneration: number) {
+    return this.routeCoordinator.recalculateAllMacroRoutes(tripId, expectedGeneration);
   }
 }
