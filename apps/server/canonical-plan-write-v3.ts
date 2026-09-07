@@ -1,5 +1,6 @@
 import { TravelPlanDocumentSchema, type TravelPlanDocument } from "./contracts-v2.js";
 import {
+  classifyIndependentDerivedRouteWriteV3,
   hasIndependentDerivedRouteWriteV3,
   inspectDerivedDayWriteV3,
 } from "./derived-day-integrity-v3.js";
@@ -36,6 +37,12 @@ function restoreExplicitDayMetadataV3(
   });
 }
 
+function canUseKnownLegacyDayFallback(before: TravelPlanDocument, incoming: TravelPlanDocument) {
+  const kinds = classifyIndependentDerivedRouteWriteV3(before, incoming);
+  if (kinds.daySet || kinds.anchorIdentity || kinds.stops || kinds.endTransport) return false;
+  return kinds.dayOrder || kinds.transferMode || kinds.anchorPlace;
+}
+
 /**
  * Normalize an incoming V3 plan before it reaches TravelStoreV3.
  *
@@ -48,16 +55,12 @@ function restoreExplicitDayMetadataV3(
  * - non-null legacy Day start/end Place edits are mapped directly to trip origin
  *   or canonical Day boundary nodes when the mapping is unambiguous;
  * - a pure legacy Day reorder moves whole canonical route segments directly;
- * - remaining legacy Day route/node writes are translated explicitly with the
- *   existing compatibility algorithm so Store is no longer the first place
- *   that discovers them;
+ * - only known registered legacy Day shapes (order/dayNumber, transferMode,
+ *   anchor Place, including mixed/null cases) may use the compatibility
+ *   translator; Stop/node/endTransport/Day-ID writes are rejected;
  * - Day-only metadata remains allowed; explicit title/date edits are restored
  *   after route derivation where the downstream persistence path preserves them;
  * - legacy Day-only fixtures/bootstrap callers keep the same compatibility path.
- *
- * Once null-anchor semantics and the remaining mixed/fallback callers write
- * canonical state directly, the translation branch can become a hard rejection
- * and the Store-level reverse bridge can be removed.
  */
 export function canonicalizePlanWriteV3(
   beforeValue: TravelPlanDocument,
@@ -79,6 +82,7 @@ export function canonicalizePlanWriteV3(
       if (anchorOnly) return restoreExplicitDayMetadataV3(before, incoming, anchorOnly);
       const reorderOnly = tryApplyLegacyDayReorderV3(before, incoming);
       if (reorderOnly) return restoreExplicitDayMetadataV3(before, incoming, reorderOnly);
+      if (!canUseKnownLegacyDayFallback(before, incoming)) throw new Error("DERIVED_DAY_ROUTE_WRITE_UNSUPPORTED");
       return syncFinalRouteForLegacyWriteV3(before, incoming);
     }
     return restoreExplicitDayMetadataV3(before, incoming, inspection.plan);
