@@ -67,6 +67,7 @@ import {
   interestDiscoveryReadinessV3,
 } from "./planning-context-v3.js";
 import { actionScope, dayMutationScope } from "./planner-action-scope-v3.js";
+import { validateItineraryReferences } from "./planner-itinerary-validation-v3.js";
 import { proposalDiff } from "./planner-proposal-v3.js";
 import { currentPlaceResolutions, currentResolvedPlaces } from "./planner-resolution-state-v3.js";
 import { effectivePlanningRole } from "./planning-roles-v3.js";
@@ -152,26 +153,6 @@ function interestCompletionSummary(resultRef: string | null | undefined) {
   if (successful === total && added === 0) return `兴趣点研究完成 · ${successful}/${total} · 本轮没有发现值得新增的兴趣点`;
   const failure = failed > 0 ? `，${failed} 个区域失败` : "";
   return `兴趣点研究完成 · ${successful}/${total}${failure} · 新增 ${added} · 已定位 ${resolved}/${resolved + pending}`;
-}
-
-function validateItineraryReferences(trip: TripDetailV3, sourceDays: Day[], _resolutions: PlaceResolution[]) {
-  const places = new Map(trip.plan.places.map((place) => [place.id, place]));
-  const candidates = new Map(trip.plan.candidates.map((candidate) => [candidate.id, candidate]));
-  const checkPlace = (placeId: string | null) => {
-    if (!placeId) return;
-    if (!places.has(placeId)) throw new Error(`行程引用未知 Place：${placeId}`);
-  };
-  for (const day of sourceDays) {
-    checkPlace(day.startAnchor.placeId);
-    checkPlace(day.endAnchor.placeId);
-    for (const stop of day.stops) {
-      checkPlace(stop.placeId);
-      if (!stop.candidateId) continue;
-      const candidate = candidates.get(stop.candidateId);
-      if (!candidate) throw new Error(`行程引用未知 Candidate：${stop.candidateId}`);
-      if (candidate.placeId !== stop.placeId) throw new Error(`Stop Candidate 与 Place 不一致：${candidate.id}`);
-    }
-  }
 }
 
 function assertDetailPlanningBlockers(_context: DetailPlanningContextV3) {
