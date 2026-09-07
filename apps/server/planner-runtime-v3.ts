@@ -575,6 +575,31 @@ export class TravelPlannerRuntimeV3 {
   selectResolution(tripId: string, placeId: string, input: unknown) { return this.options.resolver.selectCandidate(tripId, placeId, input); }
   setDirectResolution(tripId: string, placeId: string, input: unknown) { return this.options.resolver.setDirect(tripId, placeId, input); }
 
+  private async captureAdditionalRequirements(tripId: string, sourceMessageId: string, baseGeneration: number, additionalRequirements: string) {
+    const normalized = additionalRequirements.trim();
+    if (!normalized) return baseGeneration;
+    const trip = this.options.store.requireTrip(tripId);
+    if (trip.contentGeneration !== baseGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
+    if (trip.plan.trip.brief.additionalRequirements === normalized) return baseGeneration;
+    const action = AiActionRecordSchema.parse({
+      id: randomUUID(), tripId, stage: "requirements", actionType: "requirements.capture", executor: "deterministic", origin: "conversation", sourceMessageId,
+      parameters: { additionalRequirements: normalized }, targetIds: [], scope: { type: "trip", id: null }, baseGeneration, status: "pending_confirmation",
+      taskId: null, proposalId: null, resultRef: null, startedAt: null, updatedAt: now(), completedAt: null, errorSummary: null,
+    });
+    const stored = this.options.store.createAction(action).action;
+    const claimed = this.options.store.claimActionForExecution(stored.id, baseGeneration);
+    if (!claimed.claimed) throw new Error("CONTENT_GENERATION_SUPERSEDED");
+    try {
+      const resultRef = await this.executeDeterministic(claimed.action);
+      this.options.store.completeAction(stored.id, resultRef);
+      this.emit("travel.action.changed", { tripId, actionId: stored.id });
+      return this.options.store.requireTrip(tripId).contentGeneration;
+    } catch (error) {
+      this.options.store.failAction(stored.id, aiErrorMessageV3(error));
+      throw error;
+    }
+  }
+
   previewGoogleMapsLink(tripId: string, placeId: string, input: unknown) {
     return this.googleMapsLinkCoordinator.preview(tripId, placeId, input);
   }
