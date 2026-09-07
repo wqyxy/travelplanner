@@ -11,7 +11,6 @@ import { MapTileCache, TileFetchError } from "./map-tile-cache.js";
 import { AiTaskMonitorV3, aiErrorMessageV3, normalizePublicAiSummaryV3 } from "./ai-task-monitor-v3.js";
 import { DayRouteServiceV2 } from "./day-route-v2.js";
 import { PlaceResolverV2 } from "./place-resolver-v2.js";
-import { PlaceResolverAdapterV3 } from "./place-resolver-adapter-v3.js";
 import { TravelPlannerRuntimeV3, type RuntimeEventV3 } from "./planner-runtime-v3.js";
 import { loadPromptRegistryV3 } from "./prompt-registry-v3.js";
 import { StagedTravelAiV3 } from "./staged-ai-v3.js";
@@ -56,14 +55,17 @@ const resolverCore = new PlaceResolverV2({
   maps,
   assist: (input) => travelAi.assistResolution(input),
 });
-const resolver = new PlaceResolverAdapterV3(resolverCore);
+const resolver = Object.assign(resolverCore, {
+  selectCandidate: (...args: Parameters<PlaceResolverV2["selectProviderCandidate"]>) => resolverCore.selectProviderCandidate(...args),
+  setDirect: (...args: Parameters<PlaceResolverV2["setDirectCoordinates"]>) => resolverCore.setDirectCoordinates(...args),
+});
 const routes = new DayRouteServiceV2({ store: store as unknown as TravelStoreV2, maps });
 const runtime = new TravelPlannerRuntimeV3({
   store,
   ai: travelAi,
   prompts,
   tasks,
-  resolver: resolver as unknown as PlaceResolverV2,
+  resolver,
   routes,
   googleMapsLinks,
   emit: (event: RuntimeEventV3) => broadcast(event.kind, event.payload),
