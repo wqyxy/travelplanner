@@ -16,7 +16,10 @@ import {
   computeMacroDependencyFingerprintV3,
   derivePlanMacroBasisStateV3,
 } from "./planning-state-v3.js";
-import { applyInitialSkeletonToFinalRouteV3 } from "./skeleton-final-route-v3.js";
+import {
+  applyInitialSkeletonToFinalRouteV3,
+  applySkeletonReplanToFinalRouteV3,
+} from "./skeleton-final-route-v3.js";
 import type {
   OmittedPlanningArea,
   SkeletonPlanDraft,
@@ -427,9 +430,11 @@ export function applySkeletonPlanV3(trip: TripDetailV3, draft: SkeletonPlanDraft
       macroBasisFingerprint: computeMacroDependencyFingerprintV3(trip.plan),
     },
   });
-  const plan = !trip.plan.days.length && !trip.plan.finalRoute.nodes.length
+  const initial = !trip.plan.days.length && !trip.plan.finalRoute.nodes.length;
+  const dayPlan = TravelPlanDocumentSchema.parse({ ...base, days: diff.days });
+  const plan = initial
     ? applyInitialSkeletonToFinalRouteV3(base, diff.days)
-    : TravelPlanDocumentSchema.parse({ ...base, days: diff.days });
+    : applySkeletonReplanToFinalRouteV3(trip.plan, dayPlan);
   return { plan, formalizedStays, ...diff };
 }
 
