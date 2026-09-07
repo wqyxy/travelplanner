@@ -4,7 +4,7 @@
 >
 > 开始时间：2026-09-07
 > 当前分支：main
-> 当前状态：P0-1 runtime architecture in progress; Slice 1 complete; Slice 2 pure diff extraction complete
+> 当前状态：P0-1 runtime architecture in progress; pure helper extraction progressing
 
 ## 目标
 
@@ -103,28 +103,22 @@ P0 分三条主线，按风险从低到高推进：
 - `dayMutationScope`
 - `actionScope`
 
-原因：
+原因：无 DB / async 副作用，同时是 AI 修改权限关键边界。
 
-- 无 DB / async 副作用；
-- 是 AI 修改权限的关键边界；
-- 可以独立测试；
-- 第一刀只应是 move + import，不改变错误文案与 scope 行为。
+### Slice 2 — Proposal / Command Derivation
 
-### Slice 2 — Proposal Domain
+目标文件：`apps/server/planner-proposal-v3.ts` 与后续 command derivation helper。
 
-目标文件：`apps/server/planner-proposal-v3.ts`
-
-已先迁移纯逻辑：
+已迁移：
 
 - `proposalDiff`
 
-后续可继续迁移：
+下一步：
 
 - `replacementCommands`
 - `refinementCommands`
-- 与 Proposal 生成相关但不依赖 Runtime mutable state 的校验/command derivation
 
-暂不把 `createProposalForAction` 整体搬走，因为它直接依赖 Store、event 和 action lifecycle；先让纯领域逻辑脱离 Runtime。
+暂不把 `createProposalForAction` 整体搬走，因为它直接依赖 Store、event 和 action lifecycle。
 
 ### Slice 3 — Action Context Builder
 
@@ -201,11 +195,9 @@ Provider 的事实生产者保持不变，只拆 orchestration。
 
 ## 执行记录
 
-### 2026-09-07 — Slice 1 Action Scope Policy
+### 2026-09-07 — Action Scope Policy
 
-已创建：
-
-- `apps/server/planner-action-scope-v3.ts`
+创建：`apps/server/planner-action-scope-v3.ts`
 
 包含：
 
@@ -219,23 +211,17 @@ Provider 的事实生产者保持不变，只拆 orchestration。
 
 静态检查：
 
-- Runtime commit 只增加 1 行 import、删除原地 56 行 Scope 实现；
-- conversation Action 和 CTA Action 仍调用相同 `actionScope`；
-- `itinerary.detail.update/refine` 仍使用相同 `dayMutationScope`；
-- 错误文案、fallback 规则、scope 类型均未改；
-- 未运行 test/typecheck/build。
+- Runtime 只增加 1 行 import、删除原地 56 行实现；
+- conversation Action / CTA Action / detail update / refine 调用规则均未改；
+- 错误文案、fallback、scope 类型均未改。
 
-结论：Slice 1 完成，属于行为保持拆分。
+结论：行为保持拆分完成。
 
-### 2026-09-07 — Slice 2 Proposal Diff
+### 2026-09-07 — Proposal Diff
 
-已创建：
+创建：`apps/server/planner-proposal-v3.ts`
 
-- `apps/server/planner-proposal-v3.ts`
-
-当前包含：
-
-- `proposalDiff`
+包含：`proposalDiff`
 
 提交：
 
@@ -244,33 +230,98 @@ Provider 的事实生产者保持不变，只拆 orchestration。
 
 静态检查：
 
-- Runtime 只去掉 `ProposalDiff` type import、增加 `proposalDiff` import、删除本地 38 行实现；
-- `createProposalForAction` 调用位置与调用参数完全不变；
-- Proposal Scope 校验、`applyPlanCommands` preview、Store 写入、event 顺序均未改；
-- 未运行 test/typecheck/build。
+- Runtime 只去掉 `ProposalDiff` type import、增加 helper import、删除本地 38 行实现；
+- `createProposalForAction` 调用位置与参数未改；
+- Proposal Scope 校验、preview、Store 写入、event 顺序均未改。
 
-结论：Slice 2 的第一部分完成，属于行为保持拆分。
+结论：行为保持拆分完成。
 
-## 当前剩余的低风险纯函数候选
+### 2026-09-07 — Resolution Current-State Helpers
 
-Runtime 中仍有以下适合先移出的逻辑：
+创建：`apps/server/planner-resolution-state-v3.ts`
 
-1. `currentPlaceResolutions` / `currentResolvedPlaces`
-   - 只做当前 Place 与 resolution fingerprint/status 过滤；
-   - 可独立成为 resolution read-model helper。
-2. `validateItineraryReferences`
-   - 只校验未知 Place/Candidate 和 Stop Candidate/Place mismatch；
-   - 属于结构完整性硬边界，不应加入旅行合理性 blocker。
-3. `replacementCommands` / `refinementCommands`
-   - 负责 AI 结果到受控 PlanCommand 的纯 derivation；
-   - 风险略高于前两项，因为涉及 stop identity、顺序和 command limit。
-4. `markImpact`
-   - 纯 canonical impact derivation；
-   - 需要保持 user-control correction 下仅标记 `needs_review`，不能变成 blocker。
+包含：
+
+- `currentPlaceResolutions`
+- `currentResolvedPlaces`
+
+提交：
+
+- 新模块：`6a51b558627a7e8f61c2a01c0d690c0b7453f61c`
+- Runtime 接线：`2bcacd9c5692997e3882359a86fe43ab4bbb021f`
+
+静态检查：
+
+- Runtime 仅新增 helper import；
+- `resolutionIsCurrent` 从 Runtime 直接依赖中移除；
+- 删除本地 12 行 helper；
+- workspace、Action state、destination generate、interest discovery 的调用形态未改。
+
+结论：行为保持拆分完成。
+
+### 2026-09-07 — Itinerary Structural Validation
+
+创建：`apps/server/planner-itinerary-validation-v3.ts`
+
+包含：`validateItineraryReferences`
+
+保留的唯一硬校验：
+
+- Day anchor/stop 引用未知 Place；
+- Stop 引用未知 Candidate；
+- Stop Candidate 的 placeId 与 Stop placeId 不一致。
+
+明确没有新增：
+
+- 天数合理性；
+- 地点覆盖率；
+- 时间完整性；
+- 地理合理性；
+- 未定位 blocker；
+- must-go / duplicate 等 advisory blocker。
+
+提交：
+
+- 新模块：`5819163f3c9b57280f0ca43fda7a6af9e3190298`
+- Runtime 接线：`bdadeb84cfb6efe90fab0a7ed51c22175338d099`
+
+静态检查：
+
+- Runtime 仅新增 1 行 helper import、删除原地 20 行实现；
+- 所有调用点及三个参数保持不变；
+- 错误文案保持不变。
+
+结论：行为保持拆分完成。
+
+## 验证状态
+
+截至当前：
+
+- 已对每个 Runtime 接线 commit 做 Git diff/commit 静态核对；
+- 未运行 test；
+- 未运行 typecheck；
+- 未运行 build；
+- 未运行 app / Provider / E2E。
+
+这符合当前 `AGENTS.md` 的普通施工验证约束。
+
+## 当前剩余的低风险/中风险纯函数候选
+
+1. `replacementCommands` / `refinementCommands`
+   - AI 结果 -> 受控 PlanCommand；
+   - 涉及 stop identity、顺序和 command limit，属于下一步中风险纯逻辑。
+2. `markImpact`
+   - canonical impact derivation；
+   - 必须继续仅标记 `needs_review`，不能变成 blocker。
+3. `candidateCommand` / candidate discovery normalization
+   - 可进一步形成 candidate Action output mapper。
+4. `buildActionState`
+   - 下一阶段的较大 read-context boundary。
 
 ## 下一步
 
-1. 优先抽出 resolution 当前态 helper 与 itinerary structural validation，继续减少 Runtime 的领域杂项。
-2. 再迁移 `replacementCommands/refinementCommands`，每一刀单独静态 diff。
-3. 纯函数稳定后进入 `buildActionState` context builder。
-4. 继续把每个 commit、静态检查结论和发现的问题同步到本文件。
+1. 抽出 `replacementCommands/refinementCommands`，保持 STOP_FIELDS、ID 生成、错误文案、command limit 完全一致。
+2. 对 Runtime 接线 commit 做静态 diff。
+3. 再决定 `markImpact` 是单独模块还是并入 itinerary domain helper。
+4. 纯函数稳定后进入 `buildActionState` context builder。
+5. 持续把每个 commit、检查结论和新发现同步到本文件。
