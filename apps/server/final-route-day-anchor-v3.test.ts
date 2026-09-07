@@ -92,12 +92,48 @@ describe("legacy Day anchors -> canonical finalRoute", () => {
     );
   });
 
-  it("falls back for null anchors or conflicting requests on the same boundary", () => {
+  it("keeps first-Day null start metadata while clearing canonical trip origin", () => {
     const before = plan();
-    const nullIncoming = structuredClone(before);
-    nullIncoming.days[1].startAnchor.placeId = null;
-    expect(tryApplyLegacyDayAnchorPlacesV3(before, nullIncoming)).toBeNull();
+    const incoming = structuredClone(before);
+    incoming.days[0].startAnchor.placeId = null;
 
+    const legacy = syncFinalRouteForLegacyWriteV3(before, incoming);
+    const direct = tryApplyLegacyDayAnchorPlacesV3(before, incoming);
+    expect(direct).not.toBeNull();
+    expect(direct!.trip.originPlaceId).toBeNull();
+    expect(direct!.trip).toEqual(legacy.trip);
+    expect(direct!.finalRoute.nodes).toEqual(legacy.finalRoute.nodes);
+    expect(direct!.days).toEqual(legacy.days);
+  });
+
+  it("uses the legacy fallback Place for a later null start anchor", () => {
+    const before = plan();
+    const incoming = structuredClone(before);
+    incoming.days[1].startAnchor.placeId = null;
+
+    const legacy = syncFinalRouteForLegacyWriteV3(before, incoming);
+    const direct = tryApplyLegacyDayAnchorPlacesV3(before, incoming);
+    expect(direct).not.toBeNull();
+    expect(direct!.finalRoute.nodes).toEqual(legacy.finalRoute.nodes);
+    expect(direct!.days).toEqual(legacy.days);
+    expect(direct!.days[1].startAnchor.placeId).toBeNull();
+  });
+
+  it("uses the legacy fallback Place for a null end anchor", () => {
+    const before = plan();
+    const incoming = structuredClone(before);
+    incoming.days[0].endAnchor.placeId = null;
+
+    const legacy = syncFinalRouteForLegacyWriteV3(before, incoming);
+    const direct = tryApplyLegacyDayAnchorPlacesV3(before, incoming);
+    expect(direct).not.toBeNull();
+    expect(direct!.finalRoute.nodes).toEqual(legacy.finalRoute.nodes);
+    expect(direct!.days).toEqual(legacy.days);
+    expect(direct!.days[0].endAnchor.placeId).toBeNull();
+  });
+
+  it("falls back for conflicting requests on the same canonical boundary", () => {
+    const before = plan();
     const conflict = structuredClone(before);
     conflict.days[0].endAnchor.placeId = "c";
     conflict.days[1].startAnchor.placeId = "d";
