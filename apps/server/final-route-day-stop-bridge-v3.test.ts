@@ -145,9 +145,16 @@ describe("legacy Day stop -> finalRoute canonical bridge", () => {
     expect(result!.plan.days[0].stops[0]).toMatchObject({ placeId: "y", candidateId: "cy", activity: "改去 Y" });
   });
 
-  it("keeps legacy-only candidate detach/place-only semantics on the fallback path", () => {
-    expect(updateDerivedStopViaFinalRouteV3(plan(), "stop-x", { candidateId: null })).toBeNull();
-    expect(updateDerivedStopViaFinalRouteV3(plan(), "stop-x", { placeId: "y" })).toBeNull();
+  it("treats candidate identity as derived instead of preserving a detach state", () => {
+    const detached = updateDerivedStopViaFinalRouteV3(plan(), "stop-x", { candidateId: null });
+    expect(detached).not.toBeNull();
+    expect(detached!.plan.finalRoute.nodes.find((item) => item.id === "stop-x")?.placeId).toBe("x");
+    expect(detached!.plan.days[0].stops[0].candidateId).toBe("cx");
+
+    const placeOnly = updateDerivedStopViaFinalRouteV3(plan(), "stop-x", { candidateId: null, placeId: "y" });
+    expect(placeOnly).not.toBeNull();
+    expect(placeOnly!.plan.finalRoute.nodes.find((item) => item.id === "stop-x")?.placeId).toBe("y");
+    expect(placeOnly!.plan.days[0].stops[0].candidateId).toBe("cy");
   });
 
   it("removes an ordinary derived Stop by removing the same canonical route node", () => {
@@ -169,6 +176,15 @@ describe("legacy Day stop -> finalRoute canonical bridge", () => {
     expect(canonical).not.toBeNull();
     expect(canonical!.plan.finalRoute.nodes).toEqual(legacy.finalRoute.nodes);
     expect(canonical!.plan.days).toEqual(legacy.days);
+  });
+
+  it("derives Candidate identity when a new Stop only specifies canonical Place identity", () => {
+    const before = twoDayPlan();
+    const stop = { ...newStop(), candidateId: null };
+    const canonical = addDerivedStopViaFinalRouteV3(before, "day-2", 0, stop);
+    expect(canonical).not.toBeNull();
+    expect(canonical!.plan.finalRoute.nodes.find((item) => item.id === "stop-z")?.placeId).toBe("z");
+    expect(canonical!.plan.days[1].stops.find((item) => item.id === "stop-z")?.candidateId).toBe("cz");
   });
 
   it("moves a Stop across Days with the same inactive-node anchoring as the legacy bridge", () => {
