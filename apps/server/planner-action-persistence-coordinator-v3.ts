@@ -30,6 +30,7 @@ import {
   deriveItineraryUpdateStateV3,
 } from "./itinerary-workflow-v3.js";
 import { buildDetailPlanningContextV3 } from "./planning-context-v3.js";
+import { dayMutationScope } from "./planner-action-scope-v3.js";
 import {
   assertDestinationOutputWithinBrief,
   candidateCommand,
@@ -344,7 +345,7 @@ export class PlannerActionPersistenceCoordinatorV3 {
       result.title,
       result.explanation,
       replacement.commands,
-      this.dayMutationScope(result.affectedDayIds),
+      dayMutationScope(result.affectedDayIds),
       result.affectedDayIds,
     );
   }
@@ -455,14 +456,8 @@ export class PlannerActionPersistenceCoordinatorV3 {
       result.title,
       result.explanation,
       commands,
-      this.dayMutationScope(result.dayIds),
+      dayMutationScope(result.dayIds),
       result.dayIds,
     );
-  }
-
-  private dayMutationScope(dayIds: string[]): ProposalScope {
-    const ids = [...new Set(dayIds.filter(Boolean))];
-    if (!ids.length) throw new Error("局部行程 Action 缺少目标 Day，不能自动扩大为整趟 Scope。");
-    return ids.length === 1 ? { type: "day", id: ids[0] } : { type: "days", ids };
   }
 }
