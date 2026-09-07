@@ -10,7 +10,7 @@ import {
   type ProviderPlaceCandidate,
 } from "./contracts-v2.js";
 import type { MapCandidate } from "./map-service.js";
-import type { TravelStoreV2 } from "./travel-store-v2.js";
+import type { PlaceResolutionStoreCapabilityV3 } from "./provider-store-capabilities-v3.js";
 
 export const PLACE_RESOLUTION_VERSION = "v2";
 export const PLACE_RESOLUTION_PROVIDER_SEARCH_LIMIT = 4;
@@ -46,7 +46,6 @@ type Maps = {
   search(query: string, countryCode?: string | null, signal?: AbortSignal): Promise<MapCandidate[]>;
   reverse(latitude: number, longitude: number, signal?: AbortSignal): Promise<MapCandidate | null>;
 };
-type PlaceResolutionStore = Pick<TravelStoreV2, "requireTrip" | "listPlaceResolutions" | "upsertPlaceResolution">;
 type MatchFacts = { nameScore: number; countryMatch: boolean; cityMatch: boolean; regionMatch: boolean; typeScore: number };
 type SearchState = { raw: MapCandidate[]; ranked: RankedProviderCandidate[]; searchCount: number; queries: Set<string> };
 
@@ -229,7 +228,7 @@ function unresolved(tripId: string, place: Place, message: string, method: "prov
 }
 
 export class PlaceResolverV2 {
-  constructor(private readonly options: { store: PlaceResolutionStore; maps: Maps; assist?: PlaceResolutionAssist }) {}
+  constructor(private readonly options: { store: PlaceResolutionStoreCapabilityV3; maps: Maps; assist?: PlaceResolutionAssist }) {}
 
   private currentTrip(tripId: string, expectedGeneration: number) {
     const trip = this.options.store.requireTrip(tripId);
