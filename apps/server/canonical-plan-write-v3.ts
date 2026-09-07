@@ -3,6 +3,7 @@ import {
   hasIndependentDerivedRouteWriteV3,
   inspectDerivedDayWriteV3,
 } from "./derived-day-integrity-v3.js";
+import { tryApplyLegacyDayTransferModesV3 } from "./final-route-day-transfer-v3.js";
 import {
   rebuildFinalRouteDaysV3,
   syncFinalRouteForLegacyWriteV3,
@@ -40,6 +41,8 @@ function restoreExplicitDayMetadataV3(
  * - finalRoute changes are authoritative and Days are re-derived forward;
  * - stale Day views caused by other canonical data changes are overwritten by
  *   the newly derived Day view;
+ * - a legacy Day-only transferMode edit is mapped directly to the first
+ *   canonical route node of that Day segment;
  * - remaining legacy Day route/node writes are translated explicitly with the
  *   existing compatibility algorithm so Store is no longer the first place
  *   that discovers them;
@@ -65,6 +68,8 @@ export function canonicalizePlanWriteV3(
   if (before.finalRoute.nodes.length || incoming.finalRoute.nodes.length) {
     const inspection = inspectDerivedDayWriteV3(incoming);
     if (!inspection.matchesCanonicalDays && hasIndependentDerivedRouteWriteV3(before, incoming)) {
+      const transferOnly = tryApplyLegacyDayTransferModesV3(before, incoming);
+      if (transferOnly) return restoreExplicitDayMetadataV3(before, incoming, transferOnly);
       return syncFinalRouteForLegacyWriteV3(before, incoming);
     }
     return restoreExplicitDayMetadataV3(before, incoming, inspection.plan);
