@@ -2,13 +2,13 @@
 
 ## Overall Status
 
-当前阶段：Phase 5 — 最终线路 UI 收尾
-总体状态：code_complete_static_review_complete
-最后更新时间：2026-09-06
+当前阶段：P0 架构 / canonical 边界收尾完成
+总体状态：p0_complete_node24_verified
+最后更新时间：2026-09-07
 
 > 2026-09-06 用户明确调整验收方式：**不再要求浏览器人工测试 Gate。先完成全部代码，再做静态 code review。**
 >
-> 本轮施工 Agent 仍不运行 test / typecheck / build / app / Provider / CI；浏览器测试不再作为 Phase 4 / Phase 5 完成前置条件。
+> 2026-09-07 在 P0 架构收尾后，已额外执行仓库正式 Node 24 CI：typecheck、590 项全量测试、production build 全部通过。浏览器人工测试仍不作为当前 Gate；真实 Provider / AI Provider E2E 未在本次 P0 验证中执行。
 
 ---
 
@@ -46,7 +46,7 @@ Phase 1: PASS
 
 ```text
 Test Branch: test/plan-phase2-final-route-ui-20260905-r2
-Test HEAD: aa55a6d616902d1c436b8f796c8e1be3c0a7f354
+Test HEAD: aa55a6d6169022416451c436b8f796c8e1be3c0a7f354
 Phase 2: PASS
 ```
 
@@ -238,31 +238,60 @@ apps/web/src/phase5-final-route-polish.test.ts
 apps/web/src/main.tsx
 ```
 
-**没有修改任何 server finalRoute / Day / Route 核心文件。**
+**Phase 5 本身没有修改 server finalRoute / Day / Route 核心文件；后续 P0 架构收尾单独调整了 server 内部结构和 canonical 写边界。**
 
 ---
 
-## 验证说明
+# P0 架构 / canonical 收尾
 
-按当前施工规则和用户最新要求：
+状态：`completed_node24_verified`
+
+2026-09-07 完成：
+
+1. `planner-runtime-v3.ts` 从 God Object 收敛为 application facade / orchestration，Action Context、Scope、Proposal diff、Resolution、Route、Interest Discovery、Action persistence、Google Maps link、requirements mutation 等职责拆到独立 helper / coordinator。
+2. Provider/Store V2/V3 边界改为窄 capability interface，`index-v3.ts` 已去掉 P0 主链已知 `unknown as` Store/Resolver 强转。
+3. `TravelStoreV3` 的正常写入入口直接执行 canonical plan write；`finalRoute.nodes` 保持唯一线路来源，Day 继续作为派生/read model + metadata + Provider route input。
+4. Skeleton replan 使用专用 canonical adapter，不再依赖 generic reverse bridge 作为主生产路径。
+5. `PlaceResolverV2` 直接实现 Planner-facing `selectCandidate / setDirect` 薄 alias，生产与测试使用同一 capability。
+6. generic Day compatibility bridge 只保留在已登记的窄兼容场景，不恢复旧旅行迁移或双写。
+7. Candidate 删除不会删除仍被 `finalRoute` 引用的 Place；线路节点与 Place 继续保留，derived Stop 的 Candidate link 可变为 `null`。
+
+P0 收尾 merge：
 
 ```text
-本轮未运行 test
-未运行 typecheck
-未运行 build
-未运行 app
-未运行 Provider / CI
-未运行浏览器测试
+main commit: 9c17c5f19cddbf1a1cb7c13dfc5a138744acab3f
 ```
 
-本轮已完成的是：
+---
+
+## 最终验证说明
+
+正式 Node 24 GitHub CI 已执行：
 
 ```text
-全部计划内代码施工
-静态数据流 Review
-静态边界 Review
-针对 Review 发现的问题补充 / 修改测试代码
-冻结 Branch + HEAD
+Node: v24.20.0
+npm ci: PASS
+typecheck:web: PASS
+typecheck:server: PASS
+Test Files: 105 / 105 PASS
+Tests: 590 / 590 PASS
+build:web: PASS
+build:server: PASS
 ```
 
-如后续需要验证，可以单独执行自动测试 / typecheck / build；**不需要浏览器测试作为 Gate**。
+最终 clean CI run：`34102671270`。
+
+本次仍未执行：
+
+```text
+浏览器人工交互回归
+真实 Google Maps / Route Provider E2E
+真实 AI Provider E2E
+```
+
+它们属于后续运行 / 发布验证；浏览器人工测试不作为当前代码完成 Gate。
+
+CI 另有两个非阻塞后续项：
+
+- npm audit 报告 6 个依赖漏洞（4 moderate、1 high、1 critical），未在 P0 中擅自 `--force` 升级；
+- Vite 提示主 JS chunk >500kB，以及 `maplibre-gl` 同时存在静态 / 动态 import，可另做性能与依赖治理。
