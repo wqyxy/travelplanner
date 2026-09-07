@@ -1,14 +1,12 @@
 import { randomUUID } from "node:crypto";
 import {
   AiProposalSchema,
-  CandidatePreferenceSchema,
   GoogleMapsLinkCommitInputSchema,
   GoogleMapsLinkPreviewInputSchema,
   PlanCommandSchema,
   ProposalScopeSchema,
   TravelPlanDocumentSchema,
   emptyTravelPlan,
-  type DayStop,
   type Place,
   type PlaceResolution,
   type PlanCommand,
@@ -51,7 +49,6 @@ import {
   validateDetailedSchedulingOutcomeV3,
 } from "./detail-itinerary-v3.js";
 import { ROUTE_DAY_BATCH_CONCURRENCY, type DayRouteServiceV2 } from "./day-route-v2.js";
-import { analyzeItineraryImpactV3 } from "./itinerary-impact-v3.js";
 import {
   applySkeletonPlanV3,
   deriveItineraryUpdateStateV3,
@@ -59,13 +56,20 @@ import {
 import { applyPlanCommands } from "./plan-commands-v2.js";
 import { buildPlanningCoverage } from "./planning-areas-v2.js";
 import {
-  buildBackboneContextV3,
   buildDetailPlanningContextV3,
   buildInterestAreaContextV3,
-  buildSkeletonContextV3,
   interestDiscoveryReadinessV3,
 } from "./planning-context-v3.js";
+import { buildPlannerActionStateV3 } from "./planner-action-context-v3.js";
 import { actionScope, dayMutationScope } from "./planner-action-scope-v3.js";
+import {
+  assertDestinationOutputWithinBrief,
+  candidateCommand,
+  hasTravelRequirements,
+  normalizeCandidateDiscoveryOutput,
+} from "./planner-candidate-output-v3.js";
+import { deterministicCommands } from "./planner-deterministic-commands-v3.js";
+import { markImpact } from "./planner-itinerary-impact-v3.js";
 import { refinementCommands, replacementCommands } from "./planner-itinerary-commands-v3.js";
 import { validateItineraryReferences } from "./planner-itinerary-validation-v3.js";
 import { proposalDiff } from "./planner-proposal-v3.js";
@@ -110,31 +114,6 @@ function now() { return new Date().toISOString(); }
 function same(left: unknown, right: unknown) { return JSON.stringify(left ?? null) === JSON.stringify(right ?? null); }
 function stringifySize(value: unknown) { return Buffer.byteLength(JSON.stringify(value), "utf8"); }
 
-function hasTravelRequirements(plan: TravelPlanDocument) {
-  return plan.trip.brief.destination.trim().length > 0;
-}
-
-const destinationCountryAliases: Record<string, readonly string[]> = {
-  GB: ["英国", "uk", "united kingdom", "great britain", "英格兰", "苏格兰", "威尔士", "北爱尔兰"],
-  FR: ["法国", "france"], JP: ["日本", "japan"], US: ["美国", "united states", "usa"],
-  NZ: ["新西兰", "new zealand"], AU: ["澳大利亚", "australia"], IT: ["意大利", "italy"],
-  ES: ["西班牙", "spain"], DE: ["德国", "germany"], CA: ["加拿大", "canada"], CN: ["中国", "china"],
-};
-
-function requiredDestinationCountryCodes(destination: string) {
-  const normalized = destination.trim().toLocaleLowerCase();
-  return Object.entries(destinationCountryAliases).filter(([, aliases]) => aliases.some((alias) => normalized.includes(alias))).map(([code]) => code);
-}
-
-function assertDestinationOutputWithinBrief(plan: TravelPlanDocument, output: DestinationGenerateOutput) {
-  const destination = plan.trip.brief.destination.trim();
-  if (!destination) throw new Error("请先填写目的地，再生成目的地建议。");
-  const allowedCountryCodes = requiredDestinationCountryCodes(destination);
-  if (!allowedCountryCodes.length) return;
-  const invalid = output.places.filter((place) => !place.countryCode || !allowedCountryCodes.includes(place.countryCode));
-  if (invalid.length) throw new Error(`目的地范围为“${destination}”，AI 返回了范围外地点：${invalid.map((place) => place.nameZh).join("、")}。`);
-}
-
 function interestCompletionSummary(resultRef: string | null | undefined) {
   if (!resultRef?.startsWith("interest:v1;")) return null;
   const values = new Map(resultRef.split(";").slice(1).map((part) => {
@@ -161,52 +140,6 @@ function assertDetailPlanningBlockers(_context: DetailPlanningContextV3) {
 function assertDetailMacroCurrent(_context: DetailPlanningContextV3) {
   // A dirty upstream skeleton may make the detail plan stale, but it does not
   // revoke the user's ability to work on the current detailed itinerary.
-}
-
-function normalizeCandidateDiscoveryOutput(output: any, mode: "macro" | "micro") {
-  if (mode === "macro") return {
-    schemaVersion: 2,
-    baseGeneration: output.baseGeneration,
-    assistantMessage: output.assistantMessage,
-    places: output.places,
-    candidates: output.candidates.map((candidate: any) => {
-      const { planningAreaCandidateId: _legacyParent, ...backboneCandidate } = candidate;
-      return { ...backboneCandidate, defaultPreference: "optional" };
-    }),
-  };
-  return output;
-}
-
-function candidateCommand(output: { places: any[]; candidates: any[] }) {
-  const source = output.candidates[0];
-  const place = output.places.find((item) => item.id === source?.placeTemporaryId) ?? output.places[0];
-  if (!source || !place) throw new Error("AI 没有返回可正式化的地点。");
-  return PlanCommandSchema.parse({
-    type: "add_candidate",
-    place,
-    candidate: {
-      id: source.temporaryId,
-      placeId: place.id,
-      planningAreaCandidateId: source.planningAreaCandidateId,
-      ...(source.planningRole ? { planningRole: source.planningRole } : {}),
-      preference: "optional",
-      source: "ai",
-      aiReason: source.aiReason,
-      aiScore: source.aiScore,
-      suggestedDurationMinutes: source.suggestedDurationMinutes,
-      tags: source.tags,
-    },
-  });
-}
-
-function markImpact(before: TravelPlanDocument, after: TravelPlanDocument) {
-  const impact = analyzeItineraryImpactV3(before, after);
-  if (!impact.detail.affectedDayIds.length) return after;
-  const affected = new Set(impact.detail.affectedDayIds);
-  return TravelPlanDocumentSchema.parse({
-    ...after,
-    days: after.days.map((day) => affected.has(day.id) && day.detailLevel === "detailed" ? { ...day, detailStatus: "needs_review" } : day),
-  });
 }
 
 export class TravelPlannerRuntimeV3 {
@@ -500,119 +433,14 @@ export class TravelPlannerRuntimeV3 {
 
   private buildActionState(action: AiActionRecord) {
     const trip = this.options.store.requireTrip(action.tripId);
-    const places = new Map(trip.plan.places.map((place) => [place.id, place]));
     const resolutions = this.options.store.listPlaceResolutions(action.tripId);
-    const currentResolutions = currentResolvedPlaces(trip, resolutions);
-    const resolutionByPlace = new Map(currentResolutions.map((resolution) => [resolution.placeId, resolution]));
-    const candidateState = (candidate: TripDetailV3["plan"]["candidates"][number]) => ({ ...candidate, place: places.get(candidate.placeId) ?? null, resolution: resolutionByPlace.get(candidate.placeId) ?? null });
-    const base = { actionType: action.actionType, baseGeneration: action.baseGeneration, planLanguage: trip.planLanguage, parameters: action.parameters, targetIds: action.targetIds };
-    if (action.actionType.startsWith("destination.")) {
-      const backbone = buildBackboneContextV3(trip.plan);
-      const backboneCandidates = trip.plan.candidates.filter((candidate) => {
-        const place = places.get(candidate.placeId);
-        return Boolean(place && effectivePlanningRole(candidate, place) !== "detail_interest");
-      }).map(candidateState);
-      return { ...base, ...backbone, backboneCandidates };
-    }
-    if (action.actionType.startsWith("interest.")) {
-      const capacityAware = action.actionType === "interest.discover" || action.actionType === "interest.supplement";
-      if (capacityAware) {
-        const readiness = interestDiscoveryReadinessV3(trip.plan);
-        const targetIds = action.targetIds.length ? [...new Set(action.targetIds)] : readiness.adoptedPlanningAreaIds;
-        return { ...base, tripFacts: trip.plan.trip, targetMacroCandidateIds: targetIds, interestDiscoveryReadiness: readiness };
-      }
-      const targetIds = action.targetIds.length ? action.targetIds : trip.plan.candidates.filter((candidate) => {
-        const place = places.get(candidate.placeId);
-        return candidate.preference !== "excluded" && Boolean(place) && effectivePlanningRole(candidate, place!) === "planning_area";
-      }).map((candidate) => candidate.id);
-      return { ...base, tripFacts: trip.plan.trip, targetMacroCandidateIds: targetIds };
-    }
-    if (action.actionType === "itinerary.generate" || action.actionType === "itinerary.replan") {
-      const skeleton = buildSkeletonContextV3(trip.plan);
-      return {
-        ...base,
-        ...skeleton,
-        stage: trip.plan.stage,
-        macroUpdateState: deriveItineraryUpdateStateV3(trip.plan).macro,
-      };
-    }
-    if (action.actionType === "itinerary.detail.generate") {
-      const detail = buildDetailPlanningContextV3(trip.plan, resolutions);
-      assertDetailPlanningBlockers(detail);
-      const targetSet = new Set(detail.targetDayIds);
-      return {
-        ...base,
-        ...detail,
-        stage: trip.plan.stage,
-        allMacroDays: trip.plan.days.map((day) => ({ id: day.id, dayNumber: day.dayNumber, date: day.date, title: day.title, stayBlockId: day.stayBlockId ?? null, transferMode: day.transferMode, startAnchor: day.startAnchor, endAnchor: day.endAnchor })),
-        routeStates: this.options.routes.workspaceRouteState(action.tripId).filter((route) => targetSet.has(route.dayId)),
-        macroRouteStates: this.options.routes.workspaceMacroRouteState(action.tripId).filter((route) => targetSet.has(route.dayId)),
-      };
-    }
-    if (action.actionType === "itinerary.day.optimize" || action.actionType === "itinerary.refine") {
-      const requested = action.actionType === "itinerary.day.optimize"
-        ? [String(action.parameters.dayId ?? action.targetIds[0] ?? "")].filter(Boolean)
-        : (Array.isArray(action.parameters.dayIds) && action.parameters.dayIds.length
-            ? action.parameters.dayIds.map(String).slice(0, 2)
-            : action.targetIds.length
-              ? action.targetIds.slice(0, 2)
-              : trip.plan.days.filter((day) => day.detailLevel !== "detailed" || day.detailStatus !== "ready").slice(0, 2).map((day) => day.id));
-      if (!requested.length) throw new Error("单日 AI Action 缺少目标 Day。");
-      const targetDays = requested.map((dayId) => {
-        const day = trip.plan.days.find((item) => item.id === dayId);
-        if (!day) throw new Error(`未知 Day：${dayId}`);
-        return day;
-      });
-      const targetIndexes = targetDays.map((day) => trip.plan.days.findIndex((item) => item.id === day.id));
-      const adjacentIds = new Set<string>();
-      for (const index of targetIndexes) {
-        if (trip.plan.days[index - 1]) adjacentIds.add(trip.plan.days[index - 1].id);
-        if (trip.plan.days[index + 1]) adjacentIds.add(trip.plan.days[index + 1].id);
-      }
-      for (const day of targetDays) adjacentIds.delete(day.id);
-      const candidateIds = new Set(targetDays.flatMap((day) => day.stops.map((stop) => stop.candidateId).filter((id): id is string => Boolean(id))));
-      const routeStates = this.options.routes.workspaceRouteState(action.tripId);
-      return {
-        ...base,
-        tripFacts: trip.plan.trip,
-        stage: trip.plan.stage,
-        targetDayIds: targetDays.map((day) => day.id),
-        days: targetDays,
-        adjacentDays: trip.plan.days.filter((day) => adjacentIds.has(day.id)).map((day) => ({ id: day.id, dayNumber: day.dayNumber, date: day.date, title: day.title, startPlaceId: day.startAnchor.placeId, endPlaceId: day.endAnchor.placeId, stopPlaceIds: day.stops.map((stop) => stop.placeId) })),
-        candidates: trip.plan.candidates.filter((candidate) => candidateIds.has(candidate.id)).map(candidateState),
-        routeStates: routeStates.filter((route) => requested.includes(route.dayId) || adjacentIds.has(route.dayId)),
-      };
-    }
-    if (action.actionType === "itinerary.detail.update") {
-      const derived = deriveItineraryUpdateStateV3(trip.plan).detail.affectedDayIds;
-      const requested = Array.isArray(action.parameters.dayIds) && action.parameters.dayIds.length ? action.parameters.dayIds.map(String) : action.targetIds.length ? action.targetIds : derived;
-      if (!requested.length) throw new Error("当前没有需要局部更新的 Day。");
-      const detail = buildDetailPlanningContextV3(trip.plan, resolutions, requested);
-      assertDetailPlanningBlockers(detail);
-      const requestedSet = new Set(requested);
-      return {
-        ...base,
-        ...detail,
-        stage: trip.plan.stage,
-        affectedDayIds: requested,
-        allMacroDays: trip.plan.days.map((day) => ({ id: day.id, dayNumber: day.dayNumber, date: day.date, title: day.title, stayBlockId: day.stayBlockId ?? null, transferMode: day.transferMode, startAnchor: day.startAnchor, endAnchor: day.endAnchor })),
-        routeStates: this.options.routes.workspaceRouteState(action.tripId).filter((route) => requestedSet.has(route.dayId)),
-        macroRouteStates: this.options.routes.workspaceMacroRouteState(action.tripId).filter((route) => requestedSet.has(route.dayId)),
-      };
-    }
-    if (action.actionType.startsWith("itinerary.")) {
-      return {
-        ...base,
-        tripFacts: trip.plan.trip,
-        stage: trip.plan.stage,
-        candidates: trip.plan.candidates.map(candidateState),
-        days: trip.plan.days,
-        routeStates: this.options.routes.workspaceRouteState(action.tripId),
-        macroRouteStates: this.options.routes.workspaceMacroRouteState(action.tripId),
-        itineraryUpdateState: deriveItineraryUpdateStateV3(trip.plan),
-      };
-    }
-    return base;
+    return buildPlannerActionStateV3({
+      action,
+      trip,
+      resolutions,
+      routeStates: () => this.options.routes.workspaceRouteState(action.tripId),
+      macroRouteStates: () => this.options.routes.workspaceMacroRouteState(action.tripId),
+    });
   }
 
   private async executeDeterministic(action: AiActionRecord) {
@@ -650,7 +478,7 @@ export class TravelPlannerRuntimeV3 {
       return `generation:${written.generation}`;
     }
 
-    const commands = this.deterministicCommands(action, trip);
+    const commands = deterministicCommands(action, trip);
     const applied = applyPlanCommands(trip.plan, commands);
     if (action.actionType.startsWith("itinerary.")) validateItineraryReferences(trip, applied.plan.days, this.options.store.listPlaceResolutions(action.tripId));
     const plan = markImpact(trip.plan, applied.plan);
@@ -658,76 +486,6 @@ export class TravelPlannerRuntimeV3 {
     this.emit("travel.document.changed", { tripId: action.tripId, generation: written.generation, changedDayIds: applied.effects.changedDayIds });
     await this.resolveChangedPlaces(action.tripId, applied.effects.changedPlaceIds, written.generation);
     return `generation:${written.generation}`;
-  }
-
-  private deterministicCommands(action: AiActionRecord, trip: TripDetailV3): PlanCommand[] {
-    const p = action.parameters as Record<string, any>;
-    const places = new Map(trip.plan.places.map((place) => [place.id, place]));
-    const candidate = (id: string) => {
-      const value = trip.plan.candidates.find((item) => item.id === id);
-      if (!value) throw new Error(`未知 Candidate：${id}`);
-      return value;
-    };
-    const role = (item: TripDetailV3["plan"]["candidates"][number]) => {
-      const place = places.get(item.placeId);
-      if (!place) throw new Error(`Candidate 引用未知 Place：${item.id}`);
-      return effectivePlanningRole(item, place);
-    };
-    const targetCandidateId = String(p.candidateId ?? action.targetIds[0] ?? "");
-    if (action.actionType === "destination.remove") {
-      const item = candidate(targetCandidateId);
-      const planningRole = role(item);
-      if (planningRole === "detail_interest") throw new Error("Step 2 只能删除停留区域或重要游览地。");
-      return [{ type: planningRole === "planning_area" ? "remove_candidate_tree" : "remove_candidate", candidateId: item.id }];
-    }
-    if (action.actionType === "interest.remove") {
-      const item = candidate(targetCandidateId);
-      if (role(item) !== "detail_interest") throw new Error("兴趣点步骤只能删除普通兴趣点。");
-      return [{ type: "remove_candidate", candidateId: item.id }];
-    }
-    if (action.actionType === "destination.preference" || action.actionType === "interest.preference") {
-      const ids = Array.isArray(p.candidateIds) && p.candidateIds.length ? p.candidateIds.map(String) : action.targetIds.length ? action.targetIds : [targetCandidateId];
-      const preference = CandidatePreferenceSchema.parse(p.preference);
-      if (!ids.length) throw new Error("缺少 Candidate ID。");
-      for (const id of ids) {
-        const item = candidate(id);
-        const planningRole = role(item);
-        if (action.actionType === "destination.preference" && planningRole === "detail_interest") throw new Error("Step 2 preference 只能修改停留区域或重要游览地。");
-        if (action.actionType === "interest.preference" && planningRole !== "detail_interest") throw new Error("兴趣点 preference 只能修改普通兴趣点。");
-      }
-      return ids.length === 1 ? [{ type: "set_candidate_preference", candidateId: ids[0], preference }] : [{ type: "bulk_set_candidate_preference", candidateIds: ids, preference }];
-    }
-    if (action.actionType === "destination.edit" || action.actionType === "interest.edit") {
-      const item = candidate(targetCandidateId);
-      const planningRole = role(item);
-      if (action.actionType === "destination.edit" && planningRole === "detail_interest") throw new Error("Step 2 编辑只能修改停留区域或重要游览地。");
-      if (action.actionType === "interest.edit" && planningRole !== "detail_interest") throw new Error("兴趣点编辑只能修改普通兴趣点。");
-      const commands: PlanCommand[] = [];
-      if (p.placeChanges && typeof p.placeChanges === "object") commands.push(PlanCommandSchema.parse({ type: "update_place", placeId: item.placeId, changes: p.placeChanges }));
-      if (p.candidateChanges && typeof p.candidateChanges === "object") commands.push(PlanCommandSchema.parse({ type: "update_candidate", candidateId: item.id, changes: p.candidateChanges }));
-      if (!commands.length) throw new Error("没有可执行的明确字段修改。");
-      return commands;
-    }
-    if (action.actionType === "itinerary.stop.remove") return [PlanCommandSchema.parse({ type: "remove_day_stop", stopId: String(p.stopId ?? action.targetIds[0] ?? "") })];
-    if (action.actionType === "itinerary.stop.move") return [PlanCommandSchema.parse({ type: "move_day_stop", stopId: String(p.stopId ?? action.targetIds[0] ?? ""), targetDayId: String(p.targetDayId ?? ""), targetIndex: Number(p.targetIndex) })];
-    if (action.actionType === "itinerary.day.reorder") return [PlanCommandSchema.parse({ type: "move_day", dayId: String(p.dayId ?? action.targetIds[0] ?? ""), targetIndex: Number(p.targetIndex) })];
-    if (action.actionType === "itinerary.anchor.set") return [PlanCommandSchema.parse({ type: "set_day_anchor", dayId: String(p.dayId ?? action.targetIds[0] ?? ""), anchor: p.anchor, placeId: p.placeId ?? null, label: p.label ?? null, notes: p.notes ?? null })];
-    if (action.actionType === "itinerary.stop.replace") {
-      const stopId = String(p.stopId ?? action.targetIds[0] ?? ""); const replacement = candidate(String(p.candidateId ?? ""));
-      return [PlanCommandSchema.parse({ type: "update_day_stop", stopId, changes: { candidateId: replacement.id, placeId: replacement.placeId, ...(typeof p.activity === "string" ? { activity: p.activity } : {}) } })];
-    }
-    if (action.actionType === "itinerary.stop.add") {
-      const dayId = String(p.dayId ?? action.targetIds[0] ?? ""); const item = candidate(String(p.candidateId ?? "")); const place = places.get(item.placeId); if (!place) throw new Error("Candidate 引用未知 Place。");
-      const day = trip.plan.days.find((value) => value.id === dayId); if (!day) throw new Error(`未知 Day：${dayId}`);
-      const index = p.index == null ? day.stops.length : Number(p.index);
-      const stop: DayStop = { id: `tmp-stop-${randomUUID()}`, candidateId: item.id, placeId: item.placeId, activity: typeof p.activity === "string" && p.activity.trim() ? p.activity.trim() : `游览${place.nameZh}`, period: null, scheduleText: null, startTime: null, endTime: null, durationMinutes: item.suggestedDurationMinutes, transportFromPrevious: null, scheduleVerification: null, costNote: null, costVerification: null, notes: null };
-      return [PlanCommandSchema.parse({ type: "add_day_stop", dayId, index, stop })];
-    }
-    if (action.actionType === "itinerary.edit") {
-      if (p.stopId) return [PlanCommandSchema.parse({ type: "update_day_stop", stopId: String(p.stopId), changes: p.changes })];
-      return [PlanCommandSchema.parse({ type: "update_day", dayId: String(p.dayId ?? action.targetIds[0] ?? ""), changes: p.changes })];
-    }
-    throw new Error(`未实现 deterministic Action：${action.actionType}`);
   }
 
   private resolutionProgress(tripId: string, taskId?: string) {
