@@ -34,17 +34,22 @@ function restoreExplicitDayMetadataV3(
 }
 
 /**
- * Normalize an incoming V3 plan at the persistence boundary.
+ * Normalize an incoming V3 plan before it reaches TravelStoreV3.
  *
- * Canonical rules:
+ * Transitional canonical rules:
  * - finalRoute changes are authoritative and Days are re-derived forward;
- * - Day-only metadata is allowed; explicit title/date edits are restored after
- *   route derivation without turning Day back into a second route model;
- * - a stale Day view caused by other canonical data changes is replaced by the
- *   newly derived Day view rather than rejected;
- * - independent Day route/node writes are rejected once finalRoute exists;
- * - legacy Day-only plans keep the temporary reverse bridge until old fixtures/
- *   bootstrap callers are retired.
+ * - stale Day views caused by other canonical data changes are overwritten by
+ *   the newly derived Day view;
+ * - remaining legacy Day route/node writes are translated explicitly with the
+ *   existing compatibility algorithm so Store is no longer the first place
+ *   that discovers them;
+ * - Day-only metadata remains allowed; explicit title/date edits are restored
+ *   after route derivation where the downstream persistence path preserves them;
+ * - legacy Day-only fixtures/bootstrap callers keep the same compatibility path.
+ *
+ * Once itinerary.day.reorder / itinerary.anchor.set and the remaining fallback
+ * callers write finalRoute directly, the translation branch can become a hard
+ * rejection and the Store-level reverse bridge can be removed.
  */
 export function canonicalizePlanWriteV3(
   beforeValue: TravelPlanDocument,
@@ -60,7 +65,7 @@ export function canonicalizePlanWriteV3(
   if (before.finalRoute.nodes.length || incoming.finalRoute.nodes.length) {
     const inspection = inspectDerivedDayWriteV3(incoming);
     if (!inspection.matchesCanonicalDays && hasIndependentDerivedRouteWriteV3(before, incoming)) {
-      throw new Error("DERIVED_DAY_ROUTE_WRITE_REJECTED");
+      return syncFinalRouteForLegacyWriteV3(before, incoming);
     }
     return restoreExplicitDayMetadataV3(before, incoming, inspection.plan);
   }
