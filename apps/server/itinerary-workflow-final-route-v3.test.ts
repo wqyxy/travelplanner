@@ -5,6 +5,8 @@ import {
   type Place,
   type TravelPlanDocument,
 } from "./contracts-v2.js";
+import { inspectDerivedDayWriteV3 } from "./derived-day-integrity-v3.js";
+import { rebuildFinalRouteDaysV3 } from "./final-route-v3.js";
 import { applySkeletonPlanV3 } from "./itinerary-workflow-v3.js";
 import type { TripDetailV3 } from "./travel-store-v3.js";
 
@@ -30,7 +32,7 @@ function plan(): TravelPlanDocument {
       originPlaceId: "origin",
       dates: { start: "2026-10-01", end: null, requestedDurationDays: 3 },
     },
-    places: [place("origin"), place("a"), place("b")],
+    places: [place("origin"), place("a"), place("b"), place("inactive")],
     candidates: [
       {
         id: "area-a",
@@ -100,5 +102,49 @@ describe("initial skeleton canonical finalRoute", () => {
     expect(result.plan.days[0].stayBlockId).toBeTruthy();
     expect(result.plan.days[1].stayBlockId).toBe(result.plan.days[0].stayBlockId);
     expect(result.plan.days[2].stayBlockId).not.toBe(result.plan.days[0].stayBlockId);
+  });
+
+  it("canonicalizes replan before Store and preserves inactive route nodes", () => {
+    const initial = applySkeletonPlanV3(trip(), {
+      stays: [
+        { planningAreaCandidateId: "area-a", stayDays: 2, transferModeFromPrevious: "drive" },
+        { planningAreaCandidateId: "area-b", stayDays: 1, transferModeFromPrevious: "drive" },
+      ],
+      omittedPlanningAreas: [],
+    }).plan;
+
+    const withInactive = structuredClone(initial);
+    withInactive.finalRoute.nodes.splice(1, 0, {
+      id: "inactive-node",
+      placeId: "inactive",
+      status: "tentative",
+      endsDay: false,
+      transportFromPrevious: null,
+      activity: null,
+      period: null,
+      scheduleText: null,
+      startTime: null,
+      endTime: null,
+      durationMinutes: null,
+      scheduleVerification: null,
+      costNote: null,
+      costVerification: null,
+      notes: null,
+    });
+    const current = rebuildFinalRouteDaysV3(withInactive);
+
+    const replanned = applySkeletonPlanV3(trip(current), {
+      stays: [
+        { planningAreaCandidateId: "area-b", stayDays: 1, transferModeFromPrevious: "drive" },
+        { planningAreaCandidateId: "area-a", stayDays: 2, transferModeFromPrevious: "drive" },
+      ],
+      omittedPlanningAreas: [],
+    }).plan;
+
+    expect(replanned.finalRoute.nodes.filter((node) => node.status === "normal").map((node) => node.placeId)).toEqual(["b", "a", "a"]);
+    expect(replanned.finalRoute.nodes.find((node) => node.id === "inactive-node")?.status).toBe("tentative");
+    expect(replanned.days.map((day) => day.endAnchor.placeId)).toEqual(["b", "a", "a"]);
+    expect(inspectDerivedDayWriteV3(replanned).matchesCanonicalDays).toBe(true);
+    expect(replanned.finalRoute.nodes).not.toEqual(current.finalRoute.nodes);
   });
 });
