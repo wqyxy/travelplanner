@@ -2,14 +2,18 @@ import { describe, expect, it } from "vitest";
 import {
   TravelPlanDocumentSchema,
   emptyTravelPlan,
+  type DayStop,
   type FinalRouteNode,
   type Place,
   type TravelPlanDocument,
 } from "./contracts-v2.js";
 import {
+  addDerivedStopViaFinalRouteV3,
+  moveDerivedStopViaFinalRouteV3,
   removeDerivedStopViaFinalRouteV3,
   updateDerivedStopViaFinalRouteV3,
 } from "./final-route-day-stop-bridge-v3.js";
+import { syncFinalRouteForLegacyWriteV3 } from "./final-route-v3.js";
 
 const place = (id: string): Place => ({
   id,
@@ -22,6 +26,18 @@ const place = (id: string): Place => ({
   country: "新西兰",
   countryCode: "NZ",
   approximate: false,
+});
+
+const candidate = (id: string, placeId: string) => ({
+  id,
+  placeId,
+  planningAreaCandidateId: null,
+  preference: "optional" as const,
+  source: "user" as const,
+  aiReason: null,
+  aiScore: null,
+  suggestedDurationMinutes: 60,
+  tags: [],
 });
 
 const node = (id: string, placeId: string, patch: Partial<FinalRouteNode> = {}): FinalRouteNode => ({
@@ -49,15 +65,51 @@ function plan(): TravelPlanDocument {
     ...base,
     trip: { ...base.trip, originPlaceId: "origin" },
     places: [place("origin"), place("x"), place("y"), place("end")],
-    candidates: [
-      { id: "cx", placeId: "x", planningAreaCandidateId: null, preference: "optional", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: 60, tags: [] },
-      { id: "cy", placeId: "y", planningAreaCandidateId: null, preference: "optional", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: 90, tags: [] },
-    ],
+    candidates: [candidate("cx", "x"), candidate("cy", "y")],
     finalRoute: {
       version: 1,
       nodes: [node("stop-x", "x"), node("day-end", "end", { endsDay: true })],
     },
   });
+}
+
+function twoDayPlan(): TravelPlanDocument {
+  const base = emptyTravelPlan();
+  return TravelPlanDocumentSchema.parse({
+    ...base,
+    trip: { ...base.trip, originPlaceId: "origin" },
+    places: ["origin", "x", "y", "z", "inactive", "end-1", "end-2"].map(place),
+    candidates: [candidate("cx", "x"), candidate("cy", "y"), candidate("cz", "z")],
+    finalRoute: {
+      version: 1,
+      nodes: [
+        node("stop-x", "x"),
+        node("day-1", "end-1", { endsDay: true }),
+        node("inactive-node", "inactive", { status: "tentative" }),
+        node("stop-y", "y"),
+        node("day-2", "end-2", { endsDay: true }),
+      ],
+    },
+  });
+}
+
+function newStop(): DayStop {
+  return {
+    id: "stop-z",
+    candidateId: "cz",
+    placeId: "z",
+    activity: "游览 Z",
+    period: "afternoon",
+    scheduleText: null,
+    startTime: null,
+    endTime: null,
+    durationMinutes: 60,
+    transportFromPrevious: null,
+    scheduleVerification: null,
+    costNote: null,
+    costVerification: null,
+    notes: null,
+  };
 }
 
 describe("legacy Day stop -> finalRoute canonical bridge", () => {
@@ -105,5 +157,30 @@ describe("legacy Day stop -> finalRoute canonical bridge", () => {
     expect(result!.plan.days).toHaveLength(1);
     expect(result!.plan.days[0].stops).toEqual([]);
     expect(result!.affectedDayIds).toEqual(["day-end"]);
+  });
+
+  it("adds a Stop with the same active/inactive ordering as the legacy Day write bridge", () => {
+    const before = twoDayPlan();
+    const afterDayEdit = structuredClone(before);
+    afterDayEdit.days[1].stops.splice(0, 0, newStop());
+    const legacy = syncFinalRouteForLegacyWriteV3(before, afterDayEdit);
+
+    const canonical = addDerivedStopViaFinalRouteV3(before, "day-2", 0, newStop());
+    expect(canonical).not.toBeNull();
+    expect(canonical!.plan.finalRoute.nodes).toEqual(legacy.finalRoute.nodes);
+    expect(canonical!.plan.days).toEqual(legacy.days);
+  });
+
+  it("moves a Stop across Days with the same inactive-node anchoring as the legacy bridge", () => {
+    const before = twoDayPlan();
+    const afterDayEdit = structuredClone(before);
+    const [moved] = afterDayEdit.days[0].stops.splice(0, 1);
+    afterDayEdit.days[1].stops.splice(0, 0, moved);
+    const legacy = syncFinalRouteForLegacyWriteV3(before, afterDayEdit);
+
+    const canonical = moveDerivedStopViaFinalRouteV3(before, "stop-x", "day-2", 0);
+    expect(canonical).not.toBeNull();
+    expect(canonical!.plan.finalRoute.nodes).toEqual(legacy.finalRoute.nodes);
+    expect(canonical!.plan.days).toEqual(legacy.days);
   });
 });
