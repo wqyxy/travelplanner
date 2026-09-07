@@ -6,7 +6,10 @@ import {
   type Place,
   type TravelPlanDocument,
 } from "./contracts-v2.js";
-import { updateDerivedStopViaFinalRouteV3 } from "./final-route-day-stop-bridge-v3.js";
+import {
+  removeDerivedStopViaFinalRouteV3,
+  updateDerivedStopViaFinalRouteV3,
+} from "./final-route-day-stop-bridge-v3.js";
 
 const place = (id: string): Place => ({
   id,
@@ -93,5 +96,14 @@ describe("legacy Day stop -> finalRoute canonical bridge", () => {
   it("keeps legacy-only candidate detach/place-only semantics on the fallback path", () => {
     expect(updateDerivedStopViaFinalRouteV3(plan(), "stop-x", { candidateId: null })).toBeNull();
     expect(updateDerivedStopViaFinalRouteV3(plan(), "stop-x", { placeId: "y" })).toBeNull();
+  });
+
+  it("removes an ordinary derived Stop by removing the same canonical route node", () => {
+    const result = removeDerivedStopViaFinalRouteV3(plan(), "stop-x");
+    expect(result).not.toBeNull();
+    expect(result!.plan.finalRoute.nodes.map((item) => item.id)).toEqual(["day-end"]);
+    expect(result!.plan.days).toHaveLength(1);
+    expect(result!.plan.days[0].stops).toEqual([]);
+    expect(result!.affectedDayIds).toEqual(["day-end"]);
   });
 });
