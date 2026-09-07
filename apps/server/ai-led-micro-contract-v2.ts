@@ -6,6 +6,7 @@ import {
   TextSchema,
   type MicroCandidateDiscoveryOutput,
 } from "./contracts-v2.js";
+import { PlaceScoreBreakdownSchema } from "./place-score-v3.js";
 
 const prominence = z.enum(["iconic", "major", "supporting"]);
 const experienceType = z.enum([
@@ -35,6 +36,7 @@ const item = z.object({
   planningAreaCandidateId: IdSchema.nullable(),
   aiReason: TextSchema.max(1000),
   aiScore: z.number().int().min(0).max(100),
+  scoreBreakdown: PlaceScoreBreakdownSchema,
   suggestedDurationMinutes: z.number().int().min(0).nullable(),
   tags: z.array(TextSchema.max(120)).max(30),
   defaultPreference: z.literal("optional"),
