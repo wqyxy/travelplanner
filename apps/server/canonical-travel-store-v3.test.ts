@@ -67,7 +67,8 @@ function canonicalPlan() {
 }
 
 describe("installed canonical TravelStoreV3 boundary", () => {
-  it("translates a legacy Day route write before the original Store persists it", () => {
+  it("translates legacy Day route writes, stays idempotent, and preserves generation CAS", () => {
+    installCanonicalTravelStoreWriteBoundaryV3();
     installCanonicalTravelStoreWriteBoundaryV3();
     const store = new TravelStoreV3(databasePath());
     const created = store.createTrip();
@@ -86,6 +87,10 @@ describe("installed canonical TravelStoreV3 boundary", () => {
     expect(written.trip.plan.finalRoute.nodes.find((item) => item.id === "day-end")?.placeId).toBe("other");
     expect(written.trip.plan.days[0].endAnchor.placeId).toBe("other");
     expect(written.generation).toBe(seeded.generation + 1);
+    expect(() => store.writePlan(created.id, incoming, seeded.generation, {
+      source: "test",
+      summary: "stale write",
+    })).toThrow("CONTENT_GENERATION_SUPERSEDED");
     store.close();
   });
 });
