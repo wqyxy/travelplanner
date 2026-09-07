@@ -5,8 +5,7 @@ const clone = <T>(value: T): T => structuredClone(value);
 const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
 
 function dayContentWithoutNumber(day: TravelPlanDocument["days"][number]) {
-  const { dayNumber: _dayNumber, ...rest } = day;
-  return rest;
+  return { ...day, dayNumber: 0 };
 }
 
 function activeSegments(nodes: FinalRouteNode[]) {
