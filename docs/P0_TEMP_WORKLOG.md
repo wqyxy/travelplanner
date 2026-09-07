@@ -4,7 +4,7 @@
 >
 > 开始时间：2026-09-07
 > 当前分支：main
-> 当前状态：P0-1 runtime architecture analysis complete; first extraction prepared
+> 当前状态：P0-1 runtime architecture in progress; Slice 1 complete; Slice 2 pure diff extraction complete
 
 ## 目标
 
@@ -112,11 +112,14 @@ P0 分三条主线，按风险从低到高推进：
 
 ### Slice 2 — Proposal Domain
 
-候选文件：`apps/server/planner-proposal-v3.ts`
+目标文件：`apps/server/planner-proposal-v3.ts`
 
-优先迁移纯逻辑：
+已先迁移纯逻辑：
 
 - `proposalDiff`
+
+后续可继续迁移：
+
 - `replacementCommands`
 - `refinementCommands`
 - 与 Proposal 生成相关但不依赖 Runtime mutable state 的校验/command derivation
@@ -196,21 +199,78 @@ Provider 的事实生产者保持不变，只拆 orchestration。
 
 注意：`AGENTS.md` 仍引用不存在的 `docs/IMPLEMENTATION_STATUS.md`，且有旧五步/city-only 规则与后面的 User Control Correction 冲突。属于后续 P2 文档清理，不在当前 P0 顺手修改。
 
-## 当前施工决定
+## 执行记录
 
-第一处实际代码重构从 Action Scope Policy 开始。
+### 2026-09-07 — Slice 1 Action Scope Policy
 
-完成标准：
+已创建：
 
-- Runtime 不再本地定义 `dayMutationScope/actionScope`；
-- 新模块只依赖 action/contracts，不依赖 Store/AI/Provider；
-- 调用行为、错误信息、scope 结果完全不变；
-- 至少做静态 import/call-site review；
-- 不运行完整测试。
+- `apps/server/planner-action-scope-v3.ts`
+
+包含：
+
+- `dayMutationScope`
+- `actionScope`
+
+提交：
+
+- 新模块：`3880aa1fcb43356345972655c76f270e818d0025`
+- Runtime 接线：`8d2aeafa72b7838b05cee518e24134fff719c6a0`
+
+静态检查：
+
+- Runtime commit 只增加 1 行 import、删除原地 56 行 Scope 实现；
+- conversation Action 和 CTA Action 仍调用相同 `actionScope`；
+- `itinerary.detail.update/refine` 仍使用相同 `dayMutationScope`；
+- 错误文案、fallback 规则、scope 类型均未改；
+- 未运行 test/typecheck/build。
+
+结论：Slice 1 完成，属于行为保持拆分。
+
+### 2026-09-07 — Slice 2 Proposal Diff
+
+已创建：
+
+- `apps/server/planner-proposal-v3.ts`
+
+当前包含：
+
+- `proposalDiff`
+
+提交：
+
+- 新模块：`5445665dc8e9a7e857fac95f513eee98780e1f4e`
+- Runtime 接线：`c42c854f85e5279b8d386fcd639505c186c9925a`
+
+静态检查：
+
+- Runtime 只去掉 `ProposalDiff` type import、增加 `proposalDiff` import、删除本地 38 行实现；
+- `createProposalForAction` 调用位置与调用参数完全不变；
+- Proposal Scope 校验、`applyPlanCommands` preview、Store 写入、event 顺序均未改；
+- 未运行 test/typecheck/build。
+
+结论：Slice 2 的第一部分完成，属于行为保持拆分。
+
+## 当前剩余的低风险纯函数候选
+
+Runtime 中仍有以下适合先移出的逻辑：
+
+1. `currentPlaceResolutions` / `currentResolvedPlaces`
+   - 只做当前 Place 与 resolution fingerprint/status 过滤；
+   - 可独立成为 resolution read-model helper。
+2. `validateItineraryReferences`
+   - 只校验未知 Place/Candidate 和 Stop Candidate/Place mismatch；
+   - 属于结构完整性硬边界，不应加入旅行合理性 blocker。
+3. `replacementCommands` / `refinementCommands`
+   - 负责 AI 结果到受控 PlanCommand 的纯 derivation；
+   - 风险略高于前两项，因为涉及 stop identity、顺序和 command limit。
+4. `markImpact`
+   - 纯 canonical impact derivation；
+   - 需要保持 user-control correction 下仅标记 `needs_review`，不能变成 blocker。
 
 ## 下一步
 
-1. 落地 `planner-action-scope-v3.ts` 并接回 Runtime。
-2. 静态检查 conversation Action 与 CTA Action 两条调用链。
-3. 把完成 commit、改动文件和发现的问题继续写回本文件。
-4. 然后进入 Proposal Domain 纯函数拆分。
+1. 优先抽出 resolution 当前态 helper 与 itinerary structural validation，继续减少 Runtime 的领域杂项。
+2. 再迁移 `replacementCommands/refinementCommands`，每一刀单独静态 diff。
+3. 纯函数稳定后进入 `buildActionState` context builder。
+4. 继续把每个 commit、静态检查结论和发现的问题同步到本文件。
