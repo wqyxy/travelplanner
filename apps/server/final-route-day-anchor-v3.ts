@@ -30,22 +30,32 @@ function routeShapeWithoutAnchorPlaces(day: Day) {
   };
 }
 
+function dayStartPlaceId(day: Day) {
+  return day.startAnchor.placeId ?? day.stops[0]?.placeId ?? day.endAnchor.placeId ?? null;
+}
+
+function dayEndPlaceId(day: Day) {
+  return day.endAnchor.placeId ?? day.stops.at(-1)?.placeId ?? day.startAnchor.placeId ?? null;
+}
+
 type AnchorUpdate = {
   key: "origin" | `node:${string}`;
-  placeId: string;
+  placeId: string | null;
 };
 
 /**
- * Canonicalize legacy non-null Day anchor Place edits.
+ * Canonicalize legacy Day anchor Place edits.
  *
  * Mapping:
- * - first Day start anchor -> trip.originPlaceId;
- * - later Day start anchor -> previous Day boundary node Place;
- * - Day end anchor -> that Day boundary node Place.
+ * - first Day start anchor -> trip.originPlaceId, including null;
+ * - later Day start anchor -> previous Day boundary node Place. When the visible
+ *   anchor is null, use the same stop/end fallback Place as the legacy bridge
+ *   while keeping the derived Day anchor metadata null;
+ * - Day end anchor -> that Day boundary node Place, with the same last-stop/start
+ *   fallback when the visible end anchor is null.
  *
- * Null anchors remain on the broader compatibility path because null is valid
- * Day metadata but cannot be represented as a FinalRouteNode Place identity.
- * Conflicting edits that target the same canonical boundary also fall back.
+ * Conflicting edits that target the same canonical boundary fall back instead of
+ * guessing. A boundary with no representable fallback Place also falls back.
  */
 export function tryApplyLegacyDayAnchorPlacesV3(
   beforeValue: TravelPlanDocument,
@@ -63,31 +73,32 @@ export function tryApplyLegacyDayAnchorPlacesV3(
     if (!same(routeShapeWithoutAnchorPlaces(previous), routeShapeWithoutAnchorPlaces(requested))) return null;
 
     if (previous.startAnchor.placeId !== requested.startAnchor.placeId) {
-      if (!requested.startAnchor.placeId) return null;
       if (index === 0) {
         if (before.trip.originPlaceId !== incoming.trip.originPlaceId && incoming.trip.originPlaceId !== requested.startAnchor.placeId) return null;
         updates.push({ key: "origin", placeId: requested.startAnchor.placeId });
       } else {
-        updates.push({ key: `node:${incoming.days[index - 1].id}`, placeId: requested.startAnchor.placeId });
+        const canonicalPlaceId = dayStartPlaceId(requested);
+        if (!canonicalPlaceId) return null;
+        updates.push({ key: `node:${incoming.days[index - 1].id}`, placeId: canonicalPlaceId });
       }
     }
 
     if (previous.endAnchor.placeId !== requested.endAnchor.placeId) {
-      if (!requested.endAnchor.placeId) return null;
-      updates.push({ key: `node:${requested.id}`, placeId: requested.endAnchor.placeId });
+      const canonicalPlaceId = dayEndPlaceId(requested);
+      if (!canonicalPlaceId) return null;
+      updates.push({ key: `node:${requested.id}`, placeId: canonicalPlaceId });
     }
   }
   if (!updates.length) return null;
 
-  const byTarget = new Map<AnchorUpdate["key"], string>();
+  const byTarget = new Map<AnchorUpdate["key"], string | null>();
   for (const update of updates) {
-    const existing = byTarget.get(update.key);
-    if (existing && existing !== update.placeId) return null;
+    if (byTarget.has(update.key) && byTarget.get(update.key) !== update.placeId) return null;
     byTarget.set(update.key, update.placeId);
   }
 
   for (const placeId of byTarget.values()) {
-    if (!incoming.places.some((place) => place.id === placeId)) throw new Error(`未知 Place：${placeId}`);
+    if (placeId && !incoming.places.some((place) => place.id === placeId)) throw new Error(`未知 Place：${placeId}`);
   }
 
   const nodes = clone(incoming.finalRoute.nodes);
@@ -97,6 +108,7 @@ export function tryApplyLegacyDayAnchorPlacesV3(
       trip = { ...trip, originPlaceId: placeId };
       continue;
     }
+    if (!placeId) return null;
     const nodeId = key.slice("node:".length);
     const node = nodes.find((item) => item.id === nodeId);
     if (!node || node.status !== "normal") return null;
