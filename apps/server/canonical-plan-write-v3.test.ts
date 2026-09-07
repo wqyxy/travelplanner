@@ -73,6 +73,45 @@ describe("canonical V3 plan write boundary", () => {
     expect(result.days[0].detailStatus).toBe("needs_review");
   });
 
+  it("preserves explicit Day title and date metadata", () => {
+    const before = canonicalPlan();
+    const incoming = structuredClone(before);
+    incoming.days[0].title = "用户自定义标题";
+    incoming.days[0].date = "2026-10-05";
+
+    const result = canonicalizePlanWriteV3(before, incoming);
+    expect(result.days[0].title).toBe("用户自定义标题");
+    expect(result.days[0].date).toBe("2026-10-05");
+  });
+
+  it("re-derives a stale Day start when the canonical trip origin changes", () => {
+    const before = canonicalPlan();
+    const incoming = structuredClone(before);
+    incoming.trip.originPlaceId = "other";
+
+    const result = canonicalizePlanWriteV3(before, incoming);
+    expect(result.days[0].startAnchor.placeId).toBe("other");
+  });
+
+  it("re-derives Candidate links without treating them as independent Day route writes", () => {
+    const before = canonicalPlan();
+    const incoming = structuredClone(before);
+    incoming.candidates.push({
+      id: "candidate-x",
+      placeId: "x",
+      planningAreaCandidateId: null,
+      preference: "optional",
+      source: "user",
+      aiReason: null,
+      aiScore: null,
+      suggestedDurationMinutes: null,
+      tags: [],
+    });
+
+    const result = canonicalizePlanWriteV3(before, incoming);
+    expect(result.days[0].stops[0].candidateId).toBe("candidate-x");
+  });
+
   it("rejects independent Day route structure once finalRoute is canonical", () => {
     const before = canonicalPlan();
     const incoming = structuredClone(before);
