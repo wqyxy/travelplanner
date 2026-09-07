@@ -53,6 +53,19 @@ function canonicalPlan() {
   return rebuildFinalRouteDaysV3(base);
 }
 
+function twoDayPlan() {
+  const base = TravelPlanDocumentSchema.parse({
+    ...emptyTravelPlan(),
+    trip: { ...emptyTravelPlan().trip, originPlaceId: "origin" },
+    places: [place("origin"), place("a"), place("b")],
+    finalRoute: {
+      version: 1,
+      nodes: [node("day-1", "a", { endsDay: true }), node("day-2", "b")],
+    },
+  });
+  return rebuildFinalRouteDaysV3(base);
+}
+
 describe("canonical V3 plan write boundary", () => {
   it("treats finalRoute changes as authoritative and re-derives Days", () => {
     const before = canonicalPlan();
@@ -120,6 +133,18 @@ describe("canonical V3 plan write boundary", () => {
     const result = canonicalizePlanWriteV3(before, incoming);
     expect(result.finalRoute.nodes.find((item) => item.id === "day-end")?.placeId).toBe("other");
     expect(result.days[0].endAnchor.placeId).toBe("other");
+  });
+
+  it("translates legacy Day reorder while keeping stable Day IDs", () => {
+    const before = twoDayPlan();
+    const incoming = structuredClone(before);
+    incoming.days = [incoming.days[1], incoming.days[0]];
+    incoming.days.forEach((day, index) => { day.dayNumber = index + 1; });
+
+    const result = canonicalizePlanWriteV3(before, incoming);
+    expect(result.days.map((day) => day.id)).toEqual(["day-2", "day-1"]);
+    const activeIds = result.finalRoute.nodes.filter((item) => item.status === "normal").map((item) => item.id);
+    expect(activeIds.indexOf("day-2")).toBeLessThan(activeIds.indexOf("day-1"));
   });
 
   it("temporarily keeps legacy Day-only plans on the reverse bridge", () => {
