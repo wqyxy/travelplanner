@@ -10,6 +10,6 @@ export type PlaceScoreBreakdown = z.infer<typeof PlaceScoreBreakdownSchema>;
 
 export function computePlaceScore(scores: PlaceScoreBreakdown) {
   const ordered = Object.values(scores).sort((left, right) => right - left);
-  const [first = 0, second = 0, third = 0] = ordered;
-  return Math.min(100, Math.ceil(first * 0.70 + second * 0.20 + third * 0.10));
+  const [first = 0, second = 0] = ordered;
+  return Math.min(100, Math.ceil(first * 0.70 + second * 0.30));
 }
