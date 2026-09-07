@@ -16,6 +16,7 @@ import {
   computeMacroDependencyFingerprintV3,
   derivePlanMacroBasisStateV3,
 } from "./planning-state-v3.js";
+import { applyInitialSkeletonToFinalRouteV3 } from "./skeleton-final-route-v3.js";
 import type {
   OmittedPlanningArea,
   SkeletonPlanDraft,
@@ -418,15 +419,17 @@ export function applySkeletonPlanV3(trip: TripDetailV3, draft: SkeletonPlanDraft
   const stage = trip.plan.days.length && trip.plan.stage !== "place_selection"
     ? trip.plan.stage
     : "itinerary_planning";
-  const plan = TravelPlanDocumentSchema.parse({
+  const base = TravelPlanDocumentSchema.parse({
     ...trip.plan,
     stage,
-    days: diff.days,
     planningState: {
       macroBasisVersion: 1,
       macroBasisFingerprint: computeMacroDependencyFingerprintV3(trip.plan),
     },
   });
+  const plan = !trip.plan.days.length && !trip.plan.finalRoute.nodes.length
+    ? applyInitialSkeletonToFinalRouteV3(base, diff.days)
+    : TravelPlanDocumentSchema.parse({ ...base, days: diff.days });
   return { plan, formalizedStays, ...diff };
 }
 
