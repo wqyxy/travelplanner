@@ -27,7 +27,17 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
       - name: Tests
-        run: npm test
+        shell: bash
+        run: |
+          set +e
+          npm test > /tmp/vitest.log 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "--- concise Vitest failure tail ---"
+            tail -n 220 /tmp/vitest.log
+            exit "$status"
+          fi
+          cat /tmp/vitest.log
       - name: Production build
         run: npm run build
       - name: Upload source snapshot
