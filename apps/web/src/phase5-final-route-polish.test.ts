@@ -69,12 +69,12 @@ describe("Phase 5 final route polish contract", () => {
 
   it("distinguishes active route recalculation from a stale route waiting for refresh", () => {
     const panel = source("./FinalRoutePanelV3.tsx");
-    const runtime = readFileSync(fileURLToPath(new URL("../../server/planner-runtime-v3.ts", import.meta.url)), "utf8");
+    const coordinator = readFileSync(fileURLToPath(new URL("../../server/planner-route-coordinator-v3.ts", import.meta.url)), "utf8");
     expect(panel).toContain('const routeUpdating = workspace.tasks.some((task) => task.agent === "map"');
     expect(panel).toContain('routeUpdating ? "路线更新中" : "路线待更新"');
     expect(panel).toContain("正在更新 ${dirtyCount} 天地图路线");
-    expect(runtime).toContain("if (ids.length) this.startRouteBatch(tripId, expectedGeneration, ids);");
-    expect(runtime).toContain("const targetDayIds = [...new Set([...dayIds, ...dirtyDayIds])]");
+    expect(coordinator).toContain("if (ids.length) this.startRouteBatch(tripId, expectedGeneration, ids);");
+    expect(coordinator).toContain("const targetDayIds = [...new Set([...dayIds, ...dirtyDayIds])]");
   });
 
   it("offers scoped recovery for unavailable routes and unresolved places", () => {
@@ -106,7 +106,7 @@ describe("Phase 5 final route polish contract", () => {
     expect(panel).toContain('onClick={() => void onSyncMap(unresolvedPlaceIds, unavailableRouteDayIds)}');
     expect(app).toContain('force: true');
     expect(app).toContain('await Promise.all(uniqueDayIds.map');
-    expect(server).toContain('newNodes.map((candidate) => emptyRouteNode({ placeId: candidate.placeId, transportMode: "drive" }))');
+    expect(server).toContain('newNodes.push(emptyRouteNode({ placeId: candidate.placeId, transportMode: "drive" }))');
     expect(css).toContain('.final-route-panel-header-actions-v5');
   });
 

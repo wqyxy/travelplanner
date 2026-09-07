@@ -172,17 +172,17 @@ describe("canonical V3 plan write boundary", () => {
     expect(() => canonicalizePlanWriteV3(before, incoming)).toThrow("DERIVED_DAY_ROUTE_WRITE_UNSUPPORTED");
   });
 
-  it("temporarily keeps legacy Day-only plans on the reverse bridge", () => {
+  it("temporarily keeps version-1 Day-only in-memory plans on the reverse bridge", () => {
     const base = emptyTravelPlan();
     const before = TravelPlanDocumentSchema.parse({
       ...base,
       places: [place("x"), place("end")],
+      finalRoute: { version: 1, nodes: [] },
       days: [{
         id: "legacy-day",
         dayNumber: 1,
         date: null,
         title: "legacy",
-        stayBlockId: null,
         transferMode: "none",
         detailLevel: "planned",
         detailStatus: null,

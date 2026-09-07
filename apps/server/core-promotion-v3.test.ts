@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AiActionRecordSchema } from "./ai-stage-contracts-v3.js";
 import { confirmDetailToCorePromotionV3 } from "./core-promotion-v3.js";
 import { emptyTravelPlan, TravelPlanDocumentSchema } from "./contracts-v2.js";
+import { syncFinalRouteForLegacyWriteV3 } from "./final-route-v3.js";
 import { derivePlanMacroBasisStateV3, computeMacroDependencyFingerprintV3 } from "./planning-state-v3.js";
 import { TravelStoreV3 } from "./travel-store-v3.js";
 
@@ -19,7 +20,7 @@ function store() {
 
 function currentPlan() {
   const base = emptyTravelPlan();
-  const prepared = TravelPlanDocumentSchema.parse({
+  const dayOnly = TravelPlanDocumentSchema.parse({
     ...base,
     stage: "itinerary_refinement",
     trip: { ...base.trip, dates: { start: null, end: null, requestedDurationDays: 1 } },
@@ -31,6 +32,7 @@ function currentPlan() {
       { id: "area", placeId: "area-place", planningAreaCandidateId: null, planningRole: "planning_area", preference: "must_go", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: null, tags: [] },
       { id: "detail", placeId: "detail-place", planningAreaCandidateId: "area", planningRole: "detail_interest", preference: "must_go", source: "user", aiReason: "想去", aiScore: null, suggestedDurationMinutes: 90, tags: [] },
     ],
+    finalRoute: { version: 1, nodes: [] },
     days: [{
       id: "day-1", dayNumber: 1, date: null, title: "蒂阿瑙", stayBlockId: "block-area", transferMode: "none", detailLevel: "detailed", detailStatus: "ready",
       startAnchor: { id: "start-1", placeId: "area-place", label: null, notes: null },
@@ -38,9 +40,13 @@ function currentPlan() {
       endAnchor: { id: "end-1", placeId: "area-place", label: null, notes: null },
     }],
   });
+  const canonical = syncFinalRouteForLegacyWriteV3(
+    TravelPlanDocumentSchema.parse({ ...dayOnly, days: [] }),
+    dayOnly,
+  );
   return TravelPlanDocumentSchema.parse({
-    ...prepared,
-    planningState: { macroBasisVersion: 1, macroBasisFingerprint: computeMacroDependencyFingerprintV3(prepared) },
+    ...canonical,
+    planningState: { macroBasisVersion: 1, macroBasisFingerprint: computeMacroDependencyFingerprintV3(canonical) },
   });
 }
 

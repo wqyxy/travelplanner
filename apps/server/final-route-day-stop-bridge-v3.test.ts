@@ -13,7 +13,7 @@ import {
   removeDerivedStopViaFinalRouteV3,
   updateDerivedStopViaFinalRouteV3,
 } from "./final-route-day-stop-bridge-v3.js";
-import { syncFinalRouteForLegacyWriteV3 } from "./final-route-v3.js";
+import { rebuildFinalRouteDaysV3, syncFinalRouteForLegacyWriteV3 } from "./final-route-v3.js";
 
 const place = (id: string): Place => ({
   id,
@@ -60,10 +60,9 @@ const node = (id: string, placeId: string, patch: Partial<FinalRouteNode> = {}):
 });
 
 function plan(): TravelPlanDocument {
-  const base = emptyTravelPlan();
-  return TravelPlanDocumentSchema.parse({
-    ...base,
-    trip: { ...base.trip, originPlaceId: "origin" },
+  const base = TravelPlanDocumentSchema.parse({
+    ...emptyTravelPlan(),
+    trip: { ...emptyTravelPlan().trip, originPlaceId: "origin" },
     places: [place("origin"), place("x"), place("y"), place("end")],
     candidates: [candidate("cx", "x"), candidate("cy", "y")],
     finalRoute: {
@@ -71,13 +70,13 @@ function plan(): TravelPlanDocument {
       nodes: [node("stop-x", "x"), node("day-end", "end", { endsDay: true })],
     },
   });
+  return rebuildFinalRouteDaysV3(base);
 }
 
 function twoDayPlan(): TravelPlanDocument {
-  const base = emptyTravelPlan();
-  return TravelPlanDocumentSchema.parse({
-    ...base,
-    trip: { ...base.trip, originPlaceId: "origin" },
+  const base = TravelPlanDocumentSchema.parse({
+    ...emptyTravelPlan(),
+    trip: { ...emptyTravelPlan().trip, originPlaceId: "origin" },
     places: ["origin", "x", "y", "z", "inactive", "end-1", "end-2"].map(place),
     candidates: [candidate("cx", "x"), candidate("cy", "y"), candidate("cz", "z")],
     finalRoute: {
@@ -91,6 +90,7 @@ function twoDayPlan(): TravelPlanDocument {
       ],
     },
   });
+  return rebuildFinalRouteDaysV3(base);
 }
 
 function newStop(): DayStop {

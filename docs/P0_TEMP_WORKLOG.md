@@ -3,8 +3,8 @@
 > P0 唯一临时施工记忆文件。
 >
 > 开始时间：2026-09-07
-> 当前分支：main
-> 当前状态：**P0-1 / P0-2 / P0-3 实现完成，待验证**
+> 当前分支：main（验证在临时 `p0-validation` PR 上完成）
+> 当前状态：**P0-1 / P0-2 / P0-3 实现完成，Node 24 CI 验证通过**
 
 ## P0 目标
 
@@ -140,6 +140,19 @@ P0 Provider/Store 主链的不安全边界已收口：
 
 Provider 搜索、消歧、coordinates、geometry、distance、duration 算法未改。
 
+## 验证阶段发现并修正的 capability seam
+
+Node 24 Typecheck 首轮暴露：生产入口曾通过 `Object.assign` 给 `PlaceResolverV2` 补 `selectCandidate / setDirect` alias，导致测试直接 `new PlaceResolverV2()` 时不能满足 Runtime 的 Planner-facing resolver capability。
+
+修正：
+
+- `PlaceResolverV2` 本体直接提供两个薄 alias；
+- alias 只转发到既有选择/直接定位实现；
+- 生产和测试现在使用同一真实 capability；
+- 没有修改 Provider 搜索、候选、坐标、消歧或持久化语义。
+
+验证分支修正提交：`9feb3dd7255a16fcc2ff14ffa59e426f6ab9959f`。
+
 ---
 
 # P0-3 — finalRoute / Day / Route canonical boundary
@@ -209,37 +222,91 @@ SQLite transaction、generation CAS、revision、cleanup、Proposal reconcile/ap
 
 因此 generic bridge 已不是 Store 默认 canonical 写链，也不再承担 Skeleton replan 主生产路径。
 
+## 验证阶段修正的测试基线
+
+首轮全量测试暴露了一批仍停留在旧 Day-only / `finalRoute.version=0` 世界的 fixture，以及少量直接检查旧 Runtime 源码字符串的 UI/架构测试。
+
+处理原则：
+
+- 不恢复 v2 -> v3 migration；
+- 不放宽 canonical hard boundary；
+- 不为了绿灯修改正确的生产语义；
+- fixture 改成 canonical `finalRoute.version=1`，需要时显式派生 Days；
+- Runtime 拆到 coordinator 后，源码契约测试改检查真正拥有该职责的模块；
+- Candidate 删除测试按 canonical 规则更新：只要 `finalRoute` 仍引用 Place，Place 就是受保护引用，不能被垃圾回收；Candidate 可删除，derived Stop 的 Candidate link 变为 `null`，线路 Place/node 保留。
+
+最终确认没有发现需要为这些测试失败修改 finalRoute canonical 产品行为。
+
+---
+
+# P0 最终验证
+
+## 正式 Node 24 CI
+
+验证 PR：`#7 P0 validation on Node 24`
+
+最终成功 run：`34102308221`
+
+验证 head：`cf95709c7adcd9832a78b1af7795076540f1a7be`
+
+环境：
+
+- Ubuntu 24.04
+- Node `v24.20.0`
+- npm `11.19.0`
+
+结果：
+
+1. `npm ci`：通过。
+2. `npm run typecheck`：通过。
+   - Web TypeScript：通过。
+   - Server TypeScript：通过。
+3. `npm test`：通过。
+   - Test Files：**105 / 105 passed**。
+   - Tests：**590 / 590 passed**。
+4. `npm run build`：通过。
+   - `build:web`：通过。
+   - `build:server`：通过。
+
+因此当前 P0 代码在仓库正式 Node 24 CI 环境下，**typecheck + 全量 tests + production build 全绿**。
+
+## 验证过程中失败数收敛记录
+
+- 首次全量：`570 / 590`，20 failed。
+- 修正陈旧源码契约 / canonical fixture 后：`584 / 590`，6 failed。
+- 修正剩余旧 fixture 后：`588 / 590`，2 failed。
+- 最终按 canonical finalRoute 引用规则修正 Candidate 删除断言后：`590 / 590`。
+
+这个过程没有通过“放宽生产约束”换绿灯；最终两条失败反而再次确认了 finalRoute 引用必须保护 Place 的 canonical 语义。
+
+## 非阻塞后续提醒
+
+CI 同时报告但没有导致验证失败：
+
+- `npm ci` 当前审计到 6 个依赖漏洞：4 moderate、1 high、1 critical；本次 P0 没有擅自执行 `npm audit fix --force`，应单独评估依赖升级影响。
+- Vite production build 提示主 JS chunk 大于 500kB，并提示 `maplibre-gl` 同时存在静态/动态 import；属于性能/打包优化事项，不是本次 P0 回归。
+
+## 未覆盖的运行级验证
+
+本次没有做：
+
+- 手工启动 App 的浏览器交互回归；
+- 真实 Provider / Google Maps E2E；
+- 真实 AI Provider E2E。
+
+这些属于后续运行/发布验证，不影响本次 P0 架构施工在 CI 层面的完成结论。
+
 ---
 
 # 当前结论
 
-**P0-1、P0-2、P0-3 的代码实施已经完成。**
+**P0-1、P0-2、P0-3 实施完成，并已通过 Node 24 的 typecheck、590 项全量测试和 production build。**
 
-目前没有发现还需要继续机械拆 Runtime、盲删 V2 文件或继续扩大 canonical rewrite 的 P0 必须项。
+当前没有发现还需要继续机械拆 Runtime、盲删 V2 文件、恢复旧 migration 或扩大 canonical rewrite 的 P0 必须项。
 
-下一阶段应先验证，而不是继续改结构。
+下一步应：
 
-## 验证状态
-
-截至当前仍未主动运行：
-
-- test
-- typecheck
-- build
-- app
-- Provider E2E
-
-GitHub 当前未看到自动 CI run。
-
-这符合 `AGENTS.md` 普通施工约束：普通修改不自动跑整套 test/typecheck/build；完整验证需要用户确认。
-
-## P0 下一步（需要进入验证）
-
-优先验证顺序建议：
-
-1. P0 相关 targeted tests：canonical write、finalRoute Day adapters、Skeleton replan、detail canonical writes、Provider capability seam。
-2. typecheck。
-3. 再根据结果决定是否需要修补。
-4. 用户确认后再做 full test/build/app/E2E。
-
-P0 验证通过后，把最终结论同步到正式项目状态/架构文档，并删除本临时文件。
+1. 将验证分支中必要的 resolver capability 修正和测试基线修正合入 `main`；
+2. 保证临时 CI 调试改动不进入 `main`；
+3. 同步正式项目状态/架构文档；
+4. 完成正式状态同步后删除本临时工作记录。
