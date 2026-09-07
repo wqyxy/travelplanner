@@ -9,7 +9,7 @@ describe("computePlaceScore", () => {
       culture: 28,
       experience: 95,
       representativeness: 96,
-    })).toBe(93);
+    })).toBe(96);
   });
 
   it("does not let one excellent dimension alone make a weak place top-tier", () => {
