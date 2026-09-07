@@ -5,7 +5,10 @@ import {
   type Transport,
   type TravelPlanDocument,
 } from "./contracts-v2.js";
-import { rebuildFinalRouteDaysV3 } from "./final-route-v3.js";
+import {
+  rebuildFinalRouteDaysV3,
+  syncFinalRouteForLegacyWriteV3,
+} from "./final-route-v3.js";
 
 const clone = <T>(value: T): T => structuredClone(value);
 
@@ -65,4 +68,20 @@ export function applyInitialSkeletonToFinalRouteV3(
     finalRoute: { version: 1, nodes },
   });
   return rebuildFinalRouteDaysV3(base);
+}
+
+/**
+ * Transitional replan adapter. It intentionally reuses the exact legacy
+ * Day->finalRoute conversion that TravelStore currently applies implicitly, but
+ * moves that conversion into the skeleton workflow boundary. This keeps replan
+ * behavior stable while removing its dependency on Store-side magic.
+ */
+export function applySkeletonReplanToFinalRouteV3(
+  beforeValue: TravelPlanDocument,
+  desiredPlanValue: TravelPlanDocument,
+): TravelPlanDocument {
+  const before = TravelPlanDocumentSchema.parse(clone(beforeValue));
+  const desired = TravelPlanDocumentSchema.parse(clone(desiredPlanValue));
+  if (!before.days.length || !before.finalRoute.nodes.length) return desired;
+  return syncFinalRouteForLegacyWriteV3(before, desired);
 }
