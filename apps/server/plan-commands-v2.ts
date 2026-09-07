@@ -21,6 +21,12 @@ import {
   setFinalRouteNodeStatusV3,
   updateFinalRouteTransportV3,
 } from "./final-route-v3.js";
+import {
+  addDerivedStopViaFinalRouteV3,
+  moveDerivedStopViaFinalRouteV3,
+  removeDerivedStopViaFinalRouteV3,
+  updateDerivedStopViaFinalRouteV3,
+} from "./final-route-day-stop-bridge-v3.js";
 
 type MutablePlan = TravelPlanDocument & { days: Day[] };
 type CommandRecord = Record<string, unknown>;
@@ -414,18 +420,29 @@ export function applyPlanCommands(current: TravelPlanDocument, commandValues: un
         break;
       }
       case "add_day_stop": {
-        const day = findDay(plan, mapper.resolve(command.dayId)).day;
+        const dayId = mapper.resolve(command.dayId);
+        const day = findDay(plan, dayId).day;
         if (command.index > day.stops.length) throw new Error(`Stop 插入位置超出 Day ${day.id} 范围。`);
         const stop = mapNewStop(command.stop, mapper);
         requirePlace(plan, stop.placeId);
         if (stop.candidateId) requireCandidate(plan, stop.candidateId);
+        const canonical = addDerivedStopViaFinalRouteV3(plan, dayId, command.index, stop);
+        if (canonical) {
+          applyFinalRouteResult(plan, canonical, explicitlyChangedDays);
+          const updatedDay = findDay(plan, dayId).day;
+          markDayForReview(updatedDay);
+          explicitlyChangedDays.add(updatedDay.id);
+          break;
+        }
         day.stops.splice(command.index, 0, stop);
         markDayForReview(day);
         explicitlyChangedDays.add(day.id);
         break;
       }
       case "update_day_stop": {
-        const found = findStop(plan, mapper.resolve(command.stopId));
+        const stopId = mapper.resolve(command.stopId);
+        const found = findStop(plan, stopId);
+        const ownerDayId = found.day.id;
         const changes = clone(command.changes) as Partial<DayStop>;
         if (changes.placeId) changes.placeId = mapper.resolve(changes.placeId);
         if (changes.candidateId) changes.candidateId = mapper.resolve(changes.candidateId);
@@ -436,6 +453,14 @@ export function applyPlanCommands(current: TravelPlanDocument, commandValues: un
           changes.candidateId = null;
         }
         if (changes.placeId) requirePlace(plan, changes.placeId);
+        const canonical = updateDerivedStopViaFinalRouteV3(plan, stopId, changes);
+        if (canonical) {
+          applyFinalRouteResult(plan, canonical, explicitlyChangedDays);
+          const updatedDay = findDay(plan, ownerDayId).day;
+          markDayForReview(updatedDay);
+          explicitlyChangedDays.add(updatedDay.id);
+          break;
+        }
         Object.assign(found.stop, changes);
         markDayForReview(found.day);
         explicitlyChangedDays.add(found.day.id);
@@ -444,8 +469,20 @@ export function applyPlanCommands(current: TravelPlanDocument, commandValues: un
       case "move_day_stop": {
         const stopId = mapper.resolve(command.stopId);
         const found = findStop(plan, stopId);
+        const sourceDayId = found.day.id;
+        const targetDayId = mapper.resolve(command.targetDayId);
+        const canonical = moveDerivedStopViaFinalRouteV3(plan, stopId, targetDayId, command.targetIndex);
+        if (canonical) {
+          applyFinalRouteResult(plan, canonical, explicitlyChangedDays);
+          for (const dayId of new Set([sourceDayId, targetDayId])) {
+            const updatedDay = findDay(plan, dayId).day;
+            markDayForReview(updatedDay);
+            explicitlyChangedDays.add(updatedDay.id);
+          }
+          break;
+        }
         found.day.stops.splice(found.stopIndex, 1);
-        const target = findDay(plan, mapper.resolve(command.targetDayId)).day;
+        const target = findDay(plan, targetDayId).day;
         if (command.targetIndex > target.stops.length) throw new Error(`Stop 目标位置超出 Day ${target.id} 范围。`);
         target.stops.splice(command.targetIndex, 0, found.stop);
         markDayForReview(found.day);
@@ -455,7 +492,17 @@ export function applyPlanCommands(current: TravelPlanDocument, commandValues: un
         break;
       }
       case "remove_day_stop": {
-        const found = findStop(plan, mapper.resolve(command.stopId));
+        const stopId = mapper.resolve(command.stopId);
+        const found = findStop(plan, stopId);
+        const ownerDayId = found.day.id;
+        const canonical = removeDerivedStopViaFinalRouteV3(plan, stopId);
+        if (canonical) {
+          applyFinalRouteResult(plan, canonical, explicitlyChangedDays);
+          const updatedDay = findDay(plan, ownerDayId).day;
+          markDayForReview(updatedDay);
+          explicitlyChangedDays.add(updatedDay.id);
+          break;
+        }
         found.day.stops.splice(found.stopIndex, 1);
         markDayForReview(found.day);
         explicitlyChangedDays.add(found.day.id);
