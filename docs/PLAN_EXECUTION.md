@@ -12,15 +12,17 @@ Phase 1–3 已完成并经过此前本地自动验证。
 
 Phase 4 r1 因产品视觉模型错误被 r2 取代。
 
-Phase 4 r2 与 Phase 5 的计划内代码现已全部施工完成，并完成静态 code review。
+Phase 4 r2 与 Phase 5 的计划内代码已全部施工完成，并完成静态 code review。
 
 用户在 2026-09-06 明确要求：
 
 > **不要浏览器测试。先把所有代码写完，再 review 代码。**
 
-因此当前实施流程不再把浏览器人工测试作为 Gate。
+因此浏览器人工测试不作为代码完成 Gate。
 
-施工 Agent 本轮仍然不运行 test / typecheck / build / app / Provider / CI。
+2026-09-07 后续 P0 架构 / canonical 收尾也已完成，并额外执行仓库正式 Node 24 CI：typecheck、590 项全量测试、production build 全部通过。
+
+本次仍未执行浏览器人工交互回归、真实 Google Maps / Route Provider E2E、真实 AI Provider E2E。
 
 ---
 
@@ -274,31 +276,65 @@ apps/web/src/phase5-final-route-polish.test.ts
 apps/web/src/main.tsx
 ```
 
-没有修改 server finalRoute / Day / Route 核心代码。
+**Phase 5 本身没有修改 server finalRoute / Day / Route 核心代码。**
+
+后续 P0 是独立的技术架构 / canonical 收尾，主要涉及 Runtime 拆分、Provider capability seam、Store canonical write boundary、Skeleton 专用 canonical adapter 与相应测试基线，不改变上面的 Phase 5 产品合同。
 
 ---
 
-# 7. 当前验证规则
+# 7. P0 架构 / canonical 收尾
 
-本轮施工已经完成：
+状态：`completed_node24_verified`
 
-```text
-代码实现
-静态 code review
-review 问题修复
-测试代码补充
-Branch + HEAD 冻结
-```
-
-本轮没有执行：
+完成：
 
 ```text
-test
-typecheck
-build
-app
-Provider / CI
-浏览器测试
+Runtime God Object 拆分为 facade + coordinators/helpers
+Provider/Store V2/V3 边界收口为窄 capability interfaces
+TravelStoreV3 正常写链直接 canonicalizePlanWriteV3
+Skeleton replan 脱离 generic reverse bridge 主路径
+PlaceResolverV2 直接满足 Planner-facing resolver capability
+canonical finalRoute 引用保护 Place，不因 Candidate 删除静默删除线路地点
 ```
 
-如果后续需要实际运行验证，只需要单独做自动测试 / typecheck / build；**浏览器测试不再是当前 Gate。**
+generic Day compatibility bridge 仍存在，但只保留在明确登记的窄兼容场景；不恢复 v2 -> v3 migration、双写或第二份用户线路。
+
+P0 验证收尾已 squash 合入 main：
+
+```text
+9c17c5f19cddbf1a1cb7c13dfc5a138744acab3f
+```
+
+---
+
+# 8. 当前验证状态
+
+正式 Node 24 GitHub CI 已通过：
+
+```text
+Node v24.20.0
+npm ci: PASS
+typecheck:web: PASS
+typecheck:server: PASS
+Test Files: 105 / 105 PASS
+Tests: 590 / 590 PASS
+build:web: PASS
+build:server: PASS
+```
+
+clean CI run：`34102671270`。
+
+当前未执行：
+
+```text
+浏览器人工交互回归
+真实 Google Maps / Route Provider E2E
+真实 AI Provider E2E
+```
+
+这些属于后续运行 / 发布验证；**浏览器测试仍不作为当前代码完成 Gate。**
+
+CI 另有两个非阻塞维护项：
+
+- npm audit 当前报告 6 个依赖漏洞（4 moderate、1 high、1 critical），未在 P0 中执行强制升级；
+- Vite 提示主 JS chunk >500kB，以及 `maplibre-gl` 同时存在静态 / 动态 import，可另做性能治理。
