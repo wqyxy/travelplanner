@@ -1,327 +1,245 @@
 # P0 Temporary Worklog
 
-> 临时施工记忆文件。P0 完成后应整理有效结论到正式文档，再删除本文件。
+> P0 唯一临时施工记忆文件。
 >
 > 开始时间：2026-09-07
 > 当前分支：main
-> 当前状态：P0-1 runtime architecture in progress; pure helper extraction progressing
+> 当前状态：**P0-1 / P0-2 / P0-3 实现完成，待验证**
 
-## 目标
+## P0 目标
 
-P0 分三条主线，按风险从低到高推进：
+1. `planner-runtime-v3.ts`：行为保持地拆分 God Object，让 Runtime 回到 application facade / orchestration。
+2. V2/V3 边界：消除 P0 主链上的不安全 Store/Resolver cast；保留仍在工作的 V2 命名算法，不盲删。
+3. finalRoute / Day / Route：`finalRoute.nodes` 成为唯一用户维护线路；Day 是派生/read model + metadata + Provider route input。
 
-1. `planner-runtime-v3.ts`：先做行为保持的职责拆分，降低 God Object 风险。
-2. V2/V3 边界：识别真正 legacy、canonical-but-misnamed 和可复用 capability，消除不安全 cast，不做盲目改名/删除。
-3. finalRoute / Day / Route：收敛 canonical 与派生边界，保持 finalRoute 为唯一用户维护线路，Day/Route 为派生/Provider 事实。
+## 不得破坏的产品/工程事实
 
-当前优先处理 P0-1；除非拆分需要，不提前改 canonical 数据结构。
-
-## 当前产品事实（不得破坏）
-
-- 产品只有 `规划 · 旅行需求` / `行程 · 最终线路` 两个主工作区。
 - 用户只维护 `finalRoute`；Day 自动派生。
 - 同一 Place 可在线路中多次出现，每次拥有独立 route node ID。
 - `tentative / no_go` 保留，但退出当前 Day / Route。
 - `住 / 不住` 控制日程分界；`多一晚` 新增同 Place 独立 route node。
 - 右侧最终线路是唯一业务操作入口；地图负责展示/选择/聚焦/响应定位选点。
 - Provider 坐标、Place ID、geometry、distance、duration、verified 状态不能由 AI/前端伪造。
-- 用户是旅行方案唯一决策者；“不合理”原则上是 advisory，不是 canonical blocker。
+- 用户是旅行方案唯一决策者；旅行“合理性”原则上是 advisory，不是 canonical blocker。
+- SQLite transaction、generation CAS、Proposal Scope、Provider fact chain 不得弱化。
+- 不恢复 v2 -> v3 migration/双写。
 
-## 工程边界
+---
 
-- fresh v3 数据库策略保持；不重新加入 v2 -> v3 migration/双写。
-- SQLite 事务、generation CAS、Proposal Scope、Provider 事实边界不可弱化。
-- 不为了架构整洁改变 Action 权限或 AI scope。
-- 普通施工不运行完整 test/typecheck/build；先静态 review。完整验证需用户确认。
+# P0-1 — Runtime architecture
 
-## 已确认的 P0-1 问题
+## 结果
 
-`apps/server/planner-runtime-v3.ts` 当前是一个明显的 God Object，同时承担：
+`planner-runtime-v3.ts` 从最初约 100KB 收缩到约 40KB，当前主要保留：
 
-1. workspace read-model 聚合；
-2. Dialogue thread / turn / web-required 生命周期；
-3. CTA / conversation Action 创建、确认、取消、执行；
-4. Action state/context 构造；
-5. deterministic Action -> PlanCommand；
-6. AI Action output -> Proposal/canonical 持久化；
-7. interest discovery 并发批处理；
-8. Place resolution 协调；
-9. Day route / macro route / route batch 协调；
-10. Google Maps link preview/commit；
-11. task/event/active-run 协调；
-12. domain validation / diff / command derivation。
+- workspace/read-model facade 聚合；
+- dialogue thread / turn / web-required 生命周期；
+- Action claim / confirmation / execution 生命周期与每旅行 AI Action 串行限制；
+- Proposal create/apply/reject/undo 生命周期；
+- direct `applyCommands()` facade 编排；
+- coordinator 装配和 public thin wrappers。
 
-因此不能继续在同一个 Runtime 里追加新产品逻辑。
+这些是 Runtime 作为 application facade/orchestrator 的合理职责；不再为了缩文件机械拆 Action/Dialog lifecycle。
 
-## Runtime 当前依赖簇
+## 已建立并真正接入 Runtime 的模块
 
-### A. Dialogue / AI orchestration
+- `planner-action-scope-v3.ts`
+- `planner-proposal-v3.ts`
+- `planner-resolution-state-v3.ts`
+- `planner-itinerary-validation-v3.ts`
+- `planner-itinerary-commands-v3.ts`
+- `planner-itinerary-impact-v3.ts`
+- `planner-action-context-v3.ts`
+- `planner-deterministic-commands-v3.ts`
+- `planner-candidate-output-v3.ts`
+- `planner-resolution-coordinator-v3.ts`
+- `planner-route-coordinator-v3.ts`
+- `planner-interest-discovery-coordinator-v3.ts`
+- `planner-action-persistence-coordinator-v3.ts`
+- `planner-google-maps-link-coordinator-v3.ts`
+- `planner-requirements-mutation-v3.ts`
 
-- `StagedTravelAiV3`
-- `LoadedPromptRegistryV3`
-- `AiTaskMonitorV3`
-- stage context / action registry / action input contracts
+## 关键提交
 
-### B. Canonical mutation / proposal
+早期纯 helper：
 
-- `applyPlanCommands`
-- `assertProposalCommandsWithinScope`
-- `TravelPlanDocumentSchema`
-- `TravelStoreV3`
+- Action Scope：`3880aa1fcb43356345972655c76f270e818d0025` / Runtime 接线 `8d2aeafa72b7838b05cee518e24134fff719c6a0`
+- Proposal diff：`5445665dc8e9a7e857fac95f513eee98780e1f4e` / Runtime 接线 `c42c854f85e5279b8d386fcd639505c186c9925a`
+- Resolution current-state：`6a51b558627a7e8f61c2a01c0d690c0b7453f61c` / Runtime 接线 `2bcacd9c5692997e3882359a86fe43ab4bbb021f`
+- Itinerary structural validation：`5819163f3c9b57280f0ca43fda7a6af9e3190298` / Runtime 接线 `bdadeb84cfb6efe90fab0a7ed51c22175338d099`
 
-### C. Planning domain
+Runtime 大职责接线：
 
-- backbone / skeleton / interest / detail planning contexts
-- planning role / coverage / itinerary impact
-- detailed itinerary command derivation
+- `5927becabdb601fab387408eba25c948cb6cd707`：Action Context / deterministic commands / candidate output / impact。Runtime `+17/-259`。
+- `e2429f602c2b45f958ba49661db3e8412547a37f`：Resolution / Route coordinator。Runtime `+36/-101`。
+- `d7234d71ebe60bd711ffe507da44b5f5156991f1`：Interest Discovery coordinator。Runtime `+14/-222`。
+- `2a207dea718e7bdb980bd882a786c7986bc986b6`：AI Action persistence coordinator；destination/itinerary AI 输出具体落库/Proposal 准备移出 Runtime，Proposal lifecycle 留在 Runtime。
+- `f06af021f0fa8cfca7ab5e3b2b94f17587ac6747`：Google Maps link coordinator 最终接线状态。
+- `e0cdb74dc845015baa5bc5f0d74ad4c06fb1c523`：Action persistence 复用统一 `dayMutationScope`，删除第二份 Scope Policy。
+- `6746fd0573afdc93415d7b03b9f16daf883c683f`：requirements mutation builder 接回 Runtime。
 
-### D. Provider facts
+> 曾在聊天最终回复中误写 requirements commit SHA；**正确值是 `6746fd0573afdc93415d7b03b9f16daf883c683f`**。
+
+## requirements mutation
+
+`planner-requirements-mutation-v3.ts` 纯构建：
+
+- `requirements.capture`
+- `requirements.update`
+- `requirements.clear`
+
+Runtime 继续负责原 Store write、generation CAS、revision 与 `travel.document.changed`。
+
+静态核对旧语义：
+
+- 同一组允许字段；
+- `brief` 仍 merge；
+- clear 未知字段仍忽略；
+- 错误文案不变；
+- revision source / summary 不变；
+- Runtime 原 `REQUIREMENT_FIELDS` 和 `(next.trip as any)[key]` 已删除。
+
+## Google Maps 接线事故记录
+
+第一次大文件替换曾误删 `captureAdditionalRequirements()`；commit diff 当场发现，并在 `f06af021f0fa8cfca7ab5e3b2b94f17587ac6747` 恢复。
+
+最终相对接线前净 compare：
+
+- 新增 coordinator 90 行；
+- Runtime `+14/-36`；
+- `captureAdditionalRequirements()` 保留。
+
+结论：以后大文件写入成功不等于完成；必须再做 commit diff + base/head compare。
+
+---
+
+# P0-2 — V2/V3 capability seam
+
+## 结果
+
+P0 Provider/Store 主链的不安全边界已收口：
+
+- `index-v3.ts` 已去掉已知 V2/V3 `unknown as` Store/Resolver 强转；
+- 废弃 `place-resolver-adapter-v3.ts` 已删除；
+- `provider-store-capabilities-v3.ts` 提供 Resolution/Route 所需窄 Store capability；
+- `provider-resolver-capability-v3.ts` 提供 Planner-facing Resolver capability；
+- `planner-resolution-coordinator-v3.ts` 改依赖 resolver capability；
+- Runtime resolver option 改为 `PlannerPlaceResolverCapabilityV3`；
+- `selectResolution()` / `setDirectResolution()` 两个 Runtime `as any` 已删除。
+
+关键提交：`158d5b631c785cab3c6d52808b8758d63b457d90`。
+
+当前 `index-v3.ts` 直接把 `TravelStoreV3` 传给：
 
 - `PlaceResolverV2`
 - `DayRouteServiceV2`
-- `GoogleMapsLinkService`
 
-### E. Runtime coordination
+二者依赖窄 capability，不再要求 `TravelStoreV2` 类型。
 
-- active AI runs
-- route batches
-- generation supersede handling
-- event emission
+`PlaceResolverV2` / `DayRouteServiceV2` 文件名虽然仍带 v2，但它们仍是当前 Provider fact chain 的活跃实现；**不因命名盲删或重写**。
 
-这些依赖簇之间目前通过 `TravelPlannerRuntimeV3` 直接互相耦合。
+Provider 搜索、消歧、coordinates、geometry、distance、duration 算法未改。
 
-## 第一阶段拆分顺序（已决定）
+---
 
-原则：先拆纯函数，再拆有状态 service；保留 `TravelPlannerRuntimeV3` 作为 facade，使 HTTP/API 调用方暂时不变。
+# P0-3 — finalRoute / Day / Route canonical boundary
 
-### Slice 1 — Action Scope Policy
+## 当前 canonical 规则
 
-目标文件：`apps/server/planner-action-scope-v3.ts`
+- canonical route：`finalRoute.nodes`。
+- Day：派生/read model + metadata + Provider route input。
+- Stop add/update/move/remove：canonical-first。
+- detailed initial：先写 finalRoute，再派生 Day。
+- skeleton initial：直接创建 canonical boundary nodes。
+- Day `transferMode` / nullable anchor / pure reorder：已有 direct canonical adapter。
+- Day `title/date`：允许持久 metadata override。
+- canonical plan 未知独立 Day Stop/endTransport/Day-ID/anchor-ID 写：抛 `DERIVED_DAY_ROUTE_WRITE_UNSUPPORTED`。
 
-迁移：
+## Store 本体 canonical boundary
 
-- `dayMutationScope`
-- `actionScope`
+关键提交：`f8fefe8f89b043416864851d0e7f55eb2d2a57f3`。
 
-原因：无 DB / async 副作用，同时是 AI 修改权限关键边界。
+`TravelStoreV3.writePlanWithinTransaction()` 已直接执行 `canonicalizePlanWriteV3()`，不再把 generic reverse bridge 当默认保存逻辑。
 
-### Slice 2 — Proposal / Command Derivation
+该 Store 大文件严格 diff 只有：
 
-目标文件：`apps/server/planner-proposal-v3.ts` 与后续 command derivation helper。
+1. import 改为 `canonicalizePlanWriteV3`；
+2. `nextPlan` normalization 一行替换。
 
-已迁移：
+SQLite transaction、generation CAS、revision、cleanup、Proposal reconcile/apply/undo 顺序未改。
 
-- `proposalDiff`
+## Skeleton replan 已脱离 generic reverse bridge
 
-下一步：
+原 `applySkeletonReplanToFinalRouteV3()` 直接调用 `syncFinalRouteForLegacyWriteV3(before, desired)`。
 
-- `replacementCommands`
-- `refinementCommands`
+提交 `5da6245471462c11c9a051878aaed8db043b6d9d` 后：
 
-暂不把 `createProposalForAction` 整体搬走，因为它直接依赖 Store、event 和 action lifecycle。
+- Skeleton replan 使用专用 canonical adapter；
+- transient Day 数据只用于 Stay Block / Day identity 匹配；
+- Store 前显式生成 finalRoute；
+- 保留旧 translator 的 node mapping、Day continuity、inactive-node anchoring、detail mapping 和 transport mapping 语义；
+- **这一笔没有顺带修改 Provider transport 行为**，避免架构施工夹带业务变化；
+- `skeleton-final-route-v3.ts` 不再 import/call `syncFinalRouteForLegacyWriteV3`。
 
-### Slice 3 — Action Context Builder
+回归测试提交 `cc9e06ef2e937378c2d2632745a253761536c123` 新增覆盖：
 
-候选文件：`apps/server/planner-action-context-v3.ts`
+- Stay Block 重排时复用已有详细 Stop；
+- Stop canonical node ID / detail / transport 保留；
+- 被移动的 detailed Day 标记 `needs_review`；
+- 最终结果仍满足 derived Day 与 canonical finalRoute 一致。
 
-迁移 `buildActionState` 的纯 read-model/context 构造部分。
+本次 P0-3 base/head compare（`515d08f...` -> `cc9e06e...`）只有：
 
-注意：它当前读取 Route Service，因此最好依赖窄接口/输入 DTO，而不是直接依赖整个 Runtime。
+- `skeleton-final-route-v3.ts`；
+- `itinerary-workflow-final-route-v3.test.ts`。
 
-### Slice 4 — Provider Coordinator
+## generic compatibility bridge 仍保留在哪里
 
-候选文件：
+`syncFinalRouteForLegacyWriteV3()` 仍作为明确兼容实现存在，主要由 `canonical-plan-write-v3.ts` 在以下窄场景使用：
 
-- `planner-resolution-coordinator-v3.ts`
-- `planner-route-coordinator-v3.ts`
+- 纯 Day-only legacy/bootstrap；
+- 已知旧 Day order/transfer/anchor 混合 batch。
 
-迁移：
+对于正常 canonical plan：
 
-- resolution progress / resolve changed places
-- route batch / dirty route / macro route coordination
+- finalRoute 变化 -> finalRoute authoritative；
+- pure transfer/anchor/reorder -> direct adapter；
+- stale/metadata-only Day -> forward derive；
+- 未登记独立 Day route mutation -> hard reject。
 
-Provider 的事实生产者保持不变，只拆 orchestration。
+因此 generic bridge 已不是 Store 默认 canonical 写链，也不再承担 Skeleton replan 主生产路径。
 
-### Slice 5 — Action Executor
+---
 
-最后才处理：
+# 当前结论
 
-- `confirmClaimedAction`
-- `executeAction`
-- `executeDeterministic`
-- AI output persistence dispatch
+**P0-1、P0-2、P0-3 的代码实施已经完成。**
 
-这是高风险部分，必须建立在前四个 slice 已稳定之后。
+目前没有发现还需要继续机械拆 Runtime、盲删 V2 文件或继续扩大 canonical rewrite 的 P0 必须项。
 
-## P0-1 不做的事
-
-- 不顺手改变 finalRoute/Day 数据模型。
-- 不删除 V2 命名文件。
-- 不改变 Prompt/Action 合同。
-- 不把 advisory 重新变成 blocker。
-- 不改 Provider 事实来源。
-- 不改 Store transaction/CAS 顺序。
-- 不做“Clean Architecture”式大爆炸重写。
-
-## P0-2 已记录的明确问题
-
-`apps/server/index-v3.ts` 当前存在 V2/V3 边界强转：
-
-- `store as unknown as TravelStoreV2` -> `PlaceResolverV2`
-- `store as unknown as TravelStoreV2` -> `DayRouteServiceV2`
-- `resolver as unknown as PlaceResolverV2` -> `TravelPlannerRuntimeV3`
-
-当前还有 `PlaceResolverAdapterV3`，说明 V3 已经开始做 capability 适配，但接口边界没有收完。
-
-处理原则：
-
-1. 先列出 Resolver / Route 真正需要的 Store methods；
-2. 定义窄 capability interface；
-3. 让 V2/V3 store 都可以结构化满足接口；
-4. 去掉 `unknown as`；
-5. 最后再决定是否改文件名，绝不先改名。
-
-## 当前读取基线
-
-已读/复核：
-
-- `AGENTS.md`
-- `README.md`
-- `docs/PLAN_PROGRESS.md`
-- `apps/server/planner-runtime-v3.ts` 全部主要职责区段
-- `apps/server/index-v3.ts` runtime/resolver/route wiring
-
-注意：`AGENTS.md` 仍引用不存在的 `docs/IMPLEMENTATION_STATUS.md`，且有旧五步/city-only 规则与后面的 User Control Correction 冲突。属于后续 P2 文档清理，不在当前 P0 顺手修改。
-
-## 执行记录
-
-### 2026-09-07 — Action Scope Policy
-
-创建：`apps/server/planner-action-scope-v3.ts`
-
-包含：
-
-- `dayMutationScope`
-- `actionScope`
-
-提交：
-
-- 新模块：`3880aa1fcb43356345972655c76f270e818d0025`
-- Runtime 接线：`8d2aeafa72b7838b05cee518e24134fff719c6a0`
-
-静态检查：
-
-- Runtime 只增加 1 行 import、删除原地 56 行实现；
-- conversation Action / CTA Action / detail update / refine 调用规则均未改；
-- 错误文案、fallback、scope 类型均未改。
-
-结论：行为保持拆分完成。
-
-### 2026-09-07 — Proposal Diff
-
-创建：`apps/server/planner-proposal-v3.ts`
-
-包含：`proposalDiff`
-
-提交：
-
-- 新模块：`5445665dc8e9a7e857fac95f513eee98780e1f4e`
-- Runtime 接线：`c42c854f85e5279b8d386fcd639505c186c9925a`
-
-静态检查：
-
-- Runtime 只去掉 `ProposalDiff` type import、增加 helper import、删除本地 38 行实现；
-- `createProposalForAction` 调用位置与参数未改；
-- Proposal Scope 校验、preview、Store 写入、event 顺序均未改。
-
-结论：行为保持拆分完成。
-
-### 2026-09-07 — Resolution Current-State Helpers
-
-创建：`apps/server/planner-resolution-state-v3.ts`
-
-包含：
-
-- `currentPlaceResolutions`
-- `currentResolvedPlaces`
-
-提交：
-
-- 新模块：`6a51b558627a7e8f61c2a01c0d690c0b7453f61c`
-- Runtime 接线：`2bcacd9c5692997e3882359a86fe43ab4bbb021f`
-
-静态检查：
-
-- Runtime 仅新增 helper import；
-- `resolutionIsCurrent` 从 Runtime 直接依赖中移除；
-- 删除本地 12 行 helper；
-- workspace、Action state、destination generate、interest discovery 的调用形态未改。
-
-结论：行为保持拆分完成。
-
-### 2026-09-07 — Itinerary Structural Validation
-
-创建：`apps/server/planner-itinerary-validation-v3.ts`
-
-包含：`validateItineraryReferences`
-
-保留的唯一硬校验：
-
-- Day anchor/stop 引用未知 Place；
-- Stop 引用未知 Candidate；
-- Stop Candidate 的 placeId 与 Stop placeId 不一致。
-
-明确没有新增：
-
-- 天数合理性；
-- 地点覆盖率；
-- 时间完整性；
-- 地理合理性；
-- 未定位 blocker；
-- must-go / duplicate 等 advisory blocker。
-
-提交：
-
-- 新模块：`5819163f3c9b57280f0ca43fda7a6af9e3190298`
-- Runtime 接线：`bdadeb84cfb6efe90fab0a7ed51c22175338d099`
-
-静态检查：
-
-- Runtime 仅新增 1 行 helper import、删除原地 20 行实现；
-- 所有调用点及三个参数保持不变；
-- 错误文案保持不变。
-
-结论：行为保持拆分完成。
+下一阶段应先验证，而不是继续改结构。
 
 ## 验证状态
 
-截至当前：
+截至当前仍未主动运行：
 
-- 已对每个 Runtime 接线 commit 做 Git diff/commit 静态核对；
-- 未运行 test；
-- 未运行 typecheck；
-- 未运行 build；
-- 未运行 app / Provider / E2E。
+- test
+- typecheck
+- build
+- app
+- Provider E2E
 
-这符合当前 `AGENTS.md` 的普通施工验证约束。
+GitHub 当前未看到自动 CI run。
 
-## 当前剩余的低风险/中风险纯函数候选
+这符合 `AGENTS.md` 普通施工约束：普通修改不自动跑整套 test/typecheck/build；完整验证需要用户确认。
 
-1. `replacementCommands` / `refinementCommands`
-   - AI 结果 -> 受控 PlanCommand；
-   - 涉及 stop identity、顺序和 command limit，属于下一步中风险纯逻辑。
-2. `markImpact`
-   - canonical impact derivation；
-   - 必须继续仅标记 `needs_review`，不能变成 blocker。
-3. `candidateCommand` / candidate discovery normalization
-   - 可进一步形成 candidate Action output mapper。
-4. `buildActionState`
-   - 下一阶段的较大 read-context boundary。
+## P0 下一步（需要进入验证）
 
-## 下一步
+优先验证顺序建议：
 
-1. 抽出 `replacementCommands/refinementCommands`，保持 STOP_FIELDS、ID 生成、错误文案、command limit 完全一致。
-2. 对 Runtime 接线 commit 做静态 diff。
-3. 再决定 `markImpact` 是单独模块还是并入 itinerary domain helper。
-4. 纯函数稳定后进入 `buildActionState` context builder。
-5. 持续把每个 commit、检查结论和新发现同步到本文件。
+1. P0 相关 targeted tests：canonical write、finalRoute Day adapters、Skeleton replan、detail canonical writes、Provider capability seam。
+2. typecheck。
+3. 再根据结果决定是否需要修补。
+4. 用户确认后再做 full test/build/app/E2E。
+
+P0 验证通过后，把最终结论同步到正式项目状态/架构文档，并删除本临时文件。
