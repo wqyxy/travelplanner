@@ -6,7 +6,7 @@ import {
   type Place,
   type TravelPlanDocument,
 } from "./contracts-v2.js";
-import { rebuildFinalRouteDaysV3, syncFinalRouteForLegacyWriteV3 } from "./final-route-v3.js";
+import { rebuildFinalRouteDaysV3 } from "./final-route-v3.js";
 import { tryApplyLegacyDayReorderV3 } from "./final-route-day-reorder-v3.js";
 
 const place = (id: string): Place => ({
@@ -69,27 +69,31 @@ function reordered(before: TravelPlanDocument, ids: string[]) {
   return incoming;
 }
 
+function activeIds(planValue: TravelPlanDocument) {
+  return planValue.finalRoute.nodes.filter((item) => item.status === "normal").map((item) => item.id);
+}
+
 describe("legacy Day reorder -> canonical finalRoute segments", () => {
-  it("matches legacy conversion when moving first Day to the end", () => {
+  it("moves first Day to the end by reordering canonical route segments", () => {
     const before = plan();
     const incoming = reordered(before, ["day-2", "day-3", "day-1"]);
-    const legacy = syncFinalRouteForLegacyWriteV3(before, incoming);
     const direct = tryApplyLegacyDayReorderV3(before, incoming);
 
     expect(direct).not.toBeNull();
-    expect(direct!.finalRoute.nodes).toEqual(legacy.finalRoute.nodes);
-    expect(direct!.days).toEqual(legacy.days);
+    expect(direct!.days.map((day) => day.id)).toEqual(["day-2", "day-3", "day-1"]);
+    expect(activeIds(direct!)).toEqual(["stop-2", "day-2", "stop-3", "day-3", "stop-1", "day-1"]);
+    expect(direct!.finalRoute.nodes.find((item) => item.id === "inactive-node")?.status).toBe("tentative");
   });
 
-  it("matches legacy conversion when moving last Day to the front", () => {
+  it("moves last Day to the front by reordering canonical route segments", () => {
     const before = plan();
     const incoming = reordered(before, ["day-3", "day-1", "day-2"]);
-    const legacy = syncFinalRouteForLegacyWriteV3(before, incoming);
     const direct = tryApplyLegacyDayReorderV3(before, incoming);
 
     expect(direct).not.toBeNull();
-    expect(direct!.finalRoute.nodes).toEqual(legacy.finalRoute.nodes);
-    expect(direct!.days).toEqual(legacy.days);
+    expect(direct!.days.map((day) => day.id)).toEqual(["day-3", "day-1", "day-2"]);
+    expect(activeIds(direct!)).toEqual(["stop-3", "day-3", "stop-1", "day-1", "stop-2", "day-2"]);
+    expect(direct!.finalRoute.nodes.find((item) => item.id === "inactive-node")?.status).toBe("tentative");
   });
 
   it("returns null when the same write also changes Day content", () => {
