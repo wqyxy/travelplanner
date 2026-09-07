@@ -1,7 +1,7 @@
 # TravelPlanner 技术文档
 
 > 状态：**当前 main 技术现状**  
-> 更新日期：2026-09-05
+> 更新日期：2026-09-07
 
 ---
 
@@ -144,18 +144,18 @@ add_final_route_night
 
 人工地点 / 顺序 / 状态 / 住宿 / 交通从右侧通过 `/commands` 写入。
 
-详细安排当前复用已经验证过的确定性 `itinerary.edit` Day-stop 写入：
+详细安排当前复用已经验证过的确定性 `itinerary.edit` Day-stop contract：
 
 ```text
 FinalRoutePanelV3
 → itinerary.edit
 → update_day_stop
-→ Store 当前写入桥
+→ canonical Day-stop adapter
 → route node detail fields
 → finalRoute 再派生 Day
 ```
 
-这是内部兼容实现；用户看不到 DayStop / Step 5。
+Day-stop 只是内部兼容合同；正常 canonical 写入不会把 Day 当成第二份独立线路。用户看不到 DayStop / Step 5。
 
 当前右侧手工编辑字段：
 
@@ -172,7 +172,21 @@ notes
 
 ---
 
-# 6. 当前 Day 写入桥
+# 6. 当前 canonical 写边界与兼容桥
+
+Store 正常写入入口：
+
+```text
+TravelStoreV3.writePlanWithinTransaction()
+→ canonicalizePlanWriteV3()
+```
+
+规则：
+
+- `finalRoute` 有变化：finalRoute authoritative，再派生 Day；
+- Day `transferMode` / nullable anchor / pure reorder：走已登记的 direct canonical adapter；
+- Day title / date 等 metadata：允许在明确边界内保留；
+- 未登记的独立 Day route mutation：抛 `DERIVED_DAY_ROUTE_WRITE_UNSUPPORTED`。
 
 `final-route-v3.ts` 仍保留：
 
@@ -180,7 +194,9 @@ notes
 syncFinalRouteForLegacyWriteV3
 ```
 
-它只用于当前进程里仍复用 Day contracts 的内部路径，包括详细安排编辑 / refine。
+但它已经不是 Store 的默认 canonical 写链，也不再承担 Skeleton replan 主生产路径。它只用于明确登记的窄兼容场景，例如 Day-only/bootstrap 和已知旧 Day order / transfer / anchor 混合 batch。
+
+Skeleton replan 使用专用 canonical adapter，Store 前显式构造 finalRoute。
 
 已经落盘的旧非空旅行仍然不会迁移：
 
@@ -188,7 +204,7 @@ syncFinalRouteForLegacyWriteV3
 OLD_TEST_PLAN_UNSUPPORTED
 ```
 
-因此这不是旧数据迁移或双线路模型。
+因此当前没有恢复旧数据迁移、双写或第二份用户线路。
 
 ---
 
@@ -498,3 +514,78 @@ itinerary.detail.generate
 它们当前不是生产用户入口，也不能成为 finalRoute 之外的第二份线路来源。
 
 保留原因是部分内部合同 / 测试 / 写入桥仍被当前稳定能力复用。后续若做纯技术删除，应保持当前 finalRoute 产品语义不变。
+
+---
+
+# 16. P0 Runtime / Provider capability 架构
+
+2026-09-07 P0 收尾后，`TravelPlannerRuntimeV3` 主要保留 application facade / orchestration 职责：
+
+- workspace/read-model 聚合；
+- dialogue / turn 生命周期；
+- Action claim / confirmation / execution 生命周期；
+- Proposal create/apply/reject/undo；
+- direct `applyCommands()` 编排；
+- coordinator 装配和 public thin wrappers。
+
+原先集中在 Runtime 的职责已拆到独立模块，包括：
+
+```text
+planner-action-context-v3.ts
+planner-action-scope-v3.ts
+planner-proposal-v3.ts
+planner-resolution-state-v3.ts
+planner-itinerary-validation-v3.ts
+planner-itinerary-commands-v3.ts
+planner-itinerary-impact-v3.ts
+planner-deterministic-commands-v3.ts
+planner-candidate-output-v3.ts
+planner-resolution-coordinator-v3.ts
+planner-route-coordinator-v3.ts
+planner-interest-discovery-coordinator-v3.ts
+planner-action-persistence-coordinator-v3.ts
+planner-google-maps-link-coordinator-v3.ts
+planner-requirements-mutation-v3.ts
+```
+
+Provider/Store 主链使用窄 capability interface：
+
+```text
+provider-store-capabilities-v3.ts
+provider-resolver-capability-v3.ts
+```
+
+`index-v3.ts` 不再需要 P0 主链已知的 `TravelStoreV3 as unknown as TravelStoreV2` / Resolver 强转。
+
+`PlaceResolverV2` 和 `DayRouteServiceV2` 虽仍带 v2 文件名，但它们是当前活跃 Provider 实现，不因命名被盲删。`PlaceResolverV2` 直接提供 Planner-facing `selectCandidate / setDirect` 薄 alias，生产和测试使用同一 capability。
+
+Candidate 删除时，仍被 `finalRoute` 引用的 Place 属于 protected reference，不能被垃圾回收；这保证删除研究 Candidate 不会静默破坏用户 canonical 线路。
+
+---
+
+# 17. P0 验证状态
+
+正式 Node 24 GitHub CI 已通过：
+
+```text
+Node v24.20.0
+npm ci: PASS
+typecheck:web: PASS
+typecheck:server: PASS
+105 / 105 test files PASS
+590 / 590 tests PASS
+build:web: PASS
+build:server: PASS
+```
+
+P0 验证收尾 merge：
+
+```text
+9c17c5f19cddbf1a1cb7c13dfc5a138744acab3f
+```
+
+clean CI run：`34102671270`。
+
+本次未执行浏览器人工回归、真实 Google Maps / Route Provider E2E、真实 AI Provider E2E。
+
+CI 另有非阻塞维护项：npm audit 当前报告 6 个依赖漏洞；Vite 对主 bundle 大小和 `maplibre-gl` import 方式有告警。二者应作为单独维护任务评估，不在 P0 中强制升级或改包策略。
