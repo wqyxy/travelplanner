@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import type { CandidatePreference, PlaceKind, PlanningRole, Workspace } from "./v2-types";
 import { candidateRows, effectiveCandidatePlanningRole, formatDuration, resolutionStatus } from "./workspace-v2";
 import { placeNamePresentation } from "./place-name-presentation";
+import { placeScoreTooltipV3 } from "./place-score-presentation-v3";
 
 export type WorkflowCandidateDraftV3 = {
   nameZh: string;
@@ -55,30 +56,6 @@ const placeKindLabels: Record<PlaceKind, string> = {
   stop: "停靠点",
   waypoint: "途经点",
 };
-
-const SCORE_TAG_PREFIX = "__place_score:";
-const scoreLabels = {
-  uniqueness: "独特性",
-  scenery: "风景",
-  culture: "人文",
-  experience: "体验",
-  representativeness: "代表性",
-} as const;
-
-type ScoreKey = keyof typeof scoreLabels;
-
-function placeScoreTooltip(tags: string[]) {
-  const scores = new Map<string, number>();
-  for (const tag of tags) {
-    if (!tag.startsWith(SCORE_TAG_PREFIX)) continue;
-    const [key, raw] = tag.slice(SCORE_TAG_PREFIX.length).split("=");
-    const value = Number(raw);
-    if (key && Number.isFinite(value)) scores.set(key, value);
-  }
-  const keys = Object.keys(scoreLabels) as ScoreKey[];
-  if (!keys.every((key) => scores.has(key))) return null;
-  return keys.map((key) => `${scoreLabels[key]}：${scores.get(key)}`).join("\n");
-}
 
 function defaultKindForRole(role: PlanningRole): PlaceKind {
   return role === "planning_area" ? "city" : "attraction";
@@ -232,7 +209,7 @@ export function CandidateWorkflowPanelV3({
     const roleLabel = role === "planning_area" ? "停留地点" : role === "core_visit" ? "重要游览地" : "普通景点";
     const parent = row.candidate.planningAreaCandidateId ? planningAreas.find((area) => area.candidate.id === row.candidate.planningAreaCandidateId) : null;
     const selected = selectedCandidateId === row.candidate.id;
-    const scoreTooltip = role === "planning_area" ? null : placeScoreTooltip(row.candidate.tags);
+    const scoreTooltip = role === "planning_area" ? null : placeScoreTooltipV3(row.candidate.tags);
     const scoreLabel = role !== "planning_area" && row.candidate.aiScore !== null ? `${Math.round(row.candidate.aiScore)}分` : null;
     return <article className={`phase6-candidate-card ${selected ? "selected" : ""}`} key={row.candidate.id} onClick={() => selected ? onFocusCandidate(row.candidate.id) : onSelectCandidate(row.candidate.id)}>
       <div className="phase6-candidate-copy">

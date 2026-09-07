@@ -6,6 +6,7 @@ import { finalRouteMoveTargetIndexV4, type FinalRouteDropPositionV4 } from "./fi
 import type { FinalRouteNodeStatus, PlaceKind, ProviderPlaceCandidate, TransportMode } from "./v2-types";
 import type { AiActionType, ConversationStage, WorkspaceV3 } from "./v3-types";
 import { placeNamePresentation } from "./place-name-presentation";
+import { placeScoreBreakdownFromTagsV3, placeScoreLabelsV3 } from "./place-score-presentation-v3";
 import {
   finalRouteDisplayRowsV3,
   finalRouteStatusLabelsV3,
@@ -419,6 +420,15 @@ export function FinalRoutePanelV3({
           const locationState = resolution?.status ?? "missing";
           const locationAttention = locationAttentionLabel(locationState);
           const display = placeNamePresentation(row.place, workspace.trip.planLanguage, "未命名地点");
+          const placeScores = row.candidate?.planningRole !== "planning_area"
+            ? placeScoreBreakdownFromTagsV3(row.candidate?.tags ?? [])
+            : null;
+          const totalScore = row.candidate?.planningRole !== "planning_area" && typeof row.candidate?.aiScore === "number"
+            ? Math.round(row.candidate.aiScore)
+            : null;
+          const placeScoreDescription = placeScores
+            ? Object.entries(placeScores).map(([key, value]) => `${placeScoreLabelsV3[key as keyof typeof placeScoreLabelsV3]} ${value}`).join("；")
+            : "";
           const selected = row.node.id === selectedNodeId;
           const hovered = row.node.id === hoveredNodeId;
           const editing = row.node.id === editingNodeId;
@@ -473,7 +483,7 @@ export function FinalRoutePanelV3({
               }} onDragEnd={clearDrag}><GripVertical size={17}/></button>
               <button className="final-route-main-v3" type="button" onClick={() => onFocusNode(row.node.id)}>
                 <span className="final-route-index-v3">{row.index + 1}</span>
-                <span><strong>{display.primary}</strong>{display.secondary && <small>{display.secondary}</small>}<small>{placeKindLabels[row.place?.kind ?? "waypoint"]}{row.node.startTime || row.node.scheduleText ? ` · ${row.node.startTime || row.node.scheduleText}` : ""}</small></span>
+                <span><strong><span className="final-route-place-name-v3">{display.primary}</span>{totalScore !== null && <span className="final-route-total-score-v3" title="AI 五维综合总分">总分 <b>{totalScore}</b></span>}{placeScores && <span className="final-route-place-score-bars-v3" title={placeScoreDescription} aria-label={`地点五维评分：${placeScoreDescription}`}>{Object.entries(placeScores).map(([key, value]) => <span className={`final-route-place-score-bar-v3 ${key}`} key={key}><i style={{ width: `${value}%` }}/></span>)}</span>}</strong>{display.secondary && <small>{display.secondary}</small>}<small>{placeKindLabels[row.place?.kind ?? "waypoint"]}{row.node.startTime || row.node.scheduleText ? ` · ${row.node.startTime || row.node.scheduleText}` : ""}</small></span>
               </button>
               <div className="final-route-badges-v3">
                 {row.node.status !== "normal" && <span className={`status-pill-v3 ${row.node.status}`}>{finalRouteStatusLabelsV3[row.node.status]}</span>}

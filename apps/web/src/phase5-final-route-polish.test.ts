@@ -54,6 +54,18 @@ describe("Phase 5 final route polish contract", () => {
     expect(drawer).toContain('placeNamePresentation(row.place, workspace.trip.planLanguage, "未命名地点")');
   });
 
+  it("renders persisted five-dimensional place scores on final-route place cards", () => {
+    const panel = source("./FinalRoutePanelV3.tsx");
+    const css = source("./phase5-final-route-polish.css");
+    expect(panel).toContain("placeScoreBreakdownFromTagsV3");
+    expect(panel).toContain('className="final-route-total-score-v3"');
+    expect(panel).toContain('className="final-route-place-name-v3"');
+    expect(panel).toContain('className="final-route-place-score-bars-v3"');
+    expect(panel).toContain('title={placeScoreDescription}');
+    expect(css).toContain(".final-route-place-score-bars-v3");
+    expect(css).toContain("flex-direction:column");
+  });
+
   it("shows unavailable provider routes explicitly and keeps transport selection inline", () => {
     const panel = source("./FinalRoutePanelV3.tsx");
     const css = source("./phase5-final-route-polish.css");
