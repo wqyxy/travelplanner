@@ -62,65 +62,89 @@
 - 若 `finalRoute` 未改但 `days` 改了，会调用 `rebuildFinalRouteFromDayViewV3()`，把 Day 改动反向翻译成 finalRoute。
 - 所以持久化仍只有一个 canonical finalRoute，但旧调用方暂时还能通过 Day 间接写 canonical route。
 
-不能直接删这个桥。当前 `PlanCommandSchema/applyPlanCommands()` 仍包含并执行：
+当前不能直接删这个桥。剩余 legacy Day 命令仍包括：
 
 - `set_day_anchor`
-- `add_day_stop`
-- `update_day_stop`
-- `move_day_stop`
-- `remove_day_stop`
 - `move_day`
 - `update_day`
 
-Runtime 的 itinerary deterministic/detail/refine 等链路仍依赖其中一部分。因此若先删 Store bridge，会直接断掉现有 AI 详细行程与局部编辑。
+`add/update/move/remove_day_stop` 的主要生产路径已经迁到 canonical-first，但极少数无法无损表达的旧语义仍保留 fallback。
 
-#### Canonical node detail 能力已落地
+#### Canonical node detail 能力
 
-已创建 `apps/server/final-route-node-detail-v3.ts`，提交：
+已创建 `apps/server/final-route-node-detail-v3.ts`：
 
 - `4739b8e2ace287dc97458d4c95e3eaa0b67fdee9` — `feat: add canonical final route detail update`
+- `b93524a175257d8e1ae97e24819bbacc18a7a55d` — 独立测试。
 
-`updateFinalRouteNodeDetailV3()` 只允许修改：
+`updateFinalRouteNodeDetailV3()` 只允许修改 activity / period / schedule / time / duration / verification / cost / notes；明确排除 node identity、status、day boundary、transport 和 Provider route facts。
 
-- `activity`
-- `period`
-- `scheduleText`
-- `startTime`
-- `endTime`
-- `durationMinutes`
-- `scheduleVerification`
-- `costNote`
-- `costVerification`
-- `notes`
+#### Legacy Stop PlanCommand 已改为 canonical-first
 
-明确排除：
+新增 `apps/server/final-route-day-stop-bridge-v3.ts`，当前覆盖：
 
-- `id / placeId`：节点身份。
-- `status`：使用独立 route status mutation。
-- `endsDay`：使用独立 boundary mutation。
-- `transportFromPrevious`：使用独立 transport mutation。
-- Provider geometry / route distance / route duration：根本不属于 FinalRouteNode，不能通过该 helper 写入。
+- `update_day_stop`：纯 detail、candidate+place replacement、itinerary transport；无法无损表达的 candidate detach/place-only 语义返回 null 走临时 fallback。
+- `remove_day_stop`：删除同 ID canonical route node。
+- `add_day_stop`：在目标 Day 的 Stop/boundary 前插入 canonical route node；保留临时 ID -> 正式 ID 映射。
+- `move_day_stop`：重排 active route node，并用与旧 bridge 相同的 inactive-node bucket 规则保留 tentative/no_go 相对锚定。
 
-该 helper 修改 canonical finalRoute node 后立即调用 `rebuildFinalRouteDaysV3()`，因此 Day 只由 finalRoute 正向重新派生。
+关键提交：
 
-已新增独立测试：
+- `21a8cf3f8571a42bdcc1c96f408c313ba3440605` — removal bridge。
+- `bb1d1a6c56f057b999bffc8d5c47fcb7fbccb88c` — add/move 与 legacy bridge 等价测试。
+- `65ec5ca2a89e38e32e114109b8af6a121c774b9c` — `applyPlanCommands()` 四种 Stop case 接入 canonical-first，原 legacy fallback 保留。
+- `dfc3a3e12c5d30023a3bd00b079059f05816d53a` — PlanCommand 集成测试。
 
-- `b93524a175257d8e1ae97e24819bbacc18a7a55d` — `apps/server/final-route-node-detail-v3.test.ts`
-- 覆盖：更新非日界节点的详细字段后，派生 Day stop 同步；空更新拒绝。
-- 尚未运行测试。
+接线时明确保留了原来的 `markDayForReview()` 语义：详细 Day 经 Stop 修改后仍标记 `needs_review`；canonical bridge 不会偷偷改变这条产品状态规则。
 
-一个重要语义已确认：`deriveFinalRouteDaysV3()` 中 segment 最后一个 `endsDay` 节点是 Day `endAnchor`，不是普通 stop；因此 P0-3 迁移 `update_day_stop` 时只应把真正的 Day stop 映射到其同 ID finalRoute node，不应顺手把住宿/日界 anchor 复制成普通 stop。
+#### 首次详细行程已直接写 canonical finalRoute
 
-#### P0-3 正确迁移顺序
+`itinerary.detail.generate` 原本由 `applyDetailedUpdatesPhase5V3()` 直接返回修改后的 `days`，Store 再反向重建 finalRoute。现已改为：
 
-1. 已完成：补 canonical finalRoute node detail update helper。
-2. 下一步：把真实 `update_day_stop` 生产者分类，先迁移纯 detail 更新到 finalRoute node detail command/operation。
-3. 再迁移 `add/remove/move_day_stop` 为 finalRoute node 增删移动；move/add 必须正确处理全局 route index 与目标日程块。
-4. 把 anchor/day reorder/update 迁移为 origin/boundary/segment 语义，而不是继续把 Day 当独立实体编辑。
-5. 所有真实写入口迁完后，让 Store 拒绝“finalRoute 未改但 Day 被改”的写入。
-6. 最后删除 `syncFinalRouteForLegacyWriteV3()` 的 Day -> finalRoute 反向桥；只保留 finalRoute -> Day 正向派生。
+1. 根据 AI update 构造 desired Stop sequence；
+2. 通过 canonical add/move/update/remove bridge 修改 finalRoute；
+3. 每次由 finalRoute 正向重新派生 Day；
+4. 最后只在派生 Day 上标 `detailLevel=detailed / detailStatus=ready`。
 
-结论：P0-3 的目标不是“删 days[]”，而是**消灭 Day 作为写入口**。Day 可以继续作为派生 read model、AI context 和 Route Provider 输入。
+提交：
+
+- `5351b1a95b4e20ade2e6537082afda70f1eac4d5` — canonicalize detailed itinerary。
+- `abeed9f8c101083931f3e3dfbab59baee1819686` — 仅为旧 Day-only 测试/内存 fixture 保留狭窄 fallback；真实 finalRoute 数据走 canonical path。
+- `3759ea18e9508ec1c6a520fffbcccb684292ad7a` — 真实 finalRoute fixture 测试，覆盖 reorder/add/remove/detail update。
+
+已记录一个待处理 edge case：若首次 detailed update 想把“trip origin 同 Place”作为第一个普通 Stop，正向派生可能把该节点折叠成 start semantics；不能在未测试前修改派生规则。
+
+#### 首次 skeleton 已直接写 canonical finalRoute
+
+新增 `apps/server/skeleton-final-route-v3.ts`：
+
+- `d14aed8a2e98378279f46a570ac537a17e087ee1` — 首次 skeleton Day -> canonical boundary nodes。
+- 每个 Day 对应一个独立 route node；同 Place 多晚仍是不同 node ID。
+- 前 N-1 个 boundary `endsDay=true`，自然尾段作为最后一个 Day。
+- Day `transferMode` 写入 boundary `transportFromPrevious`，duration/verification 保持 unverified，不伪造 Provider 事实。
+- desired Day 仅作为 stayBlockId/date/detail metadata source，最终立即由 finalRoute 正向 re-derive。
+
+`applySkeletonPlanV3()` 已接入该 helper：
+
+- `ff8d381edf1d188f3cd5cfa1e8d0ef69c1bbcab8` — 仅当旧 Day 和 finalRoute 都为空时走 canonical initial path；已有路线 replan 保持旧行为。
+- `eba45a9291edee878ac67c9dbc8063fd8bb300ab` — 集成测试，锁住“同 Place 多晚 = 多个独立 route node”、独立 Day ID 和 transport 正向派生。
+
+当前因此已有三条真实生产写链不再依赖 Store 的隐式反向转换：
+
+1. legacy Stop PlanCommand 的主要路径；
+2. 首次详细行程；
+3. 首次 skeleton 生成。
+
+#### 尚未迁完
+
+仍需处理：
+
+1. skeleton replan：当前仍生成 `diff.days`，最终由 Store bridge 翻译；可复用同一个 `syncFinalRouteForLegacyWriteV3` 提前到 workflow 内执行以保持行为不变。
+2. `set_day_anchor / move_day / update_day`：仍是 Day-level structural write。
+3. Stop bridge 的少数 legacy fallback。
+4. metadata-only Day 写入（如 `detailStatus=needs_review`）需要与结构写入区分；最终 Store 应只拒绝 route-structural Day 写入，不应破坏派生状态 metadata。
+
+结论：P0-3 的目标不是“删 days[]”，而是**消灭 Day 作为路线结构写入口**。Day 可以继续作为派生 read model、AI context、detail状态 metadata 和 Route Provider 输入。
 
 ## 不得破坏的产品/安全边界
 
@@ -135,11 +159,11 @@ Runtime 的 itinerary deterministic/detail/refine 等链路仍依赖其中一部
 ## 当前静态检查结论
 
 - 新拆出的结构校验只处理未知引用和 Candidate/Place 身份不一致。
-- `markImpact` helper 只把已 detailed 的受影响 Day 标为 `needs_review`，没有新增 blocker；但 Runtime 接线仍待完成。
 - Provider capability 改造没有改 Resolution 搜索/消歧、Route Provider 调用、distance/duration/geometry 写入逻辑。
 - `index-v3.ts` 的三处已知 `unknown as` seam 已移除。
 - Resolver Adapter 已无引用并删除，没有引入第二套定位事实链。
-- finalRoute -> Day 已有唯一明确派生函数；当前问题是旧 Day 写入口仍通过兼容桥存在，而不是保存了第二份独立 canonical route。
+- finalRoute -> Day 已有唯一明确派生函数；当前问题是少量旧 Day 写入口仍通过兼容桥存在，而不是保存了第二份独立 canonical route。
+- 所有新 canonical helper 都立即调用正向 Day derivation，不维护第二份独立路线结构。
 
 ## 验证状态
 
@@ -155,8 +179,8 @@ Runtime 的 itinerary deterministic/detail/refine 等链路仍依赖其中一部
 
 ## 下一步
 
-1. 盘点所有旧 Day PlanCommand 的真实生产者，区分“纯 detail”“节点增删移动”“anchor/day 元数据”。
-2. 设计最小 canonical finalRoute detail command，避免一次性迁移全部旧 Day 合同。
-3. 同时继续 P0-1 的 Runtime 小风险接线；不做 100KB 大爆炸替换。
-4. 迁移旧 Day 写入口后再删除 Store legacy write bridge。
+1. skeleton replan 显式 canonicalize，使该 workflow 也不再依赖 Store 隐式 bridge。
+2. 处理 `set_day_anchor / move_day / update_day`，优先保持当前 legacy conversion 等价语义，不发明新的路线规则。
+3. 区分 Day route-structural fields 与 metadata-only fields，为最终删除 Store generic reverse bridge 做准备。
+4. 同时继续 P0-1 的 Runtime 小风险接线，不做 100KB 大爆炸替换。
 5. P0 完成后把两份临时 worklog 整理进正式文档并删除临时文件。
