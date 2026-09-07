@@ -16,7 +16,6 @@ import { loadPromptRegistryV3 } from "./prompt-registry-v3.js";
 import { StagedTravelAiV3 } from "./staged-ai-v3.js";
 import { StructuredAiRunnerV2 } from "./structured-ai-v2.js";
 import { handleTravelApiV3, readJsonBodyV3 } from "./travel-api-v3.js";
-import type { TravelStoreV2 } from "./travel-store-v2.js";
 import { TravelStoreV3 } from "./travel-store-v3.js";
 
 const root = path.resolve(process.cwd());
@@ -47,11 +46,10 @@ function broadcast(kind: string, payload: unknown) {
 
 const tasks = new AiTaskMonitorV3(store, (snapshot) => broadcast("ai-task.updated", snapshot));
 const travelAi = new StagedTravelAiV3({ root, runner: structuredAi, prompts, model: () => config.ai.model || undefined });
-// Resolver and route calculation remain the existing single fact chain. Their
-// constructor annotations still name TravelStoreV2, so v3 is passed through a
-// narrow compile-time cast; the runtime methods are the same store capabilities.
+// Resolver and route calculation remain the existing single fact chain. Both
+// depend only on narrow store capabilities, so the v3 store is passed directly.
 const resolverCore = new PlaceResolverV2({
-  store: store as unknown as TravelStoreV2,
+  store,
   maps,
   assist: (input) => travelAi.assistResolution(input),
 });
@@ -59,7 +57,7 @@ const resolver = Object.assign(resolverCore, {
   selectCandidate: (...args: Parameters<PlaceResolverV2["selectProviderCandidate"]>) => resolverCore.selectProviderCandidate(...args),
   setDirect: (...args: Parameters<PlaceResolverV2["setDirectCoordinates"]>) => resolverCore.setDirectCoordinates(...args),
 });
-const routes = new DayRouteServiceV2({ store: store as unknown as TravelStoreV2, maps });
+const routes = new DayRouteServiceV2({ store, maps });
 const runtime = new TravelPlannerRuntimeV3({
   store,
   ai: travelAi,
