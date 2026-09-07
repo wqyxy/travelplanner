@@ -4,6 +4,7 @@ import {
   inspectDerivedDayWriteV3,
 } from "./derived-day-integrity-v3.js";
 import { tryApplyLegacyDayAnchorPlacesV3 } from "./final-route-day-anchor-v3.js";
+import { tryApplyLegacyDayReorderV3 } from "./final-route-day-reorder-v3.js";
 import { tryApplyLegacyDayTransferModesV3 } from "./final-route-day-transfer-v3.js";
 import {
   rebuildFinalRouteDaysV3,
@@ -46,6 +47,7 @@ function restoreExplicitDayMetadataV3(
  *   canonical route node of that Day segment;
  * - non-null legacy Day start/end Place edits are mapped directly to trip origin
  *   or canonical Day boundary nodes when the mapping is unambiguous;
+ * - a pure legacy Day reorder moves whole canonical route segments directly;
  * - remaining legacy Day route/node writes are translated explicitly with the
  *   existing compatibility algorithm so Store is no longer the first place
  *   that discovers them;
@@ -53,9 +55,9 @@ function restoreExplicitDayMetadataV3(
  *   after route derivation where the downstream persistence path preserves them;
  * - legacy Day-only fixtures/bootstrap callers keep the same compatibility path.
  *
- * Once itinerary.day.reorder / null-anchor semantics and the remaining fallback
- * callers write canonical state directly, the translation branch can become a
- * hard rejection and the Store-level reverse bridge can be removed.
+ * Once null-anchor semantics and the remaining mixed/fallback callers write
+ * canonical state directly, the translation branch can become a hard rejection
+ * and the Store-level reverse bridge can be removed.
  */
 export function canonicalizePlanWriteV3(
   beforeValue: TravelPlanDocument,
@@ -75,6 +77,8 @@ export function canonicalizePlanWriteV3(
       if (transferOnly) return restoreExplicitDayMetadataV3(before, incoming, transferOnly);
       const anchorOnly = tryApplyLegacyDayAnchorPlacesV3(before, incoming);
       if (anchorOnly) return restoreExplicitDayMetadataV3(before, incoming, anchorOnly);
+      const reorderOnly = tryApplyLegacyDayReorderV3(before, incoming);
+      if (reorderOnly) return restoreExplicitDayMetadataV3(before, incoming, reorderOnly);
       return syncFinalRouteForLegacyWriteV3(before, incoming);
     }
     return restoreExplicitDayMetadataV3(before, incoming, inspection.plan);
