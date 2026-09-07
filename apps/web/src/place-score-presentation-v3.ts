@@ -4,8 +4,6 @@ export const placeScoreLabelsV3 = {
   uniqueness: "独特性",
   scenery: "风景",
   culture: "人文",
-  experience: "体验",
-  representativeness: "代表性",
 } as const;
 
 export type PlaceScoreKeyV3 = keyof typeof placeScoreLabelsV3;
