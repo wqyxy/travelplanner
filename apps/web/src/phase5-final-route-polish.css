@@ -68,6 +68,9 @@
 /* Keep route controls on the place row. Status choices remain visible, while
    the destructive action still opens a compact inline confirmation. */
 .final-route-row-v3{grid-template-columns:27px minmax(0,1fr) minmax(0,max-content)}
+.final-route-row-v3.is-overnight{background:color-mix(in srgb,var(--primary-soft) 72%,var(--surface));border-color:color-mix(in srgb,var(--primary) 28%,var(--border))}
+.final-route-row-v3.is-unresolved-location{background:color-mix(in srgb,var(--warning-bg) 78%,var(--surface));border-color:color-mix(in srgb,var(--warning-text) 38%,var(--border))}
+.final-route-row-v3.is-overnight.is-unresolved-location{background:color-mix(in srgb,var(--warning-bg) 58%,var(--primary-soft));border-color:color-mix(in srgb,var(--warning-text) 42%,var(--border))}
 .final-route-badges-v3{grid-column:2;grid-row:2;justify-content:flex-start}
 .final-route-quick-v4{grid-column:3;grid-row:1;align-self:center;max-width:100%;margin-top:0;gap:5px;flex-wrap:wrap}
 .final-route-quick-group-v5{display:flex;align-items:center;gap:1px;padding:2px;border:1px solid var(--border);border-radius:8px;background:var(--surface-subtle)}

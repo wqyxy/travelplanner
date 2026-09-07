@@ -421,6 +421,8 @@ export function FinalRoutePanelV3({
           const editing = row.node.id === editingNodeId;
           const dragging = row.node.id === draggedNodeId;
           const currentDrop = dropTarget?.nodeId === row.node.id ? dropTarget.position : null;
+          const overnight = row.node.status === "normal" && row.node.endsDay;
+          const unresolvedLocation = locationState === "unresolved" || locationState === "missing";
           const connection = row.node.status === "normal" ? connectionsByDestination.get(row.node.id) ?? null : null;
           const effectiveConnection = connection?.state === "same_place" ? null : connection;
           const effectiveTransportMode = effectiveConnection?.mode ?? "drive";
@@ -446,7 +448,7 @@ export function FinalRoutePanelV3({
             </div>}
 
             <article
-              className={`final-route-row-v3 status-${row.node.status} ${selected ? "map-selected" : ""} ${hovered ? "hover-linked" : ""} ${editing ? "editing" : ""} ${dragging ? "dragging" : ""} ${currentDrop ? `drop-${currentDrop}` : ""}`}
+              className={`final-route-row-v3 status-${row.node.status} ${overnight ? "is-overnight" : ""} ${unresolvedLocation ? "is-unresolved-location" : ""} ${selected ? "map-selected" : ""} ${hovered ? "hover-linked" : ""} ${editing ? "editing" : ""} ${dragging ? "dragging" : ""} ${currentDrop ? `drop-${currentDrop}` : ""}`}
               onMouseEnter={() => onHoverNode(row.node.id)}
               onMouseLeave={() => onHoverNode(null)}
               onDragOver={(event) => {
