@@ -79,7 +79,9 @@ export function tryApplyLegacyDayTransferModesV3(
   }
   if (!changed.length) return null;
 
-  let working = before;
+  // Start from incoming so unrelated canonical changes in the same write
+  // (trip/candidate/place metadata, etc.) are preserved.
+  let working = incoming;
   for (const item of changed) {
     const nodeId = firstActiveNodeIdForDay(working, item.dayId);
     if (!nodeId) return null;
