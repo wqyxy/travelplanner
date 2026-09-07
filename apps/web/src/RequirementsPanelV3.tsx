@@ -40,7 +40,7 @@ export function RequirementsPanelV3({ facts, busy, onSave, onGenerate }: {
         ? <textarea value={draft[field.key]} disabled={busy} placeholder={field.placeholder} onChange={(event) => { setStatus("idle"); setDraft((current) => ({ ...current, [field.key]: event.target.value })); }} onBlur={() => void save(field.key)}/>
         : <input value={draft[field.key]} disabled={busy} placeholder={field.placeholder} onChange={(event) => { setStatus("idle"); setDraft((current) => ({ ...current, [field.key]: event.target.value })); }} onBlur={() => void save(field.key)}/>}</label>)}
     </div>
-    <small className={`requirements-save-status-v3 ${status}`}>{status === "saving" ? "正在保存…" : status === "saved" ? "已保存" : status === "failed" ? "保存失败，请再次离开输入框重试。" : ""}</small>
+    <small className={`requirements-save-status-v3 ${status}`} role="status" aria-live="polite">{status === "saving" ? "正在保存…" : status === "saved" ? "已保存" : status === "failed" ? "保存失败，请再次离开输入框重试。" : ""}</small>
     <button className="button primary workspace-primary-cta-v3" type="button" disabled={busy || !destinationReady} title={destinationReady ? undefined : "请先填写并保存目的地"} onClick={() => void onGenerate()}><ArrowRight size={15}/>进入最终线路</button>
   </section>;
 }

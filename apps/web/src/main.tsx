@@ -11,6 +11,7 @@ import "./phase6-workflow.css";
 import "./phase2-final-route.css";
 import "./phase4-final-route-interaction.css";
 import "./phase5-final-route-polish.css";
+import "./ui-refresh.css";
 import AppFinalRouteV3 from "./AppFinalRouteV3";
 
 setWorkerUrl(mapLibreWorkerUrl);
