@@ -2,6 +2,7 @@ import type { PlanCommand, TravelPlanDocument } from "./contracts-v2.js";
 import {
   materializeLegacyFinalRouteV3,
   rebuildFinalRouteDaysV3,
+  removeFinalRouteNodeV3,
   type FinalRouteMutationResultV3,
 } from "./final-route-v3.js";
 
@@ -83,4 +84,19 @@ export function updateDerivedStopViaFinalRouteV3(
     finalRoute: { version: 1, nodes },
   });
   return { plan: next, affectedDayIds: changedDayIds(plan.days, next.days) };
+}
+
+/**
+ * A derived Day stop is represented by the same canonical finalRoute node ID.
+ * Removing that stop is therefore losslessly representable as node removal.
+ */
+export function removeDerivedStopViaFinalRouteV3(
+  planValue: TravelPlanDocument,
+  stopId: string,
+): FinalRouteMutationResultV3 | null {
+  const plan = materializeLegacyFinalRouteV3(planValue);
+  if (!derivedStopExists(plan, stopId)) return null;
+  const node = plan.finalRoute.nodes.find((item) => item.id === stopId);
+  if (!node || node.status !== "normal" || node.endsDay) return null;
+  return removeFinalRouteNodeV3(plan, stopId);
 }
