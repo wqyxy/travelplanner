@@ -122,14 +122,15 @@ describe("applyPlanCommands", () => {
     expect(applied.plan.days[1].stops[0]).toMatchObject({ placeId: "p-hotel", candidateId: null });
   });
 
-  it("garbage collects a Place after its Candidate and all other references are removed", () => {
+  it("preserves a Place when canonical finalRoute still references it after Candidate removal", () => {
     const applied = applyPlanCommands(plan(), [{ type: "remove_candidate", candidateId: "c-osaka" }]);
     expect(applied.plan.candidates.some((candidate) => candidate.id === "c-osaka")).toBe(false);
-    expect(applied.plan.places.some((place) => place.id === "p-osaka")).toBe(false);
-    expect(applied.effects.removedPlaceIds).toEqual(["p-osaka"]);
+    expect(applied.plan.places.some((place) => place.id === "p-osaka")).toBe(true);
+    expect(applied.plan.days[1].stops[0]).toMatchObject({ id: "s-osaka", placeId: "p-osaka", candidateId: null });
+    expect(applied.effects.removedPlaceIds).not.toContain("p-osaka");
   });
 
-  it("cascades a Macro deletion through child Candidates, Stops and trip references", () => {
+  it("removes a Candidate tree while preserving Places still referenced by canonical finalRoute", () => {
     const value = plan();
     value.places.push({ id: "p-macro", nameZh: "大阪", nameLocal: "大阪", nameEn: "Osaka", kind: "city", city: "大阪", region: null, country: "日本", countryCode: "JP", approximate: false });
     value.candidates.push({ id: "c-macro", placeId: "p-macro", planningAreaCandidateId: null, preference: "want_to_go", source: "ai", aiReason: "关西目的地", aiScore: 90, suggestedDurationMinutes: null, tags: [] });
@@ -138,11 +139,13 @@ describe("applyPlanCommands", () => {
     value.days[1].startAnchor = { ...value.days[1].startAnchor, placeId: "p-osaka", label: null };
     const applied = applyPlanCommands(TravelPlanDocumentSchema.parse(value), [{ type: "remove_candidate_tree", candidateId: "c-macro" }]);
     expect(applied.plan.candidates.some((candidate) => candidate.id === "c-macro" || candidate.id === "c-osaka")).toBe(false);
-    expect(applied.plan.places.some((place) => place.id === "p-macro" || place.id === "p-osaka")).toBe(false);
-    expect(applied.plan.days[1].stops).toEqual([]);
-    expect(applied.plan.days[1].startAnchor.placeId).toBeNull();
+    expect(applied.plan.places.some((place) => place.id === "p-macro")).toBe(false);
+    expect(applied.plan.places.some((place) => place.id === "p-osaka")).toBe(true);
+    expect(applied.plan.days[1].stops[0]).toMatchObject({ id: "s-osaka", placeId: "p-osaka", candidateId: null });
+    expect(applied.plan.days[1].startAnchor.placeId).toBe("p-osaka");
     expect(applied.plan.trip.destinationPlaceIds).toEqual([]);
     expect(new Set(applied.effects.removedCandidateIds)).toEqual(new Set(["c-macro", "c-osaka"]));
+    expect(applied.effects.removedPlaceIds).toEqual(["p-macro"]);
   });
 
   it("allows semantic duplicates while preserving exact ID integrity", () => {
