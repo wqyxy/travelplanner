@@ -54,6 +54,12 @@ describe("Phase 5 final route polish contract", () => {
     expect(drawer).toContain('placeNamePresentation(row.place, workspace.trip.planLanguage, "未命名地点")');
   });
 
+  it("labels every AI action by its concrete, user-controlled result", () => {
+    const panel = source("./FinalRoutePanelV3.tsx");
+    for (const label of ["为全程新增景点", "建议调整全程顺序", "为当天新增景点", "补全天内活动与时间", "建议调整当天顺序"]) expect(panel).toContain(label);
+    expect(panel).toContain("先给出可采用的建议");
+  });
+
   it("renders persisted five-dimensional place scores on final-route place cards", () => {
     const panel = source("./FinalRoutePanelV3.tsx");
     const css = source("./phase5-final-route-polish.css");
