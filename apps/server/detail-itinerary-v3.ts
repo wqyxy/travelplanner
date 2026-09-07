@@ -74,7 +74,7 @@ function syncDetailedDaysToFinalRouteV3(
 
     for (let index = 0; index < desiredDay.stops.length; index += 1) {
       const desired = desiredDay.stops[index];
-      let currentDay = working.days.find((day) => day.id === originalDay.id);
+      const currentDay = working.days.find((day) => day.id === originalDay.id);
       if (!currentDay) throw new Error(`详细行程引用未知 Day：${originalDay.id}`);
       const currentIndex = currentDay.stops.findIndex((stop) => stop.id === desired.id);
 
@@ -142,6 +142,9 @@ export function applyDetailedUpdatesPhase5V3(trip: TripDetailV3, updates: Detail
     return { ...structuredClone(day), detailLevel: "detailed", detailStatus: "ready", stops };
   });
   const desired = TravelPlanDocumentSchema.parse({ ...trip.plan, stage: "itinerary_refinement", days });
+  // Transitional tests and old in-memory fixtures can still be Day-only. Keep
+  // that narrow compatibility path until the P0 reverse bridge is fully removed.
+  if (!trip.plan.finalRoute.nodes.length && trip.plan.days.length) return desired;
   return syncDetailedDaysToFinalRouteV3(trip.plan, desired.days, new Set(updateByDay.keys()));
 }
 
