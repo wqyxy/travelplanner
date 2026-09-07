@@ -9,7 +9,6 @@ import {
   type Place,
 } from "./contracts-v2.js";
 import { rebuildFinalRouteDaysV3 } from "./final-route-v3.js";
-import { installCanonicalTravelStoreWriteBoundaryV3 } from "./canonical-travel-store-v3.js";
 import { TravelStoreV3 } from "./travel-store-v3.js";
 
 const roots: string[] = [];
@@ -66,10 +65,8 @@ function canonicalPlan() {
   return rebuildFinalRouteDaysV3(base);
 }
 
-describe("installed canonical TravelStoreV3 boundary", () => {
-  it("translates legacy Day route writes, stays idempotent, and preserves generation CAS", () => {
-    installCanonicalTravelStoreWriteBoundaryV3();
-    installCanonicalTravelStoreWriteBoundaryV3();
+describe("native TravelStoreV3 canonical plan boundary", () => {
+  it("canonicalizes legacy Day route writes and preserves generation CAS", () => {
     const store = new TravelStoreV3(databasePath());
     const created = store.createTrip();
     const seeded = store.writePlan(created.id, canonicalPlan(), created.contentGeneration, {
@@ -91,6 +88,44 @@ describe("installed canonical TravelStoreV3 boundary", () => {
       source: "test",
       summary: "stale write",
     })).toThrow("CONTENT_GENERATION_SUPERSEDED");
+    store.close();
+  });
+
+  it("persists explicit Day title/date metadata without turning Day into a route model", () => {
+    const store = new TravelStoreV3(databasePath());
+    const created = store.createTrip();
+    const seeded = store.writePlan(created.id, canonicalPlan(), created.contentGeneration, {
+      source: "test",
+      summary: "seed canonical route",
+    });
+    const incoming = structuredClone(seeded.trip.plan);
+    incoming.days[0].title = "用户自定义标题";
+    incoming.days[0].date = "2026-10-05";
+
+    const written = store.writePlan(created.id, incoming, seeded.generation, {
+      source: "test",
+      summary: "edit Day metadata",
+    });
+    expect(written.trip.plan.days[0].title).toBe("用户自定义标题");
+    expect(written.trip.plan.days[0].date).toBe("2026-10-05");
+    expect(written.trip.plan.finalRoute.nodes).toEqual(seeded.trip.plan.finalRoute.nodes);
+    store.close();
+  });
+
+  it("rejects direct Stop structure writes when finalRoute is already canonical", () => {
+    const store = new TravelStoreV3(databasePath());
+    const created = store.createTrip();
+    const seeded = store.writePlan(created.id, canonicalPlan(), created.contentGeneration, {
+      source: "test",
+      summary: "seed canonical route",
+    });
+    const incoming = structuredClone(seeded.trip.plan);
+    incoming.days[0].stops[0].activity = "绕过 finalRoute 的修改";
+
+    expect(() => store.writePlan(created.id, incoming, seeded.generation, {
+      source: "test",
+      summary: "invalid direct Day Stop write",
+    })).toThrow("DERIVED_DAY_ROUTE_WRITE_UNSUPPORTED");
     store.close();
   });
 });
