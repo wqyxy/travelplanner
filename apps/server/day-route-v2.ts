@@ -9,10 +9,9 @@ import {
 } from "./contracts-v2.js";
 import type { MapService } from "./map-service.js";
 import { resolutionIsCurrent } from "./place-resolver-v2.js";
-import type { TravelStoreV2 } from "./travel-store-v2.js";
+import type { DayRouteStoreCapabilityV3 } from "./provider-store-capabilities-v3.js";
 
 type Maps = Pick<MapService, "route">;
-type DayRouteStore = Pick<TravelStoreV2, "getWorkspace" | "requireTrip" | "listPlaceResolutions" | "getDayRoute" | "setDayRoute">;
 type RouteNode = { id: string; placeId: string; modeFromPrevious: TransportMode };
 export const ROUTE_DAY_BATCH_CONCURRENCY = 3;
 
@@ -120,7 +119,7 @@ function featureCollection(legs: RouteLeg[]) {
 
 export class DayRouteServiceV2 {
   private readonly inFlight = new Map<string, Promise<DayRoute>>();
-  constructor(private readonly options: { store: DayRouteStore; maps: Maps }) {}
+  constructor(private readonly options: { store: DayRouteStoreCapabilityV3; maps: Maps }) {}
 
   workspaceRouteState(tripId: string) {
     const workspace = this.options.store.getWorkspace(tripId);
