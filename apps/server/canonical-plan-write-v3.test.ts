@@ -112,12 +112,14 @@ describe("canonical V3 plan write boundary", () => {
     expect(result.days[0].stops[0].candidateId).toBe("candidate-x");
   });
 
-  it("rejects independent Day route structure once finalRoute is canonical", () => {
+  it("translates remaining independent Day route writes into canonical finalRoute", () => {
     const before = canonicalPlan();
     const incoming = structuredClone(before);
     incoming.days[0].endAnchor.placeId = "other";
 
-    expect(() => canonicalizePlanWriteV3(before, incoming)).toThrow("DERIVED_DAY_ROUTE_WRITE_REJECTED");
+    const result = canonicalizePlanWriteV3(before, incoming);
+    expect(result.finalRoute.nodes.find((item) => item.id === "day-end")?.placeId).toBe("other");
+    expect(result.days[0].endAnchor.placeId).toBe("other");
   });
 
   it("temporarily keeps legacy Day-only plans on the reverse bridge", () => {
