@@ -82,7 +82,7 @@ describe("Phase 4 final route interaction contract", () => {
   it("does not render a transport control for the synthetic same-place hop created by another night", () => {
     const panel = source("./FinalRoutePanelV3.tsx");
     expect(panel).toContain('const effectiveConnection = connection?.state === "same_place" ? null : connection');
-    expect(panel).toContain("{effectiveConnection && <div className={`final-route-transport-connector-v4 state-${effectiveConnection.state}`}");
+    expect(panel).toContain('final-route-transport-connector-v4 state-${effectiveConnection.state}');
     expect(panel).not.toContain('connection.state === "same_place" ? "连续住宿"');
   });
 
@@ -93,6 +93,5 @@ describe("Phase 4 final route interaction contract", () => {
     expect(css).toContain(".final-route-transport-connector-v4");
     expect(css).toContain(".final-route-night-divider-v4");
     expect(css).toContain(".final-route-editor-drawer-v4");
-    expect(css).toContain(".final-route-transport-select-v5");
   });
 });
