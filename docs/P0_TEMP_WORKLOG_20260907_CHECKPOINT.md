@@ -4,9 +4,9 @@
 
 ## P0-1 — Runtime 拆分
 
-`planner-runtime-v3.ts` 仍约 100KB。
+`planner-runtime-v3.ts` 的第一轮职责拆分已经真正接线，不再只是“先建文件”。
 
-已建立独立模块：
+### 已接入 Runtime 的独立模块
 
 - `planner-action-scope-v3.ts`
 - `planner-proposal-v3.ts`
@@ -20,18 +20,45 @@
 - `planner-deterministic-commands-v3.ts`
 - `planner-candidate-output-v3.ts`
 
-已明确接回 Runtime：Action Scope、Proposal diff、Resolution current-state、Itinerary structural validation、Itinerary command derivation。
+### Runtime pure/domain delegate 接线
 
-尚待接回 Runtime：
+提交 `5927becabdb601fab387408eba25c948cb6cd707`：
 
-- `planner-itinerary-impact-v3.ts`
-- `planner-action-context-v3.ts`
-- `planner-resolution-coordinator-v3.ts`
-- `planner-route-coordinator-v3.ts`
-- `planner-deterministic-commands-v3.ts`
-- `planner-candidate-output-v3.ts`
+- Action Context 改由 `buildPlannerActionStateV3()` 构建；Runtime 仅提供 Store 数据与惰性 Route getter。
+- deterministic Action -> PlanCommand 改由 `deterministicCommands()` 负责。
+- itinerary impact 改由 `markImpact()` 负责。
+- destination/candidate output 的 requirements gate、范围校验、normalization、candidate command 改由 `planner-candidate-output-v3.ts` 负责。
+- 删除 Runtime 内对应重复实现。
 
-现在已确认 GitHub `fetch_blob` 可以完整读取大文件，因此后续可安全对 Runtime 做完整文本替换，并通过 commit diff 严格核对，不再因为 100KB 文件停滞。
+文件级 compare：仅 `planner-runtime-v3.ts`，`+17 / -259`。
+
+### Provider coordinator 接线
+
+提交 `e2429f602c2b45f958ba49661db3e8412547a37f`：
+
+- Runtime 不再持有 `routeBatches` Map。
+- resolution progress / resolveChangedPlaces / retryResolutions 移交 `PlannerResolutionCoordinatorV3`。
+- route recalculation / dirty route batch / macro route batch / route-task abort 移交 `PlannerRouteCoordinatorV3`。
+- Runtime 保留原公开方法名和薄 wrapper，因此 API 调用方不变。
+- `stopTask()` 仍保持旧行为：AI active run 优先；否则尝试停止 route batch；找不到时继续抛“当前任务已经结束。”。
+- coordinator 通过 Runtime callback 发出原 `travel.resolution.changed` / `travel.route.changed` 事件。
+
+文件级 compare：仅 `planner-runtime-v3.ts`，`+36 / -101`。
+
+Provider 搜索/消歧、route geometry/distance/duration 算法没有修改；generation supersede、Abort 和 task 状态文案保持原逻辑。
+
+### Runtime 当前仍负责的主要事情
+
+- workspace/read-model 聚合。
+- dialogue thread / turn / web-required 生命周期。
+- Action claim / confirmation / execution 生命周期与每旅行 AI Action 串行限制。
+- requirements.capture/update/clear 的特殊 deterministic 持久化。
+- AI Action output dispatcher 和各 Action 的持久化编排。
+- interest discovery 的多区域并发 worker / commit gate / stop / failure 分类。
+- Proposal create/apply/reject/undo 编排。
+- Google Maps link preview/apply。
+
+下一步不要再拆纯 helper；优先清理剩余 resolver `as any` seam，然后决定是否把 interest discovery 或 AI output persistence 抽成 coordinator。Action lifecycle/claim executor 仍最后处理。
 
 ## P0-2 — V2/V3 capability seam
 
@@ -44,7 +71,12 @@
 - Route capability：`getWorkspace / requireTrip / listPlaceResolutions / getDayRoute / setDayRoute`。
 - Resolver / DayRoute 继续使用原 Provider 算法，但不再依赖 `TravelStoreV2` 类型。
 
-Provider 搜索、消歧、geometry、distance、duration 的事实来源未改。
+当前还剩 Runtime 两个类型逃逸：
+
+- `selectResolution()` 对 resolver 的 `as any`。
+- `setDirectResolution()` 对 resolver 的 `as any`。
+
+`index-v3.ts` 实际已经给 resolverCore 增加 `selectCandidate / setDirect` alias，因此下一步应定义窄 resolver capability/interface，把这两个 `as any` 正式去掉，而不是改 Provider 实现。
 
 ## P0-3 — finalRoute / Day / Route canonical boundary
 
@@ -63,69 +95,36 @@ Provider 搜索、消歧、geometry、distance、duration 的事实来源未改�
 - skeleton initial：直接生成 canonical boundary nodes。
 - skeleton replan：workflow 内先 canonicalize，再进入 Store。
 
-### Day 级旧操作已拆出明确 canonical 适配
+### Day 级旧操作已有明确 canonical 适配
 
-- `final-route-day-transfer-v3.ts`
-  - `update_day.transferMode` -> Day segment 第一个 active node transport。
-  - 用户改 mode 时旧 Provider-like duration/note/verification 被清空并重置 `unverified`，不伪造 Provider 事实。
-- `final-route-day-anchor-v3.ts`
-  - Day1 start -> `trip.originPlaceId`。
-  - 后续 Day start -> 前一天 boundary node Place。
-  - Day end -> 当前 boundary node Place。
-  - nullable anchor 使用旧算法相同的 stop/start fallback Place，因此可直接 canonicalize。
-- `final-route-day-reorder-v3.ts`
-  - 纯 Day reorder -> 重排完整 active route segment。
-  - inactive node anchoring 与旧 bridge 保持一致。
-  - first->last / last->first 测试以旧 conversion 的 finalRoute + Day 全量结果为基准。
+- `final-route-day-transfer-v3.ts`：`update_day.transferMode` -> segment 首个 active node transport；旧 Provider-like transport 数据失效并重置 `unverified`。
+- `final-route-day-anchor-v3.ts`：Day1 start -> trip origin；后续 start / Day end -> boundary node；nullable anchor 使用旧算法相同 fallback Place。
+- `final-route-day-reorder-v3.ts`：纯 Day reorder -> 重排 active route segments；inactive anchoring 与旧 bridge 等价。
 
 ### Store 本体已经执行 canonical boundary
 
-关键提交：
+提交 `f8fefe8f89b043416864851d0e7f55eb2d2a57f3`：
 
-- `f8fefe8f89b043416864851d0e7f55eb2d2a57f3`：`TravelStoreV3.writePlanWithinTransaction()` 从直接调用 `syncFinalRouteForLegacyWriteV3()` 改为调用 `canonicalizePlanWriteV3()`。
+`TravelStoreV3.writePlanWithinTransaction()` 从直接调用 `syncFinalRouteForLegacyWriteV3()` 改为调用 `canonicalizePlanWriteV3()`。
 
-严格 diff 已确认该 50KB Store 修改只有：
+严格 diff 只有 import 和 `nextPlan` normalization 一行变化；SQLite transaction、generation CAS、revision、cleanup、Proposal reconcile/apply/undo 顺序均未改。
 
-1. 新增 `canonicalizePlanWriteV3` import；
-2. 删除 Store 对 `syncFinalRouteForLegacyWriteV3` 的直接 import；
-3. `nextPlan` 一行替换。
-
-SQLite transaction、generation CAS、revision、cleanup、Proposal reconcile/apply/undo 顺序均未改。
-
-此前用于过渡的 `canonical-travel-store-v3.ts` prototype wrapper 已删除，`index-cutover-v3.ts` 也已恢复为不安装 wrapper。
+此前过渡 `canonical-travel-store-v3.ts` wrapper 已删除，`index-cutover-v3.ts` 不再安装 prototype wrapper。
 
 ### canonical boundary 当前策略
-
-`canonicalizePlanWriteV3(before, incoming)`：
 
 1. finalRoute 本身已改：finalRoute authoritative，正向派生 Day。
 2. stale Day / metadata-only：正向派生 route view，并保留允许的显式 metadata。
 3. transferMode-only：direct canonical adapter。
 4. anchor Place（含 null）：direct canonical adapter。
 5. pure Day reorder：direct canonical adapter。
-6. 只允许仍已知的旧 Day order/transfer/anchor 混合形态进入兼容 translation。
-7. canonical plan 中直接出现 Stop / endTransport / Day-ID / anchor-ID 等未知独立 Day 结构写：抛 `DERIVED_DAY_ROUTE_WRITE_UNSUPPORTED`，不再万能兜底。
-8. 纯 Day-only legacy/bootstrap 数据暂时继续旧 compatibility conversion。
+6. 只允许已知旧 Day order/transfer/anchor 混合形态进入兼容 translation。
+7. canonical plan 中直接出现 Stop / endTransport / Day-ID / anchor-ID 等未知独立 Day 结构写：抛 `DERIVED_DAY_ROUTE_WRITE_UNSUPPORTED`。
+8. 纯 Day-only legacy/bootstrap 暂时继续旧 compatibility conversion。
 
-### Day metadata 已明确
+Day `title/date` 已正式作为可持久 metadata override 保留。
 
-`title/date` 正式作为可持久 Day metadata override 保留。
-
-Store 本体现在也经过同一个 canonical boundary，因此不会再被第二次旧 bridge 静默覆盖。集成测试已增加：
-
-- title/date 持久化；
-- stale generation 仍由原 Store CAS 拒绝；
-- 直接绕过 finalRoute 改 Stop 会被 Store 拒绝。
-
-### 当前仍保留的 legacy
-
-`syncFinalRouteForLegacyWriteV3()` 仍作为：
-
-- Day-only legacy/bootstrap 兼容；
-- 已知旧 Day order/transfer/anchor 混合 batch 的临时 translation；
-- skeleton replan 等已明确标注的过渡 adapter 内部实现。
-
-它已不再是 `TravelStoreV3` 的 generic 默认保存逻辑。
+`syncFinalRouteForLegacyWriteV3()` 目前只作为 Day-only legacy/bootstrap、已知混合旧 Day batch、skeleton replan 等明确过渡 adapter 的内部实现；它已不是 Store generic 默认保存逻辑。
 
 ## 验证状态
 
@@ -144,7 +143,7 @@ GitHub 当前没有自动 CI/status/workflow run。当前阶段仍只做静态 d
 
 ## 下一步
 
-1. 回 P0-1：完整读取 `planner-runtime-v3.ts` blob，依次接回 Action Context、impact、deterministic/candidate helper、Resolution/Route coordinator。
-2. 每次 Runtime 接线后只接受“import + 删除原地实现 + 薄 wrapper/委托”的 diff，不改变 Action/Provider/Store 合同。
-3. P0-1 接线完成后再审剩余 Runtime 职责，决定是否继续拆 Action executor。
-4. P0 结束后统一整理正式文档，并删除临时 worklog。
+1. 去掉 resolver `selectCandidate / setDirect` 的最后两个 `as any` 类型逃逸。
+2. 审 Runtime 剩余最大职责，优先考虑 `persistInterestDiscovery` 或 AI output persistence coordinator；Action claim/execute 生命周期最后处理。
+3. 每次大文件修改继续用 GitHub blob + commit diff + file compare 严格核对。
+4. P0 结束后整理正式文档并删除临时 worklog。
