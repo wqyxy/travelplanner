@@ -1,14 +1,10 @@
 import { randomUUID } from "node:crypto";
 import {
   AiProposalSchema,
-  GoogleMapsLinkCommitInputSchema,
-  GoogleMapsLinkPreviewInputSchema,
   PlanCommandSchema,
   ProposalScopeSchema,
   TravelPlanDocumentSchema,
   emptyTravelPlan,
-  type Place,
-  type PlaceResolution,
   type PlanCommand,
   type ProposalScope,
 } from "./contracts-v2.js";
@@ -33,6 +29,7 @@ import { actionScope } from "./planner-action-scope-v3.js";
 import { PlannerActionPersistenceCoordinatorV3 } from "./planner-action-persistence-coordinator-v3.js";
 import { hasTravelRequirements } from "./planner-candidate-output-v3.js";
 import { deterministicCommands } from "./planner-deterministic-commands-v3.js";
+import { PlannerGoogleMapsLinkCoordinatorV3 } from "./planner-google-maps-link-coordinator-v3.js";
 import { PlannerInterestDiscoveryCoordinatorV3 } from "./planner-interest-discovery-coordinator-v3.js";
 import { markImpact } from "./planner-itinerary-impact-v3.js";
 import { validateItineraryReferences } from "./planner-itinerary-validation-v3.js";
@@ -40,7 +37,6 @@ import { proposalDiff } from "./planner-proposal-v3.js";
 import { PlannerResolutionCoordinatorV3 } from "./planner-resolution-coordinator-v3.js";
 import { currentPlaceResolutions } from "./planner-resolution-state-v3.js";
 import { PlannerRouteCoordinatorV3 } from "./planner-route-coordinator-v3.js";
-import { placeGeoFingerprint } from "./place-resolver-v2.js";
 import type { PlannerPlaceResolverCapabilityV3 } from "./provider-resolver-capability-v3.js";
 import { GoogleMapsLinkService } from "./google-maps-link.js";
 import { assertProposalCommandsWithinScope } from "./proposal-scope-policy-v2.js";
@@ -98,6 +94,7 @@ export class TravelPlannerRuntimeV3 {
   private readonly routeCoordinator: PlannerRouteCoordinatorV3;
   private readonly interestDiscoveryCoordinator: PlannerInterestDiscoveryCoordinatorV3;
   private readonly actionPersistenceCoordinator: PlannerActionPersistenceCoordinatorV3;
+  private readonly googleMapsLinkCoordinator: PlannerGoogleMapsLinkCoordinatorV3;
 
   constructor(private readonly options: {
     store: TravelStoreV3;
@@ -137,6 +134,12 @@ export class TravelPlannerRuntimeV3 {
       emitDocumentChanged: (tripId, generation, changedDayIds) => this.emit("travel.document.changed", { tripId, generation, changedDayIds }),
       startRouteBatch: (tripId, expectedGeneration, dayIds) => this.startRouteBatch(tripId, expectedGeneration, dayIds),
       recalculateAllMacroRoutes: (tripId, expectedGeneration) => this.recalculateAllMacroRoutes(tripId, expectedGeneration),
+    });
+    this.googleMapsLinkCoordinator = new PlannerGoogleMapsLinkCoordinatorV3({
+      store: options.store,
+      service: options.googleMapsLinks,
+      emitDocumentChanged: (tripId, generation, changedDayIds) => this.emit("travel.document.changed", { tripId, generation, changedDayIds }),
+      emitResolutionChanged: (tripId, placeId) => this.emit("travel.resolution.changed", { tripId, placeId }),
     });
   }
 
@@ -571,64 +574,14 @@ export class TravelPlannerRuntimeV3 {
   searchResolutionCandidates(tripId: string, placeId: string, expectedGeneration: number) { return this.options.resolver.searchCandidates(tripId, placeId, expectedGeneration); }
   selectResolution(tripId: string, placeId: string, input: unknown) { return this.options.resolver.selectCandidate(tripId, placeId, input); }
   setDirectResolution(tripId: string, placeId: string, input: unknown) { return this.options.resolver.setDirect(tripId, placeId, input); }
-  private googleMapsLinks() {
-    if (!this.options.googleMapsLinks) throw new Error("Google Maps 链接解析服务未配置。");
-    return this.options.googleMapsLinks;
+
+  previewGoogleMapsLink(tripId: string, placeId: string, input: unknown) {
+    return this.googleMapsLinkCoordinator.preview(tripId, placeId, input);
+  }
+  applyGoogleMapsLink(tripId: string, placeId: string, input: unknown) {
+    return this.googleMapsLinkCoordinator.apply(tripId, placeId, input);
   }
 
-  private async captureAdditionalRequirements(tripId: string, sourceMessageId: string, baseGeneration: number, additionalRequirements: string) {
-    const normalized = additionalRequirements.trim();
-    if (!normalized) return baseGeneration;
-    const trip = this.options.store.requireTrip(tripId);
-    if (trip.contentGeneration !== baseGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
-    if (trip.plan.trip.brief.additionalRequirements === normalized) return baseGeneration;
-    const action = AiActionRecordSchema.parse({
-      id: randomUUID(), tripId, stage: "requirements", actionType: "requirements.capture", executor: "deterministic", origin: "conversation", sourceMessageId,
-      parameters: { additionalRequirements: normalized }, targetIds: [], scope: { type: "trip", id: null }, baseGeneration, status: "pending_confirmation",
-      taskId: null, proposalId: null, resultRef: null, startedAt: null, updatedAt: now(), completedAt: null, errorSummary: null,
-    });
-    const stored = this.options.store.createAction(action).action;
-    const claimed = this.options.store.claimActionForExecution(stored.id, baseGeneration);
-    if (!claimed.claimed) throw new Error("CONTENT_GENERATION_SUPERSEDED");
-    try {
-      const resultRef = await this.executeDeterministic(claimed.action);
-      this.options.store.completeAction(stored.id, resultRef);
-      this.emit("travel.action.changed", { tripId, actionId: stored.id });
-      return this.options.store.requireTrip(tripId).contentGeneration;
-    } catch (error) {
-      this.options.store.failAction(stored.id, aiErrorMessageV3(error));
-      throw error;
-    }
-  }
-  async previewGoogleMapsLink(tripId: string, placeId: string, input: unknown) {
-    const parsed = GoogleMapsLinkPreviewInputSchema.parse(input);
-    const trip = this.options.store.requireTrip(tripId);
-    if (trip.contentGeneration !== parsed.expectedGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
-    if (!trip.plan.places.some((place) => place.id === placeId)) throw new Error("找不到目标 Place。");
-    return this.googleMapsLinks().preview(parsed.url);
-  }
-  async applyGoogleMapsLink(tripId: string, placeId: string, input: unknown) {
-    const parsed = GoogleMapsLinkCommitInputSchema.parse(input);
-    const trip = this.options.store.requireTrip(tripId);
-    if (trip.contentGeneration !== parsed.expectedGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
-    const currentPlace = trip.plan.places.find((place) => place.id === placeId);
-    if (!currentPlace) throw new Error("找不到目标 Place。");
-    const preview = await this.googleMapsLinks().preview(parsed.url);
-    const command = PlanCommandSchema.parse({ type: "update_place", placeId, changes: { ...parsed.changes, nameZh: currentPlace.nameZh } });
-    const applied = applyPlanCommands(trip.plan, [command]);
-    const plan = markImpact(trip.plan, applied.plan);
-    const place = plan.places.find((item) => item.id === placeId) as Place | undefined;
-    if (!place) throw new Error("找不到更新后的 Place。");
-    const resolution: PlaceResolution = {
-      tripId, placeId, geoFingerprint: placeGeoFingerprint(place), status: "resolved", method: "google_maps_link",
-      provider: null, providerPlaceId: null, latitude: preview.latitude, longitude: preview.longitude,
-      address: preview.address, confidence: null, resolvedAt: now(), errorMessage: null,
-    };
-    const written = this.options.store.writePlanAndPlaceResolution(tripId, plan, resolution, parsed.expectedGeneration, { source: "google_maps_link", summary: "通过 Google Maps 链接更新地点和坐标" });
-    this.emit("travel.document.changed", { tripId, generation: written.generation, changedDayIds: applied.effects.changedDayIds });
-    this.emit("travel.resolution.changed", { tripId, placeId });
-    return { trip: written.trip, resolution: written.resolution, generation: written.generation, version: written.version };
-  }
   recalculateRoute(tripId: string, dayId: string, expectedGeneration: number) {
     return this.routeCoordinator.recalculateRoute(tripId, dayId, expectedGeneration);
   }
