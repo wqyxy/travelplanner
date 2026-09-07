@@ -1,5 +1,8 @@
 import { TravelPlanDocumentSchema, type TravelPlanDocument } from "./contracts-v2.js";
-import { inspectDerivedDayWriteV3 } from "./derived-day-integrity-v3.js";
+import {
+  hasIndependentDerivedRouteWriteV3,
+  inspectDerivedDayWriteV3,
+} from "./derived-day-integrity-v3.js";
 import {
   rebuildFinalRouteDaysV3,
   syncFinalRouteForLegacyWriteV3,
@@ -13,8 +16,10 @@ const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.st
  *
  * Canonical rules:
  * - finalRoute changes are authoritative and Days are re-derived forward;
- * - Day-only metadata that round-trips through the unchanged finalRoute is kept;
- * - independent Day route structure is rejected once a canonical finalRoute exists;
+ * - Day-only metadata is allowed;
+ * - a stale Day view caused by other canonical data changes is replaced by the
+ *   newly derived Day view rather than rejected;
+ * - independent Day route/node writes are rejected once finalRoute exists;
  * - legacy Day-only plans keep the temporary reverse bridge until old fixtures/
  *   bootstrap callers are retired.
  */
@@ -31,7 +36,7 @@ export function canonicalizePlanWriteV3(
 
   if (before.finalRoute.nodes.length || incoming.finalRoute.nodes.length) {
     const inspection = inspectDerivedDayWriteV3(incoming);
-    if (!inspection.matchesCanonicalDays) {
+    if (!inspection.matchesCanonicalDays && hasIndependentDerivedRouteWriteV3(before, incoming)) {
       throw new Error("DERIVED_DAY_ROUTE_WRITE_REJECTED");
     }
     return inspection.plan;
