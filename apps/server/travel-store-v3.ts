@@ -23,7 +23,8 @@ import {
 import { actionRegistration } from "./ai-registries-v3.js";
 import { parseActionParametersV3 } from "./ai-action-input-contracts-v3.js";
 import { normalizeRequirementsCtaParametersV3 } from "./requirements-duration-v3.js";
-import { materializeLegacyFinalRouteV3, syncFinalRouteForLegacyWriteV3 } from "./final-route-v3.js";
+import { canonicalizePlanWriteV3 } from "./canonical-plan-write-v3.js";
+import { materializeLegacyFinalRouteV3 } from "./final-route-v3.js";
 
 type SqliteModule = typeof import("node:sqlite");
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as SqliteModule;
@@ -393,7 +394,7 @@ export class TravelStoreV3 {
     if (!row) throw new Error("找不到这趟旅行。");
     if (Number(row.content_generation) !== expectedGeneration) throw new Error("CONTENT_GENERATION_SUPERSEDED");
     const before = parseTravelPlanJson(row.current_plan_json);
-    const nextPlan = syncFinalRouteForLegacyWriteV3(before, plan);
+    const nextPlan = canonicalizePlanWriteV3(before, plan);
     const generation = expectedGeneration + 1;
     const updatedAt = now();
     this.db.prepare("UPDATE trips SET current_plan_json=?,title=?,content_generation=?,updated_at=? WHERE id=?").run(stringify(nextPlan), nextPlan.trip.title, generation, updatedAt, id);
