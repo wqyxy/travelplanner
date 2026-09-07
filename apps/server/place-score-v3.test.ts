@@ -15,14 +15,14 @@ describe("computePlaceScore", () => {
       uniqueness: 95,
       scenery: 100,
       culture: 20,
-    })).toBe(91);
+    })).toBe(99);
   });
 
-  it("sorts dimensions by strength and rounds upward", () => {
+  it("uses only the top two dimensions and rounds upward", () => {
     expect(computePlaceScore({
       uniqueness: 63,
       scenery: 81,
       culture: 42,
-    })).toBe(74);
+    })).toBe(76);
   });
 });
