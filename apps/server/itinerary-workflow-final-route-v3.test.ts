@@ -147,4 +147,71 @@ describe("initial skeleton canonical finalRoute", () => {
     expect(inspectDerivedDayWriteV3(replanned).matchesCanonicalDays).toBe(true);
     expect(replanned.finalRoute.nodes).not.toEqual(current.finalRoute.nodes);
   });
+
+  it("keeps a reused detailed Stop when its Stay Block moves and marks the Day for review", () => {
+    const initial = applySkeletonPlanV3(trip(), {
+      stays: [
+        { planningAreaCandidateId: "area-a", stayDays: 2, transferModeFromPrevious: "drive" },
+        { planningAreaCandidateId: "area-b", stayDays: 1, transferModeFromPrevious: "drive" },
+      ],
+      omittedPlanningAreas: [],
+    }).plan;
+
+    const detailed = structuredClone(initial);
+    detailed.places.push(place("poi"));
+    const firstDayId = detailed.days[0].id;
+    const firstBoundaryIndex = detailed.finalRoute.nodes.findIndex((node) => node.id === firstDayId);
+    detailed.finalRoute.nodes.splice(firstBoundaryIndex, 0, {
+      id: "detail-stop",
+      placeId: "poi",
+      status: "normal",
+      endsDay: false,
+      transportFromPrevious: {
+        mode: "drive",
+        durationMinutes: 37,
+        note: "existing route fact",
+        verification: { status: "estimated", checkedAt: "2026-09-07T00:00:00Z" },
+      },
+      activity: "保留的详细活动",
+      period: "morning",
+      scheduleText: "09:00 出发",
+      startTime: "09:00",
+      endTime: "10:00",
+      durationMinutes: 60,
+      scheduleVerification: { status: "estimated", checkedAt: "2026-09-07T00:00:00Z" },
+      costNote: null,
+      costVerification: null,
+      notes: "用户已经编辑过",
+    });
+    const current = rebuildFinalRouteDaysV3(detailed);
+    expect(current.days[0].detailLevel).toBe("detailed");
+
+    const replanned = applySkeletonPlanV3(trip(current), {
+      stays: [
+        { planningAreaCandidateId: "area-b", stayDays: 1, transferModeFromPrevious: "drive" },
+        { planningAreaCandidateId: "area-a", stayDays: 2, transferModeFromPrevious: "drive" },
+      ],
+      omittedPlanningAreas: [],
+    }).plan;
+
+    const stopNode = replanned.finalRoute.nodes.find((node) => node.id === "detail-stop");
+    expect(stopNode).toMatchObject({
+      placeId: "poi",
+      status: "normal",
+      activity: "保留的详细活动",
+      scheduleText: "09:00 出发",
+      durationMinutes: 60,
+      notes: "用户已经编辑过",
+    });
+    expect(stopNode?.transportFromPrevious).toEqual({
+      mode: "drive",
+      durationMinutes: 37,
+      note: "existing route fact",
+      verification: { status: "estimated", checkedAt: "2026-09-07T00:00:00Z" },
+    });
+    const movedDay = replanned.days.find((day) => day.stops.some((stop) => stop.id === "detail-stop"));
+    expect(movedDay?.detailLevel).toBe("detailed");
+    expect(movedDay?.detailStatus).toBe("needs_review");
+    expect(inspectDerivedDayWriteV3(replanned).matchesCanonicalDays).toBe(true);
+  });
 });
