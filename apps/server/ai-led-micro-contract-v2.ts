@@ -36,7 +36,7 @@ const item = z.object({
   planningAreaCandidateId: IdSchema.nullable(),
   aiReason: TextSchema.max(1000),
   aiScore: z.number().int().min(0).max(100),
-  scoreBreakdown: PlaceScoreBreakdownSchema,
+  scoreBreakdown: PlaceScoreBreakdownSchema.optional(),
   suggestedDurationMinutes: z.number().int().min(0).nullable(),
   tags: z.array(TextSchema.max(120)).max(30),
   defaultPreference: z.literal("optional"),
