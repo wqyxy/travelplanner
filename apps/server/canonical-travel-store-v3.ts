@@ -2,6 +2,8 @@ import { TravelPlanDocumentSchema } from "./contracts-v2.js";
 import { canonicalizePlanWriteV3 } from "./canonical-plan-write-v3.js";
 import { TravelStoreV3 } from "./travel-store-v3.js";
 
+const INSTALL_FLAG = "__travelPlannerCanonicalStoreWriteBoundaryV3";
+
 function canonicalPlanForTrip(store: TravelStoreV3, tripId: string, planValue: unknown) {
   const before = store.requireTrip(tripId).plan;
   return canonicalizePlanWriteV3(before, TravelPlanDocumentSchema.parse(planValue));
@@ -39,8 +41,6 @@ export class CanonicalTravelStoreV3 extends TravelStoreV3 {
   }
 }
 
-const installedPrototypes = new WeakSet<object>();
-
 /**
  * Transitional runtime installer used by index-cutover-v3.ts.
  *
@@ -52,7 +52,8 @@ const installedPrototypes = new WeakSet<object>();
  */
 export function installCanonicalTravelStoreWriteBoundaryV3() {
   const prototype = TravelStoreV3.prototype;
-  if (installedPrototypes.has(prototype)) return;
+  const prototypeRecord = prototype as unknown as Record<string, unknown>;
+  if (prototypeRecord[INSTALL_FLAG] === true) return;
 
   const originalWritePlan = prototype.writePlan;
   const originalWritePlanAndPlaceResolution = prototype.writePlanAndPlaceResolution;
@@ -86,5 +87,10 @@ export function installCanonicalTravelStoreWriteBoundaryV3() {
     );
   };
 
-  installedPrototypes.add(prototype);
+  Object.defineProperty(prototype, INSTALL_FLAG, {
+    value: true,
+    configurable: false,
+    enumerable: false,
+    writable: false,
+  });
 }
