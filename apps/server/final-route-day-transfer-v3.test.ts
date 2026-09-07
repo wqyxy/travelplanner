@@ -81,6 +81,28 @@ describe("legacy Day transferMode -> canonical finalRoute", () => {
     expect(result!.days[0].transferMode).toBe("drive");
   });
 
+  it("preserves unrelated canonical changes from the same incoming write", () => {
+    const before = plan();
+    const incoming = structuredClone(before);
+    incoming.days[0].transferMode = "walk";
+    incoming.candidates.push({
+      id: "candidate-a",
+      placeId: "a",
+      planningAreaCandidateId: null,
+      preference: "optional",
+      source: "user",
+      aiReason: null,
+      aiScore: null,
+      suggestedDurationMinutes: null,
+      tags: [],
+    });
+
+    const result = tryApplyLegacyDayTransferModesV3(before, incoming);
+    expect(result).not.toBeNull();
+    expect(result!.candidates.some((item) => item.id === "candidate-a")).toBe(true);
+    expect(result!.days[0].stops[0].candidateId).toBe("candidate-a");
+  });
+
   it("returns null when another route structural field changes in the same Day edit", () => {
     const before = plan();
     const incoming = structuredClone(before);
