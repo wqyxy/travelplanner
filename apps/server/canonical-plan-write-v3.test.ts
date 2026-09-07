@@ -86,7 +86,7 @@ describe("canonical V3 plan write boundary", () => {
     expect(result.days[0].detailStatus).toBe("needs_review");
   });
 
-  it("preserves explicit Day title and date metadata", () => {
+  it("preserves explicit Day title and date metadata at this boundary", () => {
     const before = canonicalPlan();
     const incoming = structuredClone(before);
     incoming.days[0].title = "用户自定义标题";
@@ -125,7 +125,7 @@ describe("canonical V3 plan write boundary", () => {
     expect(result.days[0].stops[0].candidateId).toBe("candidate-x");
   });
 
-  it("translates remaining independent Day route writes into canonical finalRoute", () => {
+  it("canonicalizes a non-null legacy Day anchor into finalRoute", () => {
     const before = canonicalPlan();
     const incoming = structuredClone(before);
     incoming.days[0].endAnchor.placeId = "other";
@@ -135,7 +135,7 @@ describe("canonical V3 plan write boundary", () => {
     expect(result.days[0].endAnchor.placeId).toBe("other");
   });
 
-  it("translates legacy Day reorder while keeping stable Day IDs", () => {
+  it("canonicalizes legacy Day reorder while keeping stable Day IDs", () => {
     const before = twoDayPlan();
     const incoming = structuredClone(before);
     incoming.days = [incoming.days[1], incoming.days[0]];
@@ -145,6 +145,31 @@ describe("canonical V3 plan write boundary", () => {
     expect(result.days.map((day) => day.id)).toEqual(["day-2", "day-1"]);
     const activeIds = result.finalRoute.nodes.filter((item) => item.status === "normal").map((item) => item.id);
     expect(activeIds.indexOf("day-2")).toBeLessThan(activeIds.indexOf("day-1"));
+  });
+
+  it("keeps null anchor edits on the known legacy compatibility path", () => {
+    const before = canonicalPlan();
+    const incoming = structuredClone(before);
+    incoming.days[0].endAnchor.placeId = null;
+
+    const result = canonicalizePlanWriteV3(before, incoming);
+    expect(result.days[0].endAnchor.placeId).toBeNull();
+  });
+
+  it("rejects direct Stop structure writes when finalRoute is already canonical", () => {
+    const before = canonicalPlan();
+    const incoming = structuredClone(before);
+    incoming.days[0].stops[0].activity = "绕过 canonical node 的修改";
+
+    expect(() => canonicalizePlanWriteV3(before, incoming)).toThrow("DERIVED_DAY_ROUTE_WRITE_UNSUPPORTED");
+  });
+
+  it("rejects direct Day identity-set changes when finalRoute is already canonical", () => {
+    const before = twoDayPlan();
+    const incoming = structuredClone(before);
+    incoming.days.pop();
+
+    expect(() => canonicalizePlanWriteV3(before, incoming)).toThrow("DERIVED_DAY_ROUTE_WRITE_UNSUPPORTED");
   });
 
   it("temporarily keeps legacy Day-only plans on the reverse bridge", () => {
