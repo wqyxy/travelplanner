@@ -56,6 +56,30 @@ const placeKindLabels: Record<PlaceKind, string> = {
   waypoint: "途经点",
 };
 
+const SCORE_TAG_PREFIX = "__place_score:";
+const scoreLabels = {
+  uniqueness: "独特性",
+  scenery: "风景",
+  culture: "人文",
+  experience: "体验",
+  representativeness: "代表性",
+} as const;
+
+type ScoreKey = keyof typeof scoreLabels;
+
+function placeScoreTooltip(tags: string[]) {
+  const scores = new Map<string, number>();
+  for (const tag of tags) {
+    if (!tag.startsWith(SCORE_TAG_PREFIX)) continue;
+    const [key, raw] = tag.slice(SCORE_TAG_PREFIX.length).split("=");
+    const value = Number(raw);
+    if (key && Number.isFinite(value)) scores.set(key, value);
+  }
+  const keys = Object.keys(scoreLabels) as ScoreKey[];
+  if (!keys.every((key) => scores.has(key))) return null;
+  return keys.map((key) => `${scoreLabels[key]}：${scores.get(key)}`).join("\n");
+}
+
 function defaultKindForRole(role: PlanningRole): PlaceKind {
   return role === "planning_area" ? "city" : "attraction";
 }
@@ -208,9 +232,11 @@ export function CandidateWorkflowPanelV3({
     const roleLabel = role === "planning_area" ? "停留地点" : role === "core_visit" ? "重要游览地" : "普通景点";
     const parent = row.candidate.planningAreaCandidateId ? planningAreas.find((area) => area.candidate.id === row.candidate.planningAreaCandidateId) : null;
     const selected = selectedCandidateId === row.candidate.id;
+    const scoreTooltip = role === "planning_area" ? null : placeScoreTooltip(row.candidate.tags);
+    const scoreLabel = role !== "planning_area" && row.candidate.aiScore !== null ? `${Math.round(row.candidate.aiScore)}分` : null;
     return <article className={`phase6-candidate-card ${selected ? "selected" : ""}`} key={row.candidate.id} onClick={() => selected ? onFocusCandidate(row.candidate.id) : onSelectCandidate(row.candidate.id)}>
       <div className="phase6-candidate-copy">
-        <div className="phase6-candidate-title"><strong>{nameText.primary}</strong><span>{roleLabel}</span>{row.candidate.preference === "must_go" ? <em>★ 必去</em> : row.candidate.preference === "want_to_go" ? <em>♡ 想去</em> : row.candidate.preference === "excluded" ? <em>不考虑</em> : null}</div>
+        <div className="phase6-candidate-title"><strong>{nameText.primary}</strong>{scoreLabel && <span className="phase6-place-score" title={scoreTooltip ?? "综合评分"} aria-label={`${scoreLabel}${scoreTooltip ? `；${scoreTooltip.replaceAll("\n", "；")}` : ""}`}>{scoreLabel}</span>}<span>{roleLabel}</span>{row.candidate.preference === "must_go" ? <em>★ 必去</em> : row.candidate.preference === "want_to_go" ? <em>♡ 想去</em> : row.candidate.preference === "excluded" ? <em>不考虑</em> : null}</div>
         {nameText.secondary && <small>{nameText.secondary}</small>}
         <p>{row.candidate.aiReason || (role === "planning_area" ? "用于安排住宿和路线顺序" : role === "core_visit" ? "会明显占用半天或全天，需要提前留时间" : "可按当天容量安排")}</p>
         <div className="phase6-candidate-meta"><span>{placeKindLabels[row.place.kind]}</span>{parent ? <span>属于 {parent.place.nameZh}</span> : role !== "planning_area" ? <span>尚未归入路线区域</span> : null}{formatDuration(row.candidate.suggestedDurationMinutes) && <span>建议 {formatDuration(row.candidate.suggestedDurationMinutes)}</span>}<span className={status === "resolved" ? "ready" : "muted"}>{status === "resolved" ? "已定位" : "尚未定位 · 仍可继续规划"}</span></div>
