@@ -77,8 +77,8 @@ import { PlannerResolutionCoordinatorV3 } from "./planner-resolution-coordinator
 import { currentPlaceResolutions, currentResolvedPlaces } from "./planner-resolution-state-v3.js";
 import { PlannerRouteCoordinatorV3 } from "./planner-route-coordinator-v3.js";
 import { effectivePlanningRole } from "./planning-roles-v3.js";
-import type { PlaceResolverV2 } from "./place-resolver-v2.js";
 import { placeGeoFingerprint } from "./place-resolver-v2.js";
+import type { PlannerPlaceResolverCapabilityV3 } from "./provider-resolver-capability-v3.js";
 import { GoogleMapsLinkService } from "./google-maps-link.js";
 import { assertProposalCommandsWithinScope } from "./proposal-scope-policy-v2.js";
 import type { LoadedPromptRegistryV3 } from "./prompt-registry-v3.js";
@@ -154,7 +154,7 @@ export class TravelPlannerRuntimeV3 {
     ai: StagedTravelAiV3;
     prompts: LoadedPromptRegistryV3;
     tasks: AiTaskMonitorV3;
-    resolver: PlaceResolverV2;
+    resolver: PlannerPlaceResolverCapabilityV3;
     routes: DayRouteServiceV2;
     googleMapsLinks?: GoogleMapsLinkService;
     emit: (event: RuntimeEventV3) => void;
@@ -982,8 +982,8 @@ export class TravelPlannerRuntimeV3 {
     return this.resolutionCoordinator.retryResolutions(tripId, placeIds, expectedGeneration, force);
   }
   searchResolutionCandidates(tripId: string, placeId: string, expectedGeneration: number) { return this.options.resolver.searchCandidates(tripId, placeId, expectedGeneration); }
-  selectResolution(tripId: string, placeId: string, input: unknown) { return (this.options.resolver as any).selectCandidate(tripId, placeId, input); }
-  setDirectResolution(tripId: string, placeId: string, input: unknown) { return (this.options.resolver as any).setDirect(tripId, placeId, input); }
+  selectResolution(tripId: string, placeId: string, input: unknown) { return this.options.resolver.selectCandidate(tripId, placeId, input); }
+  setDirectResolution(tripId: string, placeId: string, input: unknown) { return this.options.resolver.setDirect(tripId, placeId, input); }
   private googleMapsLinks() {
     if (!this.options.googleMapsLinks) throw new Error("Google Maps 链接解析服务未配置。");
     return this.options.googleMapsLinks;
