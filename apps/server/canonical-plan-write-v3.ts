@@ -44,23 +44,24 @@ function canUseKnownLegacyDayFallback(before: TravelPlanDocument, incoming: Trav
 }
 
 /**
- * Normalize an incoming V3 plan before it reaches TravelStoreV3.
+ * Normalize an incoming V3 plan at the TravelStoreV3 persistence boundary.
  *
- * Transitional canonical rules:
+ * Canonical rules:
  * - finalRoute changes are authoritative and Days are re-derived forward;
  * - stale Day views caused by other canonical data changes are overwritten by
  *   the newly derived Day view;
- * - a legacy Day-only transferMode edit is mapped directly to the first
- *   canonical route node of that Day segment;
- * - non-null legacy Day start/end Place edits are mapped directly to trip origin
- *   or canonical Day boundary nodes when the mapping is unambiguous;
+ * - a legacy Day-only transferMode edit maps directly to the first canonical
+ *   route node of that Day segment;
+ * - nullable Day start/end Place edits map directly to trip origin or canonical
+ *   boundary nodes using the same fallback Place semantics as the legacy bridge;
  * - a pure legacy Day reorder moves whole canonical route segments directly;
- * - only known registered legacy Day shapes (order/dayNumber, transferMode,
- *   anchor Place, including mixed/null cases) may use the compatibility
- *   translator; Stop/node/endTransport/Day-ID writes are rejected;
- * - Day-only metadata remains allowed; explicit title/date edits are restored
- *   after route derivation where the downstream persistence path preserves them;
- * - legacy Day-only fixtures/bootstrap callers keep the same compatibility path.
+ * - only known registered mixed legacy Day shapes (order/dayNumber,
+ *   transferMode, anchor Place) may still use the compatibility translator;
+ *   Stop/node/endTransport/Day-ID writes are rejected;
+ * - Day-only metadata remains allowed; explicit title/date edits are persisted
+ *   as metadata without becoming a second route model;
+ * - Day-only legacy/bootstrap callers keep the compatibility path until those
+ *   fixtures/callers are retired.
  */
 export function canonicalizePlanWriteV3(
   beforeValue: TravelPlanDocument,
