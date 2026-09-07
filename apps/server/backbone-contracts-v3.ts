@@ -24,7 +24,7 @@ export const BackboneCandidateDraftSchema = z.object({
   parentCandidateRef: ParentCandidateRefSchema.nullable(),
   aiReason: TextSchema.max(1000),
   aiScore: z.number().int().min(0).max(100),
-  scoreBreakdown: PlaceScoreBreakdownSchema.nullable(),
+  scoreBreakdown: PlaceScoreBreakdownSchema.nullable().optional(),
   suggestedDurationMinutes: z.number().int().min(0).nullable(),
   tags: z.array(TextSchema.max(120)).max(30),
   defaultPreference: z.literal("optional"),
@@ -47,11 +47,8 @@ export function validateBackboneDraftBatch(
   const candidatesById = new Map<string, BackboneCandidateDraft>();
   const referencedPlaceIds = new Set<string>();
   for (const [index, candidate] of value.candidates.entries()) {
-    if (candidate.planningRole === "planning_area" && candidate.scoreBreakdown !== null) {
-      context.addIssue({ code: "custom", path: ["candidates", index, "scoreBreakdown"], message: "Planning Area 不参与景点评分，scoreBreakdown 必须为 null。" });
-    }
-    if (candidate.planningRole === "core_visit" && candidate.scoreBreakdown === null) {
-      context.addIssue({ code: "custom", path: ["candidates", index, "scoreBreakdown"], message: "Core Visit 必须提供五维景点评分。" });
+    if (candidate.planningRole === "planning_area" && candidate.scoreBreakdown) {
+      context.addIssue({ code: "custom", path: ["candidates", index, "scoreBreakdown"], message: "Planning Area 不参与景点评分。" });
     }
     if (candidatesById.has(candidate.temporaryId)) {
       context.addIssue({ code: "custom", path: ["candidates", index, "temporaryId"], message: "临时 Candidate ID 不能重复。" });
