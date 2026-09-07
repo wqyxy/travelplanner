@@ -56,7 +56,10 @@ Provider 搜索、消歧、geometry、distance、duration 的事实来源未改�
 
 1. Stop PlanCommand
    - `add/update/move/remove_day_stop` 主要路径已通过 `final-route-day-stop-bridge-v3.ts` 修改 canonical route。
-   - 无法无损表达的少数旧语义仍保留 fallback。
+   - `candidateId` 已正式视为由 canonical node `placeId` + Candidate set 派生，不再保存“同一个 Place 但强制 candidateId=null”的第二份关系状态。
+   - place-only Stop 更新直接改 canonical node Place；Candidate 自动重新派生。
+   - add Stop 即使未给 candidateId，也可按 canonical Place 插入；Day 派生时自动关联已有 Candidate。
+   - 仍可能 fallback 的仅是无法映射到普通 active non-boundary route node 的旧形态，不再包括 candidate detach/place-only 语义。
    - `markDayForReview()` 语义保留。
 
 2. Detailed itinerary initial generation
@@ -96,7 +99,7 @@ Provider 搜索、消歧、geometry、distance、duration 的事实来源未改�
 - Proposal apply/undo 事务
 - cleanup/reconcilePendingState
 
-安装器使用 prototype 不可枚举标记做幂等，避免 watch/重复加载时多次包裹。
+安装器使用 prototype 不可枚举标记做幂等，避免 watch/重复加载时多次包裹；同时在 stale generation / 非 pending Proposal 情况下直接交还原 Store，避免改变原 CAS/状态错误顺序。
 
 ### 过渡 boundary 当前策略
 
@@ -148,11 +151,13 @@ Provider 搜索、消歧、geometry、distance、duration 的事实来源未改�
 
 - canonical node detail；
 - Stop add/update/move/remove canonical bridge；
+- Stop candidate relation 派生与 place-only canonical update；
 - initial detailed itinerary canonical write；
 - initial skeleton canonical route；
 - skeleton replan canonicalization；
 - derived Day structural-vs-stale classification；
 - canonical plan boundary；
+- legacy Day anchor/reorder translation；
 - 安装后的真实 `TravelStoreV3.writePlan` boundary；
 - boundary 重复安装幂等；
 - generation CAS 仍由原 Store 拒绝 stale write。
@@ -177,8 +182,9 @@ GitHub 当前没有自动 CI/status/workflow run。
 
 ## 下一步
 
-1. 继续迁 `itinerary.day.reorder / itinerary.anchor.set / update_day`，让它们直接修改 finalRoute 或明确 Day metadata，而不是依赖过渡 translation。
-2. 清掉 Stop fallback 后，把 `canonicalizePlanWriteV3` 的“legacy structural translate”切成 hard reject。
-3. 条件成熟后再把 Store 内 `syncFinalRouteForLegacyWriteV3` generic reverse bridge 删除/收窄。
-4. 再回 P0-1 继续 Runtime 未接线模块；仍避免 100KB 大爆炸替换。
-5. P0 完成后整理正式文档并删除临时 worklog。
+1. 优先迁 `update_day.transferMode`：它与 finalRoute segment 首节点 transport 有明确无损映射。
+2. 再处理 `itinerary.day.reorder / itinerary.anchor.set`，继续以旧 conversion 为等价基准，不发明新路线规则。
+3. 明确 Day `title/date` 最终产品语义；在此之前不能静默丢弃用户修改。
+4. 所有 structural Day 写入口清掉后，把 `canonicalizePlanWriteV3` 的 legacy translate 切成 hard reject。
+5. 条件成熟后删除/收窄 Store 内 generic reverse bridge。
+6. 再回 P0-1 继续 Runtime 未接线模块；仍避免 100KB 大爆炸替换。
