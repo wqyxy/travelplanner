@@ -5,9 +5,16 @@ import {
   type Day,
   type DayStop,
   type PlanCommand,
+  type TravelPlanDocument,
 } from "./contracts-v2.js";
 import type { DetailedDayUpdate } from "./ai-action-contracts-v3.js";
 import type { TripDetailV3 } from "./travel-store-v3.js";
+import {
+  addDerivedStopViaFinalRouteV3,
+  moveDerivedStopViaFinalRouteV3,
+  removeDerivedStopViaFinalRouteV3,
+  updateDerivedStopViaFinalRouteV3,
+} from "./final-route-day-stop-bridge-v3.js";
 
 export type DetailedUnscheduledCandidateV3 = { candidateId: string; reason: string };
 
@@ -52,6 +59,74 @@ function stopForDraft(trip: TripDetailV3, day: Day, draft: DetailedDayUpdate["st
   };
 }
 
+function syncDetailedDaysToFinalRouteV3(
+  planValue: TravelPlanDocument,
+  desiredDays: Day[],
+  targetDayIds: Set<string>,
+) {
+  let working = structuredClone(planValue);
+  const desiredByDay = new Map(desiredDays.filter((day) => targetDayIds.has(day.id)).map((day) => [day.id, day]));
+
+  for (const originalDay of planValue.days) {
+    if (!targetDayIds.has(originalDay.id)) continue;
+    const desiredDay = desiredByDay.get(originalDay.id);
+    if (!desiredDay) throw new Error(`详细行程缺少目标 Day：${originalDay.id}`);
+
+    for (let index = 0; index < desiredDay.stops.length; index += 1) {
+      const desired = desiredDay.stops[index];
+      let currentDay = working.days.find((day) => day.id === originalDay.id);
+      if (!currentDay) throw new Error(`详细行程引用未知 Day：${originalDay.id}`);
+      const currentIndex = currentDay.stops.findIndex((stop) => stop.id === desired.id);
+
+      if (currentIndex < 0) {
+        const added = addDerivedStopViaFinalRouteV3(working, originalDay.id, index, desired);
+        if (!added) throw new Error(`详细行程 Stop 无法映射到最终线路：${desired.id}`);
+        working = added.plan;
+      } else if (currentIndex !== index) {
+        const moved = moveDerivedStopViaFinalRouteV3(working, desired.id, originalDay.id, index);
+        if (!moved) throw new Error(`详细行程 Stop 无法在最终线路中移动：${desired.id}`);
+        working = moved.plan;
+      }
+
+      const updated = updateDerivedStopViaFinalRouteV3(working, desired.id, {
+        candidateId: desired.candidateId,
+        placeId: desired.placeId,
+        activity: desired.activity,
+        period: desired.period,
+        scheduleText: desired.scheduleText ?? null,
+        startTime: desired.startTime,
+        endTime: desired.endTime,
+        durationMinutes: desired.durationMinutes,
+        transportFromPrevious: structuredClone(desired.transportFromPrevious),
+        scheduleVerification: structuredClone(desired.scheduleVerification),
+        costNote: desired.costNote,
+        costVerification: structuredClone(desired.costVerification),
+        notes: desired.notes,
+      });
+      if (!updated) throw new Error(`详细行程 Stop 无法写入最终线路：${desired.id}`);
+      working = updated.plan;
+    }
+
+    const desiredIds = new Set(desiredDay.stops.map((stop) => stop.id));
+    const currentDay = working.days.find((day) => day.id === originalDay.id);
+    if (!currentDay) throw new Error(`详细行程引用未知 Day：${originalDay.id}`);
+    for (const stop of [...currentDay.stops].reverse()) {
+      if (desiredIds.has(stop.id)) continue;
+      const removed = removeDerivedStopViaFinalRouteV3(working, stop.id);
+      if (!removed) throw new Error(`详细行程 Stop 无法从最终线路移除：${stop.id}`);
+      working = removed.plan;
+    }
+  }
+
+  return TravelPlanDocumentSchema.parse({
+    ...working,
+    stage: "itinerary_refinement",
+    days: working.days.map((day) => targetDayIds.has(day.id)
+      ? { ...day, detailLevel: "detailed", detailStatus: "ready" }
+      : day),
+  });
+}
+
 export function applyDetailedUpdatesPhase5V3(trip: TripDetailV3, updates: DetailedDayUpdate[], requireAllDays: boolean) {
   const updateByDay = new Map(updates.map((update) => [update.dayId, update]));
   if (updateByDay.size !== updates.length) throw new Error("详细行程重复返回了同一个 Day。");
@@ -66,7 +141,8 @@ export function applyDetailedUpdatesPhase5V3(trip: TripDetailV3, updates: Detail
     const stops = update.stops.map((draft) => stopForDraft(trip, day, draft, existingByCandidate.get(draft.candidateId)));
     return { ...structuredClone(day), detailLevel: "detailed", detailStatus: "ready", stops };
   });
-  return TravelPlanDocumentSchema.parse({ ...trip.plan, stage: "itinerary_refinement", days });
+  const desired = TravelPlanDocumentSchema.parse({ ...trip.plan, stage: "itinerary_refinement", days });
+  return syncDetailedDaysToFinalRouteV3(trip.plan, desired.days, new Set(updateByDay.keys()));
 }
 
 /**
