@@ -407,6 +407,14 @@ export class PlaceResolverV2 {
     return values;
   }
 
+  async selectCandidate(tripId: string, placeId: string, input: unknown) {
+    return this.selectProviderCandidate(tripId, placeId, input);
+  }
+
+  async setDirect(tripId: string, placeId: string, input: unknown) {
+    return this.setDirectCoordinates(tripId, placeId, input);
+  }
+
   async selectProviderCandidate(tripId: string, placeId: string, input: unknown) {
     const parsed = ProviderResolutionSelectionInputSchema.parse(input);
     const place = this.place(tripId, placeId, parsed.expectedGeneration);
