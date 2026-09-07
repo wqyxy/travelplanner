@@ -65,8 +65,6 @@ function scoreTags(scores: PlaceScoreBreakdown | null | undefined) {
     `${SCORE_TAG_PREFIX}uniqueness=${scores.uniqueness}`,
     `${SCORE_TAG_PREFIX}scenery=${scores.scenery}`,
     `${SCORE_TAG_PREFIX}culture=${scores.culture}`,
-    `${SCORE_TAG_PREFIX}experience=${scores.experience}`,
-    `${SCORE_TAG_PREFIX}representativeness=${scores.representativeness}`,
   ];
 }
 
