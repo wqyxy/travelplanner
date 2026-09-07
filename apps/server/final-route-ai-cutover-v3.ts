@@ -4,7 +4,7 @@ import type {
   ItineraryRepairOutput,
 } from "./ai-action-contracts-v3.js";
 import type { AiActionRecord } from "./ai-stage-contracts-v3.js";
-import { type ProposalScope } from "./contracts-v2.js";
+import { TravelPlanDocumentSchema, type ProposalScope } from "./contracts-v2.js";
 import {
   finalRouteMoveCommandsForOrderedSubsetV3,
   finalRouteTargetNodeIdsForOptimizationV3,
