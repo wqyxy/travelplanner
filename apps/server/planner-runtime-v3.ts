@@ -68,9 +68,10 @@ import {
 } from "./planning-context-v3.js";
 import { actionScope, dayMutationScope } from "./planner-action-scope-v3.js";
 import { proposalDiff } from "./planner-proposal-v3.js";
+import { currentPlaceResolutions, currentResolvedPlaces } from "./planner-resolution-state-v3.js";
 import { effectivePlanningRole } from "./planning-roles-v3.js";
 import type { PlaceResolutionBatchProgress, PlaceResolverV2 } from "./place-resolver-v2.js";
-import { placeGeoFingerprint, resolutionIsCurrent } from "./place-resolver-v2.js";
+import { placeGeoFingerprint } from "./place-resolver-v2.js";
 import { GoogleMapsLinkService } from "./google-maps-link.js";
 import { assertProposalCommandsWithinScope } from "./proposal-scope-policy-v2.js";
 import type { LoadedPromptRegistryV3 } from "./prompt-registry-v3.js";
@@ -151,18 +152,6 @@ function interestCompletionSummary(resultRef: string | null | undefined) {
   if (successful === total && added === 0) return `兴趣点研究完成 · ${successful}/${total} · 本轮没有发现值得新增的兴趣点`;
   const failure = failed > 0 ? `，${failed} 个区域失败` : "";
   return `兴趣点研究完成 · ${successful}/${total}${failure} · 新增 ${added} · 已定位 ${resolved}/${resolved + pending}`;
-}
-
-function currentPlaceResolutions(trip: TripDetailV3, resolutions: PlaceResolution[]) {
-  const places = new Map(trip.plan.places.map((place) => [place.id, place]));
-  return resolutions.filter((resolution) => {
-    const place = places.get(resolution.placeId);
-    return Boolean(place && resolutionIsCurrent(place, resolution));
-  });
-}
-
-function currentResolvedPlaces(trip: TripDetailV3, resolutions: PlaceResolution[]) {
-  return currentPlaceResolutions(trip, resolutions).filter((resolution) => resolution.status === "resolved");
 }
 
 function validateItineraryReferences(trip: TripDetailV3, sourceDays: Day[], _resolutions: PlaceResolution[]) {
