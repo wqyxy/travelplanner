@@ -32,12 +32,14 @@ const placeKindLabels: Record<PlaceKind, string> = {
 const transportOptions: TransportMode[] = ["walk", "drive", "bike", "transit", "rail", "flight", "ferry"];
 const ADD_AT_START = "__route_start__";
 const ADD_AT_END = "__route_end__";
+const AUTO_SORT_REQUEST = "在不增删地点、不改变日程块和住宿边界的前提下，综合旅行合理性优化地点归属和访问顺序，尽量减少明显绕路和往返，并让每天安排自然合理。";
 const finalRouteQuickStatusLabelsV5: Record<FinalRouteNodeStatus, string> = { normal: "必去", tentative: "待定", no_go: "不去" };
 const finalRouteQuickStatusMarksV5: Record<FinalRouteNodeStatus, string> = { normal: "★", tentative: "○", no_go: "×" };
 const ACTIVE_TASK_STATUSES_V5 = new Set(["starting", "running", "waiting", "reconnecting"]);
 
 type AddDraft = { nameZh: string; kind: PlaceKind };
 type DropTarget = { nodeId: string; position: FinalRouteDropPositionV4 };
+type AiSortTarget = { scope: "trip" } | { scope: "day"; dayId: string; dayNumber: number };
 
 function locationAttentionLabel(status: "resolving" | "resolved" | "unresolved" | "missing") {
   if (status === "resolved") return null;
@@ -68,7 +70,9 @@ function unavailableRouteMessage(connection: FinalRouteTransportConnectionV4, re
 }
 
 function proposalKindLabel(actionType: AiActionType) {
-  return actionType === "itinerary.refine" ? "详细安排" : "顺序优化";
+  if (actionType === "itinerary.refine") return "详细安排";
+  if (actionType === "itinerary.day.optimize" || actionType === "itinerary.repair") return "AI排序";
+  return "AI 方案";
 }
 
 function proposalStatusLabel(status: WorkspaceV3["proposals"][number]["status"]) {
@@ -187,6 +191,8 @@ export function FinalRoutePanelV3({
   const editingRow = rows.find((row) => row.node.id === editingNodeId) ?? null;
   const [aiBusy, setAiBusy] = useState(false);
   const [aiMessage, setAiMessage] = useState("");
+  const [aiSortTarget, setAiSortTarget] = useState<AiSortTarget | null>(null);
+  const [aiSortRequest, setAiSortRequest] = useState("");
   const [segmentFrom, setSegmentFrom] = useState<string>("");
   const [segmentTo, setSegmentTo] = useState<string>("");
 
@@ -255,6 +261,26 @@ export function FinalRoutePanelV3({
     }
   };
 
+  const openAiSort = (target: AiSortTarget) => {
+    setAiSortTarget(target);
+    setAiSortRequest("");
+    setAiMessage("");
+  };
+
+  const runAiSort = (custom: boolean) => {
+    if (!aiSortTarget) return;
+    const request = custom ? aiSortRequest.trim() : AUTO_SORT_REQUEST;
+    if (!request) return;
+    const target = aiSortTarget;
+    setAiSortTarget(null);
+    setAiSortRequest("");
+    if (target.scope === "day") {
+      void startAi("itinerary", "itinerary.day.optimize", { dayId: target.dayId, request }, [target.dayId], `AI 已开始排序第 ${target.dayNumber} 天；完成后由你决定是否采用。`);
+      return;
+    }
+    void startAi("itinerary", "itinerary.repair", { request }, [], "AI 已开始排序全程；地点可以在日程块之间重新安排，完成后由你决定是否采用。");
+  };
+
   const handleProposal = async (proposalId: string, action: ProposalAction) => {
     if (aiBusy || busy) return;
     setAiBusy(true);
@@ -290,7 +316,7 @@ export function FinalRoutePanelV3({
     return <>
       <button className="button small" type="button" title="只为当天新增推荐景点，不移动现有地点" disabled={busy || aiBusy || !dayAreaIds.length} onClick={() => void startAi("interests", "interest.discover", { request: `final-route-detail-scope:day:${day.id}` }, dayAreaIds, "AI 已开始补充这一天的详细地点。")}>为当天新增景点</button>
       <button className="button small" type="button" title="为当天已有地点补充活动、时间和备注，不调整地点顺序" disabled={busy || aiBusy || day.stops.length < 1} onClick={() => void startAi("itinerary", "itinerary.refine", { dayIds: [day.id], request: "完善这一天" }, [day.id], "AI 已开始补充这一天的时间和活动说明；完成后由你决定是否采用。")}>补全天内活动与时间</button>
-      <button className="button small" type="button" title="只分析当天已有地点的顺序，先给出可采用的建议" disabled={busy || aiBusy || day.stops.length < 2} onClick={() => void startAi("itinerary", "itinerary.day.optimize", { dayId: day.id, request: "优化这一天" }, [day.id], "AI 已开始分析这一天的顺序；完成后由你决定是否采用。")}>建议调整当天顺序</button>
+      <button className="button small" type="button" title="AI 排序这一天的地点" disabled={busy || aiBusy || day.stops.length < 2} onClick={() => openAiSort({ scope: "day", dayId: day.id, dayNumber })}><WandSparkles size={13}/>AI排序</button>
     </>;
   };
   const visibleAiActions = workspace.actions.filter((action) => action.actionType === "itinerary.day.optimize" || action.actionType === "itinerary.repair" || action.actionType === "itinerary.refine");
@@ -365,31 +391,40 @@ export function FinalRoutePanelV3({
             {!plan.trip.brief.destination.trim() && <small>先在“旅行需求”填写目的地。</small>}
           </div>
         </> : <details className="final-route-ai-menu-v5">
-          <summary><Sparkles size={15}/><strong>AI 操作</strong><span>新增地点、补全安排或提出顺序建议</span></summary>
+          <summary><Sparkles size={15}/><strong>AI 操作</strong><span>新增地点、补全安排或 AI 排序</span></summary>
           <div className="final-route-ai-menu-body-v5">
             <section>
-              <header><strong>全程</strong><small>普通生成只新增地点；只有“优化”可以提出重排。</small></header>
+              <header><strong>全程</strong><small>AI排序可重新安排地点顺序和日程归属，住宿/日终边界保持不变。</small></header>
               <div className="final-route-inline-actions-v3">
                 <button className="button small" type="button" title="在全程中新增推荐景点，不移动现有地点" disabled={busy || aiBusy || !wholeAreaIds.length} onClick={() => void startAi("interests", "interest.discover", { request: "final-route-detail-scope:trip" }, wholeAreaIds, "AI 已开始补充详细地点，只会新增地点，不会移动现有线路。")}>为全程新增景点</button>
-                <button className="button small" type="button" title="分析全程已有地点的顺序，先给出可采用的建议" disabled={busy || aiBusy || normalRows.length < 2} onClick={() => void startAi("itinerary", "itinerary.repair", { request: "优化全程" }, [], "AI 已开始分析全程顺序；完成后会给你一份可采用或拒绝的方案。")}>建议调整全程顺序</button>
+                <button className="button small" type="button" title="AI 排序全程地点，可跨日程块移动" disabled={busy || aiBusy || normalRows.length < 2} onClick={() => openAiSort({ scope: "trip" })}><WandSparkles size={13}/>AI排序</button>
               </div>
             </section>
 
             {normalRows.length >= 2 && <section>
-              <header><strong>按区段</strong><small>选择范围后，只处理这一段。</small></header>
+              <header><strong>按区段补充</strong><small>这里只负责新增地点；排序统一从“AI排序”进入。</small></header>
               <div className="final-route-ai-segment-v5">
                 <label><span>从</span><select value={segmentFrom} disabled={busy || aiBusy} onChange={(event) => setSegmentFrom(event.target.value)}>{normalRows.map((row) => <option key={row.node.id} value={row.node.id}>{row.index + 1}. {placeNamePresentation(row.place, workspace.trip.planLanguage, "未命名地点").primary}</option>)}</select></label>
                 <label><span>到</span><select value={segmentTo} disabled={busy || aiBusy} onChange={(event) => setSegmentTo(event.target.value)}>{normalRows.map((row) => <option key={row.node.id} value={row.node.id}>{row.index + 1}. {placeNamePresentation(row.place, workspace.trip.planLanguage, "未命名地点").primary}</option>)}</select></label>
               </div>
               <div className="final-route-inline-actions-v3">
                 <button className="button small" type="button" title="只在所选区段新增推荐景点，不移动现有地点" disabled={busy || aiBusy || !segmentAreaIds.length || segmentFrom === segmentTo} onClick={() => void startAi("interests", "interest.discover", { request: `final-route-detail-scope:segment:${segmentFrom}:${segmentTo}` }, segmentAreaIds, "AI 已开始补充这一段的详细地点，不会移动已有节点。")}>为这段新增景点</button>
-                <button className="button small" type="button" title="只分析所选区段的已有地点顺序，先给出可采用的建议" disabled={busy || aiBusy || segmentRows.length < 2 || segmentFrom === segmentTo} onClick={() => void startAi("itinerary", "itinerary.repair", { request: "优化这一段" }, [segmentFrom, segmentTo], "AI 已开始分析这一段；完成后由你决定是否采用新顺序。")}>建议调整这段顺序</button>
               </div>
             </section>}
           </div>
         </details>}
         {aiMessage && <small className="final-route-ai-message-v5">{aiMessage}</small>}
       </section>
+
+      {aiSortTarget && <section className="final-route-add-v3 final-route-add-v5" aria-label="AI排序">
+        <header><div><strong><WandSparkles size={15}/> AI排序</strong><small>{aiSortTarget.scope === "trip" ? "全程：允许普通地点跨日程块移动" : `第 ${aiSortTarget.dayNumber} 天：只调整当天地点顺序`}</small></div><button className="icon-button" type="button" aria-label="关闭 AI 排序" disabled={aiBusy || busy} onClick={() => setAiSortTarget(null)}><X size={16}/></button></header>
+        <textarea rows={3} value={aiSortRequest} disabled={aiBusy || busy} placeholder="可选：告诉 AI 你的想法，例如“第二天轻松一点，皇后镇放下午，尽量少走回头路”" onChange={(event) => setAiSortRequest(event.target.value)} style={{ width: "100%", resize: "vertical" }}/>
+        <div className="final-route-inline-actions-v3">
+          <button className="button small" type="button" disabled={aiBusy || busy} onClick={() => runAiSort(false)}>自动排序</button>
+          <button className="button primary small" type="button" disabled={aiBusy || busy || !aiSortRequest.trim()} onClick={() => runAiSort(true)}>按我的想法排序</button>
+        </div>
+        <small>AI 只调整现有地点的归属和顺序，不会新增、删除或改名；结果先生成方案，由你确认后才应用。</small>
+      </section>}
 
       {visibleAiProposals.length > 0 && <section className="final-route-proposals-v5">
         <div className="final-route-proposals-head-v5"><strong><WandSparkles size={15}/>AI 方案</strong>{pendingAiProposals.length > 0 && <span>{pendingAiProposals.length} 个待决定</span>}</div>
