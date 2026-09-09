@@ -16,6 +16,8 @@ describe("Phase 3 final route AI cutover", () => {
     expect(panel).toContain('"itinerary.repair"');
     expect(panel).not.toContain('"itinerary.generate"');
     expect(panel).not.toContain('"itinerary.detail.generate"');
+    expect(panel).toContain('createBrowserUuidV4()');
+    expect(panel).not.toContain("crypto.randomUUID()");
   });
 
   it("keeps detailed time and notes editable from the final-route experience without restoring Step 5", () => {

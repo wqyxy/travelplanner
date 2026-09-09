@@ -1,6 +1,7 @@
 import { Crosshair, Link, MapPin, Pencil, RefreshCw, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
+import { createBrowserUuidV4 } from "./browser-uuid";
 import type { FinalRouteDisplayRowV3 } from "./final-route-ui-v3";
 import type { Period, PlaceKind } from "./v2-types";
 import type { WorkspaceV3 } from "./v3-types";
@@ -140,7 +141,7 @@ export function FinalRouteEditorDrawerV4({
             },
           },
           targetIds: [row.node.id],
-          requestKey: crypto.randomUUID(),
+          requestKey: createBrowserUuidV4(),
         }),
       });
       setMessage("详细安排已保存；最终线路节点会同步更新。");

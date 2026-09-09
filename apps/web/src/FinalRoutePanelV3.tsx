@@ -1,6 +1,7 @@
 import { ChevronRight, Copy, GripVertical, LocateFixed, MapPin, Pencil, Plus, RefreshCw, Route, Sparkles, Trash2, WandSparkles, X } from "lucide-react";
 import { Fragment, type DragEvent, type ReactNode, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
+import { createBrowserUuidV4 } from "./browser-uuid";
 import { FinalRouteEditorDrawerV4 } from "./FinalRouteEditorDrawerV4";
 import { finalRouteMoveTargetIndexV4, type FinalRouteDropPositionV4 } from "./final-route-drag-v4";
 import type { FinalRouteNodeStatus, PlaceKind, ProviderPlaceCandidate, TransportMode } from "./v2-types";
@@ -244,7 +245,7 @@ export function FinalRoutePanelV3({
     try {
       await api(`/api/trips/${workspace.trip.id}/actions/cta`, {
         method: "POST",
-        body: JSON.stringify({ stage, actionType, parameters, targetIds, requestKey: crypto.randomUUID() }),
+        body: JSON.stringify({ stage, actionType, parameters, targetIds, requestKey: createBrowserUuidV4() }),
       });
       await onRefreshWorkspace();
       setAiMessage(message);

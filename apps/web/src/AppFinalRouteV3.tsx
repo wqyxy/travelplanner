@@ -1,6 +1,7 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { Download, History, KeyRound, MapPinned, Menu, Moon, Plus, RefreshCw, Sun, Trash2 } from "lucide-react";
 import { api } from "./api";
+import { createBrowserUuidV4 } from "./browser-uuid";
 import { AiTaskTopbar } from "./AiTaskTopbar";
 import type { GoogleMapsPreviewV3, WorkflowPlaceEditChangesV3 } from "./CandidateWorkflowPanelV3";
 import { FinalRouteMapV3, type FinalRouteMapFocusRequestV3 } from "./FinalRouteMapV3";
@@ -162,7 +163,7 @@ export default function AppFinalRouteV3() {
 
   const createTrip = async () => { await runAction(async () => { const result = await api<{ trip: Trip }>("/api/trips", { method: "POST", body: "{}" }); setTrash(false); clearRouteTransientState(); await refreshTrips(false); await loadTrip(result.trip.id); setSection("planning"); }, "无法新建旅行。"); };
   const send = async (messageStage: ConversationStage, message: string, currentSelection: WorkspaceSelection) => { if (!trip) return; await runAction(async () => { await api(`/api/trips/${trip.id}/stages/${messageStage}/turns`, { method: "POST", body: JSON.stringify({ message, selection: currentSelection }) }); await refreshWorkspace(); }, "无法发送消息。"); };
-  const startCta = async (actionStage: ConversationStage, actionType: AiActionType, parameters: Record<string, unknown> = {}, targetIds: string[] = []) => { if (!trip) return; await runAction(async () => { await api(`/api/trips/${trip.id}/actions/cta`, { method: "POST", body: JSON.stringify({ stage: actionStage, actionType, parameters, targetIds, requestKey: crypto.randomUUID() }) }); await refreshWorkspace(); }, "无法启动这个操作。"); };
+  const startCta = async (actionStage: ConversationStage, actionType: AiActionType, parameters: Record<string, unknown> = {}, targetIds: string[] = []) => { if (!trip) return; await runAction(async () => { await api(`/api/trips/${trip.id}/actions/cta`, { method: "POST", body: JSON.stringify({ stage: actionStage, actionType, parameters, targetIds, requestKey: createBrowserUuidV4() }) }); await refreshWorkspace(); }, "无法启动这个操作。"); };
   const confirmAction = async (action: AiAction) => { if (!trip) return; await runAction(async () => { await api(`/api/trips/${trip.id}/actions/${encodeURIComponent(action.id)}/confirm`, { method: "POST", body: JSON.stringify({ expectedGeneration: action.baseGeneration }) }); await refreshWorkspace(); }, "无法确认操作。"); };
   const cancelAction = async (action: AiAction) => { if (!trip) return; await runAction(async () => { await api(`/api/trips/${trip.id}/actions/${encodeURIComponent(action.id)}/cancel`, { method: "POST", body: JSON.stringify({ expectedGeneration: action.baseGeneration }) }); await refreshWorkspace(); }, "无法取消操作。"); };
   const proposalAction = async (proposalId: string, action: ProposalAction) => { if (!trip) return; await runAction(async () => { await api(proposalActionPath(trip.id, proposalId, action), { method: "POST", body: "{}" }); await loadTrip(trip.id, false); if (action !== "reject") await refreshTrips(false); }, "无法处理这个调整方案。"); };
@@ -187,16 +188,16 @@ export default function AppFinalRouteV3() {
   };
 
   const addRoutePlace = async (draft: { nameZh: string; kind: Trip["plan"]["places"][number]["kind"] }, index: number) => {
-    const temporaryPlaceId = `tmp-place-${crypto.randomUUID()}`;
-    const temporaryCandidateId = `tmp-candidate-${crypto.randomUUID()}`;
-    const temporaryNodeId = `tmp-route-${crypto.randomUUID()}`;
+    const temporaryPlaceId = `tmp-place-${createBrowserUuidV4()}`;
+    const temporaryCandidateId = `tmp-candidate-${createBrowserUuidV4()}`;
+    const temporaryNodeId = `tmp-route-${createBrowserUuidV4()}`;
     const result = await executeCommands(newFinalRoutePlaceCommandsV3({ index, temporaryPlaceId, temporaryCandidateId, temporaryNodeId, ...draft }), "无法把地点加入最终线路。");
     return result?.idMappings[temporaryNodeId] ?? null;
   };
   const copyRouteNode = async (nodeId: string, targetIndex: number) => {
     const source = trip?.plan.finalRoute?.nodes.find((node) => node.id === nodeId);
     if (!source) return null;
-    const temporaryNodeId = `tmp-route-${crypto.randomUUID()}`;
+    const temporaryNodeId = `tmp-route-${createBrowserUuidV4()}`;
     const result = await executeCommands([{
       type: "add_final_route_node",
       index: targetIndex,
@@ -298,7 +299,7 @@ export default function AppFinalRouteV3() {
     if (!trip) return false;
     let saved = false;
     await runAction(async () => {
-      const started = await api<{ action: AiAction }>(`/api/trips/${trip.id}/actions/cta`, { method: "POST", body: JSON.stringify({ stage: "requirements", actionType: "requirements.update", parameters: { changes: { brief: changes } }, targetIds: [], requestKey: crypto.randomUUID() }) });
+      const started = await api<{ action: AiAction }>(`/api/trips/${trip.id}/actions/cta`, { method: "POST", body: JSON.stringify({ stage: "requirements", actionType: "requirements.update", parameters: { changes: { brief: changes } }, targetIds: [], requestKey: createBrowserUuidV4() }) });
       for (let attempt = 0; attempt < 20; attempt += 1) {
         const next = await api<WorkspaceV3>(`/api/trips/${trip.id}/workspace`); setWorkspace(next);
         const action = next.actions.find((item) => item.id === started.action.id);

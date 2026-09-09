@@ -1,6 +1,7 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { History, KeyRound, Menu, Moon, Plus, RefreshCw, Sparkles, Sun, Trash2, TriangleAlert } from "lucide-react";
 import { api } from "./api";
+import { createBrowserUuidV4 } from "./browser-uuid";
 import { CandidatePanel, type GoogleMapsPreview, type NewCandidateDraft, type PlaceEditChanges } from "./CandidatePanel";
 import { AiTaskTopbar } from "./AiTaskTopbar";
 import { ItineraryPanelV2 } from "./ItineraryPanelV2";
@@ -161,7 +162,7 @@ export default function AppV3() {
   };
   const startCta = async (actionStage: ConversationStage, actionType: AiActionType, parameters: Record<string, unknown> = {}, targetIds: string[] = []) => {
     if (!trip) return;
-    await runAction(async () => { await api(`/api/trips/${trip.id}/actions/cta`, { method: "POST", body: JSON.stringify({ stage: actionStage, actionType, parameters, targetIds, requestKey: crypto.randomUUID() }) }); await refreshWorkspace(); }, "无法启动 AI 动作。");
+    await runAction(async () => { await api(`/api/trips/${trip.id}/actions/cta`, { method: "POST", body: JSON.stringify({ stage: actionStage, actionType, parameters, targetIds, requestKey: createBrowserUuidV4() }) }); await refreshWorkspace(); }, "无法启动 AI 动作。");
   };
   const confirmAction = async (action: AiAction) => { if (!trip) return; await runAction(async () => { await api(`/api/trips/${trip.id}/actions/${encodeURIComponent(action.id)}/confirm`, { method: "POST", body: JSON.stringify({ expectedGeneration: action.baseGeneration }) }); await refreshWorkspace(); }, "无法确认动作。"); };
   const cancelAction = async (action: AiAction) => { if (!trip) return; await runAction(async () => { await api(`/api/trips/${trip.id}/actions/${encodeURIComponent(action.id)}/cancel`, { method: "POST", body: JSON.stringify({ expectedGeneration: action.baseGeneration }) }); await refreshWorkspace(); }, "无法取消动作。"); };
@@ -191,7 +192,7 @@ export default function AppV3() {
   const refine = async (dayIds?: string[]) => { if (!trip) return; const targets = dayIds?.length ? dayIds : []; await startCta("itinerary", "itinerary.refine", { dayIds: targets }, targets); };
   const runPlanCommand = async (command: PlanCommand) => { if (!trip) return; await runAction(async () => { await api(`/api/trips/${trip.id}/commands`, { method: "POST", body: JSON.stringify(buildPlanCommandBatchRequest(trip.contentGeneration, command)) }); await loadTrip(trip.id, false); await refreshTrips(false); }, "无法编辑旅行计划。"); };
   const addCandidate = async (draft: NewCandidateDraft) => {
-    const placeId = `tmp-place-${crypto.randomUUID()}`; const candidateId = `tmp-candidate-${crypto.randomUUID()}`;
+    const placeId = `tmp-place-${createBrowserUuidV4()}`; const candidateId = `tmp-candidate-${createBrowserUuidV4()}`;
     await runPlanCommand({ type: "add_candidate", place: { id: placeId, nameZh: draft.nameZh.trim(), nameLocal: draft.nameLocal.trim() || null, nameEn: draft.nameEn.trim() || null, kind: draft.kind, city: draft.city.trim() || null, region: draft.region.trim() || null, country: draft.country.trim() || null, countryCode: draft.countryCode.trim() ? draft.countryCode.trim().toUpperCase() : null, approximate: false }, candidate: { id: candidateId, placeId, preference: "optional", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: draft.suggestedDurationMinutes, tags: draft.tags, planningAreaCandidateId: draft.planningAreaCandidateId, planningRole: draft.planningRole } });
   };
   const updatePlace = async (placeId: string, changes: PlaceEditChanges) => runPlanCommand({ type: "update_place", placeId, changes });
@@ -203,7 +204,7 @@ export default function AppV3() {
     if (!trip) return false;
     let saved = false;
     await runAction(async () => {
-      const started = await api<{ action: AiAction }>(`/api/trips/${trip.id}/actions/cta`, { method: "POST", body: JSON.stringify({ stage: "requirements", actionType: "requirements.update", parameters: { changes: { brief: changes } }, targetIds: [], requestKey: crypto.randomUUID() }) });
+      const started = await api<{ action: AiAction }>(`/api/trips/${trip.id}/actions/cta`, { method: "POST", body: JSON.stringify({ stage: "requirements", actionType: "requirements.update", parameters: { changes: { brief: changes } }, targetIds: [], requestKey: createBrowserUuidV4() }) });
       for (let attempt = 0; attempt < 20; attempt += 1) {
         const next = await api<WorkspaceV3>(`/api/trips/${trip.id}/workspace`);
         setWorkspace(next);

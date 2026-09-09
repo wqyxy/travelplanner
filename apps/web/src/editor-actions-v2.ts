@@ -1,4 +1,5 @@
 import type { DayStop, PlanCommand, TravelPlanDocument, TripCandidate } from "./v2-types";
+import { createBrowserUuidV4 } from "./browser-uuid";
 
 export type StopPosition = { dayId: string; dayIndex: number; stopIndex: number };
 
@@ -62,7 +63,7 @@ export function createTemporaryStop(
   placeId: string,
   placeName: string,
   candidate: TripCandidate | null,
-  idFactory: () => string = () => crypto.randomUUID(),
+  idFactory: () => string = createBrowserUuidV4,
 ): DayStop {
   return {
     id: `tmp-stop-${idFactory()}`,

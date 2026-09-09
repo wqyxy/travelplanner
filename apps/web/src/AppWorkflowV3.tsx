@@ -1,6 +1,7 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { History, KeyRound, Menu, Moon, Plus, RefreshCw, Sparkles, Sun, Trash2, TriangleAlert } from "lucide-react";
 import { api } from "./api";
+import { createBrowserUuidV4 } from "./browser-uuid";
 import { AiTaskTopbar } from "./AiTaskTopbar";
 import { CandidateWorkflowPanelV3, type GoogleMapsPreviewV3, type WorkflowCandidateDraftV3, type WorkflowPlaceEditChangesV3 } from "./CandidateWorkflowPanelV3";
 import { DailyItineraryPanelV3 } from "./DailyItineraryPanelV3";
@@ -139,7 +140,7 @@ export default function AppWorkflowV3() {
 
   const createTrip = async () => { await runAction(async () => { const result = await api<{ trip: Trip }>("/api/trips", { method: "POST", body: "{}" }); setTrash(false); await refreshTrips(false); await loadTrip(result.trip.id); gotoStep("requirements"); }, "无法新建旅行。"); };
   const send = async (messageStage: ConversationStage, message: string, currentSelection: WorkspaceSelection) => { if (!trip) return; await runAction(async () => { await api(`/api/trips/${trip.id}/stages/${messageStage}/turns`, { method: "POST", body: JSON.stringify({ message, selection: currentSelection }) }); await refreshWorkspace(); }, "无法发送消息。"); };
-  const startCta = async (actionStage: ConversationStage, actionType: AiActionType, parameters: Record<string, unknown> = {}, targetIds: string[] = []) => { if (!trip) return; await runAction(async () => { await api(`/api/trips/${trip.id}/actions/cta`, { method: "POST", body: JSON.stringify({ stage: actionStage, actionType, parameters, targetIds, requestKey: crypto.randomUUID() }) }); await refreshWorkspace(); }, "无法启动这个操作。"); };
+  const startCta = async (actionStage: ConversationStage, actionType: AiActionType, parameters: Record<string, unknown> = {}, targetIds: string[] = []) => { if (!trip) return; await runAction(async () => { await api(`/api/trips/${trip.id}/actions/cta`, { method: "POST", body: JSON.stringify({ stage: actionStage, actionType, parameters, targetIds, requestKey: createBrowserUuidV4() }) }); await refreshWorkspace(); }, "无法启动这个操作。"); };
   const confirmAction = async (action: AiAction) => { if (!trip) return; await runAction(async () => { await api(`/api/trips/${trip.id}/actions/${encodeURIComponent(action.id)}/confirm`, { method: "POST", body: JSON.stringify({ expectedGeneration: action.baseGeneration }) }); await refreshWorkspace(); }, "无法确认操作。"); };
   const cancelAction = async (action: AiAction) => { if (!trip) return; await runAction(async () => { await api(`/api/trips/${trip.id}/actions/${encodeURIComponent(action.id)}/cancel`, { method: "POST", body: JSON.stringify({ expectedGeneration: action.baseGeneration }) }); await refreshWorkspace(); }, "无法取消操作。"); };
   const proposalAction = async (proposalId: string, action: ProposalAction) => { if (!trip) return; await runAction(async () => { await api(proposalActionPath(trip.id, proposalId, action), { method: "POST", body: "{}" }); await loadTrip(trip.id, false); if (action !== "reject") await refreshTrips(false); }, "无法处理这个调整方案。"); };
@@ -158,7 +159,7 @@ export default function AppWorkflowV3() {
     if (!trip) return;
     const parent = draft.planningAreaCandidateId ? trip.plan.candidates.find((candidate) => candidate.id === draft.planningAreaCandidateId) : null;
     const parentPlace = parent ? trip.plan.places.find((place) => place.id === parent.placeId) : null;
-    const placeId = `tmp-place-${crypto.randomUUID()}`; const candidateId = `tmp-candidate-${crypto.randomUUID()}`;
+    const placeId = `tmp-place-${createBrowserUuidV4()}`; const candidateId = `tmp-candidate-${createBrowserUuidV4()}`;
     await runPlanCommand({ type: "add_candidate", place: { id: placeId, nameZh: draft.nameZh, nameLocal: null, nameEn: null, kind: draft.placeKind, city: parentPlace?.nameZh ?? null, region: parentPlace?.region ?? null, country: parentPlace?.country ?? null, countryCode: parentPlace?.countryCode ?? null, approximate: false }, candidate: { id: candidateId, placeId, planningAreaCandidateId: draft.planningAreaCandidateId, planningRole: draft.planningRole, preference: "optional", source: "user", aiReason: null, aiScore: null, suggestedDurationMinutes: draft.suggestedDurationMinutes, tags: [] } });
   };
   const updatePlace = async (placeId: string, changes: WorkflowPlaceEditChangesV3) => {
@@ -189,7 +190,7 @@ export default function AppWorkflowV3() {
     if (!trip) return false;
     let saved = false;
     await runAction(async () => {
-      const started = await api<{ action: AiAction }>(`/api/trips/${trip.id}/actions/cta`, { method: "POST", body: JSON.stringify({ stage: "requirements", actionType: "requirements.update", parameters: { changes: { brief: changes } }, targetIds: [], requestKey: crypto.randomUUID() }) });
+      const started = await api<{ action: AiAction }>(`/api/trips/${trip.id}/actions/cta`, { method: "POST", body: JSON.stringify({ stage: "requirements", actionType: "requirements.update", parameters: { changes: { brief: changes } }, targetIds: [], requestKey: createBrowserUuidV4() }) });
       for (let attempt = 0; attempt < 20; attempt += 1) { const next = await api<WorkspaceV3>(`/api/trips/${trip.id}/workspace`); setWorkspace(next); const action = next.actions.find((item) => item.id === started.action.id); if (action?.status === "applied") { saved = true; await refreshTrips(false); return; } if (action?.status === "failed" || action?.status === "superseded") throw new Error(action.errorSummary || "保存旅行需求失败。"); await new Promise((resolve) => window.setTimeout(resolve, 25)); }
       throw new Error("旅行需求保存超时，请重试。");
     }, "无法保存旅行需求。");
