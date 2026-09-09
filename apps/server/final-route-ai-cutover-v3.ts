@@ -12,6 +12,13 @@ import {
   orderedAuthorizedRouteNodeIdsFromDaysV3,
   sanitizeFinalRouteRefineOutputV3,
 } from "./final-route-ai-v3.js";
+import {
+  buildPlaceOrganizerContextV3,
+  placeOrganizerNodeIdsV3,
+  placeOrganizerOutputFromDaysV3,
+  placeOrganizerOutputFromOrderedNodeIdsV3,
+  placeOrganizerOrderedNodeIdsV3,
+} from "./final-route-place-organizer-v3.js";
 import { TravelPlannerRuntimeV3 } from "./planner-runtime-v3.js";
 import { TravelStoreV3 } from "./travel-store-v3.js";
 
@@ -63,9 +70,17 @@ runtimePrototype.persistInterestDiscovery = async function persistInterestDiscov
 
 const originalBuildActionState = runtimePrototype.buildActionState as Function;
 runtimePrototype.buildActionState = function buildFinalRouteActionState(this: TravelPlannerRuntimeV3, action: AiActionRecord) {
-  if (action.actionType !== "itinerary.repair") return originalBuildActionState.call(this, action);
   const runtime = this as any;
   const trip = runtime.options.store.requireTrip(action.tripId);
+
+  if (action.actionType === "itinerary.day.optimize") {
+    const base = originalBuildActionState.call(this, action);
+    const dayId = String(action.parameters.dayId ?? action.targetIds[0] ?? "");
+    const organizer = buildPlaceOrganizerContextV3(trip.plan, { scope: "day", dayId });
+    return { ...base, organizer };
+  }
+
+  if (action.actionType !== "itinerary.repair") return originalBuildActionState.call(this, action);
   const places = new Map(trip.plan.places.map((place: any) => [place.id, place]));
   const optimizeScope = action.targetIds.length >= 2 ? "segment" as const : "trip" as const;
   const targetNodeIds = finalRouteTargetNodeIdsForOptimizationV3(trip.plan, {
@@ -83,6 +98,7 @@ runtimePrototype.buildActionState = function buildFinalRouteActionState(this: Tr
     tripFacts: trip.plan.trip,
     optimizeScope,
     targetNodeIds,
+    ...(optimizeScope === "trip" ? { organizer: buildPlaceOrganizerContextV3(trip.plan, { scope: "trip" }) } : {}),
     finalRouteNodes: trip.plan.finalRoute.nodes.map((node: any) => ({ ...node, place: places.get(node.placeId) ?? null })),
     days: trip.plan.days,
     routeStates: runtime.options.routes.workspaceRouteState(action.tripId),
@@ -105,8 +121,12 @@ runtimePrototype.persistDayOptimize = function persistFinalRouteDayOptimize(
   const trip = runtime.options.store.requireTrip(action.tripId);
   const day = trip.plan.days.find((item: any) => item.id === requestedDayId);
   if (!day) throw new Error(`未知 Day：${requestedDayId}`);
+
+  const organizer = buildPlaceOrganizerContextV3(trip.plan, { scope: "day", dayId: requestedDayId });
+  const normalized = placeOrganizerOutputFromOrderedNodeIdsV3(organizer, [...result.orderedStopIds, requestedDayId]);
+  const normalizedOrder = placeOrganizerOrderedNodeIdsV3(organizer, normalized).filter((id) => id !== requestedDayId);
   const allowedNodeIds = day.stops.map((stop: any) => stop.id);
-  const commands = finalRouteMoveCommandsForOrderedSubsetV3(trip.plan, allowedNodeIds, result.orderedStopIds);
+  const commands = finalRouteMoveCommandsForOrderedSubsetV3(trip.plan, allowedNodeIds, normalizedOrder);
   if (!commands.length) {
     runtime.options.store.completeAction(action.id, "no-change");
     return;
@@ -135,14 +155,25 @@ runtimePrototype.persistItineraryRepair = function persistFinalRouteOptimization
     runtime.options.store.completeAction(action.id, "no-change");
     return;
   }
-  const orderedNodeIds = orderedAuthorizedRouteNodeIdsFromDaysV3(result.days, allowedNodeIds);
+
+  let orderedNodeIds = orderedAuthorizedRouteNodeIdsFromDaysV3(result.days, allowedNodeIds);
+  if (optimizeScope === "trip") {
+    const organizer = buildPlaceOrganizerContextV3(trip.plan, { scope: "trip" });
+    const normalized = placeOrganizerOutputFromDaysV3(organizer, result.days);
+    orderedNodeIds = placeOrganizerOrderedNodeIdsV3(organizer, normalized);
+    const organizerNodeIds = placeOrganizerNodeIdsV3(organizer);
+    if (organizerNodeIds.length !== allowedNodeIds.length || organizerNodeIds.some((id) => !allowedNodeIds.includes(id))) {
+      throw new Error("AI_PLACE_ORGANIZER_SCOPE_MISMATCH: AI 排序桥接范围与最终线路优化范围不一致。");
+    }
+  }
+
   const commands = finalRouteMoveCommandsForOrderedSubsetV3(trip.plan, allowedNodeIds, orderedNodeIds);
   if (!commands.length) {
     runtime.options.store.completeAction(action.id, "no-change");
     return;
   }
   const scope: ProposalScope = { type: "trip", id: null };
-  return runtime.createProposalForAction(action, result.title, result.explanation, commands, scope);
+  return runtime.createProposalForAction(action, result.title, result.explanation, commands, scope, optimizeScope === "trip" ? trip.plan.days.map((day: any) => day.id) : undefined);
 };
 
 const originalPersistRefine = runtimePrototype.persistRefine as Function;
