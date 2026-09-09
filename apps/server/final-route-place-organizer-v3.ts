@@ -47,7 +47,7 @@ function organizerBlockForDay(plan: TravelPlanDocument, day: TravelPlanDocument[
 }
 
 /**
- * Thin bridge between canonical finalRoute and the AI organizer contract.
+ * Thin bridge between canonical finalRoute and AI ordering.
  * It intentionally exports only block identity plus route-node id/name pairs.
  * Candidate role/kind is not exposed, so macro destinations and detailed POIs
  * are treated identically once they are in finalRoute.
@@ -98,6 +98,49 @@ export function validatePlaceOrganizerOutputV3(
     }
   }
   return output;
+}
+
+function namesByNodeId(context: PlaceOrganizerContextV3) {
+  return new Map(context.blocks.flatMap((block) => block.places.map((place) => [place.id, place.name] as const)));
+}
+
+/** Convert an ordered node sequence back into the bridge JSON. Day-end nodes close blocks. */
+export function placeOrganizerOutputFromOrderedNodeIdsV3(
+  context: PlaceOrganizerContextV3,
+  orderedNodeIds: string[],
+): PlaceOrganizerOutputV3 {
+  const names = namesByNodeId(context);
+  let cursor = 0;
+  const blocks = context.blocks.map((block) => {
+    const places: Array<{ id: string; name: string }> = [];
+    while (cursor < orderedNodeIds.length) {
+      const id = orderedNodeIds[cursor++];
+      const name = names.get(id);
+      if (!name) throw new Error(`AI_PLACE_ORGANIZER_UNKNOWN_OUTPUT_NODE: AI 排序返回未知线路节点 ${id}。`);
+      places.push({ id, name });
+      if (id === block.fixedEndPlaceId) break;
+    }
+    return { id: block.id, places };
+  });
+  if (cursor !== orderedNodeIds.length) throw new Error("AI_PLACE_ORGANIZER_EXTRA_OUTPUT: AI 排序返回了日程块范围外的地点。");
+  return validatePlaceOrganizerOutputV3(context, { blocks });
+}
+
+/** Convert Day-like AI output into the canonical bridge JSON, restoring names server-side. */
+export function placeOrganizerOutputFromDaysV3(
+  context: PlaceOrganizerContextV3,
+  days: Array<{ id: string; stops: Array<{ id: string }> }>,
+): PlaceOrganizerOutputV3 {
+  const names = namesByNodeId(context);
+  const blocks = days.map((day) => ({
+    id: day.id,
+    places: [...day.stops.map((stop) => stop.id), day.id].map((id) => {
+      const name = names.get(id);
+      if (!name) throw new Error(`AI_PLACE_ORGANIZER_UNKNOWN_OUTPUT_NODE: AI 排序返回未知线路节点 ${id}。`);
+      return { id, name };
+    }),
+  }));
+  return validatePlaceOrganizerOutputV3(context, { blocks });
 }
 
 export function placeOrganizerOrderedNodeIdsV3(
